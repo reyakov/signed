@@ -1,0 +1,20 @@
+[package]
+name = "signed"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "signed"
+path = "src/main.rs"
+
+[dependencies]
+gpui.workspace = true
+gpui_platform.workspace = true
+gpui_linux.workspace = true
+gpui_windows.workspace = true
+gpui_macos.workspace = true
+gpui-component.workspace = true
+reqwest_client.workspace = true
+log.workspace = true
+tracing-subscriber.workspace = true
