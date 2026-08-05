@@ -1,0 +1,8 @@
+[package]
+name = "signed_core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+nostr.workspace = true

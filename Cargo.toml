@@ -20,12 +20,15 @@ reqwest_client = { git = "https://github.com/zed-industries/zed" }
 
 gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 
-nostr-lmdb = { git = "https://github.com/rust-nostr/nostr" }
-nostr-memory = { git = "https://github.com/rust-nostr/nostr" }
-nostr-blossom = { git = "https://github.com/rust-nostr/nostr" }
-nostr-gossip-memory = { git = "https://github.com/rust-nostr/nostr" }
-nostr-connect = { git = "https://github.com/rust-nostr/nostr" }
-nostr-sdk = { git = "https://github.com/rust-nostr/nostr" }
+nostr = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215", features = ["nip59", "nip49", "nip44"] }
+nostr-lmdb = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
+nostr-memory = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
+nostr-blossom = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
+nostr-gossip-memory = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
+nostr-connect = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
+nostr-sdk = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
+
+gix = { version = "0.86", default-features = false, features = ["sha1", "blocking-network-client", "blocking-http-transport-reqwest-rust-tls", "worktree-mutation"] }
 
 chrono = { version = "0.4.38", features = ["wasmbind"] }
 smol = "2"

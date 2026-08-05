@@ -1,0 +1,22 @@
+[package]
+name = "signed_nostr"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+signed_core = { path = "../signed_core" }
+
+nostr.workspace = true
+nostr-sdk.workspace = true
+nostr-connect.workspace = true
+nostr-gossip-memory.workspace = true
+
+anyhow.workspace = true
+webbrowser.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+nostr-memory.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+nostr-lmdb.workspace = true
