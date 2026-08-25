@@ -28,10 +28,7 @@ pub fn parse_clone_url(url: &str) -> Option<CloneTarget> {
 
     if first.starts_with("naddr1") {
         let coordinate = Nip19Coordinate::from_bech32(first).ok()?;
-        return Some(CloneTarget::Addr(RepoAddr::new(
-            coordinate.coordinate.public_key,
-            coordinate.coordinate.identifier,
-        )));
+        return Some(CloneTarget::Addr(coordinate.coordinate));
     }
 
     let (relay_hint, identifier) = match third {

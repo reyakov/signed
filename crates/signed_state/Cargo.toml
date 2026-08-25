@@ -6,11 +6,15 @@ publish.workspace = true
 
 [dependencies]
 signed_core = { path = "../signed_core" }
+signed_git = { path = "../signed_git" }
 signed_nostr = { path = "../signed_nostr" }
+utils = { path = "../utils" }
 
 nostr.workspace = true
 nostr-sdk.workspace = true
 nostr-connect.workspace = true
+
+bitcoin_hashes = "1"
 
 gpui.workspace = true
 flume.workspace = true

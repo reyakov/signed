@@ -194,7 +194,7 @@ impl AuthUrlHandler for SignedAuthUrlHandler {
         auth_url: Url,
     ) -> Pin<Box<dyn Future<Output = Result<(), nostr_connect::error::Error>> + Send + '_>> {
         Box::pin(async move {
-            webbrowser::open(auth_url.as_str()).unwrap();
+            webbrowser::open(auth_url.as_str()).map_err(nostr_connect::error::Error::other)?;
             Ok(())
         })
     }

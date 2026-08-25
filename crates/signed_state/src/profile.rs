@@ -1,11 +1,14 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Error;
-use gpui::{App, Context, Entity, Global, SharedString, Subscription, Task};
+use flume::{Receiver, RecvTimeoutError, Sender};
+use gpui::{App, AppContext, Context, Entity, Global, SharedString, Subscription, Task};
 use nostr_sdk::prelude::*;
+use utils::shorten_pubkey;
 
-use crate::backend::{Backend, BackendEvent};
+use crate::backend::{Backend, BackendEvent, sync_bootstrap_only};
 
 /// A user profile (kind `0` metadata), as plain data for the UI.
 #[derive(Debug, Clone)]
@@ -57,21 +60,23 @@ impl Profile {
     }
 }
 
-/// Shorten a [`PublicKey`] to `npub1abc...wxyz` form.
-pub fn shorten_pubkey(public_key: PublicKey, len: usize) -> String {
-    let npub = public_key.to_bech32().unwrap();
-    format!("{}...{}", &npub[..(len + 5)], &npub[npub.len() - len..])
+/// Message from the fetch task to the main thread.
+enum Dispatch {
+    /// A batched sync finished; re-read seen profiles from the database.
+    Synced,
 }
+
+/// How long to wait for more requests before firing a batched sync.
+const BATCH_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Global profile cache. Profiles are fetched in batches and kept as plain
 /// data; the whole store notifies on change.
 pub struct ProfileStore {
     profiles: HashMap<PublicKey, Profile>,
-    /// Public keys we've already requested this session.
-    seen: HashSet<PublicKey>,
-    /// Public keys queued for the next batched fetch.
-    queued: HashSet<PublicKey>,
-    fetching: bool,
+    /// Public keys we've already requested this session (main thread only).
+    seen: RefCell<HashSet<PublicKey>>,
+    /// Sender for queuing fetch requests, batched by a background task.
+    sender: Sender<PublicKey>,
     tasks: Vec<Task<Result<(), Error>>>,
     _subscription: Subscription,
 }
@@ -106,12 +111,31 @@ impl ProfileStore {
             _ => {}
         });
 
+        // Fetch requests are queued on a channel and synced in batches by a
+        // background task.
+        let client = backend.read(cx).client();
+        let (sender, receiver) = flume::unbounded::<PublicKey>();
+        let (dispatch_tx, dispatch_rx) = flume::unbounded::<Dispatch>();
+
+        let mut tasks = Vec::new();
+
+        tasks.push(cx.background_spawn(async move {
+            Self::handle_requests(&client, &dispatch_tx, &receiver).await
+        }));
+
+        // Re-read seen profiles from the database after each batch sync.
+        tasks.push(cx.spawn(async move |this, cx| {
+            while let Ok(Dispatch::Synced) = dispatch_rx.recv_async().await {
+                this.update(cx, |this, cx| this.apply_seen(cx)).ok();
+            }
+            Ok(())
+        }));
+
         let mut store = Self {
             profiles: HashMap::new(),
-            seen: HashSet::new(),
-            queued: HashSet::new(),
-            fetching: false,
-            tasks: Vec::new(),
+            seen: RefCell::new(HashSet::new()),
+            sender,
+            tasks,
             _subscription: subscription,
         };
 
@@ -121,14 +145,17 @@ impl ProfileStore {
 
     /// Get a profile. Returns a placeholder (default metadata) and queues a
     /// fetch if the profile isn't cached yet.
-    pub fn get(&mut self, public_key: PublicKey, cx: &mut Context<Self>) -> Profile {
-        if let Some(profile) = self.profiles.get(&public_key) {
+    pub fn get(&self, public_key: &PublicKey) -> Profile {
+        if let Some(profile) = self.profiles.get(public_key) {
             return profile.clone();
         }
 
-        if self.seen.insert(public_key) {
-            self.queued.insert(public_key);
-            self.queue_fetch(cx);
+        let public_key = *public_key;
+
+        if self.seen.borrow_mut().insert(public_key)
+            && let Err(e) = self.sender.send(public_key)
+        {
+            log::warn!("failed to queue profile fetch: {e}");
         }
 
         Profile::new(public_key, Metadata::default())
@@ -138,88 +165,165 @@ impl ProfileStore {
     fn load(&mut self, cx: &mut Context<Self>) {
         let client = Backend::global(cx).read(cx).client();
 
-        let task = cx.spawn(async move |this, cx| {
+        let work = cx.background_spawn(async move {
             let filter = Filter::new().kind(Kind::Metadata).limit(200);
             let events = client.database().query(filter).await?;
 
-            this.update(cx, |this, cx| {
-                for event in events {
+            // Parse off the main thread; only plain profiles cross back.
+            let profiles: Vec<Profile> = events
+                .into_iter()
+                .map(|event| {
                     let metadata = Metadata::from_json(&event.content).unwrap_or_default();
-                    this.profiles
-                        .insert(event.pubkey, Profile::new(event.pubkey, metadata));
+                    Profile::new(event.pubkey, metadata)
+                })
+                .collect();
+
+            Ok::<_, Error>(profiles)
+        });
+
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let profiles = work.await?;
+
+            this.update(cx, |this, cx| {
+                for profile in profiles {
+                    this.profiles.insert(profile.public_key(), profile);
                 }
                 cx.notify();
             })?;
 
             Ok(())
-        });
-
-        self.tasks.push(task);
+        }));
     }
 
     /// Re-read the latest metadata of an author from the local database.
     fn apply_author(&mut self, public_key: PublicKey, cx: &mut Context<Self>) {
         let client = Backend::global(cx).read(cx).client();
 
-        let task = cx.spawn(async move |this, cx| {
+        let work = cx.background_spawn(async move {
             let filter = Filter::new().kind(Kind::Metadata).author(public_key);
             let events = client.database().query(filter).await?;
 
-            if let Some(event) = events.into_iter().max_by_key(|e| e.created_at) {
-                let metadata = Metadata::from_json(event.content).unwrap_or_default();
+            // Parse off the main thread; only the profile crosses back.
+            let profile = events
+                .into_iter()
+                .max_by_key(|e| e.created_at)
+                .map(|event| {
+                    let metadata = Metadata::from_json(event.content).unwrap_or_default();
+                    Profile::new(event.pubkey, metadata)
+                });
 
-                this.update(cx, |this, cx| {
-                    this.profiles
-                        .insert(public_key, Profile::new(public_key, metadata));
-                    cx.notify();
-                })?;
-            }
-
-            Ok(())
+            Ok::<_, Error>(profile)
         });
 
-        self.tasks.push(task);
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let profile = work.await?;
+
+            this.update(cx, |this, cx| {
+                if let Some(profile) = profile {
+                    this.profiles.insert(profile.public_key(), profile);
+                    cx.notify();
+                }
+            })?;
+
+            Ok(())
+        }));
     }
 
-    /// Drain the queue in a batched fetch, debounced to collect requests.
-    fn queue_fetch(&mut self, cx: &mut Context<Self>) {
-        if self.fetching {
+    /// Re-read the latest metadata of every requested author from the local
+    /// database (used after a sync, which produces no NostrUpdate events).
+    fn apply_seen(&mut self, cx: &mut Context<Self>) {
+        let authors: Vec<PublicKey> = self.seen.borrow().iter().copied().collect();
+
+        if authors.is_empty() {
             return;
         }
-        self.fetching = true;
 
         let client = Backend::global(cx).read(cx).client();
 
-        let task = cx.spawn(async move |this, cx| {
-            loop {
-                // Collect more requests before firing the batch.
-                cx.background_executor()
-                    .timer(Duration::from_millis(500))
-                    .await;
+        let work = cx.background_spawn(async move {
+            let filter = Filter::new().kind(Kind::Metadata).authors(authors);
+            let events = client.database().query(filter).await?;
 
-                let batch = this.update(cx, |this, _cx| std::mem::take(&mut this.queued))?;
-
-                if batch.is_empty() {
-                    this.update(cx, |this, _cx| {
-                        this.fetching = false;
-                    })?;
-                    break;
-                }
-
-                let filter = Filter::new()
-                    .kind(Kind::Metadata)
-                    .authors(batch.into_iter().collect::<Vec<PublicKey>>());
-
-                // Gossip routes the fetch to each author's relays. Fetched
-                // events land in the database and surface via NostrUpdate.
-                if let Err(e) = client.fetch_events(filter).await {
-                    log::warn!("profile fetch failed: {e}");
+            // Pick the latest metadata per author off the main thread.
+            let mut latest: HashMap<PublicKey, (Timestamp, Metadata)> = HashMap::new();
+            for event in events {
+                match latest.get(&event.pubkey) {
+                    Some((ts, _)) if *ts >= event.created_at => {}
+                    _ => {
+                        latest.insert(
+                            event.pubkey,
+                            (
+                                event.created_at,
+                                Metadata::from_json(&event.content).unwrap_or_default(),
+                            ),
+                        );
+                    }
                 }
             }
 
-            Ok(())
+            let profiles: Vec<Profile> = latest
+                .into_iter()
+                .map(|(public_key, (_, metadata))| Profile::new(public_key, metadata))
+                .collect();
+
+            Ok::<_, Error>(profiles)
         });
 
-        self.tasks.push(task);
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let profiles = work.await?;
+
+            this.update(cx, |this, cx| {
+                for profile in profiles {
+                    this.profiles.insert(profile.public_key(), profile);
+                }
+                cx.notify();
+            })?;
+
+            Ok(())
+        }));
+    }
+
+    /// Sync metadata for requested authors in batches, debounced to collect
+    /// requests. Runs on a background thread; results are dispatched to the
+    /// main thread, which re-reads the database.
+    async fn handle_requests(
+        client: &Client,
+        dispatch: &Sender<Dispatch>,
+        receiver: &Receiver<PublicKey>,
+    ) -> Result<(), Error> {
+        let mut batch: HashSet<PublicKey> = HashSet::new();
+
+        loop {
+            // Wait for the first request of a batch.
+            match receiver.recv_timeout(BATCH_TIMEOUT) {
+                Ok(public_key) => {
+                    batch.insert(public_key);
+                }
+                Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                Err(RecvTimeoutError::Timeout) => continue,
+            };
+
+            // Collect everything that arrives within the debounce window.
+            let deadline = Instant::now() + BATCH_TIMEOUT;
+            while let Ok(public_key) = receiver.recv_deadline(deadline) {
+                batch.insert(public_key);
+            }
+
+            let filter = Filter::new()
+                .kind(Kind::Metadata)
+                .authors(batch.drain().collect::<Vec<PublicKey>>());
+
+            // Negentropy-sync with the bootstrap relays. Synced events are
+            // written to the database directly (no NostrUpdate), so re-apply
+            // from the database afterwards.
+            match sync_bootstrap_only(client, filter, SyncOptions::default()).await {
+                Ok(_) => {
+                    if dispatch.send(Dispatch::Synced).is_err() {
+                        log::warn!("profile dispatch channel closed, dropping sync result");
+                    }
+                }
+                Err(e) => log::warn!("profile sync failed: {e}"),
+            }
+        }
     }
 }

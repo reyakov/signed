@@ -1,16 +1,18 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Error, anyhow};
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Global, Task};
+use nostr::event::IntoEventBuilder;
 use nostr_connect::prelude::*;
+use nostr_sdk::client::SyncSummary;
 use nostr_sdk::prelude::*;
 use signed_core::filters;
-use signed_nostr::{NostrBackend, SignedAuthUrlHandler, UniversalSigner, Update};
+use signed_nostr::{SignedAuthUrlHandler, UniversalSigner, Update};
 
-/// Keyring entry holding the user credential (`nsec1...` or `bunker://...`).
-pub const USER_KEYRING: &str = "su.reya.signed#user";
-/// Keyring entry holding the locally generated key for NIP-46 sessions.
-pub const MASTER_KEYRING: &str = "su.reya.signed#master";
+/// Keyring entry holding the user credential (`nsec1...` or `bunker://...`
+/// with an embedded `?master=<nsec>` NIP-46 session key).
+pub const USER_KEYRING: &str = "Signed Safe Storage";
 /// Timeout for NIP-46 signer responses.
 pub const NOSTR_CONNECT_TIMEOUT: u64 = 60;
 
@@ -33,12 +35,27 @@ pub const INDEXER_RELAYS: [&str; 3] = [
 pub enum BackendEvent {
     /// User has no signer configured.
     SignerRequired,
+    /// The stored identity is NIP-49 encrypted (`ncryptsec1...`); a
+    /// passphrase is required to decrypt it before the session can resume.
+    PassphraseRequired,
     /// The signer has changed (login/logout/account switch).
     SignerChanged,
     /// Relay bootstrap finished.
     Connected,
     /// A new event was received from a relay and stored in the database.
     NostrUpdate(Update),
+    /// A negentropy sync completed; the database was updated directly,
+    /// so stores should re-query (no [`BackendEvent::NostrUpdate`] is fired
+    /// for synced events).
+    Synced,
+    /// A negentropy sync is in flight. Stores may re-query to render
+    /// incrementally; UI can show `current`/`total` progress.
+    SyncProgress {
+        /// Total events to process.
+        total: u64,
+        /// Events processed so far.
+        current: u64,
+    },
     /// An event built locally was signed, broadcast and stored.
     Published(Box<Event>),
     /// An error occurred.
@@ -58,8 +75,14 @@ impl BackendEvent {
 /// notification pump. Stores subscribe to [`BackendEvent`] and re-query the
 /// local database when relevant updates arrive.
 pub struct Backend {
-    inner: NostrBackend,
+    client: Client,
+    signer: UniversalSigner,
     current_user: Option<PublicKey>,
+    connected: bool,
+    sync_progress: Option<(u64, u64)>,
+    /// Whether the stored credential is NIP-49 encrypted and a passphrase
+    /// is still needed to resume the session.
+    passphrase_required: bool,
     tasks: Vec<Task<Result<(), Error>>>,
 }
 
@@ -79,11 +102,11 @@ impl Backend {
         cx.set_global(GlobalBackend(entity));
     }
 
-    pub(crate) fn new(inner: NostrBackend, cx: &mut Context<Self>) -> Self {
-        let client = inner.client();
+    pub(crate) fn new(client: Client, signer: UniversalSigner, cx: &mut Context<Self>) -> Self {
+        let pump_client = client.clone();
 
         let pump = cx.spawn(async move |this, cx| {
-            let mut notifications = client.notifications();
+            let mut notifications = pump_client.notifications();
 
             while let Some(notification) = notifications.next().await {
                 let ClientNotification::Event { event, .. } = notification else {
@@ -104,8 +127,12 @@ impl Backend {
         });
 
         let mut this = Self {
-            inner,
+            client,
+            signer,
             current_user: None,
+            connected: false,
+            sync_progress: None,
+            passphrase_required: false,
             tasks: vec![pump],
         };
 
@@ -116,23 +143,30 @@ impl Backend {
     /// Bootstrap the client: connect to the default relays (indexers as
     /// discovery-only) and restore the saved session, if any.
     fn bootstrap(&mut self, cx: &mut Context<Self>) {
-        let backend = self.inner.clone();
+        let client = self.client.clone();
 
         let task = cx.background_spawn(async move {
             for url in BOOTSTRAP_RELAYS {
-                backend.add_relay(url).await?;
+                client.add_relay(url).await?;
             }
             for url in INDEXER_RELAYS {
-                backend.add_discovery_relay(url).await?;
+                client
+                    .add_relay(url)
+                    .capabilities(RelayCapabilities::DISCOVERY)
+                    .await?;
             }
-            backend.connect().await;
+            client.connect().await;
             Ok::<(), Error>(())
         });
 
         self.tasks.push(cx.spawn(async move |this, cx| {
             match task.await {
                 Ok(()) => {
-                    this.update(cx, |_this, cx| cx.emit(BackendEvent::Connected))?;
+                    this.update(cx, |this, cx| {
+                        this.connected = true;
+                        cx.emit(BackendEvent::Connected);
+                        cx.notify();
+                    })?;
                 }
                 Err(e) => {
                     this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
@@ -145,7 +179,9 @@ impl Backend {
     }
 
     /// Restore the saved session from the keyring. Emits
-    /// [`BackendEvent::SignerRequired`] if no credential is stored.
+    /// [`BackendEvent::SignerRequired`] if no credential is stored, or
+    /// [`BackendEvent::PassphraseRequired`] if the stored identity is
+    /// NIP-49 encrypted.
     pub fn restore_session(&mut self, cx: &mut Context<Self>) {
         if cfg!(target_arch = "wasm32") {
             cx.emit(BackendEvent::SignerRequired);
@@ -153,7 +189,6 @@ impl Backend {
         }
 
         let user = cx.read_credentials(USER_KEYRING);
-        let master = self.master_key(cx);
 
         self.tasks.push(cx.spawn(async move |this, cx| {
             let content = match user.await {
@@ -169,15 +204,24 @@ impl Backend {
                     let keys = Keys::new(SecretKey::parse(&content)?);
                     this.update(cx, |this, cx| this.set_signer(keys, cx))?;
                 } else if content.starts_with("bunker://") {
-                    let uri = NostrConnectUri::parse(&content)?;
+                    let (base, keys) = extract_master_key(&content);
+                    let uri = NostrConnectUri::parse(base)?;
                     let mut signer = NostrConnect::new(
                         uri,
-                        master.await,
+                        keys,
                         Duration::from_secs(NOSTR_CONNECT_TIMEOUT),
                         None,
                     )?;
                     signer.auth_url_handler(SignedAuthUrlHandler);
                     this.update(cx, |this, cx| this.set_signer(signer, cx))?;
+                } else if content.starts_with("ncryptsec1") {
+                    // Encrypted identity: a passphrase is required to
+                    // decrypt it before the session can resume.
+                    log::warn!("stored identity is ncryptsec-encrypted; waiting for passphrase");
+                    this.update(cx, |this, cx| {
+                        this.passphrase_required = true;
+                        cx.emit(BackendEvent::PassphraseRequired);
+                    })?;
                 } else {
                     this.update(cx, |_, cx| cx.emit(BackendEvent::SignerRequired))?;
                 }
@@ -195,6 +239,166 @@ impl Backend {
 
             Ok(())
         }));
+    }
+
+    /// Decrypt the NIP-49 encrypted credential stored in the keyring with
+    /// the given passphrase and resume the session.
+    ///
+    /// The scrypt decryption runs off the UI thread. The returned task
+    /// yields the public key on success, or the failure reason (e.g. wrong
+    /// passphrase), so callers can render inline errors.
+    pub fn restore_with_passphrase(
+        &mut self,
+        password: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<PublicKey, Error>> {
+        let password = password.to_owned();
+        let user = cx.read_credentials(USER_KEYRING);
+
+        cx.spawn(async move |this, cx| {
+            let content = user
+                .await?
+                .map(|(_username, secret)| String::from_utf8(secret))
+                .transpose()?
+                .ok_or_else(|| anyhow!("no stored credential; nothing to unlock"))?;
+
+            if !content.starts_with("ncryptsec1") {
+                return Err(anyhow!("stored credential is not passphrase-encrypted"));
+            }
+
+            let decrypt_task = cx.background_spawn(async move {
+                let encrypted = EncryptedSecretKey::from_bech32(&content)?;
+                let secret = encrypted.decrypt(&password)?;
+                Ok::<_, Error>(Keys::new(secret))
+            });
+
+            let keys = decrypt_task.await?;
+            let public_key = keys.public_key();
+
+            this.update(cx, |this, cx| this.set_signer(keys, cx))?;
+
+            Ok(public_key)
+        })
+    }
+
+    /// Create a new identity: generate keys, encrypt the secret key with the
+    /// passphrase (NIP-49) and persist it in the keyring, then publish the
+    /// user's NIP-65 relay list, metadata and grasp list.
+    ///
+    /// The heavy encryption runs off the UI thread. The returned task yields
+    /// the new public key on success, or the failure reason, so callers can
+    /// render progress and inline errors.
+    pub fn create_identity(
+        &mut self,
+        name: &str,
+        password: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<PublicKey, Error>> {
+        let name = name.trim().to_owned();
+        let password = password.to_owned();
+
+        if name.is_empty() || name.len() > 255 {
+            return Task::ready(Err(anyhow!("Name must be 1-255 characters")));
+        }
+        if password.is_empty() {
+            return Task::ready(Err(anyhow!("Passphrase must not be empty")));
+        }
+
+        cx.spawn(async move |this, cx| {
+            let job = cx.background_spawn(async move {
+                let keys = Keys::generate();
+                let encrypted =
+                    EncryptedSecretKey::new(keys.secret_key(), &password, 16, KeySecurity::Medium)?;
+                let ncryptsec = encrypted.to_bech32()?;
+                Ok::<_, Error>((keys, ncryptsec))
+            });
+
+            let (keys, ncryptsec) = job.await?;
+            let public_key = keys.public_key();
+
+            // Persist the encrypted credential.
+            let write = cx.update(|cx| {
+                cx.write_credentials(USER_KEYRING, &public_key.to_hex(), ncryptsec.as_bytes())
+            });
+            write.await?;
+
+            this.update(cx, |this, cx| {
+                // Become the new identity, so the publishes below are
+                // signed with the new keys.
+                this.signer.swap_inner(keys);
+                this.current_user = Some(public_key);
+                this.bootstrap_user(public_key, cx);
+                cx.emit(BackendEvent::SignerChanged);
+                cx.notify();
+
+                let relays: Vec<(RelayUrl, Option<RelayMetadata>)> = [
+                    (
+                        RelayUrl::parse("wss://relay.primal.net").unwrap(),
+                        Some(RelayMetadata::Read),
+                    ),
+                    (
+                        RelayUrl::parse("wss://relay.ditto.pub").unwrap(),
+                        Some(RelayMetadata::Read),
+                    ),
+                    (
+                        RelayUrl::parse("wss://relay.nostr.net").unwrap(),
+                        Some(RelayMetadata::Write),
+                    ),
+                    (
+                        RelayUrl::parse("wss://nos.lol").unwrap(),
+                        Some(RelayMetadata::Write),
+                    ),
+                ]
+                .to_vec();
+
+                this.send_fire_and_forget(RelayList::new(relays).into_event_builder(), cx);
+
+                let metadata = Metadata::new()
+                    .name(&name)
+                    .display_name(&name)
+                    .into_event_builder();
+
+                this.send_fire_and_forget(metadata, cx);
+
+                let grasp_servers: Vec<RelayUrl> = ["wss://gitnostr.com", "wss://relay.ngit.dev"]
+                    .into_iter()
+                    .map(|url| RelayUrl::parse(url).expect("valid relay URL"))
+                    .collect();
+
+                this.send_fire_and_forget(
+                    GitUserGraspList { grasp_servers }.into_event_builder(),
+                    cx,
+                );
+            })?;
+
+            Ok(public_key)
+        })
+    }
+
+    /// Login with an `nsec1...` key or a `bunker://...` URI, dispatching on
+    /// the credential's prefix.
+    pub fn login(&mut self, credential: &str, cx: &mut Context<Self>) {
+        let credential = credential.trim();
+
+        if credential.starts_with("nsec1") {
+            self.login_with_nsec(credential, cx);
+        } else if credential.starts_with("bunker://") {
+            self.login_with_bunker(credential, cx);
+        } else {
+            cx.emit(BackendEvent::error(
+                "Unsupported credential, expected nsec1... or bunker://...",
+            ));
+        }
+    }
+
+    /// Create a fresh identity and login with it. The generated key is
+    /// persisted in the keyring like any other `nsec` credential.
+    pub fn login_with_new_identity(&mut self, cx: &mut Context<Self>) {
+        let nsec = Keys::generate()
+            .secret_key()
+            .to_bech32()
+            .expect("infallible");
+        self.login_with_nsec(&nsec, cx);
     }
 
     /// Login with an `nsec1...` secret key. The credential is verified by
@@ -224,9 +428,11 @@ impl Backend {
         }));
     }
 
-    /// Login with a `bunker://...` URI (NIP-46). The auth URL, if any, is
-    /// opened in the default browser. The credential is persisted in the
-    /// keyring after the signer proves reachable.
+    /// Login with a `bunker://...` URI (NIP-46). A fresh session key is
+    /// generated and embedded into the stored URI as `?master=<nsec>`, so
+    /// no separate keyring entry is needed. The auth URL, if any, is opened
+    /// in the default browser. The credential is persisted in the keyring
+    /// after the signer proves reachable.
     pub fn login_with_bunker(&mut self, uri: &str, cx: &mut Context<Self>) {
         let uri_string = uri.trim().to_owned();
 
@@ -238,14 +444,15 @@ impl Backend {
             }
         };
 
-        let master = self.master_key(cx);
-        let write = cx.write_credentials(USER_KEYRING, "bunker", uri_string.as_bytes());
+        let keys = Keys::generate();
+        let credential = with_master_key(&uri_string, &keys);
+        let write = cx.write_credentials(USER_KEYRING, "bunker", credential.as_bytes());
 
         self.tasks.push(cx.spawn(async move |this, cx| {
             let result = async {
                 let mut signer = NostrConnect::new(
                     connect_uri,
-                    master.await,
+                    keys,
                     Duration::from_secs(NOSTR_CONNECT_TIMEOUT),
                     None,
                 )?;
@@ -277,8 +484,9 @@ impl Backend {
             delete.await.ok();
 
             this.update(cx, |this, cx| {
-                this.inner.signer().swap_inner(Keys::generate());
+                this.signer.swap_inner(Keys::generate());
                 this.current_user = None;
+                this.passphrase_required = false;
                 cx.emit(BackendEvent::SignerChanged);
                 cx.emit(BackendEvent::SignerRequired);
                 cx.notify();
@@ -288,44 +496,14 @@ impl Backend {
         }));
     }
 
-    /// Get (or generate and persist) the key used for NIP-46 sessions.
-    fn master_key(&self, cx: &App) -> Task<Keys> {
-        let task = cx.read_credentials(MASTER_KEYRING);
-
-        cx.spawn(async move |cx| {
-            let (keys, new_key) = match task.await {
-                Ok(Some((_user, secret))) => match SecretKey::from_slice(&secret) {
-                    Ok(secret_key) => (Keys::new(secret_key), false),
-                    _ => (Keys::generate(), true),
-                },
-                _ => (Keys::generate(), true),
-            };
-
-            if new_key {
-                let username = keys.public_key().to_hex();
-                let password = keys.secret_key().to_secret_bytes();
-
-                cx.update(|cx| {
-                    let task = cx.write_credentials(MASTER_KEYRING, &username, &password);
-                    cx.background_spawn(async move { task.await.ok() }).detach();
-                });
-            }
-
-            keys
-        })
-    }
-
     /// Fetch the user's grasp list (kind `10317`) and add the listed grasp
     /// servers as relays.
     fn bootstrap_user(&mut self, public_key: PublicKey, cx: &mut Context<Self>) {
-        let backend = self.inner.clone();
+        let client = self.client.clone();
 
         self.tasks.push(cx.spawn(async move |this, cx| {
             let result = async {
-                let events = backend
-                    .client()
-                    .fetch_events(filters::grasp_list(public_key))
-                    .await?;
+                let events = client.fetch_events(filters::grasp_list(public_key)).await?;
 
                 let urls: Vec<String> = events
                     .into_iter()
@@ -340,9 +518,9 @@ impl Backend {
                     .unwrap_or_default();
 
                 for url in urls {
-                    backend.add_relay(&url).await.ok();
+                    client.add_relay(&url).await.ok();
                 }
-                backend.connect().await;
+                client.connect().await;
 
                 Ok::<_, Error>(())
             }
@@ -358,17 +536,38 @@ impl Backend {
 
     /// Get the nostr client.
     pub fn client(&self) -> Client {
-        self.inner.client()
+        self.client.clone()
     }
 
     /// Get the current signer.
     pub fn signer(&self) -> UniversalSigner {
-        self.inner.signer()
+        self.signer.clone()
     }
 
     /// Get the current user's public key.
     pub fn current_user(&self) -> Option<PublicKey> {
         self.current_user
+    }
+
+    /// Whether the stored credential is NIP-49 encrypted and a passphrase
+    /// is still needed to resume the session.
+    pub fn passphrase_required(&self) -> bool {
+        self.passphrase_required
+    }
+
+    /// Surface an error message through [`BackendEvent::Error`].
+    pub fn emit_error(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
+        cx.emit(BackendEvent::error(message));
+    }
+
+    /// Whether the relay bootstrap has completed.
+    pub fn is_connected(&self) -> bool {
+        self.connected
+    }
+
+    /// Progress of the in-flight negentropy sync, if any: `(total, current)`.
+    pub fn sync_progress(&self) -> Option<(u64, u64)> {
+        self.sync_progress
     }
 
     /// Update the signer (any type implementing the async signer traits,
@@ -384,8 +583,9 @@ impl Backend {
             match new_signer.get_public_key_async().await {
                 Ok(public_key) => {
                     this.update(cx, |this, cx| {
-                        this.inner.signer().swap_inner(new_signer);
+                        this.signer.swap_inner(new_signer);
                         this.current_user = Some(public_key);
+                        this.passphrase_required = false;
                         this.bootstrap_user(public_key, cx);
                         cx.emit(BackendEvent::SignerChanged);
                         cx.notify();
@@ -405,20 +605,24 @@ impl Backend {
 
     /// Add relays and connect to them.
     pub fn add_relays(&mut self, urls: Vec<String>, cx: &mut Context<Self>) {
-        let backend = self.inner.clone();
+        let client = self.client.clone();
 
         let task = cx.background_spawn(async move {
             for url in urls {
-                backend.add_relay(&url).await?;
+                client.add_relay(&url).await?;
             }
-            backend.connect().await;
+            client.connect().await;
             Ok::<(), Error>(())
         });
 
         self.tasks.push(cx.spawn(async move |this, cx| {
             match task.await {
                 Ok(()) => {
-                    this.update(cx, |_this, cx| cx.emit(BackendEvent::Connected))?;
+                    this.update(cx, |this, cx| {
+                        this.connected = true;
+                        cx.emit(BackendEvent::Connected);
+                        cx.notify();
+                    })?;
                 }
                 Err(e) => {
                     this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
@@ -431,13 +635,16 @@ impl Backend {
     /// Add relays used only for discovery (e.g. NIP-65 indexers) and
     /// connect to them. No subscriptions or writes are routed through them.
     pub fn add_discovery_relays(&mut self, urls: Vec<String>, cx: &mut Context<Self>) {
-        let backend = self.inner.clone();
+        let client = self.client.clone();
 
         let task = cx.background_spawn(async move {
             for url in urls {
-                backend.add_discovery_relay(&url).await?;
+                client
+                    .add_relay(&url)
+                    .capabilities(RelayCapabilities::DISCOVERY)
+                    .await?;
             }
-            backend.connect().await;
+            client.connect().await;
             Ok::<(), Error>(())
         });
 
@@ -452,9 +659,9 @@ impl Backend {
     /// Start a persistent subscription. Matching events are stored in the
     /// database automatically and surface as [`BackendEvent::NostrUpdate`].
     pub fn subscribe(&mut self, filter: Filter, cx: &mut Context<Self>) {
-        let backend = self.inner.clone();
+        let client = self.client.clone();
 
-        let task = cx.background_spawn(async move { backend.subscribe(filter).await.map(|_| ()) });
+        let task = cx.background_spawn(async move { client.subscribe(filter).await.map(|_| ()) });
 
         self.tasks.push(cx.spawn(async move |this, cx| {
             if let Err(e) = task.await {
@@ -464,41 +671,299 @@ impl Backend {
         }));
     }
 
+    /// Connect to relays announced by a repository (NIP-34 `relays` tag) and
+    /// fetch its events from them: a one-shot auto-closing subscription for
+    /// `filters`, plus a negentropy sync so issues, patches and PRs stored
+    /// only on those relays are not missed.
+    ///
+    /// Best-effort: failures are logged, not surfaced, because the bootstrap
+    /// relays already cover the repository. The relays stay in the pool, so
+    /// events the user publishes for this repository also reach them.
+    pub fn connect_repo_relays(
+        &mut self,
+        relays: Vec<RelayUrl>,
+        filters: Vec<Filter>,
+        cx: &mut Context<Self>,
+    ) {
+        let client = self.client.clone();
+
+        self.tasks.push(cx.spawn(async move |_this, _cx| {
+            if let Err(e) = connect_repo_relays_only(&client, relays, filters).await {
+                log::warn!("repo relay fetch failed: {e}");
+            }
+            Ok(())
+        }));
+    }
+
+    /// Start a one-shot subscription targeted only at the bootstrap relays,
+    /// auto-closing after EOSE or a short timeout. Matching events are stored
+    /// in the database and surface as [`BackendEvent::NostrUpdate`] while the
+    /// subscription is open.
+    pub fn subscribe_bootstrap(&mut self, filters: Vec<Filter>, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+
+        let task =
+            cx.background_spawn(async move { subscribe_bootstrap_only(&client, filters).await });
+
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            if let Err(e) = task.await {
+                this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
+            }
+            Ok(())
+        }));
+    }
+
+    /// Negentropy-sync the given filter against the bootstrap relays:
+    /// reconciles the local database with the relays in both directions.
+    /// Emits [`BackendEvent::SyncProgress`] while running (throttled to
+    /// whole-percent changes) and [`BackendEvent::Synced`] on completion.
+    pub fn sync_bootstrap(&mut self, filter: Filter, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+
+        self.sync_progress = Some((0, 0));
+        cx.notify();
+
+        let (tx, mut rx) = SyncProgress::channel();
+
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let mut last_percent: u64 = 0;
+
+            while rx.changed().await.is_ok() {
+                let progress = *rx.borrow_and_update();
+                let percent = (progress.percentage() * 100.0) as u64;
+
+                if progress.current > 0 && percent != last_percent {
+                    last_percent = percent;
+
+                    let alive = this.update(cx, |this, cx| {
+                        this.sync_progress = Some((progress.total, progress.current));
+                        cx.emit(BackendEvent::SyncProgress {
+                            total: progress.total,
+                            current: progress.current,
+                        });
+                        cx.notify();
+                    });
+
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+            }
+
+            Ok(())
+        }));
+
+        let task = cx.background_spawn(async move {
+            let opts = SyncOptions::default().progress(tx);
+            sync_bootstrap_only(&client, filter, opts).await
+        });
+
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            match task.await {
+                Ok(summary) => {
+                    log::debug!(
+                        "sync done: {} received, {} sent",
+                        summary.received.len(),
+                        summary.sent.len()
+                    );
+                    this.update(cx, |this, cx| {
+                        this.sync_progress = None;
+                        cx.emit(BackendEvent::Synced);
+                        cx.notify();
+                    })?;
+                }
+                Err(e) => {
+                    this.update(cx, |this, cx| {
+                        this.sync_progress = None;
+                        cx.emit(BackendEvent::error(e.to_string()))
+                    })?;
+                }
+            }
+            Ok(())
+        }));
+    }
+
     /// Sign, broadcast and locally store an event. Emits
     /// [`BackendEvent::Published`] on success so stores can refresh.
     ///
-    /// The returned receiver yields the outcome of this specific action,
-    /// so callers can show inline progress/errors instead of relying on
-    /// the global [`BackendEvent::Error`].
+    /// The returned task yields the outcome of this specific action, so
+    /// callers can show inline progress/errors instead of relying on
+    /// the global [`BackendEvent::Error`]. The task is owned by the caller;
+    /// dropping it cancels the publish.
     pub fn send(
         &mut self,
         builder: EventBuilder,
         cx: &mut Context<Self>,
-    ) -> flume::Receiver<Result<Event, Error>> {
-        let (tx, rx) = flume::bounded(1);
+    ) -> Task<Result<Event, Error>> {
+        let client = self.client.clone();
+        let signer = self.signer.clone();
 
-        let backend = self.inner.clone();
-        let task = cx.background_spawn(async move { backend.send(builder).await });
+        cx.spawn(async move |this, cx| {
+            // Sign with the current signer, broadcast, and save locally so
+            // the event is immediately visible to database queries.
+            let work = cx.background_spawn(async move {
+                let event = builder.finalize_async(&signer).await?;
+                let output = client.send_event(&event).await?;
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
-            let result = task.await;
+                if output.success.is_empty() && !output.failed.is_empty() {
+                    let reasons = output
+                        .failed
+                        .values()
+                        .cloned()
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    return Err(anyhow!("event not accepted by any relay: {reasons}"));
+                }
+
+                Ok(event)
+            });
+
+            let result = work.await;
 
             match &result {
                 Ok(event) => {
                     this.update(cx, |_this, cx| {
                         cx.emit(BackendEvent::Published(Box::new(event.clone())));
-                    })?;
+                    })
+                    .ok();
                 }
                 Err(e) => {
-                    this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
+                    this.update(cx, |_this, cx| {
+                        cx.emit(BackendEvent::error(e.to_string()));
+                    })
+                    .ok();
                 }
             }
 
-            tx.send_async(result)
-                .await
-                .map_err(|_| anyhow!("action result receiver dropped"))
-        }));
+            result
+        })
+    }
 
-        rx
+    /// Publish a NIP-34 repository announcement (kind 30617) with the
+    /// current signer. The returned task yields the published event, so
+    /// callers can show inline progress/errors.
+    pub fn publish_announcement(
+        &mut self,
+        announcement: GitRepositoryAnnouncement,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Event, Error>> {
+        self.send(announcement.into_event_builder(), cx)
+    }
+
+    /// Sign, broadcast and store an event without awaiting the result;
+    /// failures surface through [`BackendEvent::Error`]. The spawned task is
+    /// owned by the backend, so it is cancelled when the backend is dropped.
+    fn send_fire_and_forget(&mut self, builder: EventBuilder, cx: &mut Context<Self>) {
+        let task = self.send(builder, cx);
+
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            if let Err(e) = task.await {
+                this.update(cx, |_this, cx| {
+                    cx.emit(BackendEvent::error(e.to_string()));
+                })
+                .ok();
+            }
+            Ok(())
+        }));
+    }
+}
+
+/// Add the given relays, connect to them, and fetch the filters: a one-shot
+/// subscription (auto-closing after EOSE) plus a negentropy sync per filter
+/// as a second pass, so events that race with the subscription or relays
+/// with flaky EOSE behavior can't be missed. Relays without NEG-XX support
+/// just fail the sync step; the subscription already covered them.
+async fn connect_repo_relays_only(
+    client: &Client,
+    relays: Vec<RelayUrl>,
+    filters: Vec<Filter>,
+) -> Result<(), Error> {
+    if relays.is_empty() {
+        return Ok(());
+    }
+
+    for url in &relays {
+        client.add_relay(url).await?;
+    }
+    client.connect().await;
+
+    let opts = SubscribeAutoCloseOptions::default()
+        .exit_policy(ReqExitPolicy::ExitOnEOSE)
+        .timeout(Some(Duration::from_secs(10)));
+
+    let target: HashMap<&str, Vec<Filter>> = relays
+        .iter()
+        .map(|url| (url.as_str(), filters.clone()))
+        .collect();
+    client.subscribe(target).close_on(opts).await?;
+
+    for filter in filters {
+        let sync_opts = SyncOptions::default().initial_timeout(Duration::from_secs(5));
+        if let Err(e) = client
+            .sync(filter)
+            .with(relays.iter())
+            .opts(sync_opts)
+            .await
+        {
+            log::warn!("repo relay negentropy sync failed: {e}");
+        }
+    }
+
+    Ok(())
+}
+
+/// Subscribe only on the bootstrap relays, auto-closing after EOSE or a
+/// short timeout. Use for one-shot data fetches (repo events, profiles)
+/// instead of persistent gossip-routed subscriptions.
+pub(crate) async fn subscribe_bootstrap_only(
+    client: &Client,
+    filters: Vec<Filter>,
+) -> Result<(), Error> {
+    let opts = SubscribeAutoCloseOptions::default()
+        .exit_policy(ReqExitPolicy::ExitOnEOSE)
+        .timeout(Some(Duration::from_secs(10)));
+
+    let target: HashMap<&str, Vec<Filter>> = BOOTSTRAP_RELAYS
+        .iter()
+        .map(|relay| (*relay, filters.clone()))
+        .collect();
+
+    client.subscribe(target).close_on(opts).await?;
+
+    Ok(())
+}
+
+/// Negentropy-sync the filter against the bootstrap relays only.
+pub(crate) async fn sync_bootstrap_only(
+    client: &Client,
+    filter: Filter,
+    opts: SyncOptions,
+) -> Result<SyncSummary, Error> {
+    let output = client
+        .sync(filter)
+        .with(BOOTSTRAP_RELAYS)
+        .opts(opts)
+        .await?;
+    Ok(output.value)
+}
+
+/// Embed a NIP-46 session key into a bunker URI as `?master=<nsec>`.
+fn with_master_key(uri: &str, keys: &Keys) -> String {
+    let separator = if uri.contains('?') { '&' } else { '?' };
+    let nsec = keys.secret_key().to_bech32().expect("infallible");
+    format!("{uri}{separator}master={nsec}")
+}
+
+/// Split a stored bunker credential into the plain URI and the session key.
+/// Credentials without an embedded key (legacy) get a fresh one.
+fn extract_master_key(credential: &str) -> (&str, Keys) {
+    match credential.split_once("master=") {
+        Some((base, nsec)) => {
+            let keys = SecretKey::parse(nsec)
+                .map(Keys::new)
+                .unwrap_or_else(|_| Keys::generate());
+            (base.trim_end_matches(['?', '&']), keys)
+        }
+        None => (credential, Keys::generate()),
     }
 }

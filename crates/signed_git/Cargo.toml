@@ -8,5 +8,8 @@ publish.workspace = true
 signed_core = { path = "../signed_core" }
 
 nostr.workspace = true
-gix.workspace = true
+gix = { workspace = true, features = ["revision", "blob-diff"] }
 anyhow.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

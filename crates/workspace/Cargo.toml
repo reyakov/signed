@@ -1,0 +1,23 @@
+[package]
+name = "workspace"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+assets = { path = "../assets" }
+dock = { workspace = true }
+signed_core = { path = "../signed_core" }
+signed_git = { path = "../signed_git" }
+signed_state = { path = "../signed_state" }
+utils = { path = "../utils" }
+
+gpui.workspace = true
+gpui-component.workspace = true
+gpui-base.workspace = true
+gix.workspace = true
+nostr.workspace = true
+
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true

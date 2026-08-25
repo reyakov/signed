@@ -18,15 +18,20 @@ gpui_macos = { git = "https://github.com/zed-industries/zed" }
 gpui_tokio = { git = "https://github.com/zed-industries/zed" }
 reqwest_client = { git = "https://github.com/zed-industries/zed" }
 
-gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+# `tree-sitter-languages` enables syntax highlighting for the TextView
+# code preview (fenced code blocks are highlighted with tree-sitter).
+gpui-component = { git = "https://github.com/longbridge/gpui-component", features = ["tree-sitter-languages"] }
+gpui-base = { git = "https://github.com/longbridge/gpui-component" }
 
-nostr = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215", features = ["nip59", "nip49", "nip44"] }
-nostr-lmdb = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
-nostr-memory = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
-nostr-blossom = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
-nostr-gossip-memory = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
-nostr-connect = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
-nostr-sdk = { git = "https://github.com/rust-nostr/nostr", rev = "d0a1d67d3c9e5cf9710807a6a414c155a5f47215" }
+dock = { path = "crates/dock" }
+
+nostr = { git = "https://github.com/rust-nostr/nostr", features = ["nip59", "nip49", "nip44", "os-rng"] }
+nostr-lmdb = { git = "https://github.com/rust-nostr/nostr" }
+nostr-memory = { git = "https://github.com/rust-nostr/nostr" }
+nostr-blossom = { git = "https://github.com/rust-nostr/nostr" }
+nostr-gossip-memory = { git = "https://github.com/rust-nostr/nostr" }
+nostr-connect = { git = "https://github.com/rust-nostr/nostr" }
+nostr-sdk = { git = "https://github.com/rust-nostr/nostr" }
 
 gix = { version = "0.86", default-features = false, features = ["sha1", "blocking-network-client", "blocking-http-transport-reqwest-rust-tls", "worktree-mutation"] }
 
@@ -42,6 +47,7 @@ log = "0.4"
 anyhow = "1.0.44"
 webbrowser = "1.0.4"
 tracing-subscriber = { version = "0.3.18", features = ["fmt"] }
+tracing = "0.1"
 errno = { version = "0.3.14", default-features = false }
 instant = "0.1"
 

@@ -7,7 +7,7 @@ use nostr_sdk::prelude::*;
 pub struct Update {
     pub kind: Kind,
     /// First `a` tag value of the event, if any (e.g. the repository coordinate).
-    pub coordinate: Option<String>,
+    pub coordinate: Option<Coordinate>,
     pub author: PublicKey,
     pub event_id: EventId,
 }
@@ -15,12 +15,7 @@ pub struct Update {
 impl Update {
     /// Build an update from a received event.
     pub fn from_event(event: &Event) -> Self {
-        let coordinate = event
-            .tags
-            .iter()
-            .find(|t| t.kind() == "a")
-            .and_then(|t| t.content())
-            .map(str::to_owned);
+        let coordinate = event.tags.coordinates().nth(0);
 
         Self {
             kind: event.kind,
