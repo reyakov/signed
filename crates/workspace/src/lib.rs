@@ -1,3 +1,4 @@
+mod pixel_avatar;
 mod views;
 mod workspace;
 

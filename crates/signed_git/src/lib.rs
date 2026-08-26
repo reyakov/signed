@@ -126,6 +126,12 @@ pub fn apply_patch(repo_path: &Path, patch: &str) -> Result<()> {
 }
 
 fn clone(url: &str, path: &Path) -> Result<gix::Repository> {
+    // GRASP servers announce `grasp://<host>/<owner>/<repo>` clone URLs;
+    // the transport is git smart HTTP, so rewrite the scheme for gix.
+    let url = url
+        .strip_prefix("grasp://")
+        .map(|rest| format!("https://{rest}"))
+        .unwrap_or_else(|| url.to_owned());
     let url = gix::url::parse(url).context("invalid clone URL")?;
 
     let mut prepare = gix::prepare_clone(url, path)?;
@@ -133,6 +139,111 @@ fn clone(url: &str, path: &Path) -> Result<gix::Repository> {
     let (repo, _checkout) = checkout.main_worktree(Discard, &IS_INTERRUPTED)?;
 
     Ok(repo)
+}
+
+/// Create a new repository at `path`: initialize a `main` branch, write a
+/// `README.md` derived from `name`/`description`, and create the initial
+/// commit. Returns the initial commit id.
+///
+/// Uses the git CLI (like [`apply_patch`]) because it handles the plumbing
+/// (index writes, ref updates, default branch selection) natively.
+pub fn init_repository(path: &Path, name: &str, description: &str) -> Result<String> {
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+
+    git_in(path, &["init", "-b", "main"])?;
+
+    let readme = if description.trim().is_empty() {
+        format!("# {name}\n")
+    } else {
+        format!("# {name}\n\n{description}\n")
+    };
+    std::fs::write(path.join("README.md"), readme).context("failed to write README.md")?;
+
+    git_in(path, &["add", "README.md"])?;
+    // Identity and signing are passed per-invocation so the repository is
+    // commitable without a global git identity or signing setup.
+    git_in(
+        path,
+        &[
+            "-c",
+            "user.name=Signed",
+            "-c",
+            "user.email=signed@localhost",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Initial commit",
+        ],
+    )?;
+
+    let commit = git_in(path, &["rev-parse", "HEAD"])?;
+    if commit.len() != 40 {
+        bail!("unexpected initial commit id: {commit}");
+    }
+    Ok(commit)
+}
+
+/// Push the `main` branch of the repository at `repo_path` to a grasp
+/// server. Grasp servers speak git smart HTTP; the repository lives at
+/// `{base_url}/{owner}/{repo-id}.git` (the same path their `clone` URLs
+/// announce, per the GRASP protocol).
+pub fn push_main(repo_path: &Path, base_url: &str, owner: &str, repo_id: &str) -> Result<()> {
+    let url = format!("{base_url}/{owner}/{repo_id}.git");
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["push"])
+        .arg(&url)
+        .args(["refs/heads/main:refs/heads/main"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to spawn `git push`")?;
+
+    if !output.status.success() {
+        bail!(
+            "git push to {base_url} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Add `origin` pointing at `url` when the repository has no remote yet.
+/// No-op if `origin` already exists.
+pub fn ensure_origin(repo_path: &Path, url: &str) -> Result<()> {
+    // `git remote get-url origin` exits non-zero when the remote is absent.
+    if git_in(repo_path, &["remote", "get-url", "origin"]).is_ok() {
+        return Ok(());
+    }
+    git_in(repo_path, &["remote", "add", "origin", url])?;
+    Ok(())
+}
+
+/// Run a git command in `dir`, returning trimmed stdout. The terminal prompt
+/// is disabled so a credential request fails instead of hanging.
+fn git_in(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to spawn `git`")?;
+
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 /// Map an untrusted repository id to a safe single path component.
@@ -1528,6 +1639,70 @@ mod tests {
     fn commit_all(repo: &gix::Repository, message: &str) {
         git_run(repo.workdir().expect("workdir"), &["add", "-A"]);
         git_run(repo.workdir().expect("workdir"), &["commit", "-m", message]);
+    }
+
+    #[test]
+    fn init_repository_creates_main_branch_and_readme() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("my-repo");
+
+        let commit = init_repository(&path, "My Repo", "Does things.\n\nCool.").expect("init");
+        assert_eq!(commit.len(), 40);
+
+        let repo = gix::open(&path).expect("open");
+        let workdir = repo.workdir().expect("workdir");
+
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("README.md")).expect("read"),
+            "# My Repo\n\nDoes things.\n\nCool.\n"
+        );
+
+        let branch = current_branch(&repo).expect("branch").expect("on a branch");
+        assert_eq!(branch, "main");
+        // [`FileCommit`] carries the short id; the full id is 40 chars.
+        assert_eq!(
+            head_commit(&repo).expect("head").expect("commit").id,
+            &commit[..7]
+        );
+
+        let state = repo_ref_state(&repo).expect("refs");
+        assert_eq!(state.head.as_deref(), Some("main"));
+        assert_eq!(state.refs, vec![("refs/heads/main".to_owned(), commit)]);
+    }
+
+    #[test]
+    fn init_repository_omits_description_when_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("my-repo");
+
+        init_repository(&path, "My Repo", "   ").expect("init");
+        let repo = gix::open(&path).expect("open");
+        let workdir = repo.workdir().expect("workdir");
+
+        assert_eq!(
+            std::fs::read_to_string(workdir.join("README.md")).expect("read"),
+            "# My Repo\n"
+        );
+    }
+
+    #[test]
+    fn ensure_origin_adds_remote_only_once() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("my-repo");
+        init_repository(&path, "My Repo", "").expect("init");
+
+        ensure_origin(&path, "https://gitnostr.com/npub1test/repo.git").expect("add");
+        assert_eq!(
+            git_in(&path, &["remote", "get-url", "origin"]).expect("url"),
+            "https://gitnostr.com/npub1test/repo.git"
+        );
+
+        // A second call must not override the existing remote.
+        ensure_origin(&path, "https://other.example/repo.git").expect("keep");
+        assert_eq!(
+            git_in(&path, &["remote", "get-url", "origin"]).expect("url"),
+            "https://gitnostr.com/npub1test/repo.git"
+        );
     }
 
     /// Run a git command in `dir`, asserting success.

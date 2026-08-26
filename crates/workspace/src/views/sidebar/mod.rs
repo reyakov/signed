@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use assets::CustomIconName;
 use dock::{
     BasePanel, DockArea, DockPlacement, Panel, PanelEvent, TAB_BAR_HEIGHT, panel_handle,
@@ -5,18 +7,21 @@ use dock::{
 };
 use gpui::prelude::*;
 use gpui::{
-    App, ClickEvent, Context, ElementId, EventEmitter, FocusHandle, Focusable, Render,
-    SharedString, StyleRefinement, Subscription, WeakEntity, Window, div, px,
+    AnyElement, App, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
+    Render, SharedString, StyleRefinement, Subscription, WeakEntity, Window, div, px, uniform_list,
 };
 use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::InputState;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
-use signed_state::{Backend, BackendEvent, Profile, ProfileStore};
+use signed_core::Announcement;
+use signed_state::{Backend, BackendEvent, Profile, ProfileStore, RepoListStore};
 
-use super::RepoListView;
+use super::{RepoDetailView, RepoListView};
 use crate::image_cache::{MAX_IMAGES, image_cache};
+use crate::pixel_avatar::PixelAvatar;
 
+mod create_repo_dialog;
 mod import_dialog;
 mod onboarding_dialog;
 pub(crate) mod passphrase_dialog;
@@ -29,6 +34,11 @@ pub struct SidebarPanel {
     focus_handle: FocusHandle,
     dock_area: WeakEntity<DockArea>,
     explore: Option<WeakEntity<RepoListView>>,
+    /// Repositories announced by the current user, listed under
+    /// "All Repositories". Recreated when the signer changes.
+    my_repos: Option<Entity<RepoListStore>>,
+    /// Observes the current user's repo store so the list re-renders.
+    my_repos_subscription: Option<Subscription>,
     logged_in: bool,
     _subscription: Subscription,
 }
@@ -42,21 +52,44 @@ impl SidebarPanel {
             match event {
                 BackendEvent::SignerChanged => {
                     this.logged_in = backend.read(cx).current_user().is_some();
+                    this.refresh_my_repos(cx);
                 }
                 BackendEvent::SignerRequired => {
                     this.logged_in = false;
+                    this.my_repos = None;
+                    this.my_repos_subscription = None;
                 }
                 _ => return,
             }
             cx.notify();
         });
 
-        Self {
+        let mut panel = Self {
             focus_handle: cx.focus_handle(),
             dock_area,
             explore: None,
+            my_repos: None,
+            my_repos_subscription: None,
             logged_in,
             _subscription: subscription,
+        };
+
+        if logged_in {
+            panel.refresh_my_repos(cx);
+        }
+
+        panel
+    }
+
+    /// (Re)create the store listing the current user's repositories.
+    fn refresh_my_repos(&mut self, cx: &mut Context<Self>) {
+        self.my_repos_subscription = None;
+
+        let author = Backend::global(cx).read(cx).current_user();
+        self.my_repos = author.map(|author| cx.new(|cx| RepoListStore::new(Some(author), cx)));
+
+        if let Some(store) = self.my_repos.as_ref() {
+            self.my_repos_subscription = Some(cx.observe(store, |_, _, cx| cx.notify()));
         }
     }
 
@@ -96,6 +129,126 @@ impl SidebarPanel {
         let state = cx.new(|_| OnboardingState::default());
 
         onboarding_dialog::open(name_input, pass_input, repass_input, state, window, cx);
+    }
+
+    /// Show the Create Repository dialog.
+    fn open_create_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        create_repo_dialog::open(self.dock_area.clone(), window, cx);
+    }
+
+    /// Open a repository's detail view in the dock's center.
+    fn open_repo(
+        &mut self,
+        announcement: &Announcement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let detail = cx.new(|cx| {
+            RepoDetailView::new(self.dock_area.clone(), announcement.clone(), window, cx)
+        });
+
+        let _ = self.dock_area.update(cx, |dock_area, cx| {
+            dock_area.add_panel_view(
+                panel_handle(detail),
+                DockPlacement::Center,
+                None,
+                window,
+                cx,
+            );
+        });
+    }
+
+    /// The "All Repositories" section: header with the create button and
+    /// the current user's repositories below it, lazily rendered through a
+    /// [`uniform_list`].
+    fn render_my_repos(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let store = self.my_repos.as_ref();
+
+        v_flex()
+            .px_2()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(
+                h_flex()
+                    .h_10()
+                    .w_full()
+                    .flex_shrink_0()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        h_flex()
+                            .px_2()
+                            .gap_2()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(Icon::new(CustomIconName::Filter).small())
+                            .child(div().text_xs().font_semibold().child("All Repositories")),
+                    )
+                    .child(
+                        Button::new("add")
+                            .icon(IconName::Plus)
+                            .small()
+                            .ghost()
+                            .on_click(cx.listener(|this, _ev, window, cx| {
+                                this.open_create_repo(window, cx);
+                            })),
+                    ),
+            )
+            .when_some(store, |builder, store| {
+                let announcements = store.read(cx).announcements.clone();
+
+                if announcements.is_empty() {
+                    builder.child(
+                        div()
+                            .flex_1()
+                            .px_2()
+                            .py_1()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("No repositories yet"),
+                    )
+                } else {
+                    builder.child(
+                        uniform_list(
+                            "my-repos-list",
+                            announcements.len(),
+                            cx.processor(move |this, range: Range<usize>, _window, cx| {
+                                range
+                                    .map(|ix| {
+                                        this.render_repo_row(&announcements[ix], cx)
+                                            .into_any_element()
+                                    })
+                                    .collect()
+                            }),
+                        )
+                        .flex_1()
+                        .min_h_0(),
+                    )
+                }
+            })
+    }
+
+    /// One repository row in the sidebar, styled like the nav items: a
+    /// deterministic pixel avatar and the repo name.
+    fn render_repo_row(
+        &self,
+        announcement: &Announcement,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let name = announcement
+            .name
+            .clone()
+            .unwrap_or_else(|| SharedString::from(announcement.id.clone()));
+        let avatar = PixelAvatar::new(format!(
+            "{}:{}",
+            announcement.owner.to_hex(),
+            announcement.id
+        ));
+        let announcement = announcement.clone();
+
+        NavItem::new(format!("my-repo:{}", announcement.id), name, avatar).on_click(
+            cx.listener(move |this, _ev, window, cx| this.open_repo(&announcement, window, cx)),
+        )
     }
 
     /// Show the Import Identity dialog.
@@ -214,8 +367,9 @@ impl Render for SidebarPanel {
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
             .child(
-                div()
+                v_flex()
                     .flex_1()
+                    .min_h_0()
                     .when_some(profile.as_ref(), |this, profile| {
                         this.child(self.render_user(profile, window, cx))
                     })
@@ -225,41 +379,34 @@ impl Render for SidebarPanel {
                             .gap_1()
                             .items_start()
                             .justify_start()
-                            .child(NavItem::new("inbox", "Inbox", IconName::Inbox).on_click(
-                                cx.listener(|this, _ev, window, cx| this.open_explore(window, cx)),
-                            ))
-                            .child(NavItem::new("explore", "Browse", IconName::Globe).on_click(
-                                cx.listener(|this, _ev, window, cx| this.open_explore(window, cx)),
-                            ))
-                            .child(NavItem::new("search", "Search", IconName::Search).on_click(
-                                cx.listener(|this, _ev, window, cx| this.open_explore(window, cx)),
-                            ))
                             .child(
-                                v_flex().w_full().child(
-                                    h_flex()
-                                        .h_10()
-                                        .w_full()
-                                        .justify_between()
-                                        .items_center()
-                                        .child(
-                                            h_flex()
-                                                .px_2()
-                                                .gap_2()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(Icon::new(CustomIconName::Filter).small())
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .font_semibold()
-                                                        .child("All Repositories"),
-                                                ),
-                                        )
-                                        .child(
-                                            Button::new("add").icon(IconName::Plus).small().ghost(),
-                                        ),
-                                ),
+                                NavItem::new("inbox", "Inbox", Icon::new(IconName::Inbox).small())
+                                    .on_click(cx.listener(|this, _ev, window, cx| {
+                                        this.open_explore(window, cx)
+                                    })),
+                            )
+                            .child(
+                                NavItem::new(
+                                    "explore",
+                                    "Browse",
+                                    Icon::new(IconName::Globe).small(),
+                                )
+                                .on_click(cx.listener(
+                                    |this, _ev, window, cx| this.open_explore(window, cx),
+                                )),
+                            )
+                            .child(
+                                NavItem::new(
+                                    "search",
+                                    "Search",
+                                    Icon::new(IconName::Search).small(),
+                                )
+                                .on_click(cx.listener(
+                                    |this, _ev, window, cx| this.open_explore(window, cx),
+                                )),
                             ),
-                    ),
+                    )
+                    .child(self.render_my_repos(cx)),
             )
             .child(
                 v_flex()
@@ -268,11 +415,18 @@ impl Render for SidebarPanel {
                     .gap_1()
                     .items_start()
                     .justify_start()
-                    .child(NavItem::new("guide", "Guide", IconName::Info).on_click(
-                        cx.listener(|this, _ev, window, cx| this.open_explore(window, cx)),
-                    ))
                     .child(
-                        NavItem::new("settings", "Settings", IconName::Settings).on_click(
+                        NavItem::new("guide", "Guide", Icon::new(IconName::Info).small()).on_click(
+                            cx.listener(|this, _ev, window, cx| this.open_explore(window, cx)),
+                        ),
+                    )
+                    .child(
+                        NavItem::new(
+                            "settings",
+                            "Settings",
+                            Icon::new(IconName::Settings).small(),
+                        )
+                        .on_click(
                             cx.listener(|this, _ev, window, cx| this.open_explore(window, cx)),
                         ),
                     ),
@@ -280,27 +434,29 @@ impl Render for SidebarPanel {
     }
 }
 
-/// A single navigation entry in the sidebar: an icon and label with a hover
-/// highlight and an optional click handler.
+/// A single navigation entry in the sidebar: an arbitrary leading element
+/// (an icon, avatar, ...) and a text label with a hover highlight and an
+/// optional click handler.
 #[allow(clippy::type_complexity)]
 #[derive(IntoElement)]
 struct NavItem {
     id: ElementId,
     style: StyleRefinement,
-    icon: IconName,
+    icon: AnyElement,
     label: SharedString,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
 impl NavItem {
-    fn new<I, L>(id: I, label: L, icon: IconName) -> Self
+    fn new<I, L, N>(id: I, label: L, icon: N) -> Self
     where
         I: Into<ElementId>,
         L: Into<SharedString>,
+        N: IntoElement,
     {
         Self {
             id: id.into(),
-            icon,
+            icon: icon.into_any_element(),
             label: label.into(),
             style: StyleRefinement::default(),
             on_click: None,
@@ -323,8 +479,16 @@ impl RenderOnce for NavItem {
             .w_full()
             .gap_2()
             .rounded(cx.theme().radius)
-            .child(Icon::new(self.icon).small())
-            .child(div().text_sm().child(self.label))
+            .child(self.icon)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(self.label),
+            )
             .hover(|this| this.bg(cx.theme().list_hover))
             .when_some(self.on_click, |this, listener| this.on_click(listener))
     }

@@ -7,6 +7,7 @@ publish.workspace = true
 [dependencies]
 assets = { path = "../assets" }
 dock = { workspace = true }
+paths = { path = "../paths" }
 signed_core = { path = "../signed_core" }
 signed_git = { path = "../signed_git" }
 signed_state = { path = "../signed_state" }

@@ -1,14 +1,18 @@
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::time::Duration;
 
-use anyhow::{Error, anyhow};
+use anyhow::{Error, anyhow, bail};
+use bitcoin_hashes::sha1::Hash as Sha1Hash;
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Global, Task};
 use nostr::event::IntoEventBuilder;
 use nostr_connect::prelude::*;
 use nostr_sdk::client::SyncSummary;
 use nostr_sdk::prelude::*;
-use signed_core::filters;
+use signed_core::{Announcement, build_state, filters, repo_addr};
 use signed_nostr::{SignedAuthUrlHandler, UniversalSigner, Update};
+
+use crate::git_store::GitStore;
 
 /// Keyring entry holding the user credential (`nsec1...` or `bunker://...`
 /// with an embedded `?master=<nsec>` NIP-46 session key).
@@ -372,6 +376,180 @@ impl Backend {
             })?;
 
             Ok(public_key)
+        })
+    }
+
+    /// Create a new repository: initialize a local clone with a `main`
+    /// branch and a `README.md`, publish the NIP-34 announcement and the
+    /// repository state to the grasp relays, then push the initial commit
+    /// to each grasp server.
+    ///
+    /// The events must reach the grasp servers *before* the push: GRASP
+    /// servers hold the signed state event in "purgatory" and only accept
+    /// a push for a not-yet-existing repository while that authorization is
+    /// pending (it expires after 30 minutes), like gitworkshop and ngit.
+    ///
+    /// The git work (init, commit, push) runs on background threads. The
+    /// returned task yields the published announcement on success, so
+    /// callers can open the new repository right away. The announcement's
+    /// `relays` tag carries the grasp servers, which are also added to the
+    /// relay pool so the published events reach them.
+    pub fn create_repository(
+        &mut self,
+        name: &str,
+        description: &str,
+        grasp_servers: Vec<RelayUrl>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Announcement, Error>> {
+        let name = name.trim().to_owned();
+        let description = description.trim().to_owned();
+
+        if name.is_empty() {
+            return Task::ready(Err(anyhow!("Repository name is required")));
+        }
+        if grasp_servers.is_empty() {
+            return Task::ready(Err(anyhow!("Add at least one grasp server")));
+        }
+        let Some(public_key) = self.current_user else {
+            return Task::ready(Err(anyhow!("Sign in to create a repository")));
+        };
+
+        // The repository identifier is derived from the name, like ngit and
+        // gitworkshop: spaces become hyphens, other non-alphanumeric
+        // characters (except `/`) become hyphens, case is preserved.
+        let repo_id = identifier_from_name(&name);
+        if repo_id.is_empty() || repo_id.len() > 100 {
+            return Task::ready(Err(anyhow!(
+                "Repository name must produce an identifier of 1-100 characters"
+            )));
+        }
+        if !repo_id.chars().any(|c| c.is_ascii_alphanumeric()) {
+            return Task::ready(Err(anyhow!(
+                "Repository name must contain at least one alphanumeric character"
+            )));
+        }
+
+        let addr = repo_addr(public_key, repo_id.clone());
+        let cache = GitStore::global(cx).cache().clone();
+        let path = cache.repo_path(&addr);
+        let owner = public_key
+            .to_bech32()
+            .unwrap_or_else(|_| public_key.to_hex());
+        let servers = grasp_servers.clone();
+
+        cx.spawn(async move |this, cx| {
+            // 1. Initialize the local clone (main branch + README + initial
+            //    commit) on a background thread.
+            let work = cx.background_spawn({
+                let path = path.clone();
+                let name = name.clone();
+                let description = description.clone();
+                let owner = owner.clone();
+                let repo_id = repo_id.clone();
+                let servers = servers.clone();
+
+                async move {
+                    let parent = path
+                        .parent()
+                        .ok_or_else(|| anyhow!("invalid repository path"))?;
+                    std::fs::create_dir_all(parent)?;
+                    let commit = signed_git::init_repository(&path, &name, &description)?;
+
+                    // Point `origin` at the first grasp server so later
+                    // fetches (and pushes) have a target, like ngit.
+                    if let Some(base) = servers.first().and_then(grasp_base_url) {
+                        let url = format!("{base}/{owner}/{repo_id}.git");
+                        signed_git::ensure_origin(&path, &url).ok();
+                    }
+
+                    Ok::<_, Error>(commit)
+                }
+            });
+
+            let commit = work.await?;
+            let commit_sha =
+                Sha1Hash::from_str(&commit).map_err(|_| anyhow!("invalid initial commit id"))?;
+
+            // 2. Ensure the grasp servers are in the relay pool; the nostr
+            //    client queues events until each relay is connected.
+            this.update(cx, |this, cx| {
+                let urls: Vec<String> = servers.iter().map(ToString::to_string).collect();
+                this.add_relays(urls, cx);
+            })?;
+
+            // 3. Publish the announcement, then the state event, to the
+            //    grasp relays. The state event is the push authorization
+            //    ("purgatory"), so it must be accepted before step 4.
+            let announcement = GitRepositoryAnnouncement {
+                id: repo_id.clone(),
+                name: Some(name.clone()),
+                description: (!description.is_empty()).then_some(description.clone()),
+                web: Vec::new(),
+                clone: servers
+                    .iter()
+                    .filter_map(|relay| grasp_clone_url(relay, &owner, &repo_id))
+                    .collect(),
+                relays: servers.clone(),
+                euc: Some(commit_sha),
+                maintainers: Vec::new(),
+            };
+
+            let event = this
+                .update(cx, |this, cx| {
+                    this.send(announcement.into_event_builder(), cx)
+                })?
+                .await?;
+
+            this.update(cx, |this, cx| {
+                let builder = build_state(
+                    &repo_id,
+                    &[("refs/heads/main".to_owned(), commit)],
+                    Some("main"),
+                );
+                this.send(builder, cx)
+            })?
+            .await?;
+
+            // 4. Push the initial commit to every grasp server. A server
+            //    that fails to accept the push is logged, but the creation
+            //    only fails when no server accepted it.
+            let push = cx.background_spawn({
+                let path = path.clone();
+                let owner = owner.clone();
+                let repo_id = repo_id.clone();
+                let servers = servers.clone();
+
+                async move {
+                    let mut failures = Vec::new();
+                    let mut pushed = 0;
+                    for relay in &servers {
+                        let Some(base_url) = grasp_base_url(relay) else {
+                            failures.push(format!("{relay}: no domain"));
+                            continue;
+                        };
+                        match signed_git::push_main(&path, &base_url, &owner, &repo_id) {
+                            Ok(()) => pushed += 1,
+                            Err(e) => failures.push(format!("{relay}: {e}")),
+                        }
+                    }
+
+                    if pushed == 0 {
+                        bail!(
+                            "could not push the repository to any grasp server: {}",
+                            failures.join("; ")
+                        );
+                    }
+                    for failure in failures {
+                        log::warn!("grasp push failed: {failure}");
+                    }
+
+                    Ok::<_, Error>(())
+                }
+            });
+            push.await?;
+
+            Announcement::from_event(&event)
+                .ok_or_else(|| anyhow!("failed to parse the published announcement"))
         })
     }
 
@@ -954,6 +1132,47 @@ fn with_master_key(uri: &str, keys: &Keys) -> String {
     format!("{uri}{separator}master={nsec}")
 }
 
+/// Derive a repository identifier (d-tag) from the repo name, matching ngit
+/// and gitworkshop: spaces become hyphens, other non-alphanumeric characters
+/// (except `/`) become hyphens, case is preserved.
+fn identifier_from_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '/' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// A `https://<host>` (or `http://<host>` for `ws://` grasp servers, like
+/// ngit) base URL for a grasp server. The repository then lives at
+/// `{base}/{npub}/{repo-id}.git`.
+fn grasp_base_url(relay: &RelayUrl) -> Option<String> {
+    // `domain()` drops the port; parse the full URL to keep it (local dev
+    // grasp servers commonly run on a custom port).
+    let parsed = Url::parse(relay.as_str()).ok()?;
+    let host = parsed.host_str()?;
+    let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
+    // `ws://` grasp servers (e.g. local dev relays) speak plain HTTP;
+    // everything else is HTTPS, matching ngit.
+    let scheme = if relay.scheme().is_secure() {
+        "https"
+    } else {
+        "http"
+    };
+    Some(format!("{scheme}://{host}{port}"))
+}
+
+/// The GRASP clone URL of a repository on a grasp server, matching the
+/// format ngit announces: `https://<host>/<npub>/<repo-id>.git`.
+fn grasp_clone_url(relay: &RelayUrl, owner: &str, repo_id: &str) -> Option<Url> {
+    let base = grasp_base_url(relay)?;
+    Url::parse(&format!("{base}/{owner}/{repo_id}.git")).ok()
+}
+
 /// Split a stored bunker credential into the plain URI and the session key.
 /// Credentials without an embedded key (legacy) get a fresh one.
 fn extract_master_key(credential: &str) -> (&str, Keys) {
@@ -965,5 +1184,44 @@ fn extract_master_key(credential: &str) -> (&str, Keys) {
             (base.trim_end_matches(['?', '&']), keys)
         }
         None => (credential, Keys::generate()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifier_from_name_slugs_like_gitworkshop() {
+        assert_eq!(identifier_from_name("My Repo"), "My-Repo");
+        assert_eq!(identifier_from_name("my-repo"), "my-repo");
+        assert_eq!(identifier_from_name("Foo_Bar!"), "Foo-Bar-");
+        assert_eq!(identifier_from_name("a/b"), "a/b");
+        assert_eq!(identifier_from_name("Café"), "Caf-");
+    }
+
+    #[test]
+    fn grasp_base_url_maps_schemes_like_ngit() {
+        let wss = RelayUrl::parse("wss://relay.ngit.dev").expect("url");
+        assert_eq!(
+            grasp_base_url(&wss).as_deref(),
+            Some("https://relay.ngit.dev")
+        );
+
+        let ws = RelayUrl::parse("ws://localhost:8080").expect("url");
+        assert_eq!(
+            grasp_base_url(&ws).as_deref(),
+            Some("http://localhost:8080")
+        );
+    }
+
+    #[test]
+    fn grasp_clone_url_matches_ngit_format() {
+        let relay = RelayUrl::parse("wss://gitnostr.com").expect("url");
+        let url = grasp_clone_url(&relay, "npub1test", "my-repo").expect("url");
+        assert_eq!(
+            url.to_string(),
+            "https://gitnostr.com/npub1test/my-repo.git"
+        );
     }
 }
