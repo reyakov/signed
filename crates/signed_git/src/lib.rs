@@ -57,24 +57,42 @@ impl GitCache {
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
 
-        let mut last_err: Option<anyhow::Error> = None;
+        clone_repo(clone_urls, &path)?;
+        self.open(addr)?
+            .ok_or_else(|| anyhow::anyhow!("clone finished but the repository cannot be opened"))
+    }
+}
 
-        for url in clone_urls {
-            match clone(url, &path) {
-                Ok(repo) => {
-                    // The initial clone uses the default refspecs; also
-                    // fetch the `refs/nostr/*` PR refs.
-                    fetch_all(&repo).ok();
-                    return Ok(repo);
-                }
-                Err(e) => last_err = Some(e),
+/// Clone a repository into `path` from the first working URL in
+/// `clone_urls` (the announcement's `clone` tag), then fetch the
+/// `refs/nostr/*` PR refs like the cache clone does. The destination must
+/// not exist yet; it is created by the clone. The first URL that works
+/// wins; when none do, the error of the last failing URL is returned.
+///
+/// Unlike [`GitCache::ensure_clone`], the clone is not kept in any cache;
+/// callers open it themselves if they need a [`gix::Repository`].
+pub fn clone_repo(clone_urls: &[String], path: &Path) -> Result<()> {
+    if path.exists() {
+        bail!("destination {} already exists", path.display());
+    }
+
+    let mut last_err: Option<anyhow::Error> = None;
+
+    for url in clone_urls {
+        match clone(url, path) {
+            Ok(repo) => {
+                // The initial clone uses the default refspecs; also
+                // fetch the `refs/nostr/*` PR refs.
+                fetch_all(&repo).ok();
+                return Ok(());
             }
+            Err(e) => last_err = Some(e),
         }
+    }
 
-        match last_err {
-            Some(e) => Err(e).context("failed to clone from any mirror"),
-            None => bail!("no clone URLs provided"),
-        }
+    match last_err {
+        Some(e) => Err(e).context("failed to clone from any mirror"),
+        None => bail!("no clone URLs provided"),
     }
 }
 
@@ -246,12 +264,13 @@ fn git_in(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-/// Map an untrusted repository id to a safe single path component.
+/// Map an untrusted repository id (or display name) to a safe single path
+/// component.
 ///
 /// Replaces everything outside `[A-Za-z0-9._-]` with `_`, and rejects the
-/// special components `.` and `..` so the id can't escape the cache root
-/// when joined onto the owner directory.
-fn sanitize_path_component(id: &str) -> String {
+/// special components `.` and `..` so the id can't escape a directory it is
+/// joined onto.
+pub fn sanitize_path_component(id: &str) -> String {
     let sanitized: String = id
         .chars()
         .map(|c| {

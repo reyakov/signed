@@ -8,9 +8,10 @@ use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
 use gix::Repository;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
-    SharedString, Size, Subscription, Task, WeakEntity, Window, div, px, size,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, PathPromptOptions,
+    Pixels, Render, SharedString, Size, Subscription, Task, WeakEntity, Window, div, px, size,
 };
+use gpui_base::Disableable;
 use gpui_component::avatar::{Avatar, AvatarGroup};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::combobox::{
@@ -121,6 +122,8 @@ pub struct RepoDetailView {
     item_sizes: Rc<Vec<Size<Pixels>>>,
     /// A clone/fetch is in flight.
     loading: bool,
+    /// The header clone button is cloning into a user-chosen folder.
+    cloning: bool,
     error: Option<SharedString>,
     /// Commit HEAD currently points to, shown in the header button.
     head_commit: Option<FileCommit>,
@@ -221,6 +224,7 @@ impl RepoDetailView {
             scroll_handle: VirtualListScrollHandle::new(),
             item_sizes: Rc::new(Vec::new()),
             loading: true,
+            cloning: false,
             error: None,
             head_commit: None,
             branch_select,
@@ -401,6 +405,85 @@ impl RepoDetailView {
                 self.set_markdown(None, &text, cx);
             }
         }
+    }
+
+    /// Clone the repository into a folder chosen by the user (outside the
+    /// cache), then open the new clone in the system file manager. Like
+    /// ngit's clone, this resolves the announcement's `clone` URLs and
+    /// clones from the first working git server.
+    fn clone_to_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.cloning {
+            return;
+        }
+
+        let (clone_urls, name) = {
+            let announcement = self.announcement(cx);
+            let addr = announcement.addr();
+            let clone_urls: Vec<String> =
+                announcement.clone.iter().map(ToString::to_string).collect();
+            // Directory name: the display name, falling back to the repo id;
+            // both sanitized to a safe single path component.
+            let name = announcement
+                .name
+                .as_ref()
+                .map(|name| name.to_string())
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| addr.identifier.clone());
+            let name = signed_git::sanitize_path_component(&name);
+            let name = if name.is_empty() {
+                "repository".to_owned()
+            } else {
+                name
+            };
+            (clone_urls, name)
+        };
+
+        self.cloning = true;
+        cx.notify();
+
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Clone".into()),
+        });
+
+        let task = cx.spawn_in(window, async move |this, cx| {
+            // `Ok(Ok(Some(paths)))` means the user picked a folder; a
+            // cancel (or a picker failure) resolves to anything else.
+            let picked = match prompt.await {
+                Ok(Ok(Some(mut paths))) => paths.pop(),
+                _ => None,
+            };
+            let Some(folder) = picked else {
+                this.update_in(cx, |this, _window, cx| {
+                    this.cloning = false;
+                    cx.notify();
+                })?;
+                return Ok(());
+            };
+
+            let destination = folder.join(&name);
+            let destination_for_open = destination.clone();
+            let result = cx
+                .background_spawn(async move { signed_git::clone_repo(&clone_urls, &destination) })
+                .await;
+
+            this.update_in(cx, |this, _window, cx| {
+                this.cloning = false;
+                match result {
+                    Ok(_) => cx.open_with_system(&destination_for_open),
+                    Err(error) => {
+                        this.error = Some(format!("Failed to clone: {error}").into());
+                    }
+                }
+                cx.notify();
+            })?;
+
+            Ok(())
+        });
+
+        self.tasks.push(task);
     }
 
     /// Preview the file at `path` (relative to the worktree root).
@@ -985,6 +1068,7 @@ impl RepoDetailView {
                             .child(
                                 h_flex()
                                     .mt_2()
+                                    .w_full()
                                     .gap_2()
                                     .child(
                                         div()
@@ -1042,8 +1126,13 @@ impl RepoDetailView {
                             .child(
                                 Button::new("clone")
                                     .icon(CustomIconName::GitClone)
-                                    .tooltip("Clone")
-                                    .primary(),
+                                    .tooltip("Clone to folder...")
+                                    .loading(self.cloning)
+                                    .disabled(self.cloning)
+                                    .primary()
+                                    .on_click(cx.listener(|this, _event, window, cx| {
+                                        this.clone_to_folder(window, cx);
+                                    })),
                             ),
                     ),
             )
@@ -1176,7 +1265,6 @@ impl RepoDetailView {
             .w_full()
             .gap_3()
             .items_center()
-            .flex_wrap()
             .child(
                 h_flex()
                     .gap_1()
