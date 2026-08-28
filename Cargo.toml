@@ -33,7 +33,7 @@ nostr-gossip-memory = { git = "https://github.com/rust-nostr/nostr" }
 nostr-connect = { git = "https://github.com/rust-nostr/nostr" }
 nostr-sdk = { git = "https://github.com/rust-nostr/nostr" }
 
-gix = { version = "0.86", default-features = false, features = ["sha1", "blocking-network-client", "blocking-http-transport-reqwest-rust-tls", "worktree-mutation"] }
+gix = { version = "0.87.1", default-features = false, features = ["sha1", "blocking-network-client", "blocking-http-transport-reqwest-rust-tls", "worktree-mutation"] }
 
 chrono = { version = "0.4.38", features = ["wasmbind"] }
 smol = "2"
