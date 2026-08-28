@@ -76,6 +76,8 @@ pub enum CustomIconName {
     Filter,
     GlobalOn,
     GlobalOff,
+    GitFile,
+    GitCommit,
     GitIssueDone,
     GitIssueOpen,
     GitIssueClosed,
@@ -88,6 +90,7 @@ pub enum CustomIconName {
     GitBranch,
     Tag,
     Markdown,
+    Share,
 }
 
 impl IconNamed for CustomIconName {
@@ -98,6 +101,8 @@ impl IconNamed for CustomIconName {
             CustomIconName::Filter => "icons/filter.svg",
             CustomIconName::GlobalOn => "icons/global-on.svg",
             CustomIconName::GlobalOff => "icons/global-off.svg",
+            CustomIconName::GitCommit => "icons/git-commit.svg",
+            CustomIconName::GitFile => "icons/git-file.svg",
             CustomIconName::GitIssueDone => "icons/git-issue-done.svg",
             CustomIconName::GitIssueOpen => "icons/git-issue-open.svg",
             CustomIconName::GitIssueClosed => "icons/git-issue-close.svg",
@@ -110,6 +115,7 @@ impl IconNamed for CustomIconName {
             CustomIconName::GitBranch => "icons/git-branch.svg",
             CustomIconName::Tag => "icons/tag.svg",
             CustomIconName::Markdown => "icons/markdown.svg",
+            CustomIconName::Share => "icons/share.svg",
         }
         .into()
     }

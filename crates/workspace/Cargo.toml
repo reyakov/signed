@@ -20,5 +20,6 @@ gix.workspace = true
 nostr.workspace = true
 
 anyhow.workspace = true
+chrono.workspace = true
 futures.workspace = true
 log.workspace = true

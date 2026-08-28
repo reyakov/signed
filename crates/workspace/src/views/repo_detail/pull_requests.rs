@@ -435,7 +435,11 @@ impl PullRequestsView {
 /// Open the "new pull request" dialog: a title, an optional description and
 /// a patch input that submit through [`RepoStore::open_pull_request`] when
 /// confirmed.
-fn open_new_pull_request_dialog(store: Entity<RepoStore>, window: &mut Window, cx: &mut App) {
+pub(super) fn open_new_pull_request_dialog(
+    store: Entity<RepoStore>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let subject = cx.new(|cx| InputState::new(window, cx).placeholder("Pull request title"));
     let description =
         cx.new(|cx| TextareaState::new(window, cx).placeholder("Describe the change…"));

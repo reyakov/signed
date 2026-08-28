@@ -32,21 +32,21 @@ fn main() {
                 }
             }
 
-            let light_theme = registry.themes().get("Signed Light").cloned();
-            let dark_theme = registry.themes().get("Signed Dark").cloned();
+            //let light_theme = registry.themes().get("Signed Light").cloned();
+            //let dark_theme = registry.themes().get("Signed Dark").cloned();
             let theme = Theme::global_mut(cx);
             theme.radius = px(2.);
             theme.radius_lg = px(6.);
             theme.focus_ring = false;
             theme.shadow = false;
 
-            if let Some(light) = light_theme {
-                theme.light_theme = light;
-            }
+            //if let Some(light) = light_theme {
+            //    theme.light_theme = light;
+            //}
 
-            if let Some(dark) = dark_theme {
-                theme.dark_theme = dark;
-            }
+            //if let Some(dark) = dark_theme {
+            //    theme.dark_theme = dark;
+            //}
 
             // Sync the theme with the system appearance
             Theme::sync_system_appearance(None, cx);

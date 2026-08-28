@@ -3,17 +3,24 @@ use std::path::{Path, PathBuf};
 
 use assets::CustomIconName;
 use gpui::prelude::*;
-use gpui::{AnyElement, App, SharedString, Window, div, px};
+use gpui::{
+    Anchor, AnyElement, App, ClipboardItem, DismissEvent, ElementId, Entity, Focusable,
+    SharedString, StyleRefinement, Window, div, px,
+};
+use gpui_base::{Button as BaseButton, Popover, Selectable, StyledExt};
+use gpui_component::clipboard::Clipboard;
 use gpui_component::list::ListItem;
+use gpui_component::menu::{PopupMenu, PopupMenuItem};
 use gpui_component::tooltip::Tooltip;
 use gpui_component::tree::{TreeEntry, TreeItem};
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
-use signed_core::RepoStatus;
+use nostr::nips::nip19::{Nip19Coordinate, ToBech32};
+use signed_core::{Announcement, RepoStatus};
 use signed_git::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
 
 /// A `Send` file-tree node: the tree is built on a background thread and
-/// converted into [`TreeItem`]s (which hold `Rc` state, so they cannot
-/// cross threads) on the main thread.
+/// converted into [`TreeItem`]s (which hold `Rc` state,
+/// so they cannot cross threads) on the main thread.
 pub(super) struct TreeItemSeed {
     /// Path of the node, relative to the worktree root.
     id: String,
@@ -22,12 +29,12 @@ pub(super) struct TreeItemSeed {
     children: Vec<TreeItemSeed>,
 }
 
-/// Convert tree seeds into [`TreeItem`]s, expanding every folder when
-/// `expand_folders` is set.
+/// Convert tree seeds into [`TreeItem`]s, expanding every folder
+/// when `expand_folders` is set.
 ///
-/// The commit diff explorer shows only changed files, which is typically a
-/// handful of paths, so its folders start expanded; the worktree explorer
-/// starts collapsed instead.
+/// The commit diff explorer shows only changed files,
+/// which is typically a handful of paths, so its folders start expanded;
+/// the worktree explorer starts collapsed instead.
 pub(super) fn tree_items(seeds: Vec<TreeItemSeed>, expand_folders: bool) -> Vec<TreeItem> {
     fn convert(seed: TreeItemSeed, expand_folders: bool) -> TreeItem {
         let mut item = TreeItem::new(seed.id, seed.label);
@@ -48,8 +55,8 @@ pub(super) fn tree_items(seeds: Vec<TreeItemSeed>, expand_folders: bool) -> Vec<
         .collect()
 }
 
-/// One row of a file tree: icon + name, indented by depth. Clicking a file
-/// runs `on_click`; folders expand/collapse via the tree itself.
+/// One row of a file tree: icon + name, indented by depth.
+/// Clicking a file runs `on_click`; folders expand/collapse via the tree itself.
 pub(super) fn tree_row<F>(ix: usize, entry: &TreeEntry, selected: bool, on_click: F) -> ListItem
 where
     F: Fn(&mut Window, &mut App) + 'static,
@@ -139,8 +146,7 @@ pub(super) fn build_tree_items(entries: &[PathBuf]) -> Vec<TreeItemSeed> {
 /// The markdown fence language for a file path, or `None` for plain text.
 ///
 /// Names are chosen so `gpui_component`'s highlighter can resolve them
-/// (`highlighter::Language::from_name` accepts short aliases such as `rs`
-/// and `js`).
+/// (`highlighter::Language::from_name` accepts short aliases such as `rs` and `js`).
 pub(super) fn code_language(path: &str) -> Option<&'static str> {
     let name = Path::new(path)
         .file_name()
@@ -220,8 +226,8 @@ pub(super) fn placeholder(message: &str, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// The status badge shown next to an issue or pull request: icon + colored
-/// square, with a tooltip describing the status.
+/// The status badge shown next to an issue or pull request: icon + colored square,
+/// with a tooltip describing the status.
 pub(super) fn status_badge(status: RepoStatus, cx: &App) -> AnyElement {
     let (icon, label, tooltip, bg, fg) = match status {
         RepoStatus::Open => (
@@ -265,6 +271,284 @@ pub(super) fn status_badge(status: RepoStatus, cx: &App) -> AnyElement {
         .child(Icon::new(icon).small().text_color(fg))
         .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
         .into_any_element()
+}
+
+/// A split dropdown button built on `gpui_base::Popover`: an action element
+/// with a separate caret trigger that opens a [`PopupMenu`].
+///
+/// The action and the caret are ordinary elements supplied by the caller, so
+/// the look — icons, borders, hover states, sizes — stays fully in the
+/// application. The component only owns the popover wiring: opening on caret
+/// click, Escape/outside dismissal, focus movement into the menu, and the
+/// menu entity's lifecycle.
+#[derive(IntoElement)]
+pub(super) struct BaseDropdownButton {
+    id: ElementId,
+    style: StyleRefinement,
+    anchor: Anchor,
+    action: Option<AnyElement>,
+    caret: Option<CaretBuilder>,
+    menu: Option<MenuBuilder>,
+}
+
+type MenuBuilder =
+    Box<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static>;
+type CaretBuilder = Box<dyn FnOnce(bool, &Window, &App) -> AnyElement>;
+
+impl BaseDropdownButton {
+    pub(super) fn new(id: impl Into<ElementId>) -> Self {
+        Self {
+            id: id.into(),
+            style: StyleRefinement::default(),
+            anchor: Anchor::TopRight,
+            action: None,
+            caret: None,
+            menu: None,
+        }
+    }
+
+    /// The action half of the button. It keeps its own icon, label, tooltip
+    /// and click handler.
+    pub(super) fn action(mut self, action: impl IntoElement + 'static) -> Self {
+        self.action = Some(action.into_any_element());
+        self
+    }
+
+    /// The menu built by `builder` — the same signature as gpui-component's
+    /// `DropdownButton::dropdown_menu`, so existing menu code keeps working.
+    pub(super) fn dropdown_menu(
+        mut self,
+        builder: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> Self {
+        self.menu = Some(Box::new(builder));
+        self
+    }
+
+    /// Which corner of the caret the menu anchors to. Defaults to
+    /// [`Anchor::TopRight`], so the menu's right edge lines up with the
+    /// caret's.
+    #[allow(dead_code)] // API knob; current call sites use the default anchor.
+    pub(super) fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
+        self.anchor = anchor.into();
+        self
+    }
+}
+
+impl Styled for BaseDropdownButton {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+/// Holds the [`PopupMenu`] entity of one popover between renders. Dismissal
+/// drops it, so the menu is rebuilt with fresh items on the next open.
+#[derive(Default)]
+struct DropdownMenuState {
+    menu: Option<Entity<PopupMenu>>,
+}
+
+impl RenderOnce for BaseDropdownButton {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        debug_assert!(
+            self.menu.is_some(),
+            "a BaseDropdownButton needs a `dropdown_menu`"
+        );
+
+        // The popover needs its own id: both the container and the popover register keyed state on this window.
+        let popover_id = SharedString::from(format!("{}-popover", self.id));
+        let anchor = self.anchor;
+        let menu_state =
+            window.use_keyed_state(popover_id.clone(), cx, |_, _| DropdownMenuState::default());
+
+        let caret = self.caret.unwrap_or_else(|| {
+            let id = popover_id.clone();
+            Box::new(move |is_open, _, cx| {
+                let caret = default_caret(id.clone(), cx);
+                let selected = caret.is_selected();
+                caret.selected(selected || is_open).into_any_element()
+            })
+        });
+
+        h_flex()
+            .id(self.id)
+            .refine_style(&self.style)
+            .gap_0p5()
+            .when_some(self.action, |this, action| this.child(action))
+            .when_some(self.menu, |this, builder| {
+                this.child(
+                    Popover::new(popover_id)
+                        .anchor(anchor)
+                        // The menu dismisses itself on outside click or Escape;
+                        // the subscription below closes the popover along with it.
+                        .overlay_closable(false)
+                        .trigger_with(caret)
+                        .content(
+                            move |_, window, cx| match menu_state.read(cx).menu.clone() {
+                                Some(menu) => menu,
+                                None => {
+                                    let menu = PopupMenu::build(window, cx, |menu, window, cx| {
+                                        builder(menu, window, cx)
+                                    });
+                                    menu_state
+                                        .update(cx, |state, _| state.menu = Some(menu.clone()));
+                                    menu.focus_handle(cx).focus(window, cx);
+
+                                    let popover_state = cx.entity();
+                                    window
+                                        .subscribe(&menu, cx, {
+                                            let menu_state = menu_state.clone();
+                                            move |_, _: &DismissEvent, window, cx| {
+                                                popover_state.update(cx, |state, cx| {
+                                                    state.dismiss(window, cx);
+                                                });
+                                                menu_state.update(cx, |state, _| {
+                                                    state.menu = None;
+                                                });
+                                            }
+                                        })
+                                        .detach();
+
+                                    menu.clone()
+                                }
+                            },
+                        ),
+                )
+            })
+    }
+}
+
+/// The default caret: a chevron button the height of a medium button, tinted
+/// by the theme, with hover and menu-open states.
+fn default_caret(id: impl Into<ElementId>, cx: &App) -> BaseButton {
+    BaseButton::new(id)
+        .h(px(32.))
+        .px_1p5()
+        .text_color(cx.theme().muted_foreground)
+        .hover(|style| style.bg(cx.theme().secondary_hover))
+        .styles(|this| {
+            this.selected(|style| style.bg(cx.theme().secondary_active))
+                .disabled(|style| style.opacity(0.5))
+        })
+        .child(Icon::new(IconName::ChevronDown).xsmall())
+}
+
+pub(super) struct ShareTargets {
+    /// NIP-19 `naddr1...` of the announcement (with its announced relays).
+    pub(super) naddr: String,
+    /// Hex ID of the announcement event itself.
+    pub(super) event_id: String,
+    /// NIP-34 coordinate `30617:<pubkey>:<repo-id>`.
+    pub(super) coordinate: String,
+    /// `https://gitworkshop.dev/<naddr>`
+    pub(super) gitworkshop: String,
+    /// `https://ditto.pub/<naddr>`
+    pub(super) ditto: String,
+}
+
+impl ShareTargets {
+    pub(super) fn from_announcement(announcement: &Announcement) -> Self {
+        let addr = announcement.addr();
+        let coordinate = addr.to_string();
+        let naddr = Nip19Coordinate::new(addr, announcement.relays.iter().cloned())
+            .to_bech32()
+            .expect("a complete coordinate always encodes to naddr");
+
+        Self {
+            naddr: naddr.clone(),
+            event_id: announcement.event_id.to_bech32().unwrap(),
+            coordinate,
+            gitworkshop: format!("https://gitworkshop.dev/{naddr}"),
+            ditto: format!("https://ditto.pub/{naddr}"),
+        }
+    }
+
+    /// The share dropdown menu: one row per target, each showing a compact
+    /// label while the copy button (and row click) copy the full value.
+    pub(super) fn menu(&self, menu: PopupMenu) -> PopupMenu {
+        menu.min_w(px(340.))
+            .item(share_menu_row(
+                "copy-gitworkshop",
+                "GitWorkshop",
+                truncate_naddr_link(&self.gitworkshop, 4),
+                self.gitworkshop.clone(),
+            ))
+            .item(share_menu_row(
+                "copy-ditto",
+                "Ditto",
+                truncate_naddr_link(&self.ditto, 4),
+                self.ditto.clone(),
+            ))
+            .item(share_menu_row(
+                "copy-event-id",
+                "Event ID",
+                middle_truncate(&self.event_id, 10, 10),
+                self.event_id.clone(),
+            ))
+            .item(share_menu_row(
+                "copy-coordinate",
+                "Coordinate",
+                middle_truncate(&self.coordinate, 10, 10),
+                self.coordinate.clone(),
+            ))
+    }
+}
+
+/// One row of the share menu: a small title on top of the compact label,
+/// with a copy button that flips to a check while the value is on the
+/// clipboard. Clicking the row text copies and dismisses the menu; the copy
+/// button stops propagation, so the menu stays open for further copies.
+/// Both copy `copy`, never the truncated label.
+pub(super) fn share_menu_row(
+    id: &'static str,
+    title: &'static str,
+    label: String,
+    copy: String,
+) -> PopupMenuItem {
+    let row_copy = copy.clone();
+    PopupMenuItem::element(move |_window, _cx| {
+        let button_copy = copy.clone();
+        h_flex()
+            .flex_1()
+            .gap_2()
+            .items_end()
+            .child(
+                h_flex()
+                    .flex_1()
+                    .gap_1()
+                    .text_xs()
+                    .child(div().flex_shrink_0().w_20().font_semibold().child(title))
+                    .child(div().flex_1().text_ellipsis().child(label.clone())),
+            )
+            .child(Clipboard::new(id).tooltip("Copy").value(button_copy))
+    })
+    .on_click(move |_, _, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(row_copy.clone()));
+    })
+}
+
+/// `[head chars]...[tail chars]` middle truncation; the value is left alone
+/// when it is too short for the ellipsis to save space.
+pub(super) fn middle_truncate(value: &str, head: usize, tail: usize) -> String {
+    let len = value.chars().count();
+    if len <= head + tail + 3 {
+        return value.to_string();
+    }
+    let head: String = value.chars().take(head).collect();
+    let tail: String = value.chars().skip(len - tail).collect();
+    format!("{head}...{tail}")
+}
+
+/// Shorten an naddr link to `<url>/naddr1...[last tail chars]`, e.g.
+/// `https://gitworkshop.dev/naddr1...abcd`. Only the label is shortened;
+/// the value to be copied stays the full URL.
+fn truncate_naddr_link(url: &str, tail: usize) -> String {
+    let Some(end) = url.find("naddr1").map(|i| i + "naddr1".len()) else {
+        return url.to_string();
+    };
+    if url.len() - end <= tail + 3 {
+        return url.to_string();
+    }
+    format!("{}...{}", &url[..end], &url[url.len() - tail..])
 }
 
 /// Width of one line-number gutter in a diff row.
@@ -481,5 +765,53 @@ mod tests {
         assert_eq!(code_language("data.csv"), None);
         assert_eq!(code_language("LICENSE"), None);
         assert_eq!(code_language("README.md"), None);
+    }
+
+    #[test]
+    fn middle_truncates_long_values_only() {
+        assert_eq!(
+            middle_truncate(
+                "a008def15796fba9a0d6fab04e8fd57089285d9fd505da5a83fe8aad57a3564d",
+                10,
+                10,
+            ),
+            "a008def157...ad57a3564d"
+        );
+        assert_eq!(
+            middle_truncate(
+                "30617:a008def15796fba9a0d6fab04e8fd57089285d9fd505da5a83fe8aad57a3564d:ngit",
+                10,
+                10
+            ),
+            "30617:a008...3564d:ngit"
+        );
+        // Too short to save space with the ellipsis: left alone.
+        assert_eq!(middle_truncate("short", 10, 10), "short");
+    }
+
+    #[test]
+    fn naddr_link_keeps_url_and_tail() {
+        assert_eq!(
+            truncate_naddr_link("https://gitworkshop.dev/naddr1qqqxyzabc1234", 4),
+            "https://gitworkshop.dev/naddr1...1234"
+        );
+        // No naddr1 prefix: unchanged.
+        assert_eq!(
+            truncate_naddr_link("https://example.com/x", 4),
+            "https://example.com/x"
+        );
+    }
+
+    #[test]
+    fn base_dropdown_button_builder_state() {
+        let button = BaseDropdownButton::new("issues")
+            .action(div())
+            .anchor(Anchor::BottomLeft)
+            .dropdown_menu(|menu, _, _| menu);
+
+        assert!(button.action.is_some());
+        assert!(button.caret.is_some());
+        assert!(button.menu.is_some());
+        assert_eq!(button.anchor, Anchor::BottomLeft);
     }
 }

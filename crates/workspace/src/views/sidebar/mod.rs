@@ -239,11 +239,7 @@ impl SidebarPanel {
             .name
             .clone()
             .unwrap_or_else(|| SharedString::from(announcement.id.clone()));
-        let avatar = PixelAvatar::new(format!(
-            "{}:{}",
-            announcement.owner.to_hex(),
-            announcement.id
-        ));
+        let avatar = PixelAvatar::new(format!("{}:{}", announcement.owner, announcement.id));
         let announcement = announcement.clone();
 
         NavItem::new(format!("my-repo:{}", announcement.id), name, avatar).on_click(

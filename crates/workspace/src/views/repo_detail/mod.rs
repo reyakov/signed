@@ -8,20 +8,20 @@ use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
 use gix::Repository;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, PathPromptOptions,
-    Pixels, Render, SharedString, Size, Subscription, Task, WeakEntity, Window, div, px, size,
+    Action, AnyElement, App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    PathPromptOptions, Pixels, Render, SharedString, Size, Subscription, Task, WeakEntity, Window,
+    div, px, relative, size,
 };
-use gpui_base::Disableable;
-use gpui_component::avatar::{Avatar, AvatarGroup};
+use gpui_base::{Button as BaseButton, Disableable};
+use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::combobox::{
     Caret, Combobox, ComboboxEvent, ComboboxState, ComboboxTriggerContext,
 };
 use gpui_component::searchable_list::SearchableVec;
-use gpui_component::tag::Tag;
 use gpui_component::tree::TreeState;
 use gpui_component::{
-    ActiveTheme, Icon, IconName, Selectable, Sizable, StyledExt, VirtualListScrollHandle, h_flex,
+    ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, VirtualListScrollHandle, h_flex,
     v_flex,
 };
 use signed_core::Announcement;
@@ -29,7 +29,9 @@ use signed_git::{CommitList, FileCommit};
 use signed_state::{GitStore, ProfileStore, RepoStore};
 
 use crate::image_cache::{MAX_IMAGES, image_cache};
+use crate::pixel_avatar::PixelAvatar;
 
+mod about;
 mod browser;
 mod commits;
 mod diff;
@@ -39,15 +41,18 @@ mod issues;
 mod pull_request_detail;
 mod pull_requests;
 
+use about::open_about_dialog;
 use browser::{
     CodeView, FileContent, MAX_PREVIEW_BYTES, MAX_PREVIEW_CACHE_BYTES, MAX_PREVIEWED_FILES,
     MarkdownView,
 };
 use commits::COMMIT_ROW_HEIGHT;
 use diff::CommitDiffView;
-use helpers::{TreeItemSeed, build_tree_items, is_markdown_path, tree_items};
-use issues::IssuesView;
-use pull_requests::PullRequestsView;
+use helpers::{
+    BaseDropdownButton, ShareTargets, TreeItemSeed, build_tree_items, is_markdown_path, tree_items,
+};
+use issues::{IssuesView, open_new_issue_dialog};
+use pull_requests::{PullRequestsView, open_new_pull_request_dialog};
 
 /// What kind of ref the header selectors switch to.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -56,6 +61,16 @@ enum RefKind {
     Branch,
     /// A tag (`refs/tags/*`); HEAD becomes detached.
     Tag,
+}
+
+/// Header actions dispatched by the dropdown menus of the header buttons.
+#[derive(Clone, Action, PartialEq, Eq)]
+#[action(namespace = repo_detail, no_json)]
+enum RepoAction {
+    /// Open the "new issue" dialog.
+    NewIssue,
+    /// Open the "new pull request" dialog.
+    NewPR,
 }
 
 /// Everything loaded from the local clone for the explorer: the tree seeds,
@@ -1029,16 +1044,28 @@ impl RepoDetailView {
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let store = self.store.read(cx);
         let announcement = store.announcement.as_ref().unwrap_or(&self.initial);
-        let issue_count = store.issue_count();
-        let pull_request_count = store.pull_request_count();
+        let issue_count = SharedString::from(store.issue_count().to_string());
+        let pr_count = SharedString::from(store.pull_request_count().to_string());
 
         let name = self.display_name(cx);
         let description = announcement.description();
+        let avatar = PixelAvatar::new(format!("{}:{}", announcement.owner, announcement.id));
+        let share = ShareTargets::from_announcement(announcement);
 
         let commits_count = self.all_commits.as_ref().map(|list| list.total);
         let worktree_empty = self.switching_ref || self.worktree.is_none();
 
         v_flex()
+            .on_action(
+                cx.listener(|this, action: &RepoAction, window, cx| match action {
+                    RepoAction::NewIssue => {
+                        open_new_issue_dialog(this.store.clone(), window, cx);
+                    }
+                    RepoAction::NewPR => {
+                        open_new_pull_request_dialog(this.store.clone(), window, cx);
+                    }
+                }),
+            )
             .px_4()
             .pb_4()
             .w_full()
@@ -1048,20 +1075,29 @@ impl RepoDetailView {
             .child(
                 h_flex()
                     .w_full()
-                    .gap_2()
+                    .gap_4()
                     .items_start()
                     .justify_between()
                     .child(
                         v_flex()
                             .flex_1()
                             .min_w_0()
-                            .child(div().font_semibold().child(name))
+                            .gap_1()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .min_h_8()
+                                    .font_semibold()
+                                    .child(avatar.size_6())
+                                    .child(name),
+                            )
                             .child(
                                 div()
                                     .min_w_0()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
                                     .line_clamp(2)
+                                    .line_height(relative(1.25))
                                     .text_ellipsis()
                                     .child(description),
                             )
@@ -1069,7 +1105,7 @@ impl RepoDetailView {
                                 h_flex()
                                     .mt_2()
                                     .w_full()
-                                    .gap_2()
+                                    .gap_0p5()
                                     .child(
                                         div()
                                             .text_xs()
@@ -1086,42 +1122,115 @@ impl RepoDetailView {
                             .gap_2()
                             .justify_end()
                             .child(
-                                Button::new("issues")
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .text_sm()
-                                            .child(SharedString::from("Issues"))
-                                            .child(Tag::new().xsmall().child(SharedString::from(
-                                                issue_count.to_string(),
-                                            ))),
+                                BaseDropdownButton::new("issues")
+                                    .action(
+                                        BaseButton::new("issues-open")
+                                            .child(
+                                                h_flex()
+                                                    .h_8()
+                                                    .px_2()
+                                                    .gap_1()
+                                                    .rounded(cx.theme().radius)
+                                                    .bg(cx.theme().secondary)
+                                                    .hover(|this| {
+                                                        this.bg(cx.theme().secondary_hover)
+                                                    })
+                                                    .text_sm()
+                                                    .text_color(cx.theme().secondary_foreground)
+                                                    .child(Icon::new(CustomIconName::GitIssueDone))
+                                                    .child("Issues")
+                                                    .child(
+                                                        div()
+                                                            .mx_1()
+                                                            .h_5()
+                                                            .w_px()
+                                                            .bg(cx.theme().border.darken(0.1)),
+                                                    )
+                                                    .child(issue_count),
+                                            )
+                                            .on_click(cx.listener(|this, _event, window, cx| {
+                                                this.open_issue_detail(window, cx);
+                                            })),
                                     )
-                                    .outline()
-                                    .on_click(cx.listener(|this, _event, window, cx| {
-                                        this.open_issue_detail(window, cx);
-                                    })),
+                                    .dropdown_menu(|menu, _, _| {
+                                        menu.menu_element_with_icon(
+                                            IconName::Plus,
+                                            Box::new(RepoAction::NewIssue),
+                                            |_, _| div().text_xs().child("New issue"),
+                                        )
+                                    }),
                             )
                             .child(
-                                Button::new("prs")
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .text_sm()
-                                            .child(SharedString::from("Pull Requests"))
-                                            .child(Tag::new().xsmall().child(SharedString::from(
-                                                pull_request_count.to_string(),
-                                            ))),
+                                BaseDropdownButton::new("prs")
+                                    .action(
+                                        BaseButton::new("prs-open")
+                                            .child(
+                                                h_flex()
+                                                    .h_8()
+                                                    .px_2()
+                                                    .gap_1()
+                                                    .rounded(cx.theme().radius)
+                                                    .bg(cx.theme().secondary)
+                                                    .hover(|this| {
+                                                        this.bg(cx.theme().secondary_hover)
+                                                    })
+                                                    .text_sm()
+                                                    .text_color(cx.theme().secondary_foreground)
+                                                    .child(Icon::new(
+                                                        CustomIconName::GitPullRequest,
+                                                    ))
+                                                    .child("Pull Requests")
+                                                    .child(
+                                                        div()
+                                                            .mx_1()
+                                                            .h_5()
+                                                            .w_px()
+                                                            .bg(cx.theme().border.darken(0.1)),
+                                                    )
+                                                    .child(pr_count),
+                                            )
+                                            .on_click(cx.listener(|this, _event, window, cx| {
+                                                this.open_pull_request_detail(window, cx);
+                                            })),
                                     )
-                                    .outline()
-                                    .on_click(cx.listener(|this, _event, window, cx| {
-                                        this.open_pull_request_detail(window, cx);
-                                    })),
+                                    .dropdown_menu(|menu, _, _| {
+                                        menu.menu_element_with_icon(
+                                            IconName::Plus,
+                                            Box::new(RepoAction::NewPR),
+                                            |_, _| div().text_xs().child("New PR"),
+                                        )
+                                    }),
                             )
                             .child(
-                                Button::new("link")
-                                    .icon(IconName::ExternalLink)
-                                    .tooltip("Open in gitworkshop.dev")
-                                    .secondary(),
+                                BaseDropdownButton::new("share")
+                                    .action(
+                                        Button::new("link")
+                                            .icon(IconName::Copy)
+                                            .tooltip("Copy ID")
+                                            .secondary()
+                                            .on_click({
+                                                let naddr = share.naddr.clone();
+                                                move |_, _, cx| {
+                                                    cx.write_to_clipboard(
+                                                        ClipboardItem::new_string(naddr.clone()),
+                                                    );
+                                                }
+                                            }),
+                                    )
+                                    .dropdown_menu(move |menu, _, _| share.menu(menu)),
+                            )
+                            .child(
+                                Button::new("info")
+                                    .icon(IconName::Info)
+                                    .tooltip("About")
+                                    .secondary()
+                                    .on_click(cx.listener(|this, _event, window, cx| {
+                                        open_about_dialog(
+                                            this.announcement(cx).clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
                             )
                             .child(
                                 Button::new("clone")
@@ -1141,26 +1250,68 @@ impl RepoDetailView {
                     .items_center()
                     .gap_2()
                     .child(
-                        Button::new("files-tab")
-                            .label("Files")
+                        BaseButton::new("files-tab")
+                            .flex()
+                            .items_center()
+                            .h_8()
+                            .px_2()
+                            .gap_2()
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .text_sm()
+                                    .child(Icon::new(CustomIconName::GitFile).small())
+                                    .child("Files"),
+                            )
+                            .text_color(cx.theme().button_foreground)
+                            .rounded(cx.theme().radius)
+                            .hover(|this| this.bg(cx.theme().button_hover))
+                            .active(|this| this.bg(cx.theme().button_active))
                             .selected(self.active_tab == 0)
-                            .toggled(self.active_tab == 0)
+                            .when(self.active_tab == 0, |this| {
+                                this.bg(cx.theme().button_active)
+                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.active_tab = 0;
                                 cx.notify();
                             })),
                     )
                     .child(
-                        Button::new("commits-tab")
-                            .label("Commits")
-                            .selected(self.active_tab == 1)
-                            .toggled(self.active_tab == 1)
+                        BaseButton::new("commits-tab")
+                            .flex()
+                            .items_center()
+                            .h_8()
+                            .px_2()
+                            .gap_2()
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .text_sm()
+                                    .child(Icon::new(CustomIconName::GitCommit).small())
+                                    .child("Commits"),
+                            )
                             .when_some(commits_count, |this, count| {
                                 this.child(
-                                    Tag::secondary()
-                                        .xsmall()
+                                    h_flex()
+                                        .justify_center()
+                                        .px_1()
+                                        .py_0p5()
+                                        .min_w_4()
+                                        .text_size(px(8.))
+                                        .bg(cx.theme().muted)
+                                        .text_color(cx.theme().muted_foreground)
+                                        .rounded(cx.theme().radius)
+                                        .line_height(relative(1.))
                                         .child(SharedString::from(count.to_string())),
                                 )
+                            })
+                            .text_color(cx.theme().button_foreground)
+                            .rounded(cx.theme().radius)
+                            .hover(|this| this.bg(cx.theme().button_hover))
+                            .active(|this| this.bg(cx.theme().button_active))
+                            .selected(self.active_tab == 1)
+                            .when(self.active_tab == 1, |this| {
+                                this.bg(cx.theme().button_active)
                             })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.active_tab = 1;
@@ -1243,8 +1394,6 @@ impl RepoDetailView {
             .into_any_element()
     }
 
-    /// Horizontal list of everyone who maintains the repository: the owner
-    /// shown in full, and any additional maintainers as a compact overlapping avatar group.
     fn render_maintainers(&self, cx: &mut Context<Self>) -> AnyElement {
         let announcement = self.announcement(cx);
         let profile_store = ProfileStore::global(cx);
@@ -1254,7 +1403,7 @@ impl RepoDetailView {
             .maintainers
             .iter()
             .copied()
-            .filter(|key| *key != announcement.owner && seen.insert(*key))
+            .filter(|key| key != &announcement.owner && seen.insert(*key))
             .collect();
 
         let owner = profile_store.read(cx).get(&announcement.owner);
@@ -1264,31 +1413,32 @@ impl RepoDetailView {
         h_flex()
             .w_full()
             .gap_3()
-            .items_center()
             .child(
-                h_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(
-                        Avatar::new()
-                            .name(owner_name.clone())
-                            .when_some(owner_picture, |this, url| this.src(url))
-                            .rounded(cx.theme().radius)
-                            .small(),
-                    )
-                    .child(div().text_xs().whitespace_nowrap().child(owner_name)),
+                Button::new("maintainers").compact().ghost().child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .gap_1()
+                                .child(
+                                    Avatar::new()
+                                        .name(owner_name.clone())
+                                        .when_some(owner_picture, |this, url| this.src(url))
+                                        .rounded(cx.theme().radius)
+                                        .small(),
+                                )
+                                .child(div().text_xs().whitespace_nowrap().child(owner_name)),
+                        )
+                        .when(!rest.is_empty(), |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(SharedString::from(format!("+{}", rest.len()))),
+                            )
+                        }),
+                ),
             )
-            .when(!rest.is_empty(), |this| {
-                this.child(AvatarGroup::new().small().limit(5).ellipsis().children(
-                    rest.into_iter().map(|key| {
-                        let profile = profile_store.read(cx).get(&key);
-                        Avatar::new()
-                            .name(profile.name())
-                            .when_some(profile.picture(), |this, url| this.src(url))
-                            .rounded(cx.theme().radius)
-                    }),
-                ))
-            })
             .into_any_element()
     }
 }

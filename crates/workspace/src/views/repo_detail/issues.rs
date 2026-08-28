@@ -1,7 +1,3 @@
-//! Issues panel: a bottom panel listing every issue of the repository with
-//! its title, event id, author, age and status, filterable by status via
-//! the header's All/Open/Closed filter.
-
 use std::rc::Rc;
 
 use assets::CustomIconName;
@@ -43,8 +39,8 @@ enum IssueFilter {
     All,
     /// Issues whose resolved status is [`RepoStatus::Open`].
     Open,
-    /// Issues whose resolved status is [`RepoStatus::Closed`] or
-    /// [`RepoStatus::Applied`] (both are "done" states).
+    /// Issues whose resolved status is
+    /// [`RepoStatus::Closed`] or [`RepoStatus::Applied`] (both are "done" states).
     Closed,
 }
 
@@ -74,8 +70,7 @@ pub struct IssuesView {
     filter: IssueFilter,
     /// Per-row heights of the virtual list.
     item_sizes: Rc<Vec<Size<Pixels>>>,
-    /// Number of rows [`Self::item_sizes`] was built for (the filtered
-    /// issue count); rebuilt on change.
+    /// Number of rows [`Self::item_sizes`] was built for (the filtered issue count).
     issue_len: usize,
     /// Indices into the store's `issues` matching [`Self::filter`], rebuilt
     /// every render; the virtual list renders this slice.
@@ -350,7 +345,7 @@ impl IssuesView {
 
 /// Open the "new issue" dialog: a title and a content input that submit
 /// through [`RepoStore::open_issue`] when confirmed.
-fn open_new_issue_dialog(store: Entity<RepoStore>, window: &mut Window, cx: &mut App) {
+pub(super) fn open_new_issue_dialog(store: Entity<RepoStore>, window: &mut Window, cx: &mut App) {
     let subject = cx.new(|cx| InputState::new(window, cx).placeholder("Issue title"));
     let content = cx.new(|cx| TextareaState::new(window, cx).placeholder("Describe the issue…"));
 

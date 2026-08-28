@@ -4,6 +4,8 @@ use nostr::prelude::*;
 /// Parsed NIP-34 repository announcement (plain data, ready for the UI).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Announcement {
+    /// ID of the announcement event itself.
+    pub event_id: EventId,
     /// Repository ID (`d` tag).
     pub id: String,
     /// Author of the announcement event.
@@ -211,6 +213,7 @@ impl Announcement {
         }
 
         Some(Self {
+            event_id: event.id,
             owner: event.pubkey,
             created_at: event.created_at,
             id,

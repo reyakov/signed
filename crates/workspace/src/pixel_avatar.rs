@@ -1,5 +1,6 @@
 use gpui::prelude::*;
-use gpui::{App, Pixels, Window, div, px};
+use gpui::{App, Pixels, StyleRefinement, Window, div, px};
+use gpui_base::StyledExt;
 use gpui_component::{ActiveTheme, Colorize};
 
 /// Number of rows and columns in the pixel grid.
@@ -19,6 +20,7 @@ const MIN_FILLED: usize = 5;
 pub(crate) struct PixelAvatar {
     seed: u64,
     size: Pixels,
+    style: StyleRefinement,
 }
 
 impl PixelAvatar {
@@ -28,7 +30,14 @@ impl PixelAvatar {
         Self {
             seed: fnv1a(seed.as_ref().as_bytes()),
             size: px(16.),
+            style: StyleRefinement::default(),
         }
+    }
+}
+
+impl Styled for PixelAvatar {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
     }
 }
 
@@ -64,6 +73,7 @@ impl RenderOnce for PixelAvatar {
         }
 
         div()
+            .refine_style(&self.style)
             .grid()
             .grid_cols(GRID_SIZE as u16)
             .grid_rows(GRID_SIZE as u16)
