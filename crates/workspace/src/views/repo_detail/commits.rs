@@ -25,8 +25,6 @@ fn commit_row(
     cx: &App,
 ) -> AnyElement {
     let view = view.clone();
-    // Only the id is needed by the click handler: the diff panel fetches
-    // the full commit itself.
     let id = commit.id.clone();
 
     h_flex()

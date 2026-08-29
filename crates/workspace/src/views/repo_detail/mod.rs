@@ -8,22 +8,24 @@ use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
 use gix::Repository;
 use gpui::prelude::*;
 use gpui::{
-    Action, AnyElement, App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    PathPromptOptions, Pixels, Render, SharedString, Size, Subscription, Task, WeakEntity, Window,
-    div, px, relative, size,
+    Action, Anchor, AnyElement, App, ClipboardItem, Context, Div, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, PathPromptOptions, Pixels, Render, SharedString, Size, Subscription,
+    Task, WeakEntity, Window, div, px, relative, size,
 };
-use gpui_base::{Button as BaseButton, Disableable};
+use gpui_base::{Button as BaseButton, Disableable, Popover};
 use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::clipboard::Clipboard;
 use gpui_component::combobox::{
     Caret, Combobox, ComboboxEvent, ComboboxState, ComboboxTriggerContext,
 };
 use gpui_component::searchable_list::SearchableVec;
 use gpui_component::tree::TreeState;
 use gpui_component::{
-    ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, VirtualListScrollHandle, h_flex,
-    v_flex,
+    ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, ThemeStyled,
+    VirtualListScrollHandle, h_flex, v_flex,
 };
+use nostr::prelude::{RelayUrl, ToBech32};
 use signed_core::Announcement;
 use signed_git::{CommitList, FileCommit};
 use signed_state::{GitStore, ProfileStore, RepoStore};
@@ -1055,6 +1057,11 @@ impl RepoDetailView {
         let commits_count = self.all_commits.as_ref().map(|list| list.total);
         let worktree_empty = self.switching_ref || self.worktree.is_none();
 
+        let nostr_url = nostr_clone_url(announcement, cx);
+        let ngit_command = SharedString::from(format!("git clone {nostr_url}"));
+        let nak_command = SharedString::from(format!("nak git clone {nostr_url}"));
+        let git_commands = announcement.clone_urls();
+
         v_flex()
             .on_action(
                 cx.listener(|this, action: &RepoAction, window, cx| match action {
@@ -1232,17 +1239,107 @@ impl RepoDetailView {
                                         );
                                     })),
                             )
-                            .child(
-                                Button::new("clone")
-                                    .icon(CustomIconName::GitClone)
-                                    .tooltip("Clone to folder...")
-                                    .loading(self.cloning)
-                                    .disabled(self.cloning)
-                                    .primary()
-                                    .on_click(cx.listener(|this, _event, window, cx| {
-                                        this.clone_to_folder(window, cx);
-                                    })),
-                            ),
+                            .child({
+                                let view = cx.entity();
+                                let ngit_command = ngit_command.clone();
+                                let nak_command = nak_command.clone();
+                                let git_commands = git_commands.clone();
+
+                                Popover::new("clone")
+                                    .anchor(Anchor::TopRight)
+                                    .trigger(
+                                        Button::new("clone")
+                                            .icon(CustomIconName::GitClone)
+                                            .tooltip("Clone")
+                                            .loading(self.cloning)
+                                            .disabled(self.cloning)
+                                            .primary(),
+                                    )
+                                    .content(move |_, _window, cx| {
+                                        let state = cx.entity();
+                                        let ngit_row = command_row("copy-ngit", &ngit_command, cx);
+                                        let nak_row = command_row("copy-nak", &nak_command, cx);
+
+                                        v_flex()
+                                            .w(px(440.))
+                                            .mt_1()
+                                            .p_3()
+                                            .gap_4()
+                                            .popover_style(cx)
+                                            .child(
+                                                v_flex()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .font_semibold()
+                                                            .text_color(cx.theme().muted_foreground)
+                                                            .child("Clone with ngit"),
+                                                    )
+                                                    .child(ngit_row),
+                                            )
+                                            .child(
+                                                v_flex()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .font_semibold()
+                                                            .text_color(cx.theme().muted_foreground)
+                                                            .child("Clone with nak"),
+                                                    )
+                                                    .child(nak_row),
+                                            )
+                                            .child(
+                                                v_flex()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .font_semibold()
+                                                            .text_color(cx.theme().muted_foreground)
+                                                            .child("Grasp Servers"),
+                                                    )
+                                                    .when(!git_commands.is_empty(), |this| {
+                                                        this.children(
+                                                            git_commands.iter().enumerate().map(
+                                                                |(ix, cmd)| {
+                                                                    command_row(
+                                                                        format!("copy-git-{ix}"),
+                                                                        cmd,
+                                                                        cx,
+                                                                    )
+                                                                },
+                                                            ),
+                                                        )
+                                                    })
+                                                    .when(git_commands.is_empty(), |this| {
+                                                        this.child(
+                                                            div()
+                                                                .text_xs()
+                                                                .child("No git clone urls."),
+                                                        )
+                                                    }),
+                                            )
+                                            .child(div().h_px().w_full().bg(cx.theme().border))
+                                            .child(
+                                                h_flex().gap_1().justify_end().child(
+                                                    Button::new("download")
+                                                        .icon(CustomIconName::GitClone)
+                                                        .label("Download")
+                                                        .primary()
+                                                        .on_click(move |_event, window, cx| {
+                                                            state.update(cx, |state, cx| {
+                                                                state.dismiss(window, cx);
+                                                            });
+                                                            view.update(cx, |this, cx| {
+                                                                this.clone_to_folder(window, cx);
+                                                            });
+                                                        }),
+                                                ),
+                                            )
+                                    })
+                            }),
                     ),
             )
             .child(
@@ -1529,4 +1626,58 @@ fn load_repo_data(repo: &Repository) -> Result<RepoData, Error> {
         current_branch,
         head_commit,
     })
+}
+
+/// The `nostr://...` clone URL of an announcement (NIP-34): the owner as a
+/// NIP-05 identifier when known (npub otherwise), the first announced relay
+/// as a hint, and the repository identifier.
+fn nostr_clone_url(announcement: &Announcement, cx: &App) -> SharedString {
+    let owner = announcement.owner;
+    let user = ProfileStore::global(cx)
+        .read(cx)
+        .get(&owner)
+        .metadata()
+        .nip05
+        .as_deref()
+        .filter(|nip05| !nip05.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| owner.to_bech32().unwrap_or_else(|_| owner.to_hex()));
+
+    let mut url = format!("nostr://{user}");
+    if let Some(hint) = announcement.relays.first().and_then(RelayUrl::domain) {
+        url.push('/');
+        url.push_str(hint);
+    }
+    url.push('/');
+    url.push_str(&announcement.id);
+
+    SharedString::from(url)
+}
+
+fn command_row<E>(copy_id: E, command: &SharedString, cx: &mut App) -> Div
+where
+    E: Into<ElementId>,
+{
+    h_flex()
+        .h_8()
+        .w_full()
+        .px_2()
+        .gap_2()
+        .items_center()
+        .bg(cx.theme().muted)
+        .rounded(cx.theme().radius)
+        .child(
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_ellipsis()
+                .text_xs()
+                .child(command.clone()),
+        )
+        .child(
+            Clipboard::new(copy_id)
+                .tooltip("Copy")
+                .value(command.clone()),
+        )
 }

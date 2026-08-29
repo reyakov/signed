@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use gpui::SharedString;
 use nostr::prelude::*;
 
@@ -251,6 +253,17 @@ impl Announcement {
             maintainers.push(self.owner);
         }
         maintainers
+    }
+
+    /// The `git clone` URLs for this repository, deduplicated while
+    /// preserving the announced order (deterministic across calls).
+    pub fn clone_urls(&self) -> Vec<SharedString> {
+        let mut seen = HashSet::new();
+        self.clone
+            .iter()
+            .map(|url| SharedString::from(format!("git clone {url}")))
+            .filter(|command| seen.insert(command.clone()))
+            .collect()
     }
 }
 
