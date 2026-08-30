@@ -14,9 +14,6 @@ fn main() {
         .with_assets(Assets)
         .with_http_client(Arc::new(reqwest_client::ReqwestClient::new()))
         .run(move |cx| {
-            // Set app identity
-            cx.set_app_identity("su.reya.signed", "Signed");
-
             // Initialize components
             gpui_component::init(cx);
 
@@ -62,6 +59,9 @@ fn main() {
             // Local git clone cache for browsing repository contents.
             std::fs::create_dir_all(paths::repos_dir()).ok();
             signed_state::GitStore::set_global(paths::repos_dir().clone(), cx);
+
+            // Set app identity
+            cx.set_app_identity("su.reya.signed", "Signed");
 
             // Set up the window options
             let bounds = Bounds::centered(None, size(px(1120.0), px(750.0)), cx);

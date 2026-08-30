@@ -214,7 +214,7 @@ pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) 
                                                     div()
                                                         .text_xs()
                                                         .text_color(cx.theme().muted_foreground)
-                                                        .child("Loading your grasp servers…"),
+                                                        .child("Loading your grasp servers..."),
                                                 )
                                             },
                                         )

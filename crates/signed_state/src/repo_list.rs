@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Error;
-use gpui::{AppContext, Context, Subscription, Task};
+use gpui::{App, AppContext, Context, Entity, Global, Subscription, Task};
 use nostr_sdk::prelude::*;
 use signed_core::{Announcement, Deletions, RepoAddr, filters, repo_addr};
 
@@ -16,13 +16,46 @@ const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
 /// How far back activity events count toward a repository's last activity.
 const ACTIVITY_WINDOW: Duration = Duration::from_secs(90 * 86_400);
 
+struct GlobalRepoListStore(Entity<RepoListStore>);
+
+impl Global for GlobalRepoListStore {}
+
+/// Counts of NIP-34 activity events per repository, used to rank the
+/// explore list by popularity. Each patch event is a pushed commit (or a
+/// small commit series), which is the closest cross-repository proxy for
+/// commit count available from event data alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RepoActivityCounts {
+    /// Root `30611` issue events addressed to the repository.
+    pub issues: u32,
+    /// Root `3063` pull request events addressed to the repository
+    /// (updates to a PR are not new PRs and don't count).
+    pub pull_requests: u32,
+    /// `1617` patch events addressed to the repository.
+    pub commits: u32,
+}
+
+impl RepoActivityCounts {
+    /// Total issues + pull requests + commits; the popularity ranking key.
+    pub fn score(self) -> u32 {
+        self.issues + self.pull_requests + self.commits
+    }
+}
+
 /// Store listing repository announcements (global discovery or per-author).
+///
+/// The all-repos store (`author: None`) is created at startup by
+/// [`crate::init`] and installed as a global, so the explore panel renders
+/// what's in the local database without waiting for relays.
 pub struct RepoListStore {
     /// Shared so views can clone the list per frame without a deep copy.
     pub announcements: Arc<Vec<Announcement>>,
     /// Latest known activity timestamp per repository
     /// (announcements, state updates, patches, PRs, issues, statuses).
     pub last_activity: Arc<HashMap<RepoAddr, Timestamp>>,
+    /// Issues + pull requests + commits per repository, for the Popular
+    /// ranking of the explore list.
+    pub counts: Arc<HashMap<RepoAddr, RepoActivityCounts>>,
     author: Option<PublicKey>,
     refreshing: bool,
     refresh_dirty: bool,
@@ -33,6 +66,16 @@ pub struct RepoListStore {
 }
 
 impl RepoListStore {
+    /// Retrieve the global explore store (all announcements, created at
+    /// startup by [`crate::init`]).
+    pub fn global(cx: &App) -> Entity<Self> {
+        cx.global::<GlobalRepoListStore>().0.clone()
+    }
+
+    pub(crate) fn set_global(entity: Entity<Self>, cx: &mut App) {
+        cx.set_global(GlobalRepoListStore(entity));
+    }
+
     /// Create a store. If `author` is `None`, all announcements are listed.
     pub fn new(author: Option<PublicKey>, cx: &mut Context<Self>) -> Self {
         let backend = Backend::global(cx);
@@ -70,6 +113,7 @@ impl RepoListStore {
         let mut store = Self {
             announcements: Arc::new(Vec::new()),
             last_activity: Arc::new(HashMap::new()),
+            counts: Arc::new(HashMap::new()),
             author,
             refreshing: false,
             refresh_dirty: false,
@@ -79,7 +123,9 @@ impl RepoListStore {
         };
 
         store.subscribe_remote(cx);
-        store.refresh(cx);
+        // Query the local database right away; the list never waits for the
+        // relay syncs started above to finish.
+        store.refresh_initial(cx);
         store
     }
 
@@ -105,6 +151,18 @@ impl RepoListStore {
             // announcement can be shown.
             backend.sync_bootstrap(filters::deletions(), cx);
         });
+    }
+
+    /// One-shot initial load: query the local database immediately (no
+    /// debounce), so stored announcements appear as soon as the app opens.
+    /// Only called from [`Self::new`], before any refresh can be pending.
+    fn refresh_initial(&mut self, cx: &mut Context<Self>) {
+        debug_assert!(!self.debouncing);
+        if self.refreshing {
+            self.refresh_dirty = true;
+            return;
+        }
+        self.run_refresh(cx);
     }
 
     /// Re-query the local database. Latest announcement per repository wins.
@@ -222,11 +280,38 @@ impl RepoListStore {
                 }
             }
 
-            Ok::<_, Error>((announcements, last_activity))
+            // Popularity counts per repository (issues, pull requests and
+            // patches). Unbounded, unlike the windowed activity query
+            // above, so totals are exact.
+            let mut counts: HashMap<RepoAddr, RepoActivityCounts> = HashMap::new();
+            let count_filter =
+                Filter::new().kinds([Kind::GitIssue, Kind::GitPullRequest, Kind::GitPatch]);
+            for event in client.database().query(count_filter).await? {
+                if deletions.is_deleted(&event) {
+                    continue;
+                }
+                for addr in event.tags.coordinates() {
+                    // Skip events for repos we don't list, so the map can't
+                    // grow beyond the number of announcements.
+                    if addr.kind != Kind::GitRepoAnnouncement || !last_activity.contains_key(&addr)
+                    {
+                        continue;
+                    }
+                    let entry = counts.entry(addr).or_default();
+                    match event.kind {
+                        Kind::GitIssue => entry.issues += 1,
+                        Kind::GitPullRequest => entry.pull_requests += 1,
+                        Kind::GitPatch => entry.commits += 1,
+                        _ => {}
+                    }
+                }
+            }
+
+            Ok::<_, Error>((announcements, last_activity, counts))
         });
 
         self.tasks.push(cx.spawn(async move |this, cx| {
-            let (announcements, last_activity) = match work.await {
+            let (announcements, last_activity, counts) = match work.await {
                 Ok(results) => results,
                 // Database errors are transient; keep the last list.
                 Err(_) => {
@@ -239,6 +324,7 @@ impl RepoListStore {
             let again = this.update(cx, |this, cx| {
                 this.announcements = Arc::new(announcements);
                 this.last_activity = Arc::new(last_activity);
+                this.counts = Arc::new(counts);
                 cx.notify();
 
                 this.refreshing = false;

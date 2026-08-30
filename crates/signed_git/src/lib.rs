@@ -807,7 +807,7 @@ fn tree_diff(
 /// Parse a `git format-patch` output (a single patch or a patch series)
 /// into the same [`CommitDiff`] structure used for commit diffs.
 ///
-/// The mbox envelope (From/Subject/… headers, commit body and diffstat)
+/// The mbox envelope (From/Subject/... headers, commit body and diffstat)
 /// is skipped; every `diff --git` section becomes one [`FileDiff`]. Paths
 /// are taken from the section headers, with git's C-style quoting undone.
 /// Sections without hunks (pure renames, mode changes, binary files) are
@@ -895,7 +895,7 @@ fn name_from_address(from: &str) -> String {
     }
 }
 
-/// Strip the `[PATCH]`, `[PATCH 1/2]`, `[RFC PATCH]` … prefix from a patch
+/// Strip the `[PATCH]`, `[PATCH 1/2]`, `[RFC PATCH]` ... prefix from a patch
 /// `Subject:` header.
 fn strip_patch_prefix(subject: &str) -> String {
     let trimmed = subject.trim();
@@ -1060,7 +1060,7 @@ fn parse_hunk(lines: &[&str], start: usize) -> Result<(DiffHunk, usize)> {
 }
 
 /// The kind of a hunk body line, from its first character; lines that don't
-/// belong to the hunk (headers, `\ No newline…`, the next section) yield
+/// belong to the hunk (headers, `\ No newline...`, the next section) yield
 /// `None`.
 fn line_prefix_kind(line: &str) -> Option<DiffLineKind> {
     match line.as_bytes().first()? {

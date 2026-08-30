@@ -94,7 +94,7 @@ impl PullRequestDetailView {
     ) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
         let comment_input =
-            cx.new(|cx| TextareaState::new(window, cx).placeholder("Leave a comment…"));
+            cx.new(|cx| TextareaState::new(window, cx).placeholder("Leave a comment..."));
 
         // Same display name as the repo detail panel's title.
         let repo_name = store

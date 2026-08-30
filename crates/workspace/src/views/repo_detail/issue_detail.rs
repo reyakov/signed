@@ -37,7 +37,7 @@ impl IssueDetailView {
         cx: &mut Context<Self>,
     ) -> Self {
         let comment_input =
-            cx.new(|cx| TextareaState::new(window, cx).placeholder("Leave a comment…"));
+            cx.new(|cx| TextareaState::new(window, cx).placeholder("Leave a comment..."));
 
         Self {
             focus_handle: cx.focus_handle(),

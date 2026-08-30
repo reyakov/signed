@@ -442,9 +442,9 @@ pub(super) fn open_new_pull_request_dialog(
 ) {
     let subject = cx.new(|cx| InputState::new(window, cx).placeholder("Pull request title"));
     let description =
-        cx.new(|cx| TextareaState::new(window, cx).placeholder("Describe the change…"));
-    let patch =
-        cx.new(|cx| TextareaState::new(window, cx).placeholder("Paste `git format-patch` output…"));
+        cx.new(|cx| TextareaState::new(window, cx).placeholder("Describe the change..."));
+    let patch = cx
+        .new(|cx| TextareaState::new(window, cx).placeholder("Paste `git format-patch` output..."));
 
     window.open_dialog(cx, move |dialog, _window, _cx| {
         let subject = subject.clone();

@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use assets::CustomIconName;
 use dock::{
@@ -7,9 +8,11 @@ use dock::{
 };
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
-    Render, SharedString, StyleRefinement, Subscription, WeakEntity, Window, div, px, uniform_list,
+    AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, EventEmitter, FocusHandle,
+    Focusable, ObjectFit, Render, SharedString, StyleRefinement, Subscription, WeakEntity, Window,
+    div, img, px, uniform_list,
 };
+use gpui_base::Button as BaseButton;
 use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::InputState;
@@ -40,6 +43,9 @@ pub struct SidebarPanel {
     /// Observes the current user's repo store so the list re-renders.
     my_repos_subscription: Option<Subscription>,
     logged_in: bool,
+    /// Banner artwork shown behind the sign-in screen,
+    /// picked at random from the bundled `backgrounds/` assets.
+    banner: SharedString,
     _subscription: Subscription,
 }
 
@@ -56,6 +62,7 @@ impl SidebarPanel {
                 }
                 BackendEvent::SignerRequired => {
                     this.logged_in = false;
+                    this.banner = pick_banner();
                     this.my_repos = None;
                     this.my_repos_subscription = None;
                 }
@@ -71,6 +78,7 @@ impl SidebarPanel {
             my_repos: None,
             my_repos_subscription: None,
             logged_in,
+            banner: pick_banner(),
             _subscription: subscription,
         };
 
@@ -287,6 +295,87 @@ impl SidebarPanel {
             cx,
         )
     }
+
+    /// Sign-in placeholder shown while logged out: the banner artwork fills the
+    /// panel behind a scrim that ends in a solid black band, keeping the CTA
+    /// buttons readable on a clean dark surface in both themes.
+    fn render_sign_in(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        v_flex()
+            .size_full()
+            .relative()
+            .bg(cx.theme().sidebar)
+            .text_color(cx.theme().sidebar_foreground)
+            .child(title_bar_drag_handlers(
+                div()
+                    .id("onboarding-drag")
+                    .absolute()
+                    .h_12()
+                    .w_full()
+                    .top_0()
+                    .left_0(),
+                window,
+                cx,
+            ))
+            .child(
+                div().absolute().inset_0().child(
+                    img(self.banner.clone())
+                        .size_full()
+                        .object_fit(ObjectFit::Cover),
+                ),
+            )
+            .child(
+                v_flex()
+                    .size_full()
+                    .justify_end()
+                    .p_4()
+                    .mb_4()
+                    .gap_4()
+                    .child(img("backgrounds/headline.png").max_w_48())
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .w_full()
+                            .child(
+                                BaseButton::new("onboarding")
+                                    .h_flex()
+                                    .h_8()
+                                    .px_2()
+                                    .bg(cx.theme().primary)
+                                    .hover(|this| this.bg(cx.theme().primary_hover))
+                                    .active(|this| this.bg(cx.theme().primary_active))
+                                    .text_color(cx.theme().primary_foreground)
+                                    .child(div().text_sm().font_semibold().child("Join now"))
+                                    .on_click(cx.listener(|this, _ev, window, cx| {
+                                        this.open_onboarding(window, cx)
+                                    })),
+                            )
+                            .child(
+                                BaseButton::new("onboarding")
+                                    .h_flex()
+                                    .h_8()
+                                    .px_2()
+                                    .text_color(gpui::white())
+                                    .bg(gpui::white().opacity(0.1))
+                                    .hover(|this| this.bg(gpui::white().opacity(0.2)))
+                                    .active(|this| this.bg(gpui::white().opacity(0.4)))
+                                    .child(div().text_sm().child("Import identity"))
+                                    .on_click(cx.listener(|this, _ev, window, cx| {
+                                        this.open_import(window, cx)
+                                    })),
+                            ),
+                    ),
+            )
+    }
+}
+
+fn pick_banner() -> SharedString {
+    let num = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .subsec_nanos()
+        % 3
+        + 1;
+    format!("backgrounds/banner{num}.jpg").into()
 }
 
 impl BasePanel for SidebarPanel {
@@ -316,36 +405,7 @@ impl Focusable for SidebarPanel {
 impl Render for SidebarPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.logged_in {
-            return v_flex()
-                .p_4()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Sign in to continue"),
-                )
-                .child(
-                    Button::new("onboarding")
-                        .label("Join now")
-                        .primary()
-                        .w_full()
-                        .on_click(
-                            cx.listener(|this, _ev, window, cx| this.open_onboarding(window, cx)),
-                        ),
-                )
-                .child(
-                    Button::new("import-identity")
-                        .label("Import identity")
-                        .secondary()
-                        .w_full()
-                        .on_click(
-                            cx.listener(|this, _ev, window, cx| this.open_import(window, cx)),
-                        ),
-                );
+            return self.render_sign_in(window, cx);
         }
 
         let backend = Backend::global(cx);

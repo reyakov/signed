@@ -12,7 +12,7 @@ use gpui::{App, AppContext, Entity};
 pub use nostr_sdk::prelude::Timestamp;
 pub use profile::{Profile, ProfileStore};
 pub use repo::RepoStore;
-pub use repo_list::RepoListStore;
+pub use repo_list::{RepoActivityCounts, RepoListStore};
 use signed_nostr::new_backend;
 pub use utils::shorten_pubkey;
 
@@ -37,6 +37,11 @@ pub fn init(db_path: impl AsRef<Path>, cx: &mut App) -> Entity<Backend> {
 
     ProfileStore::set_global(cx.new(ProfileStore::new), cx);
 
+    // Start the explore list from the local database before the first
+    // window opens; relay syncs continue in the background, so the list
+    // never waits for them.
+    RepoListStore::set_global(cx.new(|cx| RepoListStore::new(None, cx)), cx);
+
     // The clone cache is only meaningful on native platforms; the wasm
     // build registers an empty store so `GitStore::global` still works.
     GitStore::set_global(PathBuf::new(), cx);
@@ -53,6 +58,11 @@ pub fn init(cx: &mut App) -> Entity<Backend> {
     Backend::set_global(entity.clone(), cx);
 
     ProfileStore::set_global(cx.new(ProfileStore::new), cx);
+
+    // Start the explore list from the local database before the first
+    // window opens; relay syncs continue in the background, so the list
+    // never waits for them.
+    RepoListStore::set_global(cx.new(|cx| RepoListStore::new(None, cx)), cx);
 
     GitStore::set_global(PathBuf::new(), cx);
 

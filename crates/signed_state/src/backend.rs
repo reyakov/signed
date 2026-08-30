@@ -29,11 +29,7 @@ pub const BOOTSTRAP_RELAYS: [&str; 4] = [
 ];
 
 /// Relays used for indexing user's relay list (NIP-65).
-pub const INDEXER_RELAYS: [&str; 3] = [
-    "wss://indexer.coracle.social",
-    "wss://purplepag.es",
-    "wss://user.kindpag.es",
-];
+pub const INDEXER_RELAYS: [&str; 2] = ["wss://indexer.coracle.social", "wss://user.kindpag.es"];
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {

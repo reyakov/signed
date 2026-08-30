@@ -1,5 +1,5 @@
 use anyhow::Context;
-use gpui::{App, AssetSource, Result, SharedString};
+use gpui::{AssetSource, Result, SharedString};
 use gpui_component::IconNamed;
 use rust_embed::RustEmbed;
 
@@ -7,6 +7,8 @@ use rust_embed::RustEmbed;
 #[folder = "assets"]
 #[include = "icons/**/*.svg"]
 #[include = "themes/**/*.json"]
+#[include = "backgrounds/**/*.jpg"]
+#[include = "backgrounds/**/*.png"]
 #[exclude = "*.DS_Store"]
 pub struct Assets;
 
@@ -31,17 +33,12 @@ impl AssetSource for Assets {
 }
 
 impl Assets {
-    /// Returns the embedded theme files as `(file name, JSON content)` pairs,
-    /// e.g. `("signed.json", ...)`. The content is a `ThemeSet` that can be
-    /// loaded into the [`ThemeRegistry`](gpui_component::ThemeRegistry).
     pub fn themes(&self) -> Vec<(String, String)> {
         Self::iter()
             .filter(|path| path.starts_with("themes/"))
             .filter_map(|path| {
                 let data = Self::get(path.as_ref())?;
                 let name = path.strip_prefix("themes/").unwrap_or(path.as_ref());
-                // Debug builds read files from disk (owned), release builds
-                // embed them in the binary (borrowed).
                 let content = match data.data {
                     std::borrow::Cow::Borrowed(bytes) => {
                         std::str::from_utf8(bytes).ok()?.to_owned()
@@ -51,22 +48,6 @@ impl Assets {
                 Some((name.to_owned(), content))
             })
             .collect()
-    }
-
-    pub fn load_fonts(&self, cx: &App) -> anyhow::Result<()> {
-        let font_paths = self.list("fonts")?;
-        let mut embedded_fonts = Vec::new();
-        for font_path in font_paths {
-            if font_path.ends_with(".ttf") {
-                let font_bytes = cx
-                    .asset_source()
-                    .load(&font_path)?
-                    .expect("Assets should never return None");
-                embedded_fonts.push(font_bytes);
-            }
-        }
-
-        cx.text_system().add_fonts(embedded_fonts)
     }
 }
 
@@ -91,6 +72,9 @@ pub enum CustomIconName {
     Tag,
     Markdown,
     Share,
+    Trending,
+    Recent,
+    Grid,
 }
 
 impl IconNamed for CustomIconName {
@@ -116,6 +100,9 @@ impl IconNamed for CustomIconName {
             CustomIconName::Tag => "icons/tag.svg",
             CustomIconName::Markdown => "icons/markdown.svg",
             CustomIconName::Share => "icons/share.svg",
+            CustomIconName::Trending => "icons/trending.svg",
+            CustomIconName::Recent => "icons/recent.svg",
+            CustomIconName::Grid => "icons/grid.svg",
         }
         .into()
     }

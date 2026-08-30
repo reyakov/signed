@@ -347,7 +347,7 @@ impl IssuesView {
 /// through [`RepoStore::open_issue`] when confirmed.
 pub(super) fn open_new_issue_dialog(store: Entity<RepoStore>, window: &mut Window, cx: &mut App) {
     let subject = cx.new(|cx| InputState::new(window, cx).placeholder("Issue title"));
-    let content = cx.new(|cx| TextareaState::new(window, cx).placeholder("Describe the issue…"));
+    let content = cx.new(|cx| TextareaState::new(window, cx).placeholder("Describe the issue..."));
 
     window.open_dialog(cx, move |dialog, _window, _cx| {
         let subject = subject.clone();

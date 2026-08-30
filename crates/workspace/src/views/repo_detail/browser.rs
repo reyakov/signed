@@ -134,7 +134,7 @@ impl RepoDetailView {
                     div()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child("Cloning repository…"),
+                        .child("Cloning repository..."),
                 )
                 .into_any_element()
         } else if let Some(error) = error {
