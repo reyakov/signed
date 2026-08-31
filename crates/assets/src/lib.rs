@@ -74,7 +74,9 @@ pub enum CustomIconName {
     Share,
     Trending,
     Recent,
+    Refresh,
     Grid,
+    Init,
 }
 
 impl IconNamed for CustomIconName {
@@ -101,8 +103,10 @@ impl IconNamed for CustomIconName {
             CustomIconName::Markdown => "icons/markdown.svg",
             CustomIconName::Share => "icons/share.svg",
             CustomIconName::Trending => "icons/trending.svg",
+            CustomIconName::Refresh => "icons/refresh.svg",
             CustomIconName::Recent => "icons/recent.svg",
             CustomIconName::Grid => "icons/grid.svg",
+            CustomIconName::Init => "icons/init.svg",
         }
         .into()
     }

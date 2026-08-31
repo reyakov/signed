@@ -98,8 +98,14 @@ impl RepoListStore {
                     }
                 }
                 BackendEvent::Published(event) => {
-                    event.kind == Kind::GitRepoAnnouncement
-                        && this.author.is_none_or(|a| a == event.pubkey)
+                    let announcement = event.kind == Kind::GitRepoAnnouncement
+                        && this.author.is_none_or(|a| a == event.pubkey);
+                    // Locally published deletions (e.g. deleting a repo)
+                    // are already in the local database; refresh so they
+                    // take effect immediately, like relay deletions.
+                    let deletion =
+                        event.kind == Kind::EventDeletion || event.kind == Kind::RequestToVanish;
+                    announcement || deletion
                 }
                 BackendEvent::Synced | BackendEvent::SyncProgress { .. } => true,
                 _ => false,

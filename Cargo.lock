@@ -7924,6 +7924,7 @@ dependencies = [
  "nostr",
  "nostr-connect",
  "nostr-sdk",
+ "paths",
  "rustls",
  "signed_core",
  "signed_git",

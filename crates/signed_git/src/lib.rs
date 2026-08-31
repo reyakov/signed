@@ -1,7 +1,3 @@
-//! Blocking local git operations against GRASP servers.
-//!
-//! All functions may block; call them inside `cx.background_spawn`.
-
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -61,6 +57,65 @@ impl GitCache {
         self.open(addr)?
             .ok_or_else(|| anyhow::anyhow!("clone finished but the repository cannot be opened"))
     }
+}
+
+/// Maximum directory nesting depth when scanning for local repositories,
+/// so pathological trees can't stall the scan.
+const SCAN_MAX_DEPTH: usize = 12;
+
+/// Directories never descended into during a scan: dependency caches that
+/// can be enormous without ever containing user repositories.
+const SCAN_SKIPPED_DIRS: [&str; 1] = ["node_modules"];
+
+/// Walk `root` recursively and collect the paths of git repositories
+/// (directories containing a `.git` entry) below it.
+///
+/// Hidden entries and symlinks are skipped, and directories that are
+/// themselves repositories are not descended into (so nested repositories,
+/// like submodule worktrees, are not reported). Results are canonicalized,
+/// deduplicated and sorted by path.
+pub fn find_git_repos(root: &Path) -> Vec<PathBuf> {
+    let mut repos = Vec::new();
+    if !root.is_dir() {
+        return repos;
+    }
+
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > SCAN_MAX_DEPTH {
+            continue;
+        }
+        // A directory containing a `.git` entry is a repository (a linked
+        // worktree has a `.git` file instead of a directory); don't descend.
+        if dir.join(".git").exists() {
+            if let Ok(path) = dir.canonicalize() {
+                repos.push(path);
+            }
+            continue;
+        }
+
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() || file_type.is_symlink() {
+                continue;
+            }
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy();
+            if name.starts_with('.') || SCAN_SKIPPED_DIRS.contains(&name.as_ref()) {
+                continue;
+            }
+            stack.push((entry.path(), depth + 1));
+        }
+    }
+
+    repos.sort();
+    repos.dedup();
+    repos
 }
 
 /// Clone a repository into `path` from the first working URL in
@@ -197,16 +252,15 @@ pub fn init_repository(path: &Path, name: &str, description: &str) -> Result<Str
     )?;
 
     let commit = git_in(path, &["rev-parse", "HEAD"])?;
+
     if commit.len() != 40 {
         bail!("unexpected initial commit id: {commit}");
     }
+
     Ok(commit)
 }
 
-/// Push the `main` branch of the repository at `repo_path` to a grasp
-/// server. Grasp servers speak git smart HTTP; the repository lives at
-/// `{base_url}/{owner}/{repo-id}.git` (the same path their `clone` URLs
-/// announce, per the GRASP protocol).
+/// Push the `main` branch of the repository at `repo_path` to a grasp server.
 pub fn push_main(repo_path: &Path, base_url: &str, owner: &str, repo_id: &str) -> Result<()> {
     let url = format!("{base_url}/{owner}/{repo_id}.git");
 
@@ -228,6 +282,58 @@ pub fn push_main(repo_path: &Path, base_url: &str, owner: &str, repo_id: &str) -
         );
     }
     Ok(())
+}
+
+/// Push every local branch and tag of the repository at `repo_path` to a grasp server,
+/// so an initialized repository's whole history is mirrored.
+pub fn push_all(repo_path: &Path, base_url: &str, owner: &str, repo_id: &str) -> Result<()> {
+    let url = format!("{base_url}/{owner}/{repo_id}.git");
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["push"])
+        .arg(&url)
+        .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to spawn `git push`")?;
+
+    if !output.status.success() {
+        bail!(
+            "git push to {base_url} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    Ok(())
+}
+
+/// The earliest unique commit of the repository at `repo_path` (a root
+/// commit, like `git rev-list --max-parents=0 HEAD`), used as the NIP-34
+/// announcement's `euc` marker. `None` for a repository without commits.
+pub fn root_commit(repo_path: &Path) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["rev-list", "--max-parents=0", "HEAD"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to spawn `git rev-list`")?;
+
+    // An unborn HEAD (no commits yet) makes `rev-list` fail,
+    // there is no unique commit to report then.
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .map(str::to_owned)
+        .filter(|id| id.len() == 40))
 }
 
 /// Add `origin` pointing at `url` when the repository has no remote yet.
@@ -1550,6 +1656,135 @@ mod tests {
             path.file_name().map(|n| n.to_string_lossy().into_owned()),
             Some("_".into())
         );
+    }
+
+    #[test]
+    fn find_git_repos_discovers_repositories_recursively() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // Repositories are found at any depth; a linked worktree (a `.git`
+        // file instead of a directory) counts too.
+        let nested = root.join("a/b/project");
+        std::fs::create_dir_all(nested.join(".git")).unwrap();
+        let worktree = root.join("wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: ../a/b/project/.git/worktrees/wt",
+        )
+        .unwrap();
+
+        // Plain directories are not repositories.
+        std::fs::create_dir_all(root.join("plain")).unwrap();
+
+        // Hidden entries and dependency caches are skipped.
+        std::fs::create_dir_all(root.join(".hidden/repo/.git")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg/.git")).unwrap();
+
+        // A repository is not descended into, so repositories inside it
+        // (submodule worktrees) are not reported.
+        let outer = root.join("outer");
+        std::fs::create_dir_all(outer.join(".git")).unwrap();
+        std::fs::create_dir_all(outer.join("sub/other/.git")).unwrap();
+
+        let mut found = find_git_repos(root);
+        found.sort();
+
+        let mut expected = vec![
+            nested.canonicalize().unwrap(),
+            worktree.canonicalize().unwrap(),
+            outer.canonicalize().unwrap(),
+        ];
+        expected.sort();
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn root_commit_reports_the_first_ancestor() {
+        let (dir, repo) = fixture(&[("a.txt", b"one")]);
+        commit_all(&repo, "initial");
+
+        let dir = dir.path();
+        let root = root_commit(dir).expect("root").expect("commit");
+        assert_eq!(root.len(), 40);
+
+        // The root commit does not change when history grows.
+        std::fs::write(dir.join("b.txt"), b"two").expect("write");
+        commit_all(&repo, "second");
+        assert_eq!(
+            root_commit(dir).expect("root").as_deref(),
+            Some(root.as_str())
+        );
+    }
+
+    #[test]
+    fn root_commit_is_none_without_commits() {
+        let (_dir, repo) = fixture(&[("a.txt", b"one")]);
+        let workdir = repo.workdir().expect("workdir");
+        assert_eq!(root_commit(workdir).expect("root"), None);
+    }
+
+    #[test]
+    fn push_all_mirrors_branches_and_tags() {
+        // A bare "server" repository reachable via a `file://` URL, like a
+        // grasp server's `{base}/{owner}/{repo-id}.git` layout.
+        let server = tempfile::tempdir().unwrap();
+        let server_repo = server.path().join("npub1test").join("my-repo.git");
+        std::fs::create_dir_all(server_repo.parent().unwrap()).unwrap();
+        let init_status = Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .arg(&server_repo)
+            .status()
+            .expect("spawn git init --bare");
+        assert!(init_status.success());
+
+        let (dir, repo) = fixture(&[("a.txt", b"one")]);
+        commit_all(&repo, "initial");
+        let dir = dir.path();
+
+        // Two branches plus a tag are all mirrored.
+        git_run(dir, &["checkout", "-b", "feature"]);
+        std::fs::write(dir.join("b.txt"), b"two").expect("write");
+        commit_all(&repo, "feature work");
+        git_run(dir, &["checkout", "-"]);
+        git_run(dir, &["tag", "v1.0"]);
+
+        let base_url = format!("file://{}", server.path().display());
+        push_all(dir, &base_url, "npub1test", "my-repo").expect("push");
+
+        let refs = git_in(&server_repo, &["show-ref"]).expect("server refs");
+        assert!(refs.contains("refs/heads/main"));
+        assert!(refs.contains("refs/heads/feature"));
+        assert!(refs.contains("refs/tags/v1.0"));
+    }
+
+    #[test]
+    fn push_all_tolerates_a_missing_ref_kind() {
+        // A repository with only tags (no branches) still pushes: wildcard
+        // refspecs without a local match are ignored.
+        let server = tempfile::tempdir().unwrap();
+        let server_repo = server.path().join("npub1test").join("my-repo.git");
+        std::fs::create_dir_all(server_repo.parent().unwrap()).unwrap();
+        let init_status = Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .arg(&server_repo)
+            .status()
+            .expect("spawn git init --bare");
+        assert!(init_status.success());
+
+        let (dir, repo) = fixture(&[("a.txt", b"one")]);
+        commit_all(&repo, "initial");
+        let dir = dir.path();
+        git_run(dir, &["tag", "v1.0"]);
+        git_run(dir, &["update-ref", "-d", "refs/heads/main"]);
+
+        let base_url = format!("file://{}", server.path().display());
+        push_all(dir, &base_url, "npub1test", "my-repo").expect("push");
+
+        let refs = git_in(&server_repo, &["show-ref"]).expect("server refs");
+        assert!(refs.contains("refs/tags/v1.0"));
+        assert!(!refs.contains("refs/heads/"));
     }
 
     #[test]

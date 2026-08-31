@@ -41,6 +41,12 @@ pub fn desktop_dir() -> PathBuf {
     dirs::desktop_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default())
 }
 
+/// Returns the current user's Documents folder, falling back to the home
+/// directory (or an empty path) when it can't be determined.
+pub fn documents_dir() -> PathBuf {
+    dirs::document_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default())
+}
+
 /// Sets a custom directory for all user data, overriding the default data
 /// directory. Must be called before any other path operation. The directory
 /// is created if it doesn't exist and canonicalized to an absolute path.

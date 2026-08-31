@@ -86,8 +86,13 @@ impl RepoStore {
                     let kind = event.kind == Kind::GitRepoAnnouncement;
                     let author = event.pubkey == this.addr.public_key;
                     let coordinate = event.tags.coordinates().into_iter().any(|c| c == this.addr);
+                    // Locally published deletions may target any event of
+                    // this repository; refresh so they take effect
+                    // immediately, like relay deletions.
+                    let deletion =
+                        event.kind == Kind::EventDeletion || event.kind == Kind::RequestToVanish;
 
-                    coordinate || (kind && author)
+                    coordinate || (kind && author) || deletion
                 }
                 _ => false,
             };

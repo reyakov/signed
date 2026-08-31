@@ -13,12 +13,14 @@ use gpui::{
     Task, WeakEntity, Window, div, px, relative, size,
 };
 use gpui_base::{Button as BaseButton, Disableable, Popover};
+use gpui_component::alert::Alert;
 use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::clipboard::Clipboard;
 use gpui_component::combobox::{
     Caret, Combobox, ComboboxEvent, ComboboxState, ComboboxTriggerContext,
 };
+use gpui_component::menu::DropdownMenu;
 use gpui_component::searchable_list::SearchableVec;
 use gpui_component::tree::TreeState;
 use gpui_component::{
@@ -28,7 +30,7 @@ use gpui_component::{
 use nostr::prelude::{RelayUrl, ToBech32};
 use signed_core::Announcement;
 use signed_git::{CommitList, FileCommit};
-use signed_state::{GitStore, ProfileStore, RepoStore};
+use signed_state::{Backend, GitStore, LocalReposStore, ProfileStore, RepoStore};
 
 use crate::image_cache::{MAX_IMAGES, image_cache};
 use crate::pixel_avatar::PixelAvatar;
@@ -38,6 +40,7 @@ mod browser;
 mod commits;
 mod diff;
 mod helpers;
+mod init_dialog;
 mod issue_detail;
 mod issues;
 mod pull_request_detail;
@@ -73,6 +76,12 @@ enum RepoAction {
     NewIssue,
     /// Open the "new pull request" dialog.
     NewPR,
+    /// Open the about dialog.
+    About,
+    /// Re-push the repository to its grasp servers.
+    Push,
+    /// Delete the repository from nostr (owner only).
+    Delete,
 }
 
 /// Everything loaded from the local clone for the explorer: the tree seeds,
@@ -98,9 +107,15 @@ pub struct RepoDetailView {
     dock_area: WeakEntity<DockArea>,
     /// Snapshot taken at open time, shown until the store's first refresh
     /// completes (and as a fallback while the store has no announcement).
-    initial: Announcement,
+    /// `None` for local repositories that haven't been published yet.
+    initial: Option<Announcement>,
     /// Per-repository nostr store (announcement, issues, PRs, statuses).
-    store: Entity<RepoStore>,
+    /// `None` until a local repository is initialized (published) to
+    /// NIP-34.
+    store: Option<Entity<RepoStore>>,
+    /// Path of the local repository when opened from the scan; `None` once
+    /// it has been initialized to NIP-34 (or for announced repositories).
+    local_path: Option<PathBuf>,
     /// File explorer state (worktree of the local clone).
     tree_state: Entity<TreeState>,
     /// Root of the local clone, for reading files on demand.
@@ -141,6 +156,8 @@ pub struct RepoDetailView {
     loading: bool,
     /// The header clone button is cloning into a user-chosen folder.
     cloning: bool,
+    /// A push to the grasp servers is in flight.
+    pushing: bool,
     error: Option<SharedString>,
     /// Commit HEAD currently points to, shown in the header button.
     head_commit: Option<FileCommit>,
@@ -161,6 +178,8 @@ pub struct RepoDetailView {
 }
 
 impl RepoDetailView {
+    /// Open a repository announced on NIP-34: the store connects to the
+    /// announcement's relays and loads issues, PRs and statuses.
     pub fn new(
         dock_area: WeakEntity<DockArea>,
         initial: Announcement,
@@ -170,7 +189,36 @@ impl RepoDetailView {
         // The announcement we opened from already carries the repository's
         // NIP-34 `relays` tag, so the store can connect to those relays
         // immediately instead of waiting for the bootstrap fetch.
-        let store = cx.new(|cx| RepoStore::new(initial.addr(), initial.relays.clone(), cx));
+        let addr = initial.addr();
+        let relays = initial.relays.clone();
+        let store = cx.new(|cx| RepoStore::new(addr, relays, cx));
+
+        Self::new_common(dock_area, Some(initial), Some(store), None, window, cx)
+    }
+
+    /// Open a local repository discovered by the scan. There is no
+    /// announcement and no nostr store until the user initializes
+    /// (publishes) it to NIP-34, so the header shows an Init button
+    /// instead of the NIP-34 actions.
+    pub fn new_local(
+        dock_area: WeakEntity<DockArea>,
+        local_path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_common(dock_area, None, None, Some(local_path), window, cx)
+    }
+
+    /// Shared construction: file explorer state, ref selectors and the
+    /// deferred repository load.
+    fn new_common(
+        dock_area: WeakEntity<DockArea>,
+        initial: Option<Announcement>,
+        store: Option<Entity<RepoStore>>,
+        local_path: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
 
         // Empty until the clone completes; populated with the local refs.
@@ -222,6 +270,7 @@ impl RepoDetailView {
             initial,
             dock_area,
             store,
+            local_path,
             tree_state,
             worktree: None,
             md: None,
@@ -242,6 +291,7 @@ impl RepoDetailView {
             item_sizes: Rc::new(Vec::new()),
             loading: true,
             cloning: false,
+            pushing: false,
             error: None,
             head_commit: None,
             branch_select,
@@ -254,19 +304,49 @@ impl RepoDetailView {
         }
     }
 
-    /// Load the repository and populate the file explorer. The local clone
-    /// (if any) is loaded first without touching the network, so an
-    /// unreachable server can't block the panel; a background fetch then
-    /// refreshes the refs and commit list (a fetch never changes the
-    /// checked-out files, so the tree and previews are left alone).
+    /// Load the repository and populate the file explorer. A local
+    /// (not yet published) repository is opened straight from disk. An
+    /// announced repository's local clone (if any) is loaded first without
+    /// touching the network, so an unreachable server can't block the
+    /// panel; a background fetch then refreshes the refs and commit list
+    /// (a fetch never changes the checked-out files, so the tree and
+    /// previews are left alone).
     fn load_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
         cx.notify();
 
+        // Local repositories live on disk at their scan path; there is no
+        // clone to ensure and no network refresh.
+        if let Some(local_path) = self.local_path.clone() {
+            let task = cx.spawn_in(window, async move |this, cx| {
+                let data = cx
+                    .background_spawn(async move {
+                        let repo = gix::open(&local_path)?;
+                        load_repo_data(&repo)
+                    })
+                    .await;
+
+                this.update_in(cx, |this, window, cx| {
+                    match data {
+                        Ok(data) => this.apply_repo_data(data, window, cx),
+                        Err(error) => this.error = Some(error.to_string().into()),
+                    }
+                    this.loading = false;
+                    cx.notify();
+                })?;
+                Ok(())
+            });
+            self.tasks.push(task);
+            return;
+        }
+
+        let Some(initial) = self.initial.as_ref() else {
+            return;
+        };
         let cache = GitStore::global(cx).cache().clone();
-        let addr = self.initial.addr();
-        let clone_urls: Vec<String> = self.initial.clone.iter().map(ToString::to_string).collect();
+        let addr = initial.addr();
+        let clone_urls: Vec<String> = initial.clone.iter().map(ToString::to_string).collect();
         // Captured before the loads start: a branch/tag switch bumps it, and
         // the refresh below is discarded when that happens.
         let refresh_generation = self.ref_generation;
@@ -434,7 +514,9 @@ impl RepoDetailView {
         }
 
         let (clone_urls, name) = {
-            let announcement = self.announcement(cx);
+            let Some(announcement) = self.announcement(cx) else {
+                return;
+            };
             let addr = announcement.addr();
             let clone_urls: Vec<String> =
                 announcement.clone.iter().map(ToString::to_string).collect();
@@ -757,8 +839,65 @@ impl RepoDetailView {
         });
     }
 
+    /// Re-push the repository's refs to its announced grasp servers; the
+    /// menu trigger shows a spinner while the push is in flight, failures
+    /// appear in the panel's error banner.
+    fn push_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pushing {
+            return;
+        }
+        let Some(announcement) = self.announcement(cx).cloned() else {
+            return;
+        };
+        self.pushing = true;
+        self.error = None;
+        cx.notify();
+
+        let backend = Backend::global(cx);
+        let task = backend.update(cx, |backend, cx| backend.push_repository(announcement, cx));
+
+        self.tasks.push(cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, _window, cx| {
+                if let Err(error) = result {
+                    this.error = Some(format!("Push failed: {error}").into());
+                }
+                this.pushing = false;
+                cx.notify();
+            })?;
+            Ok(())
+        }));
+    }
+
+    /// Delete the repository from nostr (announcement, state and activity);
+    /// only offered to the repository owner. The sidebar list updates when
+    /// the deletion events arrive.
+    fn delete_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(announcement) = self.announcement(cx).cloned() else {
+            return;
+        };
+        let backend = Backend::global(cx);
+        let task = backend.update(cx, |backend, cx| {
+            backend.delete_repository(announcement.addr(), cx)
+        });
+
+        self.tasks.push(cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, _window, cx| {
+                if let Err(error) = result {
+                    this.error = Some(format!("Delete failed: {error}").into());
+                }
+                cx.notify();
+            })?;
+            Ok(())
+        }));
+    }
+
     /// Open the issues panel at the bottom of the dock area.
     fn open_issue_detail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
         let Some(dock_area) = self.dock_area.upgrade() else {
             return;
         };
@@ -766,7 +905,7 @@ impl RepoDetailView {
         let panel = cx.new(|cx| {
             IssuesView::new(
                 self.dock_area.clone(),
-                self.store.clone(),
+                store,
                 self.display_name(cx),
                 window,
                 cx,
@@ -780,6 +919,9 @@ impl RepoDetailView {
 
     /// Open the pull requests panel at the bottom of the dock area.
     fn open_pull_request_detail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
         let Some(dock_area) = self.dock_area.upgrade() else {
             return;
         };
@@ -787,7 +929,7 @@ impl RepoDetailView {
         let panel = cx.new(|cx| {
             PullRequestsView::new(
                 self.dock_area.clone(),
-                self.store.clone(),
+                store,
                 self.display_name(cx),
                 window,
                 cx,
@@ -1025,39 +1167,66 @@ impl RepoDetailView {
         }
     }
 
-    /// The latest announcement from the store, or the open-time snapshot.
-    fn announcement<'a>(&'a self, cx: &'a App) -> &'a Announcement {
-        self.store
+    /// The latest announcement from the store, or the open-time snapshot;
+    /// `None` for local repositories that haven't been published yet.
+    fn announcement<'a>(&'a self, cx: &'a App) -> Option<&'a Announcement> {
+        let store = self.store.as_ref()?;
+        store
             .read(cx)
             .announcement
             .as_ref()
-            .unwrap_or(&self.initial)
+            .or(self.initial.as_ref())
     }
 
-    /// Display name: the announcement's name, or the ID if no name is set.
+    /// Display name: the announcement's name (or ID) for announced
+    /// repositories, the directory name for local ones.
     fn display_name(&self, cx: &App) -> SharedString {
-        let announcement = self.announcement(cx);
-        announcement
-            .name
-            .clone()
-            .unwrap_or_else(|| SharedString::from(announcement.id.clone()))
+        if let Some(path) = &self.local_path {
+            return SharedString::from(
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string()),
+            );
+        }
+        self.announcement(cx)
+            .map(|announcement| {
+                announcement
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| SharedString::from(announcement.id.clone()))
+            })
+            .unwrap_or_default()
     }
 
+    /// The NIP-34 header (actions, issues/PR counts) or, for a local
+    /// repository that hasn't been published yet, the local header with an
+    /// Init button.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let store = self.store.read(cx);
-        let announcement = store.announcement.as_ref().unwrap_or(&self.initial);
+        if self.local_path.is_some() {
+            return self.render_local_header(cx);
+        }
+
+        let Some(store_entity) = self.store.as_ref() else {
+            return div().into_any_element();
+        };
+        let store = store_entity.read(cx);
+        let Some(announcement) = store
+            .announcement
+            .as_ref()
+            .or(self.initial.as_ref())
+            .cloned()
+        else {
+            return div().into_any_element();
+        };
         let issue_count = SharedString::from(store.issue_count().to_string());
         let pr_count = SharedString::from(store.pull_request_count().to_string());
 
         let name = self.display_name(cx);
         let description = announcement.description();
         let avatar = PixelAvatar::new(format!("{}:{}", announcement.owner, announcement.id));
-        let share = ShareTargets::from_announcement(announcement);
+        let share = ShareTargets::from_announcement(&announcement);
 
-        let commits_count = self.all_commits.as_ref().map(|list| list.total);
-        let worktree_empty = self.switching_ref || self.worktree.is_none();
-
-        let nostr_url = nostr_clone_url(announcement, cx);
+        let nostr_url = nostr_clone_url(&announcement, cx);
         let ngit_command = SharedString::from(format!("git clone {nostr_url}"));
         let nak_command = SharedString::from(format!("nak git clone {nostr_url}"));
         let git_commands = announcement.clone_urls();
@@ -1066,11 +1235,22 @@ impl RepoDetailView {
             .on_action(
                 cx.listener(|this, action: &RepoAction, window, cx| match action {
                     RepoAction::NewIssue => {
-                        open_new_issue_dialog(this.store.clone(), window, cx);
+                        if let Some(store) = this.store.clone() {
+                            open_new_issue_dialog(store, window, cx);
+                        }
                     }
                     RepoAction::NewPR => {
-                        open_new_pull_request_dialog(this.store.clone(), window, cx);
+                        if let Some(store) = this.store.clone() {
+                            open_new_pull_request_dialog(store, window, cx);
+                        }
                     }
+                    RepoAction::About => {
+                        if let Some(announcement) = this.announcement(cx) {
+                            open_about_dialog(announcement.clone(), window, cx);
+                        }
+                    }
+                    RepoAction::Push => this.push_repository(window, cx),
+                    RepoAction::Delete => this.delete_repository(window, cx),
                 }),
             )
             .px_4()
@@ -1160,11 +1340,13 @@ impl RepoDetailView {
                                             })),
                                     )
                                     .dropdown_menu(|menu, _, _| {
-                                        menu.menu_element_with_icon(
-                                            IconName::Plus,
-                                            Box::new(RepoAction::NewIssue),
-                                            |_, _| div().text_xs().child("New issue"),
-                                        )
+                                        menu.menu_element(Box::new(RepoAction::NewIssue), |_, _| {
+                                            h_flex()
+                                                .gap_2()
+                                                .text_sm()
+                                                .child(Icon::new(IconName::Plus))
+                                                .child("New issue")
+                                        })
                                     }),
                             )
                             .child(
@@ -1201,11 +1383,13 @@ impl RepoDetailView {
                                             })),
                                     )
                                     .dropdown_menu(|menu, _, _| {
-                                        menu.menu_element_with_icon(
-                                            IconName::Plus,
-                                            Box::new(RepoAction::NewPR),
-                                            |_, _| div().text_xs().child("New PR"),
-                                        )
+                                        menu.menu_element(Box::new(RepoAction::NewPR), |_, _| {
+                                            h_flex()
+                                                .gap_2()
+                                                .text_sm()
+                                                .child(Icon::new(IconName::Plus))
+                                                .child("New PR")
+                                        })
                                     }),
                             )
                             .child(
@@ -1227,17 +1411,50 @@ impl RepoDetailView {
                                     .dropdown_menu(move |menu, _, _| share.menu(menu)),
                             )
                             .child(
-                                Button::new("info")
-                                    .icon(IconName::Info)
-                                    .tooltip("About")
+                                Button::new("repo-menu-open")
+                                    .icon(IconName::EllipsisVertical)
+                                    .tooltip("Repository management")
+                                    .compact()
                                     .secondary()
-                                    .on_click(cx.listener(|this, _event, window, cx| {
-                                        open_about_dialog(
-                                            this.announcement(cx).clone(),
-                                            window,
-                                            cx,
+                                    .loading(self.pushing)
+                                    .disabled(self.pushing)
+                                    .dropdown_menu(move |menu, _, cx| {
+                                        let backend = Backend::global(cx);
+                                        let current_user = backend.read(cx).current_user();
+                                        let owner = current_user == Some(announcement.owner);
+
+                                        let menu = menu.menu_element(
+                                            Box::new(RepoAction::About),
+                                            |_, _| {
+                                                h_flex()
+                                                    .gap_2()
+                                                    .text_sm()
+                                                    .child(Icon::new(IconName::Info))
+                                                    .child("About")
+                                            },
                                         );
-                                    })),
+
+                                        if owner {
+                                            menu.menu_element(Box::new(RepoAction::Push), |_, _| {
+                                                h_flex()
+                                                    .gap_2()
+                                                    .text_sm()
+                                                    .child(Icon::new(CustomIconName::Init))
+                                                    .child("Republish")
+                                            })
+                                            .separator()
+                                            .menu_element(Box::new(RepoAction::Delete), |_, cx| {
+                                                h_flex()
+                                                    .gap_2()
+                                                    .text_sm()
+                                                    .text_color(cx.theme().danger)
+                                                    .child(Icon::new(IconName::Delete))
+                                                    .child("Delete")
+                                            })
+                                        } else {
+                                            menu
+                                        }
+                                    }),
                             )
                             .child({
                                 let view = cx.entity();
@@ -1342,157 +1559,261 @@ impl RepoDetailView {
                             }),
                     ),
             )
+            .child(self.render_header_tabs(cx))
+            .into_any_element()
+    }
+
+    /// Header for a local (not yet published) repository: the directory
+    /// name and path with an Init button instead of the NIP-34 actions
+    /// (issues, pull requests, share, info, clone).
+    fn render_local_header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let name = self.display_name(cx);
+        let path = self
+            .local_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default();
+        let avatar = PixelAvatar::new(path.clone());
+
+        v_flex()
+            .px_4()
+            .pb_4()
+            .w_full()
+            .gap_8()
+            .border_b_1()
+            .border_color(cx.theme().border)
             .child(
                 h_flex()
+                    .w_full()
+                    .gap_4()
+                    .items_start()
+                    .justify_between()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .min_h_8()
+                                    .font_semibold()
+                                    .child(avatar.size_6())
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .line_clamp(2)
+                                    .line_height(relative(1.25))
+                                    .text_ellipsis()
+                                    .child(path),
+                            ),
+                    )
+                    .child(
+                        Button::new("init")
+                            .icon(CustomIconName::Init)
+                            .label("Initialize on Nostr")
+                            .primary()
+                            .tooltip("Publish this repository to Nostr")
+                            .on_click(cx.listener(|this, _event, window, cx| {
+                                this.open_init_dialog(window, cx);
+                            })),
+                    ),
+            )
+            .child(self.render_header_tabs(cx))
+            .into_any_element()
+    }
+
+    /// Open the dialog guiding the user through publishing the local
+    /// repository to NIP-34.
+    fn open_init_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(local_path) = self.local_path.clone() else {
+            return;
+        };
+        let view = cx.entity().downgrade();
+        init_dialog::open(local_path, view, window, cx);
+    }
+
+    /// Switch the repository into its NIP-34 mode after a successful init:
+    /// create the nostr store for the announced repository and drop the
+    /// local (scan) identity. The worktree is unchanged, so the file
+    /// explorer keeps its loaded content.
+    pub(crate) fn apply_announcement(
+        &mut self,
+        announcement: Announcement,
+        cx: &mut Context<Self>,
+    ) {
+        // The repository is no longer a bare local repo: drop it from the
+        // scan results so it leaves the sidebar's local section immediately.
+        if let Some(path) = self.local_path.take() {
+            LocalReposStore::global(cx).update(cx, |store, cx| store.remove(&path, cx));
+        }
+        let store =
+            cx.new(|cx| RepoStore::new(announcement.addr(), announcement.relays.clone(), cx));
+        // Re-render when the store refreshes (issues, PRs, statuses).
+        self._subscriptions
+            .push(cx.observe(&store, |_this, _store, cx| cx.notify()));
+        self.store = Some(store);
+        self.initial = Some(announcement);
+        cx.notify();
+    }
+
+    /// The tab row shared by both header variants: Files/Commits tabs, the
+    /// HEAD commit button and the branch/tag selectors.
+    fn render_header_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
+        let commits_count = self.all_commits.as_ref().map(|list| list.total);
+        let worktree_empty = self.switching_ref || self.worktree.is_none();
+
+        h_flex()
+            .items_center()
+            .gap_2()
+            .child(
+                BaseButton::new("files-tab")
+                    .flex()
                     .items_center()
+                    .h_8()
+                    .px_2()
                     .gap_2()
                     .child(
-                        BaseButton::new("files-tab")
-                            .flex()
-                            .items_center()
-                            .h_8()
-                            .px_2()
-                            .gap_2()
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .text_sm()
-                                    .child(Icon::new(CustomIconName::GitFile).small())
-                                    .child("Files"),
-                            )
-                            .text_color(cx.theme().button_foreground)
-                            .rounded(cx.theme().radius)
-                            .hover(|this| this.bg(cx.theme().button_hover))
-                            .active(|this| this.bg(cx.theme().button_active))
-                            .selected(self.active_tab == 0)
-                            .when(self.active_tab == 0, |this| {
-                                this.bg(cx.theme().button_active)
-                            })
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.active_tab = 0;
-                                cx.notify();
-                            })),
+                        h_flex()
+                            .gap_1()
+                            .text_sm()
+                            .child(Icon::new(CustomIconName::GitFile).small())
+                            .child("Files"),
                     )
-                    .child(
-                        BaseButton::new("commits-tab")
-                            .flex()
-                            .items_center()
-                            .h_8()
-                            .px_2()
-                            .gap_2()
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .text_sm()
-                                    .child(Icon::new(CustomIconName::GitCommit).small())
-                                    .child("Commits"),
-                            )
-                            .when_some(commits_count, |this, count| {
-                                this.child(
-                                    h_flex()
-                                        .justify_center()
-                                        .px_1()
-                                        .py_0p5()
-                                        .min_w_4()
-                                        .text_size(px(8.))
-                                        .bg(cx.theme().muted)
-                                        .text_color(cx.theme().muted_foreground)
-                                        .rounded(cx.theme().radius)
-                                        .line_height(relative(1.))
-                                        .child(SharedString::from(count.to_string())),
-                                )
-                            })
-                            .text_color(cx.theme().button_foreground)
-                            .rounded(cx.theme().radius)
-                            .hover(|this| this.bg(cx.theme().button_hover))
-                            .active(|this| this.bg(cx.theme().button_active))
-                            .selected(self.active_tab == 1)
-                            .when(self.active_tab == 1, |this| {
-                                this.bg(cx.theme().button_active)
-                            })
-                            .on_click(cx.listener(|this, _event, _window, cx| {
-                                this.active_tab = 1;
-                                cx.notify();
-                            })),
-                    )
+                    .text_color(cx.theme().button_foreground)
+                    .rounded(cx.theme().radius)
+                    .hover(|this| this.bg(cx.theme().button_hover))
+                    .active(|this| this.bg(cx.theme().button_active))
+                    .selected(self.active_tab == 0)
+                    .when(self.active_tab == 0, |this| {
+                        this.bg(cx.theme().button_active)
+                    })
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.active_tab = 0;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                BaseButton::new("commits-tab")
+                    .flex()
+                    .items_center()
+                    .h_8()
+                    .px_2()
+                    .gap_2()
                     .child(
                         h_flex()
-                            .flex_1()
-                            .gap_2()
-                            .justify_end()
-                            .child(
-                                Button::new("enc")
-                                    .ghost()
-                                    .when_some(self.head_commit.as_ref(), |this, commit| {
-                                        this.child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(SharedString::from(&commit.id)),
-                                        )
-                                        .child(
-                                            div()
-                                                .max_w(px(200.))
-                                                .overflow_hidden()
-                                                .text_ellipsis()
-                                                .whitespace_nowrap()
-                                                .text_xs()
-                                                .child(SharedString::from(&commit.summary)),
-                                        )
-                                    })
-                                    .tooltip(
-                                        self.head_commit
-                                            .as_ref()
-                                            .map_or_else(SharedString::default, |commit| {
-                                                commit.summary.clone().into()
-                                            }),
-                                    )
-                                    .on_click(cx.listener(|this, _event, window, cx| {
-                                        if let Some(commit) = &this.head_commit {
-                                            let id = commit.id.clone();
-                                            this.open_commit_diff(&id, window, cx);
-                                        }
-                                    })),
+                            .gap_1()
+                            .text_sm()
+                            .child(Icon::new(CustomIconName::GitCommit).small())
+                            .child("Commits"),
+                    )
+                    .when_some(commits_count, |this, count| {
+                        this.child(
+                            h_flex()
+                                .justify_center()
+                                .px_1()
+                                .py_0p5()
+                                .min_w_4()
+                                .text_size(px(8.))
+                                .bg(cx.theme().muted)
+                                .text_color(cx.theme().muted_foreground)
+                                .rounded(cx.theme().radius)
+                                .line_height(relative(1.))
+                                .child(SharedString::from(count.to_string())),
+                        )
+                    })
+                    .text_color(cx.theme().button_foreground)
+                    .rounded(cx.theme().radius)
+                    .hover(|this| this.bg(cx.theme().button_hover))
+                    .active(|this| this.bg(cx.theme().button_active))
+                    .selected(self.active_tab == 1)
+                    .when(self.active_tab == 1, |this| {
+                        this.bg(cx.theme().button_active)
+                    })
+                    .on_click(cx.listener(|this, _event, _window, cx| {
+                        this.active_tab = 1;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                h_flex()
+                    .flex_1()
+                    .gap_2()
+                    .justify_end()
+                    .child(
+                        Button::new("enc")
+                            .ghost()
+                            .when_some(self.head_commit.as_ref(), |this, commit| {
+                                this.child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(SharedString::from(&commit.id)),
+                                )
+                                .child(
+                                    div()
+                                        .max_w(px(200.))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .text_xs()
+                                        .child(SharedString::from(&commit.summary)),
+                                )
+                            })
+                            .tooltip(
+                                self.head_commit
+                                    .as_ref()
+                                    .map_or_else(SharedString::default, |commit| {
+                                        commit.summary.clone().into()
+                                    }),
                             )
-                            .child(
-                                div().w(px(120.)).child(
-                                    Combobox::new(&self.branch_select)
-                                        .placeholder("Branch")
-                                        .appearance(false)
-                                        .menu_width(px(200.))
-                                        .disabled(worktree_empty)
-                                        .bg(cx.theme().muted)
-                                        .rounded(cx.theme().radius)
-                                        .render_trigger(|ctx, _window, cx| {
-                                            Self::render_ref_trigger(
-                                                ctx,
-                                                CustomIconName::GitBranch,
-                                                cx,
-                                            )
-                                        }),
-                                ),
-                            )
-                            .child(
-                                div().w(px(120.)).child(
-                                    Combobox::new(&self.tag_select)
-                                        .placeholder("Tag")
-                                        .appearance(false)
-                                        .menu_width(px(200.))
-                                        .disabled(worktree_empty)
-                                        .bg(cx.theme().muted)
-                                        .rounded(cx.theme().radius)
-                                        .render_trigger(|ctx, _window, cx| {
-                                            Self::render_ref_trigger(ctx, CustomIconName::Tag, cx)
-                                        }),
-                                ),
-                            ),
+                            .on_click(cx.listener(|this, _event, window, cx| {
+                                if let Some(commit) = &this.head_commit {
+                                    let id = commit.id.clone();
+                                    this.open_commit_diff(&id, window, cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        div().w(px(120.)).child(
+                            Combobox::new(&self.branch_select)
+                                .placeholder("Branch")
+                                .appearance(false)
+                                .menu_width(px(200.))
+                                .disabled(worktree_empty)
+                                .bg(cx.theme().muted)
+                                .rounded(cx.theme().radius)
+                                .render_trigger(|ctx, _window, cx| {
+                                    Self::render_ref_trigger(ctx, CustomIconName::GitBranch, cx)
+                                }),
+                        ),
+                    )
+                    .child(
+                        div().w(px(120.)).child(
+                            Combobox::new(&self.tag_select)
+                                .placeholder("Tag")
+                                .appearance(false)
+                                .menu_width(px(200.))
+                                .disabled(worktree_empty)
+                                .bg(cx.theme().muted)
+                                .rounded(cx.theme().radius)
+                                .render_trigger(|ctx, _window, cx| {
+                                    Self::render_ref_trigger(ctx, CustomIconName::Tag, cx)
+                                }),
+                        ),
                     ),
             )
             .into_any_element()
     }
 
     fn render_maintainers(&self, cx: &mut Context<Self>) -> AnyElement {
-        let announcement = self.announcement(cx);
+        let Some(announcement) = self.announcement(cx) else {
+            return div().into_any_element();
+        };
         let profile_store = ProfileStore::global(cx);
 
         let mut seen = HashSet::new();
@@ -1576,6 +1897,16 @@ impl Render for RepoDetailView {
             .id("repo")
             .size_full()
             .child(self.render_header(cx))
+            .when_some(self.error.clone(), |this, error| {
+                this.child(
+                    Alert::error("repo-error", error)
+                        .banner()
+                        .on_close(cx.listener(|this, _event, _window, cx| {
+                            this.error = None;
+                            cx.notify();
+                        })),
+                )
+            })
             .map(|this| match self.active_tab {
                 0 => this.child(
                     h_flex()

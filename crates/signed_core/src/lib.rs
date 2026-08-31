@@ -8,7 +8,7 @@ pub mod model;
 pub mod state;
 pub mod status;
 
-pub use addr::{RepoAddr, repo_addr};
+pub use addr::{RepoAddr, identifier_from_name, repo_addr};
 pub use annotations::{COVER_NOTE_KIND, cover_note, labels_and_subject, subject_override};
 pub use clone_url::{CloneTarget, parse_clone_url};
 pub use comments::{CommentThread, comment_threads};

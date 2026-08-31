@@ -1,4 +1,6 @@
+use std::collections::HashSet;
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use assets::CustomIconName;
@@ -17,14 +19,15 @@ use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::InputState;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
-use signed_core::Announcement;
-use signed_state::{Backend, BackendEvent, Profile, ProfileStore, RepoListStore};
+use signed_core::{Announcement, identifier_from_name};
+use signed_state::{Backend, BackendEvent, LocalReposStore, Profile, ProfileStore, RepoListStore};
 
 use super::{RepoDetailView, RepoListView};
 use crate::image_cache::{MAX_IMAGES, image_cache};
 use crate::pixel_avatar::PixelAvatar;
 
 mod create_repo_dialog;
+pub(crate) mod grasp_servers;
 mod import_dialog;
 mod onboarding_dialog;
 pub(crate) mod passphrase_dialog;
@@ -37,20 +40,23 @@ pub struct SidebarPanel {
     focus_handle: FocusHandle,
     dock_area: WeakEntity<DockArea>,
     explore: Option<WeakEntity<RepoListView>>,
+    logged_in: bool,
     /// Repositories announced by the current user, listed under
     /// "All Repositories". Recreated when the signer changes.
     my_repos: Option<Entity<RepoListStore>>,
     /// Observes the current user's repo store so the list re-renders.
     my_repos_subscription: Option<Subscription>,
-    logged_in: bool,
     /// Banner artwork shown behind the sign-in screen,
     /// picked at random from the bundled `backgrounds/` assets.
     banner: SharedString,
+    /// Observes the local-repository scan so new discoveries re-render.
+    _local_repos_subscription: Subscription,
     _subscription: Subscription,
 }
 
 impl SidebarPanel {
     pub fn new(dock_area: WeakEntity<DockArea>, cx: &mut Context<Self>) -> Self {
+        let local_repos_store = LocalReposStore::global(cx);
         let backend = Backend::global(cx);
         let logged_in = backend.read(cx).current_user().is_some();
 
@@ -71,14 +77,19 @@ impl SidebarPanel {
             cx.notify();
         });
 
+        let local_repos_subscription = cx.observe(&local_repos_store, |_, _, cx| {
+            cx.notify();
+        });
+
         let mut panel = Self {
             focus_handle: cx.focus_handle(),
             dock_area,
+            logged_in,
             explore: None,
             my_repos: None,
             my_repos_subscription: None,
-            logged_in,
             banner: pick_banner(),
+            _local_repos_subscription: local_repos_subscription,
             _subscription: subscription,
         };
 
@@ -166,11 +177,32 @@ impl SidebarPanel {
         });
     }
 
+    /// Open a local repository's detail view in the dock's center; the
+    /// detail view offers to publish it to NIP-34.
+    fn open_local_repo(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let detail =
+            cx.new(|cx| RepoDetailView::new_local(self.dock_area.clone(), path, window, cx));
+
+        let _ = self.dock_area.update(cx, |dock_area, cx| {
+            dock_area.add_panel_view(
+                panel_handle(detail),
+                DockPlacement::Center,
+                None,
+                window,
+                cx,
+            );
+        });
+    }
+
     /// The "All Repositories" section: header with the create button and
     /// the current user's repositories below it, lazily rendered through a
-    /// [`uniform_list`].
+    /// [`uniform_list`], followed by the local git repositories discovered
+    /// by the startup scan.
     fn render_my_repos(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let store = self.my_repos.as_ref();
+        let local = LocalReposStore::global(cx);
+        let local_repos = local.read(cx).repos.clone();
+        let scanning = local.read(cx).scanning;
 
         v_flex()
             .px_2()
@@ -193,19 +225,54 @@ impl SidebarPanel {
                             .child(div().text_xs().font_semibold().child("All Repositories")),
                     )
                     .child(
-                        Button::new("add")
-                            .icon(IconName::Plus)
-                            .small()
-                            .ghost()
-                            .on_click(cx.listener(|this, _ev, window, cx| {
-                                this.open_create_repo(window, cx);
-                            })),
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("rescan")
+                                    .icon(CustomIconName::Refresh)
+                                    .small()
+                                    .ghost()
+                                    .tooltip("Rescan for local repositories")
+                                    .on_click(cx.listener(|_this, _ev, _window, cx| {
+                                        let local_repos = LocalReposStore::global(cx);
+                                        local_repos.update(cx, |store, cx| store.rescan(cx));
+                                    })),
+                            )
+                            .child(
+                                Button::new("add")
+                                    .icon(IconName::Plus)
+                                    .small()
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _ev, window, cx| {
+                                        this.open_create_repo(window, cx);
+                                    })),
+                            ),
                     ),
             )
             .when_some(store, |builder, store| {
                 let announcements = store.read(cx).announcements.clone();
+                // Local repositories that have already been published to
+                // NIP-34 are listed among the user's repositories above;
+                // hide them from the local section (matched by the
+                // identifier derived from the directory name, like the
+                // init dialog's default name).
+                let announced_ids: HashSet<String> =
+                    announcements.iter().map(|a| a.id.clone()).collect();
+                let local_repos: Vec<PathBuf> = local_repos
+                    .iter()
+                    .filter(|path| {
+                        let Some(name) = path.file_name() else {
+                            return true;
+                        };
+                        !announced_ids.contains(&identifier_from_name(&name.to_string_lossy()))
+                    })
+                    .cloned()
+                    .collect();
+                // One merged list: the user's NIP-34 repositories first,
+                // then the local repositories discovered by the scan.
+                let total = announcements.len() + local_repos.len();
 
-                if announcements.is_empty() {
+                if total == 0 {
                     builder.child(
                         div()
                             .flex_1()
@@ -213,18 +280,27 @@ impl SidebarPanel {
                             .py_1()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("No repositories yet"),
+                            .child(if scanning {
+                                "Scanning for local repositories…"
+                            } else {
+                                "No repositories yet"
+                            }),
                     )
                 } else {
                     builder.child(
                         uniform_list(
-                            "my-repos-list",
-                            announcements.len(),
+                            "repos",
+                            total,
                             cx.processor(move |this, range: Range<usize>, _window, cx| {
                                 range
                                     .map(|ix| {
-                                        this.render_repo_row(&announcements[ix], cx)
-                                            .into_any_element()
+                                        this.render_repo_row_at(
+                                            &announcements,
+                                            &local_repos,
+                                            ix,
+                                            cx,
+                                        )
+                                        .into_any_element()
                                     })
                                     .collect()
                             }),
@@ -236,8 +312,27 @@ impl SidebarPanel {
             })
     }
 
-    /// One repository row in the sidebar, styled like the nav items: a
-    /// deterministic pixel avatar and the repo name.
+    /// One row of the merged sidebar list: a NIP-34 repository or a local
+    /// repository.
+    fn render_repo_row_at(
+        &self,
+        announcements: &[Announcement],
+        local_repos: &[PathBuf],
+        ix: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if ix < announcements.len() {
+            return self
+                .render_repo_row(&announcements[ix], cx)
+                .into_any_element();
+        }
+
+        let local_ix = ix - announcements.len();
+        let path = &local_repos[local_ix];
+
+        self.render_local_row(path, cx).into_any_element()
+    }
+
     fn render_repo_row(
         &self,
         announcement: &Announcement,
@@ -253,6 +348,32 @@ impl SidebarPanel {
         NavItem::new(format!("my-repo:{}", announcement.id), name, avatar).on_click(
             cx.listener(move |this, _ev, window, cx| this.open_repo(&announcement, window, cx)),
         )
+    }
+
+    /// One local repository row: a deterministic pixel avatar seeded from
+    /// the path, the directory name, and a warning suffix marking it as
+    /// not yet set up for NIP-34. Clicking it opens the repository's
+    /// detail view, which offers to initialize it.
+    fn render_local_row(&self, path: &Path, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let path = path.to_path_buf();
+
+        NavItem::new(
+            format!("local-repo:{}", path.display()),
+            name,
+            PixelAvatar::new(path.to_string_lossy()),
+        )
+        .suffix(
+            Icon::new(IconName::TriangleAlert)
+                .small()
+                .text_color(cx.theme().warning),
+        )
+        .on_click(cx.listener(move |this, _ev, window, cx| {
+            this.open_local_repo(path.clone(), window, cx);
+        }))
     }
 
     /// Show the Import Identity dialog.
@@ -491,8 +612,8 @@ impl Render for SidebarPanel {
 }
 
 /// A single navigation entry in the sidebar: an arbitrary leading element
-/// (an icon, avatar, ...) and a text label with a hover highlight and an
-/// optional click handler.
+/// (an icon, avatar, ...) and a text label with a hover highlight,
+/// an optional trailing suffix (e.g. a status icon) and an optional click handler.
 #[allow(clippy::type_complexity)]
 #[derive(IntoElement)]
 struct NavItem {
@@ -500,6 +621,8 @@ struct NavItem {
     style: StyleRefinement,
     icon: AnyElement,
     label: SharedString,
+    /// Trailing element rendered at the right edge of the row, after the (ellipsized) label.
+    suffix: Option<AnyElement>,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
@@ -515,8 +638,15 @@ impl NavItem {
             icon: icon.into_any_element(),
             label: label.into(),
             style: StyleRefinement::default(),
+            suffix: None,
             on_click: None,
         }
+    }
+
+    /// A trailing element rendered at the right edge of the row
+    fn suffix(mut self, suffix: impl IntoElement) -> Self {
+        self.suffix = Some(suffix.into_any_element());
+        self
     }
 
     fn on_click(mut self, listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
@@ -545,6 +675,9 @@ impl RenderOnce for NavItem {
                     .text_ellipsis()
                     .child(self.label),
             )
+            .when_some(self.suffix, |this, suffix| {
+                this.child(div().flex_shrink_0().child(suffix))
+            })
             .hover(|this| this.bg(cx.theme().list_hover))
             .when_some(self.on_click, |this, listener| this.on_click(listener))
     }
