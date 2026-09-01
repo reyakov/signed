@@ -276,11 +276,8 @@ pub(super) fn status_badge(status: RepoStatus, cx: &App) -> AnyElement {
 /// A split dropdown button built on `gpui_base::Popover`: an action element
 /// with a separate caret trigger that opens a [`PopupMenu`].
 ///
-/// The action and the caret are ordinary elements supplied by the caller, so
-/// the look — icons, borders, hover states, sizes — stays fully in the
-/// application. The component only owns the popover wiring: opening on caret
-/// click, Escape/outside dismissal, focus movement into the menu, and the
-/// menu entity's lifecycle.
+/// The action and the caret are caller-supplied elements, so the look stays
+/// in the application; this component only owns the popover wiring.
 #[derive(IntoElement)]
 pub(super) struct BaseDropdownButton {
     id: ElementId,
@@ -493,11 +490,10 @@ impl ShareTargets {
     }
 }
 
-/// One row of the share menu: a small title on top of the compact label,
-/// with a copy button that flips to a check while the value is on the
-/// clipboard. Clicking the row text copies and dismisses the menu; the copy
-/// button stops propagation, so the menu stays open for further copies.
-/// Both copy `copy`, never the truncated label.
+/// One row of the share menu: a small title above the compact label, with
+/// a copy button that flips to a check while the value is on the clipboard.
+/// Clicking the row copies and dismisses the menu; the copy button stops
+/// propagation so the menu stays open. Both copy `copy`, never the label.
 pub(super) fn share_menu_row(
     id: &'static str,
     title: &'static str,

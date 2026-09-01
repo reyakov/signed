@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Error, anyhow, bail};
 use bitcoin_hashes::sha1::Hash as Sha1Hash;
@@ -31,6 +33,12 @@ pub const BOOTSTRAP_RELAYS: [&str; 4] = [
 
 /// Relays used for indexing user's relay list (NIP-65).
 pub const INDEXER_RELAYS: [&str; 2] = ["wss://indexer.coracle.social", "wss://user.kindpag.es"];
+
+/// How long an identical fetch/sync request is suppressed after it started.
+/// A second panel for the same repository (or the global and per-author
+/// list stores at login) doesn't duplicate a sync that just ran; after the
+/// window, re-fetching is allowed again so data stays fresh.
+const FETCH_DEDUP_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
@@ -84,6 +92,10 @@ pub struct Backend {
     /// Whether the stored credential is NIP-49 encrypted and a passphrase
     /// is still needed to resume the session.
     passphrase_required: bool,
+    /// Fingerprints of recently started fetches/syncs (relay + filter set),
+    /// so duplicate requests within [`FETCH_DEDUP_WINDOW`] collapse into
+    /// one. Entries are pruned lazily on the next request.
+    recent_fetches: HashMap<u64, Instant>,
     tasks: Vec<Task<Result<(), Error>>>,
 }
 
@@ -134,6 +146,7 @@ impl Backend {
             connected: false,
             sync_progress: None,
             passphrase_required: false,
+            recent_fetches: HashMap::new(),
             tasks: vec![pump],
         };
 
@@ -245,9 +258,8 @@ impl Backend {
     /// Decrypt the NIP-49 encrypted credential stored in the keyring with
     /// the given passphrase and resume the session.
     ///
-    /// The scrypt decryption runs off the UI thread. The returned task
-    /// yields the public key on success, or the failure reason (e.g. wrong
-    /// passphrase), so callers can render inline errors.
+    /// The scrypt decryption runs off the UI thread. The task yields the
+    /// public key, or the failure reason (e.g. wrong passphrase).
     pub fn restore_with_passphrase(
         &mut self,
         password: &str,
@@ -286,9 +298,8 @@ impl Backend {
     /// passphrase (NIP-49) and persist it in the keyring, then publish the
     /// user's NIP-65 relay list, metadata and grasp list.
     ///
-    /// The heavy encryption runs off the UI thread. The returned task yields
-    /// the new public key on success, or the failure reason, so callers can
-    /// render progress and inline errors.
+    /// The encryption runs off the UI thread; the task yields the new
+    /// public key.
     pub fn create_identity(
         &mut self,
         name: &str,
@@ -386,11 +397,8 @@ impl Backend {
     /// a push for a not-yet-existing repository while that authorization is
     /// pending (it expires after 30 minutes), like gitworkshop and ngit.
     ///
-    /// The git work (init, commit, push) runs on background threads. The
-    /// returned task yields the published announcement on success, so
-    /// callers can open the new repository right away. The announcement's
-    /// `relays` tag carries the grasp servers, which are also added to the
-    /// relay pool so the published events reach them.
+    /// The git work runs on background threads; the task yields the
+    /// published announcement.
     pub fn create_repository(
         &mut self,
         name: &str,
@@ -435,8 +443,7 @@ impl Backend {
         let servers = grasp_servers.clone();
 
         cx.spawn(async move |this, cx| {
-            // 1. Initialize the local clone (main branch + README + initial
-            //    commit) on a background thread.
+            // Initialize the local clone (main branch + README + initial commit).
             let work = cx.background_spawn({
                 let path = path.clone();
                 let name = name.clone();
@@ -467,16 +474,14 @@ impl Backend {
             let commit_sha =
                 Sha1Hash::from_str(&commit).map_err(|_| anyhow!("invalid initial commit id"))?;
 
-            // 2. Ensure the grasp servers are in the relay pool; the nostr
-            //    client queues events until each relay is connected.
+            // The nostr client queues events until each relay is connected.
             this.update(cx, |this, cx| {
                 let urls: Vec<String> = servers.iter().map(ToString::to_string).collect();
                 this.add_relays(urls, cx);
             })?;
 
-            // 3. Publish the announcement, then the state event, to the
-            //    grasp relays. The state event is the push authorization
-            //    ("purgatory"), so it must be accepted before step 4.
+            // The state event is the push authorization ("purgatory"), so
+            // it must be accepted before the push below.
             let announcement = GitRepositoryAnnouncement {
                 id: repo_id.clone(),
                 name: Some(name.clone()),
@@ -522,9 +527,8 @@ impl Backend {
                 }
             };
 
-            // 4. Push the initial commit to every grasp server. A server
-            //    that fails to accept the push is logged, but the creation
-            //    only fails when no server accepted it.
+            // Push to every grasp server; creation only fails when no
+            // server accepted it.
             let push = cx.background_spawn({
                 let path = path.clone();
                 let owner = owner.clone();
@@ -555,14 +559,8 @@ impl Backend {
     /// state to the grasp relays, then push every branch and tag to each
     /// grasp server. Also points `origin` at the first grasp server.
     ///
-    /// The events must reach the grasp servers *before* the push, like
-    /// [`Self::create_repository`]: GRASP servers hold the signed state
-    /// event in "purgatory" and only accept a push while that
-    /// authorization is pending.
-    ///
-    /// The git work (ref listing, push) runs on background threads. The
-    /// returned task yields the published announcement on success, so
-    /// callers can switch the repository into its NIP-34 mode.
+    /// Same ordering constraint as [`Self::create_repository`]: the state
+    /// event ("purgatory") must be accepted before the push.
     pub fn publish_local_repo(
         &mut self,
         path: PathBuf,
@@ -586,9 +584,8 @@ impl Backend {
             return Task::ready(Err(anyhow!("Sign in to publish a repository")));
         };
 
-        // The repository identifier is derived from the name, like
-        // [`Self::create_repository`]: spaces become hyphens, other
-        // non-alphanumeric characters (except `/`) become hyphens.
+        // The repository identifier is derived from the name as in
+        // [`Self::create_repository`].
         let repo_id = identifier_from_name(&name);
 
         if repo_id.is_empty() || repo_id.len() > 100 {
@@ -607,8 +604,6 @@ impl Backend {
         let servers = grasp_servers.clone();
 
         cx.spawn(async move |this, cx| {
-            // 1. Read the local repository's refs (branches, tags, HEAD)
-            //    and its root commit on a background thread.
             let work = cx.background_spawn({
                 let path = path.clone();
                 async move {
@@ -619,16 +614,14 @@ impl Backend {
             });
             let (state, euc) = work.await?;
 
-            // 2. Ensure the grasp servers are in the relay pool; the nostr
-            //    client queues events until each relay is connected.
+            // The nostr client queues events until each relay is connected.
             this.update(cx, |this, cx| {
                 let urls: Vec<String> = servers.iter().map(ToString::to_string).collect();
                 this.add_relays(urls, cx);
             })?;
 
-            // 3. Publish the announcement, then the state event, to the
-            //    grasp relays. The state event is the push authorization
-            //    ("purgatory"), so it must be accepted before step 4.
+            // The state event is the push authorization ("purgatory"), so
+            // it must be accepted before the push below.
             let announcement = GitRepositoryAnnouncement {
                 id: repo_id.clone(),
                 name: Some(name.clone()),
@@ -672,10 +665,9 @@ impl Backend {
                 }
             };
 
-            // 4. Push every branch and tag to each grasp server. A server
-            //    that fails to accept the push is logged, but the init only
-            //    fails when no server accepted it. An empty repository
-            //    (no refs yet) has nothing to push.
+            // Push every branch and tag to each grasp server; the init
+            // only fails when no server accepted it. An empty repository
+            // has nothing to push.
             if !refs.is_empty() {
                 let push = cx.background_spawn({
                     let path = path.clone();
@@ -697,8 +689,8 @@ impl Backend {
                 }
             }
 
-            // 5. Point `origin` at the first grasp server so later pushes
-            //    have a target, like the create flow.
+            // Point `origin` at the first grasp server so later pushes
+            // have a target.
             if let Some(base) = servers.first().and_then(grasp_base_url) {
                 let url = format!("{base}/{owner}/{repo_id}.git");
                 let path = path.clone();
@@ -732,15 +724,13 @@ impl Backend {
         let relays = announcement.relays.clone();
 
         cx.spawn(async move |this, cx| {
-            // 1. Read the current refs of the local clone.
             let work = cx.background_spawn({
                 let path = path.clone();
                 async move { signed_git::worktree_ref_state(&path) }
             });
             let state = work.await?;
 
-            // 2. Publish a fresh state event; grasp servers authorize a
-            //    push by the state they have seen.
+            // Grasp servers authorize a push by the state they have seen.
             let refs = state.refs.clone();
             let head = state.head.clone();
             this.update(cx, |this, cx| {
@@ -749,7 +739,6 @@ impl Backend {
             })?
             .await?;
 
-            // 3. Push every branch and tag to the announced grasp servers.
             if !refs.is_empty() {
                 let push = cx.background_spawn({
                     let path = path.clone();
@@ -1106,25 +1095,53 @@ impl Backend {
         }));
     }
 
+    /// Whether an identical fetch was started within [`FETCH_DEDUP_WINDOW`]
+    /// and is still recent enough to suppress a duplicate. Records the
+    /// fingerprint (after pruning expired entries) when returning `false`.
+    fn fetch_recently_started(&mut self, fingerprint: u64) -> bool {
+        self.recent_fetches
+            .retain(|_, started| started.elapsed() < FETCH_DEDUP_WINDOW);
+        if self.recent_fetches.contains_key(&fingerprint) {
+            return true;
+        }
+        self.recent_fetches.insert(fingerprint, Instant::now());
+        false
+    }
+
     /// Connect to relays announced by a repository (NIP-34 `relays` tag) and
     /// fetch its events from them: a one-shot auto-closing subscription for
     /// `filters`, plus a negentropy sync so issues, patches and PRs stored
     /// only on those relays are not missed.
     ///
-    /// Best-effort: failures are logged, not surfaced, because the bootstrap
-    /// relays already cover the repository. The relays stay in the pool, so
-    /// events the user publishes for this repository also reach them.
+    /// Deduplicated: an identical request (same relays and filters) started
+    /// within [`FETCH_DEDUP_WINDOW`] is skipped, so a second panel for the
+    /// same repository doesn't re-run the fetch.
+    ///
+    /// Best-effort: failures are logged, not surfaced. The relays stay in
+    /// the pool, so later publishes for this repository also reach them.
     pub fn connect_repo_relays(
         &mut self,
         relays: Vec<RelayUrl>,
         filters: Vec<Filter>,
         cx: &mut Context<Self>,
     ) {
+        let relay_strs: Vec<&str> = relays.iter().map(|url| url.as_str()).collect();
+        let fingerprint = fetch_fingerprint(&relay_strs, &filters);
+        if self.fetch_recently_started(fingerprint) {
+            log::debug!("skipping duplicate repo relay fetch");
+            return;
+        }
+
         let client = self.client.clone();
 
-        self.tasks.push(cx.spawn(async move |_this, _cx| {
+        self.tasks.push(cx.spawn(async move |this, cx| {
             if let Err(e) = connect_repo_relays_only(&client, relays, filters).await {
                 log::warn!("repo relay fetch failed: {e}");
+                // Allow an immediate retry after a failure.
+                this.update(cx, |this, _cx| {
+                    this.recent_fetches.remove(&fingerprint);
+                })
+                .ok();
             }
             Ok(())
         }));
@@ -1152,7 +1169,17 @@ impl Backend {
     /// reconciles the local database with the relays in both directions.
     /// Emits [`BackendEvent::SyncProgress`] while running (throttled to
     /// whole-percent changes) and [`BackendEvent::Synced`] on completion.
+    ///
+    /// Deduplicated: an identical sync started within
+    /// [`FETCH_DEDUP_WINDOW`] is skipped. Observers still see the original
+    /// sync's progress and completion events.
     pub fn sync_bootstrap(&mut self, filter: Filter, cx: &mut Context<Self>) {
+        let fingerprint = fetch_fingerprint(&BOOTSTRAP_RELAYS, std::slice::from_ref(&filter));
+        if self.fetch_recently_started(fingerprint) {
+            log::debug!("skipping duplicate bootstrap sync");
+            return;
+        }
+
         let client = self.client.clone();
 
         self.sync_progress = Some((0, 0));
@@ -1210,6 +1237,8 @@ impl Backend {
                 Err(e) => {
                     this.update(cx, |this, cx| {
                         this.sync_progress = None;
+                        // Allow an immediate retry after a failure.
+                        this.recent_fetches.remove(&fingerprint);
                         cx.emit(BackendEvent::error(e.to_string()))
                     })?;
                 }
@@ -1221,10 +1250,9 @@ impl Backend {
     /// Sign, broadcast and locally store an event. Emits
     /// [`BackendEvent::Published`] on success so stores can refresh.
     ///
-    /// The returned task yields the outcome of this specific action, so
-    /// callers can show inline progress/errors instead of relying on
-    /// the global [`BackendEvent::Error`]. The task is owned by the caller;
-    /// dropping it cancels the publish.
+    /// The task yields the outcome of this specific action (for inline
+    /// progress/errors) and is owned by the caller; dropping it cancels
+    /// the publish.
     pub fn send(
         &mut self,
         builder: EventBuilder,
@@ -1329,6 +1357,20 @@ impl Backend {
     }
 }
 
+/// Fingerprint of a relay + filter set, for fetch dedup. Relays and
+/// filters are sorted first so the fingerprint is order-independent.
+fn fetch_fingerprint(relays: &[&str], filters: &[Filter]) -> u64 {
+    let mut relays: Vec<&str> = relays.to_vec();
+    relays.sort_unstable();
+    let mut filters: Vec<&Filter> = filters.iter().collect();
+    filters.sort_unstable();
+
+    let mut hasher = DefaultHasher::new();
+    relays.hash(&mut hasher);
+    filters.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Add the given relays, connect to them, and fetch the filters: a one-shot
 /// subscription (auto-closing after EOSE) plus a negentropy sync per filter
 /// as a second pass, so events that race with the subscription or relays
@@ -1343,10 +1385,15 @@ async fn connect_repo_relays_only(
         return Ok(());
     }
 
+    let mut added = false;
     for url in &relays {
-        client.add_relay(url).await?;
+        added |= client.add_relay(url).await?;
     }
-    client.connect().await;
+    // Connecting is only needed when the pool grew; connected relays no-op,
+    // but the call still iterates every relay in the pool.
+    if added {
+        client.connect().await;
+    }
 
     let opts = SubscribeAutoCloseOptions::default()
         .exit_policy(ReqExitPolicy::ExitOnEOSE)
@@ -1358,17 +1405,21 @@ async fn connect_repo_relays_only(
         .collect();
     client.subscribe(target).close_on(opts).await?;
 
-    for filter in filters {
-        let sync_opts = SyncOptions::default().initial_timeout(Duration::from_secs(5));
-        if let Err(e) = client
-            .sync(filter)
-            .with(relays.iter())
-            .opts(sync_opts)
-            .await
-        {
-            log::warn!("repo relay negentropy sync failed: {e}");
+    // Sync the filters concurrently: each reconciles against every relay
+    // either way, and a relay without NEG-XX support otherwise serializes
+    // its initial timeout behind every other filter.
+    let sync_opts = SyncOptions::default().initial_timeout(Duration::from_secs(5));
+    let syncs = filters.into_iter().map(|filter| {
+        let client = &client;
+        let relays = &relays;
+        let sync_opts = sync_opts.clone();
+        async move {
+            if let Err(e) = client.sync(filter).with(relays.iter()).opts(sync_opts).await {
+                log::warn!("repo relay negentropy sync failed: {e}");
+            }
         }
-    }
+    });
+    futures::future::join_all(syncs).await;
 
     Ok(())
 }

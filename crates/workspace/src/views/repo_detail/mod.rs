@@ -27,7 +27,7 @@ use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, ThemeStyled,
     VirtualListScrollHandle, h_flex, v_flex,
 };
-use nostr::prelude::{RelayUrl, ToBech32};
+use nostr::prelude::{EventId, RelayUrl, ToBech32};
 use signed_core::Announcement;
 use signed_git::{CommitList, FileCommit};
 use signed_state::{Backend, GitStore, LocalReposStore, ProfileStore, RepoStore};
@@ -96,6 +96,20 @@ struct RepoData {
     tags: Vec<String>,
     current_branch: Option<String>,
     head_commit: Option<FileCommit>,
+}
+
+/// Derived NIP-34 header data, cached so renders don't re-encode bech32
+/// share targets and rebuild clone command strings on every frame.
+struct HeaderCache {
+    /// Announcement event ID and owner NIP-05 this cache was built from;
+    /// rebuilt when either changes (a new announcement version, or the
+    /// owner's profile arriving with a NIP-05 identifier).
+    key: (EventId, Option<String>),
+    announcement: Rc<Announcement>,
+    share: Rc<ShareTargets>,
+    ngit_command: SharedString,
+    nak_command: SharedString,
+    git_commands: Rc<Vec<SharedString>>,
 }
 
 /// Detail view of a repository: header, stats, a file explorer with README
@@ -170,6 +184,10 @@ pub struct RepoDetailView {
     /// Bumped on every branch/tag switch; in-flight loads tagged with an
     /// older generation are discarded when they complete.
     ref_generation: u64,
+    /// Derived NIP-34 header data (share targets, clone commands),
+    /// rebuilt only when the announcement or the owner's NIP-05 changes
+    /// instead of on every render.
+    header_cache: Option<HeaderCache>,
     /// In-flight tasks; finished tasks are pruned on every push, so the vec
     /// stays bounded by the number of concurrent loads.
     tasks: Vec<Task<Result<(), Error>>>,
@@ -298,6 +316,7 @@ impl RepoDetailView {
             tag_select,
             switching_ref: false,
             ref_generation: 0,
+            header_cache: None,
             focus_handle: cx.focus_handle(),
             tasks: Vec::new(),
             _subscriptions: subscriptions,
@@ -308,9 +327,7 @@ impl RepoDetailView {
     /// (not yet published) repository is opened straight from disk. An
     /// announced repository's local clone (if any) is loaded first without
     /// touching the network, so an unreachable server can't block the
-    /// panel; a background fetch then refreshes the refs and commit list
-    /// (a fetch never changes the checked-out files, so the tree and
-    /// previews are left alone).
+    /// panel; a background fetch then refreshes the refs and commit list.
     fn load_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
@@ -427,9 +444,9 @@ impl RepoDetailView {
                     return;
                 }
                 if let Ok(Some((branches, tags, current_branch, head_commit))) = refresh {
-                    let branches: Vec<SharedString> =
-                        branches.into_iter().map(Into::into).collect();
-                    let tags: Vec<SharedString> = tags.into_iter().map(Into::into).collect();
+                    let branches: Vec<SharedString> = branches.iter().map(Into::into).collect();
+                    let tags: Vec<SharedString> = tags.iter().map(Into::into).collect();
+
                     this.branch_select.update(cx, |state, cx| {
                         state.set_items(SearchableVec::from(branches), window, cx);
                         if let Some(branch) = current_branch {
@@ -437,14 +454,22 @@ impl RepoDetailView {
                             state.set_selected_values(&[branch], window, cx);
                         }
                     });
+
                     this.tag_select.update(cx, |state, cx| {
                         state.set_items(SearchableVec::from(tags), window, cx);
                     });
+
+                    let new_head_commit = head_commit.as_ref().map(|c| &c.id);
+                    let current_head_commit = this.head_commit.as_ref().map(|c| &c.id);
+                    let head_changed = new_head_commit != current_head_commit;
                     this.head_commit = head_commit;
-                    // The fetch may have brought new commits: reload the list.
-                    this.all_commits = None;
-                    this.loading_all_commits = false;
-                    this.load_all_commits(cx);
+
+                    if head_changed || this.all_commits.is_none() {
+                        this.all_commits = None;
+                        this.loading_all_commits = false;
+                        this.load_all_commits(cx);
+                    }
+
                     cx.notify();
                 }
             })?;
@@ -455,8 +480,8 @@ impl RepoDetailView {
         self.tasks.push(task);
     }
 
-    /// Apply the loaded repository data: explorer tree, README preview, ref
-    /// selectors and HEAD commit, then start the commit-list walk.
+    /// Apply the loaded repository data: explorer tree, README preview,
+    /// ref selectors and HEAD commit, then start the commit-list walk.
     fn apply_repo_data(&mut self, data: RepoData, window: &mut Window, cx: &mut Context<Self>) {
         let RepoData {
             tree,
@@ -479,10 +504,11 @@ impl RepoDetailView {
             state.set_items(tree_items(tree, false), cx);
         });
 
-        // Populate the branch/tag selectors with the local refs, selecting
-        // the branch HEAD points to.
+        // Populate the branch/tag selectors with the local refs,
+        // selecting the branch HEAD points to.
         let branches: Vec<SharedString> = branches.into_iter().map(Into::into).collect();
         let tags: Vec<SharedString> = tags.into_iter().map(Into::into).collect();
+
         self.branch_select.update(cx, |state, cx| {
             state.set_items(SearchableVec::from(branches), window, cx);
             if let Some(branch) = current_branch {
@@ -490,11 +516,13 @@ impl RepoDetailView {
                 state.set_selected_values(&[branch], window, cx);
             }
         });
+
         self.tag_select.update(cx, |state, cx| {
             state.set_items(SearchableVec::from(tags), window, cx);
         });
 
         self.load_all_commits(cx);
+
         if let Some((path, bytes)) = readme_path.zip(readme) {
             self.readme_name = Some(path.to_string_lossy().into());
             self.load_commit(&path.to_string_lossy(), cx);
@@ -504,10 +532,8 @@ impl RepoDetailView {
         }
     }
 
-    /// Clone the repository into a folder chosen by the user (outside the
-    /// cache), then open the new clone in the system file manager. Like
-    /// ngit's clone, this resolves the announcement's `clone` URLs and
-    /// clones from the first working git server.
+    /// Clone the repository into a folder chosen by the user (outside the cache),
+    /// then open the new clone in the system file manager.
     fn clone_to_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.cloning {
             return;
@@ -722,11 +748,8 @@ impl RepoDetailView {
 
     /// Walk history once for every queued path on a background task, and
     /// cache the latest commit touching each of them in [`Self::commits`]
-    /// (for the file header in the content column).
-    ///
-    /// Batching shares one walk (and its object decodes) across all paths
-    /// queued while the previous walk was in flight, instead of walking the
-    /// full history per file.
+    /// (for the file header in the content column). Batching shares one
+    /// walk across all paths queued while the previous walk was in flight.
     fn load_commits(&mut self, cx: &mut Context<Self>) {
         if self.pending_commits.is_empty() || self.loading_commits {
             return;
@@ -1029,8 +1052,7 @@ impl RepoDetailView {
 
     /// Trigger body for the branch/tag selectors: the kind icon, the
     /// selection (or placeholder) and the caret. `Combobox` replaces its
-    /// default trigger entirely, which is the only way to show an icon
-    /// inside the trigger label.
+    /// default trigger entirely, the only way to show an icon inside it.
     fn render_ref_trigger(
         ctx: &ComboboxTriggerContext<SearchableVec<SharedString>>,
         icon: CustomIconName,
@@ -1201,7 +1223,7 @@ impl RepoDetailView {
     /// The NIP-34 header (actions, issues/PR counts) or, for a local
     /// repository that hasn't been published yet, the local header with an
     /// Init button.
-    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_header(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.local_path.is_some() {
             return self.render_local_header(cx);
         }
@@ -1210,26 +1232,53 @@ impl RepoDetailView {
             return div().into_any_element();
         };
         let store = store_entity.read(cx);
-        let Some(announcement) = store
-            .announcement
-            .as_ref()
-            .or(self.initial.as_ref())
-            .cloned()
-        else {
-            return div().into_any_element();
-        };
         let issue_count = SharedString::from(store.issue_count().to_string());
         let pr_count = SharedString::from(store.pull_request_count().to_string());
+
+        let Some(source) = store.announcement.as_ref().or(self.initial.as_ref()) else {
+            return div().into_any_element();
+        };
+
+        // The header derives bech32 share targets and clone command strings
+        // from the announcement; rebuild them only when the announcement or
+        // the owner's NIP-05 changes, not on every render.
+        let nip05 = ProfileStore::global(cx)
+            .read(cx)
+            .get(&source.owner)
+            .metadata()
+            .nip05
+            .clone()
+            .filter(|nip05| !nip05.trim().is_empty());
+        let key = (source.event_id, nip05);
+
+        if self
+            .header_cache
+            .as_ref()
+            .is_none_or(|cache| cache.key != key)
+        {
+            let announcement = source.clone();
+            let share = ShareTargets::from_announcement(&announcement);
+            let nostr_url = nostr_clone_url(&announcement, key.1.as_deref());
+            self.header_cache = Some(HeaderCache {
+                ngit_command: SharedString::from(format!("git clone {nostr_url}")),
+                nak_command: SharedString::from(format!("nak git clone {nostr_url}")),
+                git_commands: Rc::new(announcement.clone_urls()),
+                share: Rc::new(share),
+                announcement: Rc::new(announcement),
+                key,
+            });
+        }
+
+        let cache = self.header_cache.as_ref().expect("cache just built");
+        let announcement = cache.announcement.clone();
+        let share = cache.share.clone();
+        let ngit_command = cache.ngit_command.clone();
+        let nak_command = cache.nak_command.clone();
+        let git_commands = cache.git_commands.clone();
 
         let name = self.display_name(cx);
         let description = announcement.description();
         let avatar = PixelAvatar::new(format!("{}:{}", announcement.owner, announcement.id));
-        let share = ShareTargets::from_announcement(&announcement);
-
-        let nostr_url = nostr_clone_url(&announcement, cx);
-        let ngit_command = SharedString::from(format!("git clone {nostr_url}"));
-        let nak_command = SharedString::from(format!("nak git clone {nostr_url}"));
-        let git_commands = announcement.clone_urls();
 
         v_flex()
             .on_action(
@@ -1923,9 +1972,7 @@ impl Render for RepoDetailView {
 }
 
 /// Read the worktree state of `repo` (no network): entries, README, refs
-/// and HEAD commit. The tree is built off the main thread; the seeds are
-/// plain owned strings and convert to `TreeItem`s (which hold `Rc` state)
-/// on the main thread.
+/// and HEAD commit.
 fn load_repo_data(repo: &Repository) -> Result<RepoData, Error> {
     let entries = signed_git::worktree_entries(repo)?;
     let tree = build_tree_items(&entries);
@@ -1961,16 +2008,11 @@ fn load_repo_data(repo: &Repository) -> Result<RepoData, Error> {
 
 /// The `nostr://...` clone URL of an announcement (NIP-34): the owner as a
 /// NIP-05 identifier when known (npub otherwise), the first announced relay
-/// as a hint, and the repository identifier.
-fn nostr_clone_url(announcement: &Announcement, cx: &App) -> SharedString {
+/// as a hint, and the repository identifier. `nip05` is the owner's
+/// NIP-05 identifier from the profile store, already blank-filtered.
+fn nostr_clone_url(announcement: &Announcement, nip05: Option<&str>) -> SharedString {
     let owner = announcement.owner;
-    let user = ProfileStore::global(cx)
-        .read(cx)
-        .get(&owner)
-        .metadata()
-        .nip05
-        .as_deref()
-        .filter(|nip05| !nip05.trim().is_empty())
+    let user = nip05
         .map(str::to_owned)
         .unwrap_or_else(|| owner.to_bech32().unwrap_or_else(|_| owner.to_hex()));
 

@@ -417,9 +417,8 @@ impl SidebarPanel {
         )
     }
 
-    /// Sign-in placeholder shown while logged out: the banner artwork fills the
-    /// panel behind a scrim that ends in a solid black band, keeping the CTA
-    /// buttons readable on a clean dark surface in both themes.
+    /// Sign-in placeholder shown while logged out: banner artwork behind a
+    /// scrim so the CTA buttons stay readable in both themes.
     fn render_sign_in(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         v_flex()
             .size_full()

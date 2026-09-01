@@ -7,12 +7,10 @@ use gpui_component::ActiveTheme as _;
 
 use crate::Panel;
 
-/// Stands in for a panel this build cannot construct — one whose `panel_name`
-/// no [`PanelRegistry`](gpui_base::dock::PanelRegistry) builder answers to.
-///
-/// It reports the original [`PanelState`] from
-/// [`dump`](gpui_base::dock::Panel::dump), so a layout written by a build that
-/// knows the panel survives a load and a save here rather than losing it.
+/// Stands in for a panel this build cannot construct. It reports the
+/// original [`PanelState`] from [`dump`](gpui_base::dock::Panel::dump), so
+/// a layout written by a build that knows the panel survives a load and
+/// save here.
 pub(crate) struct InvalidPanel {
     name: SharedString,
     focus_handle: FocusHandle,

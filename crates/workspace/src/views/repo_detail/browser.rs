@@ -39,12 +39,9 @@ pub(super) enum FileContent {
 
 /// A markdown document loaded into a persistent [`TextViewState`].
 ///
-/// The state is owned by the view rather than created per render (as the
-/// stateless `text::markdown` helper does), so it survives branch switches
-/// in the content pane. GPUI's keyed element state is dropped as soon as the
-/// element is absent for a single frame, which would otherwise re-parse the
-/// whole document on the main thread every time the pane switches between
-/// the README, a file preview, and the loading spinner.
+/// The state is owned by the view rather than created per render: GPUI
+/// drops keyed element state after one absent frame, which would re-parse
+/// the whole document on every pane switch (README / file / spinner).
 pub(super) struct MarkdownView {
     /// Source path; `None` means the repository README.
     pub(super) path: Option<SharedString>,
@@ -53,11 +50,7 @@ pub(super) struct MarkdownView {
 
 /// A code file loaded into a persistent [`InputState`], rendered as a
 /// disabled (read-only) code editor with syntax highlighting, line numbers
-/// and search.
-///
-/// Same persistence rationale as [`MarkdownView`]: the state lives as long
-/// as this view, so re-viewing the same file does not re-parse it, and
-/// parsing happens on a background task inside the editor.
+/// and search. Persistent for the same reason as [`MarkdownView`].
 pub(super) struct CodeView {
     /// Source path, relative to the worktree root.
     pub(super) path: SharedString,
@@ -230,9 +223,7 @@ impl RepoDetailView {
     /// Load `text` into the persistent markdown TextView state.
     ///
     /// The state is created empty and fed via `push_str`, which parses on a
-    /// background task: switching files never blocks the main thread, and
-    /// the state lives as long as this view, so re-viewing the same document
-    /// does not re-parse it.
+    /// background task, so switching files never blocks the main thread.
     pub(super) fn set_markdown(
         &mut self,
         path: Option<SharedString>,
@@ -269,10 +260,8 @@ impl RepoDetailView {
     /// Load `text` into the persistent code editor state for `path`.
     ///
     /// The state is created in code editor mode so the Input renders it as
-    /// a syntax-highlighted, read-only editor. Like [`set_markdown`], the
-    /// state lives as long as this view, so re-viewing the same file does
-    /// not re-parse it; the tree-sitter parse runs on a background task
-    /// inside the editor instead of blocking the main thread.
+    /// a syntax-highlighted, read-only editor; the tree-sitter parse runs
+    /// on a background task like [`set_markdown`]'s.
     pub(super) fn set_code(
         &mut self,
         path: SharedString,

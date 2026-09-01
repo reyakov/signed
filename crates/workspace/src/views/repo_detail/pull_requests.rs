@@ -17,7 +17,7 @@ use gpui_component::scroll::Scrollbar;
 use gpui_component::{
     ActiveTheme, Icon, Sizable, VirtualListScrollHandle, WindowExt, h_flex, v_flex, v_virtual_list,
 };
-use nostr::prelude::{Event, EventId, Kind};
+use nostr::prelude::{EventId, Kind};
 use signed_core::{RepoStatus, activity_subject};
 use signed_state::{ProfileStore, RepoStore};
 use utils::relative_time;
@@ -26,11 +26,8 @@ use super::helpers::{placeholder, status_badge};
 use super::pull_request_detail::PullRequestDetailView;
 use crate::image_cache::{MAX_IMAGES, image_cache};
 
-/// Height of one pull request row in the virtual list: same layout as an
-/// issue row (8px vertical padding (`py_2`) on top and bottom, a 32px title
-/// line (`h_8`) and a 24px meta line (`h_6`), plus the 1px bottom border),
-/// so the row totals 73px. The status badge (`size_7`, 28px) is shorter
-/// than the content.
+/// Height of one pull request row in the virtual list; same layout as an
+/// issue row.
 const PR_ROW_HEIGHT: f32 = 73.;
 
 /// Status filter of the pull request list, chosen via the header's filter
@@ -51,14 +48,14 @@ enum PullRequestFilter {
 }
 
 impl PullRequestFilter {
-    /// Whether `pr` (of `store`) is included by this filter.
-    fn matches(self, store: &RepoStore, pr: &Event) -> bool {
+    /// Whether a pull request with `status` is included by this filter.
+    fn matches(self, status: RepoStatus) -> bool {
         match self {
             Self::All => true,
-            Self::Open => store.status_of(pr) == RepoStatus::Open,
-            Self::Closed => store.status_of(pr) == RepoStatus::Closed,
-            Self::Draft => store.status_of(pr) == RepoStatus::Draft,
-            Self::Merged => store.status_of(pr) == RepoStatus::Applied,
+            Self::Open => status == RepoStatus::Open,
+            Self::Closed => status == RepoStatus::Closed,
+            Self::Draft => status == RepoStatus::Draft,
+            Self::Merged => status == RepoStatus::Applied,
         }
     }
 }
@@ -79,10 +76,16 @@ pub struct PullRequestsView {
     /// pull request count); rebuilt on change.
     pr_len: usize,
     /// Indices into the store's `pull_requests` matching [`Self::filter`]
-    /// (root PR events only; updates are revisions of the root and are not
-    /// listed separately), rebuilt every render; the virtual list renders
-    /// this slice.
+    /// (root PR events only; updates are revisions of the root); the
+    /// virtual list renders this slice. Rebuilt only when the store
+    /// version or the filter changes, keyed by [`Self::cache_key`].
     visible_prs: Vec<usize>,
+    /// Header counts `(total, open, closed, draft, merged)` of the root
+    /// pull requests only (revisions are not separate PRs), rebuilt with
+    /// [`Self::visible_prs`].
+    counts: (usize, usize, usize, usize, usize),
+    /// Store version and filter the cached rows/counts were built from.
+    cache_key: Option<(u64, PullRequestFilter)>,
     /// Virtual list state of the pull requests list.
     scroll_handle: VirtualListScrollHandle,
 }
@@ -104,6 +107,8 @@ impl PullRequestsView {
             item_sizes: Rc::new(Vec::new()),
             pr_len: 0,
             visible_prs: Vec::new(),
+            counts: (0, 0, 0, 0, 0),
+            cache_key: None,
             scroll_handle: VirtualListScrollHandle::new(),
         }
     }
@@ -206,16 +211,9 @@ impl PullRequestsView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let store = self.store.read(cx);
-        let (total, open, closed, draft, merged) = store.pull_requests.iter().fold(
-            (0usize, 0usize, 0usize, 0usize, 0usize),
-            |(total, open, closed, draft, merged), pr| match store.status_of(pr) {
-                RepoStatus::Open => (total + 1, open + 1, closed, draft, merged),
-                RepoStatus::Closed => (total + 1, open, closed + 1, draft, merged),
-                RepoStatus::Draft => (total + 1, open, closed, draft + 1, merged),
-                RepoStatus::Applied => (total + 1, open, closed, draft, merged + 1),
-            },
-        );
+        // Counts of the last list rebuild (`render` rebuilds first when the
+        // store version or filter changed, so this is never stale).
+        let (total, open, closed, draft, merged) = self.counts;
 
         h_flex()
             .px_4()
@@ -541,19 +539,38 @@ impl Render for PullRequestsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filter = self.filter;
 
-        // Indices of the root pull requests matching the active filter
-        // (updates are revisions of the root and are not listed
-        // separately); the virtual list renders this filtered slice.
-        self.visible_prs = {
+        // Rebuild the filtered rows and header counts only when the store
+        // refreshed or the filter changed; other renders reuse the cache.
+        let version = self.store.read(cx).version();
+        if self.cache_key != Some((version, filter)) {
             let store = self.store.read(cx);
-            store
+            let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize);
+            self.visible_prs = store
                 .pull_requests
                 .iter()
                 .enumerate()
-                .filter(|(_, pr)| pr.kind == Kind::GitPullRequest && filter.matches(store, pr))
-                .map(|(ix, _)| ix)
-                .collect()
-        };
+                .filter_map(|(ix, pr)| {
+                    // Kind-30620 patches are revisions of a root PR (NIP-34),
+                    // not separate pull requests: count only root events, or
+                    // the header counts inflate with every revision (which
+                    // also default to `Open` in `status_of`).
+                    if pr.kind != Kind::GitPullRequest {
+                        return None;
+                    }
+                    let status = store.status_of(pr);
+                    counts.0 += 1;
+                    match status {
+                        RepoStatus::Open => counts.1 += 1,
+                        RepoStatus::Closed => counts.2 += 1,
+                        RepoStatus::Draft => counts.3 += 1,
+                        RepoStatus::Applied => counts.4 += 1,
+                    }
+                    filter.matches(status).then_some(ix)
+                })
+                .collect();
+            self.counts = counts;
+            self.cache_key = Some((version, filter));
+        }
 
         let count = self.visible_prs.len();
 

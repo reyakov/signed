@@ -7,17 +7,13 @@ use gpui_component::{Theme, ThemeRegistry, theme};
 use gpui_platform::application;
 
 fn main() {
-    // Initialize logging
     tracing_subscriber::fmt::init();
 
     application()
         .with_assets(Assets)
         .with_http_client(Arc::new(reqwest_client::ReqwestClient::new()))
         .run(move |cx| {
-            // Initialize components
             gpui_component::init(cx);
-
-            // Initialize theme
             theme::init(cx);
 
             // Register the built-in "Signed" theme (light + dark variants)
@@ -49,10 +45,9 @@ fn main() {
                 tracing::warn!("Signed Dark theme is missing from the registry");
             }
 
-            // Sync the theme with the system appearance
             Theme::sync_system_appearance(None, cx);
 
-            // Initialize backend and stores (connects relays, restores session)
+            // Connects relays and restores the session.
             std::fs::create_dir_all(paths::nostr_dir()).ok();
             signed_state::init(paths::nostr_dir(), cx);
 
@@ -60,15 +55,9 @@ fn main() {
             std::fs::create_dir_all(paths::repos_dir()).ok();
             signed_state::GitStore::set_global(paths::repos_dir().clone(), cx);
 
-            // Set app identity
             cx.set_app_identity("su.reya.signed", "Signed");
 
-            // Set up the window options
             let bounds = Bounds::centered(None, size(px(1120.0), px(750.0)), cx);
-
-            // The dock's tab bar acts as the window title bar: the app owns
-            // title-bar dragging (via `start_window_move` on the tab bar), so
-            // AppKit must not treat the top strip as a native drag region.
             let opts = WindowOptions {
                 window_background: WindowBackgroundAppearance::Opaque,
                 window_decorations: Some(WindowDecorations::Client),
@@ -78,7 +67,7 @@ fn main() {
                 app_id: Some("Signed".to_owned()),
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::new_static("Signed")),
-                    // AppKit's traffic-light buttons are 14 pt tall; offset them so their vertical center matches the tab bar.
+                    // Center the 14pt traffic-light buttons on the tab bar.
                     traffic_light_position: Some(point(
                         px(9.0),
                         px(TAB_BAR_HEIGHT / px(2.) - 14. / 2.),
@@ -94,7 +83,6 @@ fn main() {
             })
             .detach();
 
-            // Bring the app to the foreground
             cx.activate(true);
         });
 }

@@ -22,8 +22,7 @@ impl Global for GlobalRepoListStore {}
 
 /// Counts of NIP-34 activity events per repository, used to rank the
 /// explore list by popularity. Each patch event is a pushed commit (or a
-/// small commit series), which is the closest cross-repository proxy for
-/// commit count available from event data alone.
+/// small series), the closest proxy for commit count in the event data.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RepoActivityCounts {
     /// Root `30611` issue events addressed to the repository.

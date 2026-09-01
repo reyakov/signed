@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::Error;
@@ -33,11 +33,21 @@ pub struct RepoStore {
     pub pull_requests: Vec<Event>,
     /// Comments on issues / PRs, oldest first.
     pub comments: Vec<Event>,
-    statuses: Vec<Event>,
+    /// Resolved status per root event (issue / patch / PR), recomputed on
+    /// every refresh so render paths are HashMap lookups instead of
+    /// scanning all status events per root.
+    status_by_root: HashMap<EventId, RepoStatus>,
+    /// Open issue / root PR counts, computed with [`Self::status_by_root`]
+    /// on every refresh.
+    open_issue_count: usize,
+    open_pr_count: usize,
     /// Kind-1624 cover notes and kind-1985 label events referencing this
     /// repository's roots (ngit / GitWorkshop extensions).
     cover_notes: Vec<Event>,
     labels: Vec<Event>,
+    /// Incremented on every applied refresh; views key their derived-data
+    /// caches to it instead of recomputing on every render.
+    version: u64,
     /// Error of the last action initiated from this store, if any.
     pub last_error: Option<String>,
     /// Relays announced by this repository (NIP-34 `relays` tag) that we
@@ -111,9 +121,12 @@ impl RepoStore {
             patches: Vec::new(),
             pull_requests: Vec::new(),
             comments: Vec::new(),
-            statuses: Vec::new(),
+            status_by_root: HashMap::new(),
+            open_issue_count: 0,
+            open_pr_count: 0,
             cover_notes: Vec::new(),
             labels: Vec::new(),
+            version: 0,
             last_error: None,
             repo_relays: HashSet::new(),
             root_fetches: HashSet::new(),
@@ -141,8 +154,13 @@ impl RepoStore {
     /// deletions targeting it.
     fn repo_filters(addr: &RepoAddr) -> Vec<Filter> {
         let mut filters = vec![
-            filters::announcement(addr),
-            filters::state(addr),
+            // Announcement and state share author and identifier, so they
+            // combine into one filter: one fewer negentropy reconciliation
+            // per relay when fetching from the repo's announced relays.
+            Filter::new()
+                .kinds([Kind::GitRepoAnnouncement, Kind::RepoState])
+                .author(addr.public_key)
+                .identifier(addr.identifier.clone()),
             filters::activity(addr),
         ];
         // Deletion requests (NIP-09/62) must be known before any event of
@@ -293,7 +311,7 @@ impl RepoStore {
                 .chain(&pull_requests)
                 .map(|e| e.id);
             for root in roots {
-                for event in db.query(filters::statuses_for(root)).await? {
+                for event in db.query(filters::statuses_for([root])).await? {
                     if seen_statuses.insert(event.id) {
                         statuses.push(event);
                     }
@@ -312,7 +330,7 @@ impl RepoStore {
                 .chain(&pull_requests)
                 .map(|e| e.id);
             for root in roots {
-                for event in db.query(filters::annotations_for(root)).await? {
+                for event in db.query(filters::annotations_for([root])).await? {
                     if deletions.is_deleted(&event) {
                         continue;
                     }
@@ -331,13 +349,36 @@ impl RepoStore {
             sort_newest_first(&mut cover_notes);
             sort_newest_first(&mut labels);
 
+            // Resolve every root's status once here; render paths do
+            // HashMap lookups instead of scanning all status events per
+            // root (quadratic, with an allocation per pair).
+            let maintainers = announcement
+                .as_ref()
+                .map(Announcement::effective_maintainers)
+                .unwrap_or_default();
+            let status_by_root =
+                resolve_statuses(&issues, &patches, &pull_requests, &statuses, &maintainers);
+            let open_issue_count = issues
+                .iter()
+                .filter(|issue| status_of(&status_by_root, issue) == RepoStatus::Open)
+                .count();
+            let open_pr_count = pull_requests
+                .iter()
+                .filter(|pr| {
+                    pr.kind == Kind::GitPullRequest
+                        && status_of(&status_by_root, pr) == RepoStatus::Open
+                })
+                .count();
+
             Ok::<_, Error>((
                 announcement,
                 state,
                 issues,
                 patches,
                 pull_requests,
-                statuses,
+                status_by_root,
+                open_issue_count,
+                open_pr_count,
                 comments,
                 cover_notes,
                 labels,
@@ -353,7 +394,9 @@ impl RepoStore {
                 issues,
                 patches,
                 pull_requests,
-                statuses,
+                status_by_root,
+                open_issue_count,
+                open_pr_count,
                 comments,
                 cover_notes,
                 labels,
@@ -389,9 +432,12 @@ impl RepoStore {
                 this.patches = patches;
                 this.pull_requests = pull_requests;
                 this.comments = comments;
-                this.statuses = statuses;
+                this.status_by_root = status_by_root;
+                this.open_issue_count = open_issue_count;
+                this.open_pr_count = open_pr_count;
                 this.cover_notes = cover_notes;
                 this.labels = labels;
+                this.version = this.version.wrapping_add(1);
 
                 // Comments, statuses without an `a` tag, cover notes and
                 // labels are not addressed to the repository, so fetch them
@@ -411,25 +457,18 @@ impl RepoStore {
                     .collect();
                 if !new_roots.is_empty() {
                     this.root_fetches.extend(new_roots.iter().copied());
-                    let comment_filters = filters::comments_for(new_roots.clone());
-                    let status_filters: Vec<Filter> = new_roots
-                        .iter()
-                        .copied()
-                        .map(filters::statuses_for)
-                        .collect();
-                    let annotation_filters: Vec<Filter> = new_roots
-                        .into_iter()
-                        .map(filters::annotations_for)
-                        .collect();
+                    // Batch the per-root filters: one statuses filter and one
+                    // annotations filter covering all new roots, instead of
+                    // one filter per root (each filter is a separate
+                    // negentropy reconciliation per relay).
+                    let mut root_filters = filters::comments_for(new_roots.clone());
+                    root_filters.push(filters::statuses_for(new_roots.iter().copied()));
+                    root_filters.push(filters::annotations_for(new_roots));
                     let announced: Vec<RelayUrl> = this.repo_relays.iter().cloned().collect();
                     let backend = Backend::global(cx);
                     backend.update(cx, |backend, cx| {
-                        backend.subscribe_bootstrap(comment_filters.clone(), cx);
-                        backend.connect_repo_relays(announced.clone(), comment_filters, cx);
-                        backend.subscribe_bootstrap(status_filters.clone(), cx);
-                        backend.connect_repo_relays(announced.clone(), status_filters, cx);
-                        backend.subscribe_bootstrap(annotation_filters.clone(), cx);
-                        backend.connect_repo_relays(announced, annotation_filters, cx);
+                        backend.subscribe_bootstrap(root_filters.clone(), cx);
+                        backend.connect_repo_relays(announced, root_filters, cx);
                     });
                 }
 
@@ -454,20 +493,17 @@ impl RepoStore {
         }));
     }
 
-    /// Resolve the status of a root event (issue / patch / PR) per NIP-34.
+    /// Resolve the status of a root event (issue / patch / PR) per NIP-34:
+    /// a lookup into the map built on the last refresh.
     pub fn status_of(&self, root: &Event) -> RepoStatus {
-        let maintainers = self
-            .announcement
-            .as_ref()
-            .map(Announcement::effective_maintainers)
-            .unwrap_or_default();
+        status_of(&self.status_by_root, root)
+    }
 
-        let events = self
-            .statuses
-            .iter()
-            .filter(|e| signed_core::references_root(e, &root.id));
-
-        signed_core::resolve_status(events, &root.pubkey, &maintainers)
+    /// Refresh generation, incremented on every applied refresh. Views use
+    /// it to key their derived-data caches (filtered lists, counts) so
+    /// renders that change nothing stay O(1).
+    pub fn version(&self) -> u64 {
+        self.version
     }
 
     /// The effective cover note of `root` (kind 1624), if any: the latest
@@ -509,21 +545,16 @@ impl RepoStore {
 
     /// Number of open issues: issues whose resolved status is
     /// [`RepoStatus::Open`] (issues without status events default to open).
+    /// Cached on the last refresh.
     pub fn issue_count(&self) -> usize {
-        self.issues
-            .iter()
-            .filter(|issue| self.status_of(issue) == RepoStatus::Open)
-            .count()
+        self.open_issue_count
     }
 
     /// Number of open pull requests: root PR events (not PR updates, whose
     /// status is carried by the root) with a resolved status of
-    /// [`RepoStatus::Open`].
+    /// [`RepoStatus::Open`]. Cached on the last refresh.
     pub fn pull_request_count(&self) -> usize {
-        self.pull_requests
-            .iter()
-            .filter(|pr| pr.kind == Kind::GitPullRequest && self.status_of(pr) == RepoStatus::Open)
-            .count()
+        self.open_pr_count
     }
 
     /// Whether `user` is the author (owner) of this repository: the public
@@ -586,15 +617,12 @@ impl RepoStore {
     /// (kind 1617) carrying the `git format-patch` output, which the PR
     /// references via an `e` tag (NIP-34).
     ///
-    /// The patch is published first and the PR is sent once the patch
-    /// event's id is known, so the two always arrive together. The proposed
-    /// commit is parsed from the patch's `From <commit>` header; publishing
-    /// without one is refused, because the PR's `c` tag (and the patch's
-    /// `commit`/`r` tags) must carry a real commit id for other NIP-34
-    /// clients to verify and apply the proposal. The PR's `clone` tag
-    /// carries the repository's announced mirror URLs (the commit may not be
-    /// pushed there yet; the linked patch is the source of truth until a
-    /// push backend exists).
+    /// The patch is published first so the PR can reference its id. The
+    /// proposed commit is parsed from the patch's `From <commit>` header;
+    /// without one publishing is refused, because the PR's `c` tag must
+    /// carry a real commit id for other NIP-34 clients to verify and apply
+    /// the proposal. The `clone` tag carries the announced mirror URLs; the
+    /// linked patch is the source of truth until the commit is pushed there.
     pub fn open_pull_request(
         &mut self,
         subject: Option<String>,
@@ -783,10 +811,9 @@ impl RepoStore {
     /// the merged status.
     ///
     /// Only the repository author may merge. The clone is created on demand
-    /// from the announcement's clone URLs when the repository hasn't been
-    /// mirrored locally yet. Patch application runs on a background thread
-    /// (`git am`); failures (e.g. a patch that no longer applies) surface in
-    /// [`Self::last_error`] and no status is sent.
+    /// from the announcement's clone URLs when needed. Patch application
+    /// (`git am`) runs on a background thread; failures (e.g. a patch that
+    /// no longer applies) surface in [`Self::last_error`].
     pub fn merge_pull_request(&mut self, root: &Event, cx: &mut Context<Self>) {
         self.last_error = None;
 
@@ -860,6 +887,49 @@ where
     events.into_iter().max_by_key(|e| e.created_at)
 }
 
+/// Status of `root` from the precomputed map; roots without status events
+/// default to [`RepoStatus::Open`], like [`signed_core::resolve_status`].
+fn status_of(status_by_root: &HashMap<EventId, RepoStatus>, root: &Event) -> RepoStatus {
+    status_by_root
+        .get(&root.id)
+        .copied()
+        .unwrap_or(RepoStatus::Open)
+}
+
+/// Resolve the status of every root event in one pass: status events are
+/// indexed by the root they reference (`e`/`E` tag), then each root
+/// resolves against its own slice. O(roots + statuses) instead of the
+/// O(roots × statuses) of resolving per root on demand.
+fn resolve_statuses(
+    issues: &[Event],
+    patches: &[Event],
+    pull_requests: &[Event],
+    statuses: &[Event],
+    maintainers: &[PublicKey],
+) -> HashMap<EventId, RepoStatus> {
+    let mut by_root: HashMap<EventId, Vec<&Event>> = HashMap::new();
+    for event in statuses {
+        for tag in event.tags.iter() {
+            if matches!(tag.kind(), "e" | "E")
+                && let Some(id) = tag.content().and_then(|hex| EventId::from_hex(hex).ok())
+            {
+                by_root.entry(id).or_default().push(event);
+            }
+        }
+    }
+
+    issues
+        .iter()
+        .chain(patches)
+        .chain(pull_requests)
+        .map(|root| {
+            let events = by_root.get(&root.id).map(Vec::as_slice).unwrap_or(&[]);
+            let status = signed_core::resolve_status(events.iter().copied(), &root.pubkey, maintainers);
+            (root.id, status)
+        })
+        .collect()
+}
+
 fn sort_newest_first(events: &mut [Event]) {
     events.sort_by_key(|e| std::cmp::Reverse(e.created_at));
 }
@@ -876,12 +946,10 @@ fn patch_current_commit(patch: &str) -> Option<&str> {
     hex.split_whitespace().next().filter(|hex| hex.len() == 40)
 }
 
-/// Build a NIP-22 kind-1111 comment using the SDK's [`CommentBuilder`]:
-/// uppercase `E`/`K`/`P` tags scope the thread root, lowercase `e`/`k`/`p`
-/// tags the direct parent (`parent`, or the root itself for a top-level
-/// comment). An `a` tag with the repository coordinate is added so Signed's
-/// own activity subscriptions also match the comment (it is not part of
-/// NIP-22).
+/// Build a NIP-22 kind-1111 comment: uppercase `E`/`K`/`P` tags scope the
+/// thread root, lowercase `e`/`k`/`p` the direct parent (or the root for a
+/// top-level comment). An `a` tag with the repository coordinate (not part
+/// of NIP-22) is added so Signed's own activity subscriptions also match.
 fn comment_builder(
     root: &Event,
     parent: Option<&Event>,

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use nostr::prelude::*;
 
 use crate::RepoAddr;
@@ -40,8 +42,10 @@ pub fn activity(addr: &RepoAddr) -> Filter {
     Filter::new().kinds(ACTIVITY_KINDS).coordinate(addr)
 }
 
-/// Status events (`1630..=1633`) referencing a specific root event (`#e` tag).
-pub fn statuses_for(root: EventId) -> Filter {
+/// Status events (`1630..=1633`) referencing any of the given root events
+/// (`#e` tag). Batched: one filter covers all roots, so a negentropy sync
+/// reconciles them in a single session instead of one per root.
+pub fn statuses_for(roots: impl IntoIterator<Item = EventId>) -> Filter {
     Filter::new()
         .kinds([
             Kind::GitStatusOpen,
@@ -49,16 +53,17 @@ pub fn statuses_for(root: EventId) -> Filter {
             Kind::GitStatusClosed,
             Kind::GitStatusDraft,
         ])
-        .event(root)
+        .events(roots)
 }
 
-/// Cover notes (kind 1624) and NIP-32 label events (kind 1985) referencing a
-/// specific root event (`#e` tag), fetched per root like comments and
-/// statuses because they carry no repository `a` tag.
-pub fn annotations_for(root: EventId) -> Filter {
+/// Cover notes (kind 1624) and NIP-32 label events (kind 1985) referencing
+/// any of the given root events (`#e` tag), fetched per root like comments
+/// and statuses because they carry no repository `a` tag. Batched, like
+/// [`statuses_for`].
+pub fn annotations_for(roots: impl IntoIterator<Item = EventId>) -> Filter {
     Filter::new()
         .kinds([crate::COVER_NOTE_KIND, Kind::Label])
-        .event(root)
+        .events(roots)
 }
 
 /// A user's grasp list (kind `10317`).
@@ -71,11 +76,10 @@ pub fn grasp_list(public_key: PublicKey) -> Filter {
 /// NIP-22 comments (kind `1111`) referencing any of the given root events
 /// (issues, patches, PRs).
 ///
-/// Comments are not addressed to the repository — they carry no `a` tag with
-/// the repo coordinate — so they must be fetched by their root reference
-/// instead. NIP-22 defines the uppercase `E` tag as the root of the thread
-/// (used by ngit) while some clients (including Signed itself) reference the
-/// root with a lowercase `e` tag, so both are matched.
+/// Comments carry no repository `a` tag, so they must be fetched by their
+/// root reference. NIP-22 defines the uppercase `E` tag as the thread root
+/// (used by ngit), but some clients (including Signed) use a lowercase `e`
+/// tag, so both are matched.
 ///
 /// Returns two filters because `#E` and `#e` conditions would be ANDed if
 /// combined into one.
@@ -110,12 +114,28 @@ pub fn all_announcements() -> Filter {
     Filter::new().kind(Kind::GitRepoAnnouncement)
 }
 
-/// All deletion-related events (NIP-09 kind `5`, NIP-62 kind `62`).
+/// How far back deletion requests are fetched and stored.
 ///
-/// Unbounded, like [`all_announcements`]: deletion requests must be known
-/// before any other event can be shown.
+/// A deletion request can only target events created before it, and NIP-34
+/// events are all far younger than this window, so older requests can never
+/// match anything shown. Bounding the window keeps the kind-5/62 set (one of
+/// the largest on public relays) from being fully reconciled on every sync.
+const DELETIONS_LOOKBACK: Duration = Duration::from_secs(3 * 365 * 86_400);
+
+/// `now` minus [`DELETIONS_LOOKBACK`], quantized to whole days so identical
+/// filters hash the same and the backend's sync dedup can match them.
+fn deletions_since() -> Timestamp {
+    let now = Timestamp::now().as_secs();
+    Timestamp::from_secs(now - now % 86_400) - DELETIONS_LOOKBACK
+}
+
+/// All deletion-related events (NIP-09 kind `5`, NIP-62 kind `62`) within
+/// [`DELETIONS_LOOKBACK`]. Deletion requests must be known before any other
+/// event can be shown.
 pub fn deletions() -> Filter {
-    Filter::new().kinds([Kind::EventDeletion, Kind::RequestToVanish])
+    Filter::new()
+        .kinds([Kind::EventDeletion, Kind::RequestToVanish])
+        .since(deletions_since())
 }
 
 /// Deletion events relevant to a single repository: requests authored by

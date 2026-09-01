@@ -70,10 +70,9 @@ const SCAN_SKIPPED_DIRS: [&str; 1] = ["node_modules"];
 /// Walk `root` recursively and collect the paths of git repositories
 /// (directories containing a `.git` entry) below it.
 ///
-/// Hidden entries and symlinks are skipped, and directories that are
-/// themselves repositories are not descended into (so nested repositories,
-/// like submodule worktrees, are not reported). Results are canonicalized,
-/// deduplicated and sorted by path.
+/// Hidden entries and symlinks are skipped; repositories are not descended
+/// into, so nested ones (e.g. submodule worktrees) are not reported.
+/// Results are canonicalized, deduplicated and sorted.
 pub fn find_git_repos(root: &Path) -> Vec<PathBuf> {
     let mut repos = Vec::new();
     if !root.is_dir() {
@@ -121,11 +120,9 @@ pub fn find_git_repos(root: &Path) -> Vec<PathBuf> {
 /// Clone a repository into `path` from the first working URL in
 /// `clone_urls` (the announcement's `clone` tag), then fetch the
 /// `refs/nostr/*` PR refs like the cache clone does. The destination must
-/// not exist yet; it is created by the clone. The first URL that works
-/// wins; when none do, the error of the last failing URL is returned.
+/// not exist yet. When no URL works, the last error is returned.
 ///
-/// Unlike [`GitCache::ensure_clone`], the clone is not kept in any cache;
-/// callers open it themselves if they need a [`gix::Repository`].
+/// Unlike [`GitCache::ensure_clone`], the clone is not kept in any cache.
 pub fn clone_repo(clone_urls: &[String], path: &Path) -> Result<()> {
     if path.exists() {
         bail!("destination {} already exists", path.display());
@@ -218,8 +215,8 @@ fn clone(url: &str, path: &Path) -> Result<gix::Repository> {
 /// `README.md` derived from `name`/`description`, and create the initial
 /// commit. Returns the initial commit id.
 ///
-/// Uses the git CLI (like [`apply_patch`]) because it handles the plumbing
-/// (index writes, ref updates, default branch selection) natively.
+/// Uses the git CLI (like [`apply_patch`]), which handles index writes,
+/// ref updates and default branch selection natively.
 pub fn init_repository(path: &Path, name: &str, description: &str) -> Result<String> {
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create {}", path.display()))?;
@@ -371,11 +368,8 @@ fn git_in(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 /// Map an untrusted repository id (or display name) to a safe single path
-/// component.
-///
-/// Replaces everything outside `[A-Za-z0-9._-]` with `_`, and rejects the
-/// special components `.` and `..` so the id can't escape a directory it is
-/// joined onto.
+/// component: everything outside `[A-Za-z0-9._-]` becomes `_`, and the
+/// special components `.` and `..` are rejected.
 pub fn sanitize_path_component(id: &str) -> String {
     let sanitized: String = id
         .chars()
@@ -517,12 +511,9 @@ fn file_commit(commit: &gix::Commit<'_>, include_description: bool) -> Result<Fi
 }
 
 /// Find the most recent commit that changed `rel` (a path relative to the
-/// worktree), like `git log -1 -- <rel>` does for non-merge commits.
-///
-/// Walks history from `HEAD` newest-first and returns the first commit whose
-/// tree entry for `rel` differs from its first parent's; a merge that only
-/// changed the file through its second parent is therefore not reported.
-/// Returns `Ok(None)` if no commit touched the file (e.g. untracked files).
+/// worktree), like `git log -1 -- <rel>`: the first commit, walking from
+/// `HEAD` newest-first, whose tree entry for `rel` differs from its first
+/// parent's. `Ok(None)` when no commit touched the file (e.g. untracked).
 pub fn last_commit(repo: &gix::Repository, rel: &Path) -> Result<Option<FileCommit>> {
     let rel = rel.to_path_buf();
     Ok(last_commits(repo, std::slice::from_ref(&rel))?
@@ -727,10 +718,8 @@ pub struct CommitDiff {
 }
 
 /// The changes of the commit `id` (short or full) in the repository at
-/// `workdir`, compared against its first parent (the empty tree for the root
-/// commit), like `git show`. Directory entries and submodules are skipped;
-/// their contents are reported as individual file changes. Files are sorted
-/// by path.
+/// `workdir`, compared against its first parent (the empty tree for the
+/// root commit), like `git show`. Files are sorted by path.
 pub fn worktree_commit_diff(workdir: &Path, id: &str) -> Result<CommitDiff> {
     commit_diff(&open_with_cache(workdir)?, id)
 }

@@ -27,11 +27,7 @@ use crate::tiles::SignedTilesSkin;
 use crate::{TAB_BAR_HEIGHT, panel_handle};
 
 /// What every part of the skin reads, and the dock area it belongs to.
-///
-/// The renderer is the only skin-owned object in the picture, so the settings
-/// the old `DockArea` carried live here. It is shared by reference with the
-/// per-container renderers, which are built once each and outlive any one
-/// frame.
+/// Shared by reference with the per-container renderers.
 pub(crate) struct SkinShared {
     area: WeakEntity<DockArea>,
     toggle_button_visible: Cell<bool>,
@@ -201,10 +197,9 @@ impl DockAreaRenderer for SignedDockSkin {
             .into_any_element()
     }
 
-    /// The "unknown panel" message the old `InvalidPanel` drew.
-    ///
-    /// It answers `dump` with the state it was handed, so a layout written by
-    /// a build that knows the panel survives a load and save here.
+    /// The "unknown panel" message the old `InvalidPanel` drew. It answers
+    /// `dump` with the state it was handed, so a layout written by a build
+    /// that knows the panel survives a load and save here.
     fn build_placeholder(
         &self,
         state: &PanelState,
@@ -246,12 +241,10 @@ impl SignedDockSkin {
     }
 }
 
-/// Turns the window's mouse stream into dock resizing.
-///
-/// A resize is driven by pointer moves that land anywhere in the window, not
-/// only on the handle, so it cannot be expressed as a listener on the handle
-/// itself. This element paints nothing and exists for its `paint` hook, which
-/// is the only place a window-level mouse listener can be registered.
+/// Turns the window's mouse stream into dock resizing. A resize is driven
+/// by pointer moves anywhere in the window, so this paints nothing and
+/// exists for its `paint` hook — the only place a window-level mouse
+/// listener can be registered.
 struct DockResizeTracker {
     dock: DockContext,
     shared: Rc<SkinShared>,
@@ -317,10 +310,10 @@ impl Element for DockResizeTracker {
                 if !phase.bubble() || shared.resizing_dock().get() != Some(placement) {
                     return;
                 }
-                // Dragging a closed dock's handle reopens it, as the old dock
-                // did. The live state is read rather than the render-time
-                // snapshot in `dock`, which would still say closed for the
-                // rest of the frame and toggle it shut again on the next move.
+                // Dragging a closed dock's handle reopens it. The live
+                // state is read rather than the render-time snapshot in
+                // `dock`, which would still say closed for the rest of the
+                // frame and toggle it shut again on the next move.
                 let open = shared
                     .area()
                     .upgrade()

@@ -101,13 +101,11 @@ impl SignedTilesSkin {
             })
     }
 
-    /// The trailing controls of a tile's title bar.
-    ///
-    /// A tile has no tab bar to hang a toolbar off, so this is where its zoom,
-    /// close and ellipsis menu live. The entries use click handlers rather
-    /// than the [`ToggleZoom`](crate::ToggleZoom) and
-    /// [`ClosePanel`](crate::ClosePanel) actions: those are dispatched to a
-    /// focused tab group, and a tile is not one.
+    /// The trailing controls of a tile's title bar: zoom, close and the
+    /// ellipsis menu. They use click handlers rather than the
+    /// [`ToggleZoom`](crate::ToggleZoom)/[`ClosePanel`](crate::ClosePanel)
+    /// actions, which are dispatched to a focused tab group — a tile is
+    /// not one.
     fn render_tile_controls(
         &self,
         tile: &TileContext,
@@ -388,12 +386,9 @@ impl TilesRenderer for SignedTilesSkin {
             .size_full()
     }
 
-    /// The canvas scrollbar.
-    ///
-    /// It has to be an overlay rather than one of the frame's own children:
-    /// the frame is the scroll container and base appends the tiles after
-    /// whatever the frame carries, so a scrollbar placed there would paint and
-    /// hit-test underneath every tile.
+    /// The canvas scrollbar. It must be an overlay: the frame is the scroll
+    /// container and base appends the tiles after it, so a scrollbar placed
+    /// inside would paint and hit-test underneath every tile.
     fn render_overlay(
         &self,
         content: Size<Pixels>,

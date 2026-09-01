@@ -84,11 +84,9 @@ impl Render for DragPanelPreview {
 }
 
 /// Where the zoom affordance goes for the group's displayed panel, or `None`
-/// when there is none to offer.
-///
-/// Two questions, and both have to be asked. [`Panel::zoom_control`] says
-/// *where* the control appears; [`gpui_base::dock::Panel::zoomable`] says
-/// whether zooming happens at all, and base refuses a zoom that fails it.
+/// when there is none to offer. Both [`Panel::zoom_control`] (where) and
+/// [`gpui_base::dock::Panel::zoomable`] (whether) must pass; base refuses a
+/// zoom that fails the latter.
 fn zoom_control(group: &TabGroupContext, cx: &App) -> Option<PanelControl> {
     let panel = group.active_panel()?;
     panel
@@ -122,11 +120,8 @@ fn right_top_group(node: &PaneNode) -> Option<NodeId> {
     }
 }
 
-/// One tab group's appearance.
-///
-/// Built per group — `DockAreaRenderer::tab_group_renderer` is called once
-/// per container — so the tab bar's scroll position and the measured
-/// title-bar geometry belong to the group they describe.
+/// One tab group's appearance. Built once per container, so the tab bar's
+/// scroll position and measured title-bar geometry belong to the group.
 pub(crate) struct SignedTabGroupSkin {
     shared: Rc<SkinShared>,
     scroll_handle: ScrollHandle,
@@ -177,9 +172,8 @@ impl SignedTabGroupSkin {
     /// The bottom or right dock whose root tab group this group is, if any.
     ///
     /// Base bars a dock's only group from being dragged or closed, so the
-    /// dock cannot be emptied. A bottom/right panel is supposed to be
-    /// closable and movable, though — the vendored dock allowed exactly that
-    /// — so the skin recognizes the group and routes around the bar.
+    /// dock cannot be emptied — but a bottom/right panel is supposed to be
+    /// closable, so the skin routes around the bar for these groups.
     fn is_dock_root_group(&self, group: &TabGroupContext, cx: &App) -> Option<DockPlacement> {
         let area = self.shared.area().upgrade()?;
         let area = area.read(cx);
@@ -270,9 +264,7 @@ impl SignedTabGroupSkin {
     }
 
     /// The previous/next tab buttons shown in the tab bar's leading prefix.
-    ///
-    /// Unlike the dock toggle button they always render, but are disabled at
-    /// the ends of the tab strip (or while the panel is collapsed).
+    /// Always rendered, disabled at the ends of the strip (or collapsed).
     fn render_prev_next_tab_buttons(
         &self,
         group: &TabGroupContext,
@@ -405,10 +397,9 @@ impl SignedTabGroupSkin {
             )
     }
 
-    /// One tab of the pill strip.
-    ///
-    /// While collapsed, tabs lose the active style and all interactions, and
-    /// the strip becomes the way a closed bottom dock is opened again.
+    /// One tab of the pill strip. While collapsed, tabs lose the active
+    /// style and all interactions, and the strip becomes the way a closed
+    /// bottom dock is opened again.
     #[allow(clippy::too_many_arguments)]
     fn render_tab(
         &self,
@@ -578,10 +569,8 @@ impl TabGroupRenderer for SignedTabGroupSkin {
         if group.panels().is_empty() {
             return div().id("tab-panel");
         }
-        // Closing the only panel of a bottom/right dock would leave an empty
-        // dock, which base refuses through the group. The skin removes the
-        // whole dock instead — the vendored dock's close took its split
-        // group away just the same.
+        // Closing the only panel of a bottom/right dock would leave an
+        // empty dock, which base refuses; the skin removes the dock instead.
         let dock_to_remove = (group.panels().len() <= 1)
             .then(|| self.is_dock_root_group(group, cx))
             .flatten();
@@ -601,8 +590,8 @@ impl TabGroupRenderer for SignedTabGroupSkin {
                 this.on_action({
                     let group = group.clone();
                     move |_: &ToggleZoom, window, cx| {
-                        // The affordance decides the control, so a panel that
-                        // offers none is not zoomed *in* by the keybinding
+                        // The affordance decides the control, so a panel
+                        // offering none is not zoomed *in* by the keybinding
                         // either. Zooming out is never refused: a panel that
                         // stopped offering the control while zoomed would
                         // otherwise strand the user with no way back.
@@ -671,12 +660,10 @@ impl TabGroupRenderer for SignedTabGroupSkin {
         let right_dock_button = self.dock_toggle_button(DockPlacement::Right, group, cx);
         let is_bottom_dock = bottom_dock_button.is_some();
 
-        // macOS: the traffic lights overlay the window's top-left corner. Only
-        // the group whose tab bar actually sits under them must reserve the
-        // space: the left dock (sidebar) normally clears them, and when it is
-        // closed or absent it is the center's left-most, top-most tab group
-        // that is in the corner. A bottom or right dock is never there, and
-        // neither is the right panel of a center split.
+        // macOS: the traffic lights overlay the window's top-left corner.
+        // Only the group whose tab bar actually sits under them reserves the
+        // space — the center's left-most, top-most group when the left dock
+        // is closed or absent.
         let needs_traffic_light_padding = cfg!(target_os = "macos")
             && self.shared.area().upgrade().is_some_and(|area| {
                 let area = area.read(cx);
@@ -703,11 +690,10 @@ impl TabGroupRenderer for SignedTabGroupSkin {
             self.scroll_handle.scroll_to_item(visible_ix);
         }
 
-        // The tab strip lays out its scrollable content at content width, so
-        // the area after the last tab only spans `min_w_16` — the rest of the
-        // tab bar has no element at all. Cover that dead zone with a
-        // measured overlay so the whole non-interactive area can drag the
-        // window. Its span is [last tab's right edge, suffix's left edge].
+        // The tab strip lays out at content width, so the area after the
+        // last tab has no element. Cover that dead zone (last tab's right
+        // edge to suffix's left edge) with a measured overlay so the whole
+        // non-interactive area can drag the window.
         let drag_overlay = match (
             self.title_bar_bounds.get(),
             self.title_bar_strip_bounds.get(),

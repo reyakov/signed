@@ -17,7 +17,7 @@ use gpui_component::scroll::Scrollbar;
 use gpui_component::{
     ActiveTheme, Icon, Sizable, VirtualListScrollHandle, WindowExt, h_flex, v_flex, v_virtual_list,
 };
-use nostr::prelude::{Event, EventId};
+use nostr::prelude::EventId;
 use signed_core::{RepoStatus, activity_subject};
 use signed_state::{ProfileStore, RepoStore};
 use utils::relative_time;
@@ -26,10 +26,8 @@ use super::helpers::{placeholder, status_badge};
 use super::issue_detail::IssueDetailView;
 use crate::image_cache::{MAX_IMAGES, image_cache};
 
-/// Height of one issue row in the virtual list: 8px vertical padding
-/// (`py_2`) on top and bottom, a 32px title line (`h_8`) and a 24px meta
-/// line (`h_6`), plus the 1px bottom border; the row totals 73px. The
-/// status chip (`size_7`, 28px) is shorter than the content.
+/// Height of one issue row in the virtual list: `py_2` padding, a 32px
+/// title line (`h_8`), a 24px meta line (`h_6`) and the 1px bottom border.
 const ISSUE_ROW_HEIGHT: f32 = 73.;
 
 /// Status filter of the issues list, chosen via the header's filter buttons.
@@ -39,21 +37,18 @@ enum IssueFilter {
     All,
     /// Issues whose resolved status is [`RepoStatus::Open`].
     Open,
-    /// Issues whose resolved status is
-    /// [`RepoStatus::Closed`] or [`RepoStatus::Applied`] (both are "done" states).
+    /// Issues whose resolved status is [`RepoStatus::Closed`] or
+    /// [`RepoStatus::Applied`] (both are "done" states).
     Closed,
 }
 
 impl IssueFilter {
-    /// Whether `issue` (of `store`) is included by this filter.
-    fn matches(self, store: &RepoStore, issue: &Event) -> bool {
+    /// Whether an issue with `status` is included by this filter.
+    fn matches(self, status: RepoStatus) -> bool {
         match self {
             Self::All => true,
-            Self::Open => store.status_of(issue) == RepoStatus::Open,
-            Self::Closed => matches!(
-                store.status_of(issue),
-                RepoStatus::Closed | RepoStatus::Applied
-            ),
+            Self::Open => status == RepoStatus::Open,
+            Self::Closed => matches!(status, RepoStatus::Closed | RepoStatus::Applied),
         }
     }
 }
@@ -72,9 +67,15 @@ pub struct IssuesView {
     item_sizes: Rc<Vec<Size<Pixels>>>,
     /// Number of rows [`Self::item_sizes`] was built for (the filtered issue count).
     issue_len: usize,
-    /// Indices into the store's `issues` matching [`Self::filter`], rebuilt
-    /// every render; the virtual list renders this slice.
+    /// Indices into the store's `issues` matching [`Self::filter`]; the
+    /// virtual list renders this slice. Rebuilt only when the store
+    /// version or the filter changes, keyed by [`Self::cache_key`].
     visible_issues: Vec<usize>,
+    /// Header counts `(total, open, closed)`, rebuilt with
+    /// [`Self::visible_issues`].
+    counts: (usize, usize, usize),
+    /// Store version and filter the cached rows/counts were built from.
+    cache_key: Option<(u64, IssueFilter)>,
     /// Virtual list state of the issues list.
     scroll_handle: VirtualListScrollHandle,
 }
@@ -96,6 +97,8 @@ impl IssuesView {
             item_sizes: Rc::new(Vec::new()),
             issue_len: 0,
             visible_issues: Vec::new(),
+            counts: (0, 0, 0),
+            cache_key: None,
             scroll_handle: VirtualListScrollHandle::new(),
         }
     }
@@ -188,19 +191,9 @@ impl IssuesView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let store = self.store.read(cx);
-        let (total, open, closed) =
-            store
-                .issues
-                .iter()
-                .fold(
-                    (0usize, 0usize, 0usize),
-                    |(total, open, closed), issue| match store.status_of(issue) {
-                        RepoStatus::Open => (total + 1, open + 1, closed),
-                        RepoStatus::Closed => (total + 1, open, closed + 1),
-                        RepoStatus::Draft | RepoStatus::Applied => (total + 1, open, closed),
-                    },
-                );
+        // Counts of the last list rebuild (`render` rebuilds first when the
+        // store version or filter changed, so this is never stale).
+        let (total, open, closed) = self.counts;
 
         h_flex()
             .px_4()
@@ -433,18 +426,30 @@ impl Render for IssuesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filter = self.filter;
 
-        // Indices of the issues matching the active filter; the virtual
-        // list renders this filtered slice.
-        self.visible_issues = {
+        // Rebuild the filtered rows and header counts only when the store
+        // refreshed or the filter changed; other renders reuse the cache.
+        let version = self.store.read(cx).version();
+        if self.cache_key != Some((version, filter)) {
             let store = self.store.read(cx);
-            store
+            let mut counts = (0usize, 0usize, 0usize);
+            self.visible_issues = store
                 .issues
                 .iter()
                 .enumerate()
-                .filter(|(_, issue)| filter.matches(store, issue))
-                .map(|(ix, _)| ix)
-                .collect()
-        };
+                .filter_map(|(ix, issue)| {
+                    let status = store.status_of(issue);
+                    counts.0 += 1;
+                    match status {
+                        RepoStatus::Open => counts.1 += 1,
+                        RepoStatus::Closed => counts.2 += 1,
+                        RepoStatus::Draft | RepoStatus::Applied => {}
+                    }
+                    filter.matches(status).then_some(ix)
+                })
+                .collect();
+            self.counts = counts;
+            self.cache_key = Some((version, filter));
+        }
 
         let count = self.visible_issues.len();
 

@@ -1,12 +1,10 @@
 //! The Signed dock skin.
 //!
-//! The dock engine lives upstream: `gpui_base::dock` owns the layout tree,
-//! the drags, the zoom and the persistence, and `gpui_component::dock`
-//! supplies the default appearance. This crate is the appearance the app
-//! used to vendor from gpui-component — a 44px tab bar that doubles as the
-//! window title bar, with pill tabs, window controls, title-bar dragging and
-//! previous/next tab buttons — re-implemented against upstream's renderer
-//! traits.
+//! The dock engine lives upstream (`gpui_base::dock` owns the layout tree,
+//! drags, zoom and persistence); this crate is the appearance the app used
+//! to vendor from gpui-component — a 44px tab bar that doubles as the
+//! window title bar, with pill tabs, window controls, title-bar dragging
+//! and previous/next tab buttons.
 //!
 //! Everything `gpui_component::dock` exports is re-exported here, so the app
 //! keeps importing the dock from a single place.

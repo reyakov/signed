@@ -97,9 +97,7 @@ pub struct RepoListView {
     /// Number of rows [`Self::item_sizes`] was built for (the filtered repo count).
     repo_len: usize,
     /// Indices into the store's `announcements` matching [`Self::filter`],
-    /// in display order; rebuilt when the store changes, the filter is
-    /// switched, or the search text changes. The virtual list renders this
-    /// slice.
+    /// in display order; the virtual list renders this slice.
     visible: Vec<usize>,
     /// Search box filtering repositories by name.
     search: Entity<InputState>,
@@ -153,10 +151,7 @@ impl RepoListView {
     }
 
     /// Rebuild [`Self::visible`] and [`Self::item_sizes`] from the current
-    /// store contents, [`Self::filter`] and the search query. Called when
-    /// the view is created, when the store changes, when the filter is
-    /// switched, and on every search keystroke, so the list is ready before
-    /// the next render.
+    /// store contents, [`Self::filter`] and the search query.
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
         let filter = self.filter;
         let query = self.search.read(cx).value();

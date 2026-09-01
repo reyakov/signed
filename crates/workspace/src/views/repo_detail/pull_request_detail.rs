@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -38,6 +39,10 @@ use crate::image_cache::{MAX_IMAGES, image_cache};
 /// Width of the changed-files column.
 const TREE_WIDTH: f32 = 260.;
 
+/// Height of one commit row in the commits tab's virtual list: a single
+/// text line plus the 1px bottom border.
+const PR_COMMIT_ROW_HEIGHT: f32 = 37.;
+
 /// Detail panel of a single pull request.
 pub struct PullRequestDetailView {
     focus_handle: FocusHandle,
@@ -77,6 +82,15 @@ pub struct PullRequestDetailView {
     item_sizes: Rc<Vec<Size<Pixels>>>,
     /// Virtual list state of the diff rows.
     scroll_handle: VirtualListScrollHandle,
+    /// Per-row heights of the commits tab's virtual list, built when the
+    /// patch series is loaded.
+    commit_item_sizes: Rc<Vec<Size<Pixels>>>,
+    /// Virtual list state of the commits tab.
+    commit_scroll_handle: VirtualListScrollHandle,
+    /// Comment bodies as shared strings, keyed by comment event ID, so
+    /// re-renders don't clone full contents again (events are immutable,
+    /// so the cache never needs invalidation).
+    contents: HashMap<EventId, SharedString>,
     /// In-flight tasks; finished tasks are pruned on every push, so the vec
     /// stays bounded by the number of concurrent loads.
     tasks: Vec<Task<Result<(), anyhow::Error>>>,
@@ -137,6 +151,9 @@ impl PullRequestDetailView {
             rows: Vec::new(),
             item_sizes: Rc::new(Vec::new()),
             scroll_handle: VirtualListScrollHandle::new(),
+            commit_item_sizes: Rc::new(Vec::new()),
+            commit_scroll_handle: VirtualListScrollHandle::new(),
+            contents: HashMap::new(),
             tasks: Vec::new(),
             _subscriptions: subscriptions,
         }
@@ -146,9 +163,8 @@ impl PullRequestDetailView {
     /// and commit list on a background task and populate the tree.
     ///
     /// The changes come from the PR's patch set (NIP-34 `e`-linked patch
-    /// events) when present; otherwise they live in the git repository
-    /// (`c`, `clone` and `merge-base` tags, per NIP-34), so the clone is
-    /// fetched and the `merge-base..tip` range is diffed.
+    /// events) when present; otherwise from the git repository (`c`,
+    /// `clone` and `merge-base` tags), diffing the `merge-base..tip` range.
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
@@ -263,6 +279,8 @@ impl PullRequestDetailView {
                 this.loading = false;
                 this.worktree = worktree;
                 this.current_commit = current_commit.map(SharedString::from);
+                this.commit_item_sizes =
+                    Rc::new(vec![size(px(0.), px(PR_COMMIT_ROW_HEIGHT)); commits.len()]);
                 this.commits = commits;
                 match diff {
                     Ok(diff) => {
@@ -799,15 +817,32 @@ impl PullRequestDetailView {
         }
 
         v_flex()
+            .relative()
             .flex_1()
             .w_full()
             .min_h_0()
-            .overflow_y_scrollbar()
-            .children(
-                self.commits
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, commit)| self.render_commit_row(ix, commit, cx)),
+            .child(
+                v_virtual_list(
+                    cx.entity().clone(),
+                    "pr-commits",
+                    self.commit_item_sizes.clone(),
+                    move |this, range, _window, cx| {
+                        range
+                            .map(|ix| this.render_commit_row(ix, &this.commits[ix], cx))
+                            .collect()
+                    },
+                )
+                .track_scroll(&self.commit_scroll_handle)
+                .size_full(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .child(Scrollbar::vertical(&self.commit_scroll_handle)),
             )
             .into_any_element()
     }
@@ -826,7 +861,7 @@ impl PullRequestDetailView {
         h_flex()
             .id(ix)
             .px_4()
-            .py_2()
+            .h(px(PR_COMMIT_ROW_HEIGHT))
             .gap_2()
             .items_center()
             .text_sm()
@@ -881,6 +916,13 @@ impl PullRequestDetailView {
                 let author = profile.name();
                 let picture = profile.picture();
                 let age = relative_time(comment.created_at);
+                // Comment bodies are cloned into shared strings once per
+                // comment, not on every render.
+                let content = self
+                    .contents
+                    .entry(comment.id)
+                    .or_insert_with(|| SharedString::from(comment.content.clone()))
+                    .clone();
 
                 v_flex()
                     .gap_1()
@@ -915,11 +957,7 @@ impl PullRequestDetailView {
                                     .child(SharedString::from(age)),
                             ),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .child(SharedString::from(comment.content.clone())),
-                    )
+                    .child(div().text_sm().child(content))
             }))
             .into_any_element()
     }

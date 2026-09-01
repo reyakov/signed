@@ -18,6 +18,7 @@ bitcoin_hashes = "1"
 
 gpui.workspace = true
 flume.workspace = true
+futures.workspace = true
 anyhow.workspace = true
 log.workspace = true
 

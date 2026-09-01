@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use assets::CustomIconName;
 use dock::{BasePanel, Panel, PanelEvent};
 use gpui::prelude::*;
@@ -27,6 +29,10 @@ pub struct IssueDetailView {
     issue_id: EventId,
     /// Input state of the "leave a comment" textarea.
     comment_input: Entity<TextareaState>,
+    /// Issue/comment bodies as shared strings, keyed by event ID, so
+    /// re-renders don't clone full contents again (events are immutable,
+    /// so the cache never needs invalidation).
+    contents: HashMap<EventId, SharedString>,
 }
 
 impl IssueDetailView {
@@ -44,6 +50,7 @@ impl IssueDetailView {
             store,
             issue_id,
             comment_input,
+            contents: HashMap::new(),
         }
     }
 
@@ -142,6 +149,13 @@ impl IssueDetailView {
                 let author = profile.name();
                 let picture = profile.picture();
                 let age = relative_time(comment.created_at);
+                // Comment bodies are cloned into shared strings once per
+                // comment, not on every render.
+                let content = self
+                    .contents
+                    .entry(comment.id)
+                    .or_insert_with(|| SharedString::from(comment.content.clone()))
+                    .clone();
 
                 v_flex()
                     .gap_1()
@@ -176,11 +190,7 @@ impl IssueDetailView {
                                     .child(SharedString::from(age)),
                             ),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .child(SharedString::from(comment.content.clone())),
-                    )
+                    .child(div().text_sm().child(content))
             }))
             .into_any_element()
     }
@@ -284,6 +294,11 @@ impl Render for IssueDetailView {
         let (title, author, picture, status, age, issue_id, content) = {
             let profile_store = ProfileStore::global(cx);
             let profile = profile_store.read(cx).get(&issue.pubkey);
+            let content = self
+                .contents
+                .entry(issue.id)
+                .or_insert_with(|| SharedString::from(issue.content.clone()))
+                .clone();
 
             (
                 activity_subject(issue),
@@ -292,7 +307,7 @@ impl Render for IssueDetailView {
                 store.status_of(issue),
                 relative_time(issue.created_at),
                 issue.id,
-                issue.content.clone(),
+                content,
             )
         };
 
@@ -358,7 +373,7 @@ impl Render for IssueDetailView {
                                                     .child(SharedString::from(age)),
                                             ),
                                     )
-                                    .child(div().text_sm().child(SharedString::from(&content))),
+                                    .child(div().text_sm().child(content)),
                             )
                             .child(self.render_comments(&issue_id, cx))
                             .child(self.render_form(&issue_id, cx)),
