@@ -5,15 +5,9 @@ use gpui_component::form::{Field, field};
 use gpui_component::input::{Input, InputState};
 use gpui_component::{ActiveTheme, IconName, Sizable, h_flex, v_flex};
 use nostr::prelude::*;
+use settings::{DEFAULT_GRASP_SERVERS, GraspServersSettings};
 use signed_core::filters;
 use signed_state::Backend;
-
-/// Grasp servers offered when the user hasn't published a grasp list (kind `10317`) yet.
-const DEFAULT_GRASP_SERVERS: [&str; 3] = [
-    "wss://relay.ngit.dev",
-    "wss://gitnostr.com",
-    "wss://git.shakespeare.diy",
-];
 
 /// State of the grasp-server section of a publish dialog, so async
 /// results can be rendered.
@@ -30,11 +24,22 @@ pub struct GraspServersState {
 
 impl GraspServersState {
     /// Defaults until the user's grasp list arrives; replaced by it when it lists any servers.
-    pub fn new_default() -> Self {
+    ///
+    /// The servers come from the persisted settings, falling back to the
+    /// built-in defaults when the configured list is empty.
+    pub fn new_default(settings: &GraspServersSettings) -> Self {
+        let urls: Vec<String> = if settings.default_servers.is_empty() {
+            DEFAULT_GRASP_SERVERS
+                .iter()
+                .map(|url| (*url).to_owned())
+                .collect()
+        } else {
+            settings.default_servers.clone()
+        };
         Self {
             loading_servers: true,
             servers_enabled: false,
-            grasp_servers: DEFAULT_GRASP_SERVERS
+            grasp_servers: urls
                 .iter()
                 .filter_map(|url| RelayUrl::parse(url).ok())
                 .collect(),
@@ -52,8 +57,7 @@ pub fn grasp_servers_field(
     relay_input: &Entity<InputState>,
     cx: &App,
 ) -> Field {
-    const SERVER_NOTE: &str =
-        "Where the repository is hosted, the initial push goes to each server";
+    const SERVER_NOTE: &str = "Where the repository is hosted";
 
     let state = state.clone();
     let relay_input = relay_input.clone();

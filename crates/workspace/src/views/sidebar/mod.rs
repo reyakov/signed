@@ -26,6 +26,7 @@ pub(crate) mod grasp_servers;
 mod import_dialog;
 mod onboarding_dialog;
 pub(crate) mod passphrase_dialog;
+mod settings_dialog;
 
 use self::onboarding_dialog::OnboardingState;
 
@@ -591,9 +592,9 @@ impl Render for SidebarPanel {
                             "Settings",
                             Icon::new(IconName::Settings).small(),
                         )
-                        .on_click(
-                            cx.listener(|this, _ev, window, cx| this.open_explore(window, cx)),
-                        ),
+                        .on_click(cx.listener(|_, _ev, window, cx| {
+                            settings_dialog::open(window, cx);
+                        })),
                     ),
             )
     }

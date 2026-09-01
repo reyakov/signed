@@ -18,17 +18,10 @@ pub use repo_list::{RepoActivityCounts, RepoListStore};
 use signed_nostr::new_backend;
 pub use utils::shorten_pubkey;
 
-/// The default directories scanned for local git repositories
-/// on every platform: the user's Desktop and Documents folders.
-#[cfg(not(target_arch = "wasm32"))]
-fn default_scan_paths() -> Vec<PathBuf> {
-    vec![paths::desktop_dir(), paths::documents_dir()]
-}
-
 /// Initialize the backend and stores, and install them as globals.
 /// Call once at startup, before opening any window that uses the stores.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn init(db_path: impl AsRef<Path>, cx: &mut App) -> Entity<Backend> {
+pub fn init(db_path: impl AsRef<Path>, scan_paths: Vec<PathBuf>, cx: &mut App) -> Entity<Backend> {
     // rustls uses the `aws_lc_rs` provider by default; ignore if already installed.
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
@@ -53,10 +46,7 @@ pub fn init(db_path: impl AsRef<Path>, cx: &mut App) -> Entity<Backend> {
     // `GitStore::global` still works.
     GitStore::set_global(PathBuf::new(), cx);
 
-    LocalReposStore::set_global(
-        cx.new(|cx| LocalReposStore::new(default_scan_paths(), cx)),
-        cx,
-    );
+    LocalReposStore::set_global(cx.new(|cx| LocalReposStore::new(scan_paths, cx)), cx);
 
     entity
 }

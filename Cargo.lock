@@ -7765,6 +7765,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "settings"
+version = "1.0.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "log",
+ "paths",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7874,6 +7886,7 @@ dependencies = [
  "log",
  "paths",
  "reqwest_client",
+ "settings",
  "signed_state",
  "tracing",
  "tracing-subscriber",
@@ -7927,7 +7940,6 @@ dependencies = [
  "nostr",
  "nostr-connect",
  "nostr-sdk",
- "paths",
  "rustls",
  "signed_core",
  "signed_git",
@@ -10774,6 +10786,7 @@ dependencies = [
  "log",
  "nostr",
  "paths",
+ "settings",
  "signed_core",
  "signed_git",
  "signed_state",

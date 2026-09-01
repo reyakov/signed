@@ -3,8 +3,9 @@ use std::sync::Arc;
 use assets::Assets;
 use dock::TAB_BAR_HEIGHT;
 use gpui::*;
-use gpui_component::{Theme, ThemeRegistry, theme};
+use gpui_component::{Theme, ThemeMode, ThemeRegistry, theme};
 use gpui_platform::application;
+use settings::{AppearanceMode, SettingsStore};
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -16,40 +17,64 @@ fn main() {
             gpui_component::init(cx);
             theme::init(cx);
 
+            // Load the persisted settings before applying the theme,
+            // so the stored appearance and theme configuration take effect at startup.
+            let store = cx.new(|cx| SettingsStore::new(paths::settings_file(), cx));
+            SettingsStore::set_global(store.clone(), cx);
+            let settings = store.read(cx).settings().clone();
+
             // Register the built-in "Signed" theme (light + dark variants)
-            // and make it the active theme, following the system appearance.
+            // and make it the active theme, following the stored appearance.
             let registry = ThemeRegistry::global_mut(cx);
             for (name, content) in Assets.themes() {
                 if let Err(err) = registry.load_themes_from_str(&content) {
                     tracing::error!("Failed to load theme {name}: {err}");
                 }
             }
-            let light_theme = registry.themes().get("Signed Light").cloned();
-            let dark_theme = registry.themes().get("Signed Dark").cloned();
+            let light_theme = registry
+                .themes()
+                .get(settings.theme.light_theme.as_str())
+                .cloned();
+            let dark_theme = registry
+                .themes()
+                .get(settings.theme.dark_theme.as_str())
+                .cloned();
 
             let theme = Theme::global_mut(cx);
-            theme.radius = px(2.);
-            theme.radius_lg = px(6.);
-            theme.focus_ring = false;
-            theme.shadow = false;
+            theme.radius = px(settings.theme.radius);
+            theme.radius_lg = px(settings.theme.radius_lg);
+            theme.focus_ring = settings.theme.focus_ring;
+            theme.shadow = settings.theme.shadow;
+            theme.font_size = px(settings.theme.font_size);
+            theme.mono_font_size = px(settings.theme.mono_font_size);
 
             if let Some(light) = light_theme {
                 theme.light_theme = light;
             } else {
-                tracing::warn!("Signed Light theme is missing from the registry");
+                tracing::warn!(
+                    "{} theme is missing from the registry",
+                    settings.theme.light_theme
+                );
             }
 
             if let Some(dark) = dark_theme {
                 theme.dark_theme = dark;
             } else {
-                tracing::warn!("Signed Dark theme is missing from the registry");
+                tracing::warn!(
+                    "{} theme is missing from the registry",
+                    settings.theme.dark_theme
+                );
             }
 
-            Theme::sync_system_appearance(None, cx);
+            match settings.appearance {
+                AppearanceMode::System => Theme::sync_system_appearance(None, cx),
+                AppearanceMode::Light => Theme::change(ThemeMode::Light, None, cx),
+                AppearanceMode::Dark => Theme::change(ThemeMode::Dark, None, cx),
+            }
 
             // Connects relays and restores the session.
             std::fs::create_dir_all(paths::nostr_dir()).ok();
-            signed_state::init(paths::nostr_dir(), cx);
+            signed_state::init(paths::nostr_dir(), settings.local_repos.scan_paths, cx);
 
             // Local git clone cache for browsing repository contents.
             std::fs::create_dir_all(paths::repos_dir()).ok();

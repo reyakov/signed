@@ -7,6 +7,7 @@ use gpui_component::dialog::{DialogDescription, DialogFooter, DialogHeader, Dial
 use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputState, Textarea};
 use gpui_component::{ActiveTheme, Disableable, IconName, WindowExt, h_flex};
+use settings::SettingsStore;
 use signed_core::Announcement;
 use signed_state::Backend;
 
@@ -26,6 +27,15 @@ pub struct CreateRepoState {
 /// list) and falls back to the shared defaults when none are set. On
 /// success the dialog closes and the new repository opens in the dock.
 pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) {
+    let settings = SettingsStore::global(cx);
+    let default_folder = settings
+        .read(cx)
+        .settings()
+        .create_repository
+        .default_folder
+        .clone()
+        .unwrap_or_else(paths::desktop_dir);
+
     let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Repository name"));
     let desc_input = cx.new(|cx| {
         TextareaState::new(window, cx)
@@ -33,20 +43,20 @@ pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) 
             .placeholder("Short description")
     });
     let folder_input = cx.new(|cx| {
-        InputState::new(window, cx)
-            .default_value(paths::desktop_dir().to_string_lossy().to_string())
+        InputState::new(window, cx).default_value(default_folder.to_string_lossy().to_string())
     });
     let relay_input = cx.new(|cx| {
         InputState::new(window, cx).placeholder("wss://relay.example.com or relay.example.com")
     });
     let state = cx.new(|_| CreateRepoState::default());
-    let grasp_state = cx.new(|_| GraspServersState::new_default());
+    let grasp_settings = settings.read(cx).settings().grasp_servers.clone();
+    let grasp_state = cx.new(|_| GraspServersState::new_default(&grasp_settings));
 
     load_user_grasp_servers(grasp_state.clone(), window, cx);
 
     window.open_dialog(cx, move |dialog, _window, _cx| {
         const DESC: &str = "Publish a new repository to your grasp servers.";
-        const FOLDER_NOTE: &str = "Where the repository is stored, defaults to your Desktop";
+        const FOLDER_NOTE: &str = "Where the repository is stored.";
 
         let name_input = name_input.clone();
         let desc_input = desc_input.clone();
@@ -148,10 +158,12 @@ pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) 
 
 /// Prompt the user to pick the folder the repository will be stored in, using
 /// the platform's native folder picker, and show the result in the disabled
-/// folder input.
+/// folder input. The picked folder is remembered in the settings so it
+/// becomes the default next time.
 fn choose_folder(folder_input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
     let folder_input = folder_input.clone();
+    let store = SettingsStore::global(cx);
 
     let prompt = cx.prompt_for_paths(PathPromptOptions {
         files: false,
@@ -166,6 +178,14 @@ fn choose_folder(folder_input: &Entity<InputState>, window: &mut Window, cx: &mu
         {
             let path = path.to_string_lossy().to_string();
             cx.update_window(handle, |_, window, cx| {
+                store.update(cx, |store, cx| {
+                    store.edit(
+                        |settings| {
+                            settings.create_repository.default_folder = Some(path.clone().into())
+                        },
+                        cx,
+                    );
+                });
                 folder_input.update(cx, |input, cx| input.set_value(path, window, cx));
             })
             .ok();

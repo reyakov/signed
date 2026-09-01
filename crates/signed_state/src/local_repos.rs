@@ -10,11 +10,6 @@ struct GlobalLocalReposStore(Entity<LocalReposStore>);
 impl Global for GlobalLocalReposStore {}
 
 /// Store of the git repositories discovered under a set of scan paths.
-///
-/// Created at startup by [`crate::init`] with the default scan paths
-/// (the Desktop and Documents folders; empty on wasm, where no scan runs),
-/// then installed as a global so the sidebar can list local repositories.
-/// The scan runs on a background thread; only the results cross back into the entity.
 pub struct LocalReposStore {
     /// The directories being scanned.
     pub roots: Arc<Vec<PathBuf>>,
@@ -28,8 +23,7 @@ pub struct LocalReposStore {
 }
 
 impl LocalReposStore {
-    /// Retrieve the global local-repositories store
-    /// (created at startup by [`crate::init`]).
+    /// Retrieve the global local-repositories store.
     pub fn global(cx: &App) -> Entity<Self> {
         cx.global::<GlobalLocalReposStore>().0.clone()
     }
@@ -38,8 +32,7 @@ impl LocalReposStore {
         cx.set_global(GlobalLocalReposStore(entity));
     }
 
-    /// Create a store scanning `roots` right away
-    /// (a no-op when the list is empty, e.g. on wasm).
+    /// Create a store scanning `roots` right away.
     pub fn new(roots: Vec<PathBuf>, cx: &mut Context<Self>) -> Self {
         let mut store = Self {
             roots: Arc::new(roots),
@@ -52,10 +45,9 @@ impl LocalReposStore {
         store
     }
 
-    /// Forget a repository that has just been published to NIP-34, so it
-    /// leaves the local list immediately. A later rescan re-discovers it
-    /// from disk; the sidebar additionally hides published repositories by
-    /// identifier.
+    /// Forget a repository that has just been published to NIP-34,
+    /// so it leaves the local list immediately. A later rescan re-discovers it from disk,
+    /// the sidebar additionally hides published repositories by identifier.
     pub fn remove(&mut self, path: &Path, cx: &mut Context<Self>) {
         self.repos = Arc::new(
             self.repos
@@ -67,8 +59,7 @@ impl LocalReposStore {
         cx.notify();
     }
 
-    /// Re-run the scan. Requests that arrive while a scan is running are
-    /// folded into one follow-up scan; the results replace the list atomically.
+    /// Re-run the scan.
     pub fn rescan(&mut self, cx: &mut Context<Self>) {
         if self.scanning {
             self.scan_dirty = true;

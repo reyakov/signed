@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 assets = { path = "../crates/assets" }
 paths = { path = "../crates/paths" }
+settings = { path = "../crates/settings" }
 signed_state = { path = "../crates/signed_state" }
 workspace = { path = "../crates/workspace" }
 

@@ -10,6 +10,7 @@ use gpui_component::dialog::{DialogDescription, DialogFooter, DialogHeader, Dial
 use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputState, Textarea};
 use gpui_component::{ActiveTheme, Disableable, WindowExt};
+use settings::SettingsStore;
 use signed_state::Backend;
 
 use super::RepoDetailView;
@@ -49,7 +50,12 @@ pub fn open(
         InputState::new(window, cx).placeholder("wss://relay.example.com or relay.example.com")
     });
     let state = cx.new(|_| InitRepoState::default());
-    let grasp_state = cx.new(|_| GraspServersState::new_default());
+    let grasp_settings = SettingsStore::global(cx)
+        .read(cx)
+        .settings()
+        .grasp_servers
+        .clone();
+    let grasp_state = cx.new(|_| GraspServersState::new_default(&grasp_settings));
 
     load_user_grasp_servers(grasp_state.clone(), window, cx);
 

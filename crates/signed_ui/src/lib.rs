@@ -19,6 +19,10 @@
 //! - [`placeholder`] — centered muted placeholder message
 //! - [`copy_row`] / [`menu_copy_row`] — rows with a copy-to-clipboard button
 //! - [`tree_row`] — one row of a file tree
+//! - [`setting_row`] / [`setting_block`] — label + description rows for a
+//!   settings dialog, with the control on the right (row) or below (block)
+//! - [`SelectOption`] — dropdown option with a display label and a stored
+//!   value
 //! - [`title_bar_drag_handlers`] — make an element behave like a window
 //!   title bar (drag moves the window, double-click zooms)
 //! - [`image_cache`] — per-view LRU image cache provider
@@ -29,6 +33,7 @@ mod nav_item;
 mod pixel_avatar;
 mod placeholder;
 mod segment_button;
+mod setting;
 mod status_badge;
 mod title_bar;
 mod tree_row;
@@ -45,6 +50,7 @@ pub use nav_item::NavItem;
 pub use pixel_avatar::PixelAvatar;
 pub use placeholder::placeholder;
 pub use segment_button::{CountBadge, SegmentButton};
+pub use setting::{SelectOption, setting_block, setting_row};
 pub use status_badge::status_badge;
 pub use title_bar::title_bar_drag_handlers;
 pub use tree_row::tree_row;

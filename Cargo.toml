@@ -24,6 +24,7 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", feature
 gpui-base = { git = "https://github.com/longbridge/gpui-component" }
 
 dock = { path = "crates/dock" }
+settings = { path = "crates/settings" }
 
 nostr = { git = "https://github.com/rust-nostr/nostr", features = ["nip59", "nip49", "nip44", "os-rng"] }
 nostr-lmdb = { git = "https://github.com/rust-nostr/nostr" }

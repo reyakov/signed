@@ -24,4 +24,3 @@ log.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rustls = "0.23"
-paths = { path = "../paths" }
