@@ -5,26 +5,24 @@ use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
-    SharedString, Size, WeakEntity, Window, div, px, relative, size,
+    SharedString, Size, WeakEntity, Window, div, px, size,
 };
-use gpui_base::Button as BaseButton;
-use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dialog::{DialogDescription, DialogFooter, DialogHeader, DialogTitle};
 use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, VirtualListScrollHandle, WindowExt, h_flex, v_flex, v_virtual_list,
+    ActiveTheme, Icon, VirtualListScrollHandle, WindowExt, h_flex, v_flex, v_virtual_list,
 };
 use nostr::prelude::{EventId, Kind};
 use signed_core::{RepoStatus, activity_subject};
 use signed_state::{ProfileStore, RepoStore};
+use signed_ui::image_cache::{MAX_IMAGES, image_cache};
+use signed_ui::{SegmentButton, UserAvatar, placeholder, status_badge};
 use utils::relative_time;
 
-use super::helpers::{placeholder, status_badge};
 use super::pull_request_detail::PullRequestDetailView;
-use crate::image_cache::{MAX_IMAGES, image_cache};
 
 /// Height of one pull request row in the virtual list; same layout as an
 /// issue row.
@@ -188,13 +186,7 @@ impl PullRequestsView {
                             .child(
                                 h_flex()
                                     .gap_1()
-                                    .child(
-                                        Avatar::new()
-                                            .name(author.clone())
-                                            .when_some(picture, |this, url| this.src(url))
-                                            .rounded(cx.theme().radius)
-                                            .small(),
-                                    )
+                                    .child(UserAvatar::new(author.clone()).picture(picture))
                                     .child(div().child(author)),
                             )
                             .child(SharedString::from("opened"))
@@ -227,180 +219,50 @@ impl PullRequestsView {
                     .h_12()
                     .gap_2()
                     .child(
-                        BaseButton::new("all")
-                            .flex()
-                            .items_center()
-                            .h_7()
-                            .px_2()
-                            .gap_1()
-                            .child(Icon::new(CustomIconName::GitPullRequest))
-                            .child(div().text_sm().child("All"))
-                            .child(
-                                h_flex()
-                                    .justify_center()
-                                    .ml_2()
-                                    .px_1()
-                                    .py_0p5()
-                                    .min_w_4()
-                                    .text_size(px(8.))
-                                    .bg(cx.theme().muted)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .rounded(cx.theme().radius)
-                                    .line_height(relative(1.))
-                                    .child(SharedString::from(total.to_string())),
-                            )
-                            .text_color(cx.theme().button_foreground)
-                            .rounded(cx.theme().radius)
-                            .hover(|this| this.bg(cx.theme().button_hover))
-                            .active(|this| this.bg(cx.theme().button_active))
+                        SegmentButton::new("all", "All")
+                            .icon(Icon::new(CustomIconName::GitPullRequest))
+                            .count(total)
                             .selected(self.filter == PullRequestFilter::All)
-                            .when(self.filter == PullRequestFilter::All, |this| {
-                                this.bg(cx.theme().button_active)
-                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::All;
                                 cx.notify();
                             })),
                     )
                     .child(
-                        BaseButton::new("open")
-                            .flex()
-                            .items_center()
-                            .h_7()
-                            .px_2()
-                            .gap_1()
-                            .child(Icon::new(CustomIconName::GitPullRequest))
-                            .child(div().text_sm().child("Open"))
-                            .child(
-                                h_flex()
-                                    .justify_center()
-                                    .ml_2()
-                                    .px_1()
-                                    .py_0p5()
-                                    .min_w_4()
-                                    .text_size(px(8.))
-                                    .bg(cx.theme().muted)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .rounded(cx.theme().radius)
-                                    .line_height(relative(1.))
-                                    .child(SharedString::from(open.to_string())),
-                            )
-                            .text_color(cx.theme().button_foreground)
-                            .rounded(cx.theme().radius)
-                            .hover(|this| this.bg(cx.theme().button_hover))
-                            .active(|this| this.bg(cx.theme().button_active))
+                        SegmentButton::new("open", "Open")
+                            .icon(Icon::new(CustomIconName::GitPullRequest))
+                            .count(open)
                             .selected(self.filter == PullRequestFilter::Open)
-                            .when(self.filter == PullRequestFilter::Open, |this| {
-                                this.bg(cx.theme().button_active)
-                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Open;
                                 cx.notify();
                             })),
                     )
                     .child(
-                        BaseButton::new("closed")
-                            .flex()
-                            .items_center()
-                            .h_7()
-                            .px_2()
-                            .gap_1()
-                            .child(Icon::new(CustomIconName::GitPullRequestClosed))
-                            .child(div().text_sm().child("Closed"))
-                            .child(
-                                h_flex()
-                                    .justify_center()
-                                    .ml_2()
-                                    .px_1()
-                                    .py_0p5()
-                                    .min_w_4()
-                                    .text_size(px(8.))
-                                    .bg(cx.theme().muted)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .rounded(cx.theme().radius)
-                                    .line_height(relative(1.))
-                                    .child(SharedString::from(closed.to_string())),
-                            )
-                            .text_color(cx.theme().button_foreground)
-                            .rounded(cx.theme().radius)
-                            .hover(|this| this.bg(cx.theme().button_hover))
-                            .active(|this| this.bg(cx.theme().button_active))
+                        SegmentButton::new("closed", "Closed")
+                            .icon(Icon::new(CustomIconName::GitPullRequestClosed))
+                            .count(closed)
                             .selected(self.filter == PullRequestFilter::Closed)
-                            .when(self.filter == PullRequestFilter::Closed, |this| {
-                                this.bg(cx.theme().button_active)
-                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Closed;
                                 cx.notify();
                             })),
                     )
                     .child(
-                        BaseButton::new("draft")
-                            .flex()
-                            .items_center()
-                            .h_7()
-                            .px_2()
-                            .gap_1()
-                            .child(Icon::new(CustomIconName::GitPullRequestDraft))
-                            .child(div().text_sm().child("Draft"))
-                            .child(
-                                h_flex()
-                                    .justify_center()
-                                    .ml_2()
-                                    .px_1()
-                                    .py_0p5()
-                                    .min_w_4()
-                                    .text_size(px(8.))
-                                    .bg(cx.theme().muted)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .rounded(cx.theme().radius)
-                                    .line_height(relative(1.))
-                                    .child(SharedString::from(draft.to_string())),
-                            )
-                            .text_color(cx.theme().button_foreground)
-                            .rounded(cx.theme().radius)
-                            .hover(|this| this.bg(cx.theme().button_hover))
-                            .active(|this| this.bg(cx.theme().button_active))
+                        SegmentButton::new("draft", "Draft")
+                            .icon(Icon::new(CustomIconName::GitPullRequestDraft))
+                            .count(draft)
                             .selected(self.filter == PullRequestFilter::Draft)
-                            .when(self.filter == PullRequestFilter::Draft, |this| {
-                                this.bg(cx.theme().button_active)
-                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Draft;
                                 cx.notify();
                             })),
                     )
                     .child(
-                        BaseButton::new("merged")
-                            .flex()
-                            .items_center()
-                            .h_7()
-                            .px_2()
-                            .gap_1()
-                            .child(Icon::new(CustomIconName::GitPullRequestMerged))
-                            .child(div().text_sm().child("Merged"))
-                            .child(
-                                h_flex()
-                                    .justify_center()
-                                    .ml_2()
-                                    .px_1()
-                                    .py_0p5()
-                                    .min_w_4()
-                                    .text_size(px(8.))
-                                    .bg(cx.theme().muted)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .rounded(cx.theme().radius)
-                                    .line_height(relative(1.))
-                                    .child(SharedString::from(merged.to_string())),
-                            )
-                            .text_color(cx.theme().button_foreground)
-                            .rounded(cx.theme().radius)
-                            .hover(|this| this.bg(cx.theme().button_hover))
-                            .active(|this| this.bg(cx.theme().button_active))
+                        SegmentButton::new("merged", "Merged")
+                            .icon(Icon::new(CustomIconName::GitPullRequestMerged))
+                            .count(merged)
                             .selected(self.filter == PullRequestFilter::Merged)
-                            .when(self.filter == PullRequestFilter::Merged, |this| {
-                                this.bg(cx.theme().button_active)
-                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Merged;
                                 cx.notify();
@@ -409,19 +271,9 @@ impl PullRequestsView {
             )
             .child(div().flex_1())
             .child(
-                BaseButton::new("new-pr")
-                    .flex()
-                    .items_center()
-                    .h_7()
-                    .px_2()
-                    .gap_1()
-                    .child(Icon::new(CustomIconName::CirclePlus))
-                    .child(div().text_sm().child("New pull request"))
-                    .text_color(cx.theme().button_primary_foreground)
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().button_primary)
-                    .hover(|this| this.bg(cx.theme().button_primary_hover))
-                    .active(|this| this.bg(cx.theme().button_primary_active))
+                SegmentButton::new("new-pr", "New pull request")
+                    .icon(Icon::new(CustomIconName::CirclePlus))
+                    .primary()
                     .on_click(cx.listener(|this, _event, window, cx| {
                         open_new_pull_request_dialog(this.store.clone(), window, cx);
                     })),

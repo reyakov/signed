@@ -5,26 +5,24 @@ use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
-    SharedString, Size, WeakEntity, Window, div, px, relative, size,
+    SharedString, Size, WeakEntity, Window, div, px, size,
 };
-use gpui_base::Button as BaseButton;
-use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dialog::{DialogDescription, DialogFooter, DialogHeader, DialogTitle};
 use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, VirtualListScrollHandle, WindowExt, h_flex, v_flex, v_virtual_list,
+    ActiveTheme, Icon, VirtualListScrollHandle, WindowExt, h_flex, v_flex, v_virtual_list,
 };
 use nostr::prelude::EventId;
 use signed_core::{RepoStatus, activity_subject};
 use signed_state::{ProfileStore, RepoStore};
+use signed_ui::image_cache::{MAX_IMAGES, image_cache};
+use signed_ui::{SegmentButton, UserAvatar, placeholder, status_badge};
 use utils::relative_time;
 
-use super::helpers::{placeholder, status_badge};
 use super::issue_detail::IssueDetailView;
-use crate::image_cache::{MAX_IMAGES, image_cache};
 
 /// Height of one issue row in the virtual list: `py_2` padding, a 32px
 /// title line (`h_8`), a 24px meta line (`h_6`) and the 1px bottom border.
@@ -168,13 +166,7 @@ impl IssuesView {
                             .child(
                                 h_flex()
                                     .gap_1()
-                                    .child(
-                                        Avatar::new()
-                                            .name(author.clone())
-                                            .when_some(picture, |this, url| this.src(url))
-                                            .rounded(cx.theme().radius)
-                                            .small(),
-                                    )
+                                    .child(UserAvatar::new(author.clone()).picture(picture))
                                     .child(div().child(author)),
                             )
                             .child(SharedString::from("opened"))
@@ -207,106 +199,30 @@ impl IssuesView {
                     .h_12()
                     .gap_2()
                     .child(
-                        BaseButton::new("all")
-                            .flex()
-                            .items_center()
-                            .h_7()
-                            .px_2()
-                            .gap_1()
-                            .child(Icon::new(CustomIconName::GitIssueDone))
-                            .child(div().text_sm().child("All"))
-                            .child(
-                                h_flex()
-                                    .justify_center()
-                                    .ml_2()
-                                    .px_1()
-                                    .py_0p5()
-                                    .min_w_4()
-                                    .text_size(px(8.))
-                                    .bg(cx.theme().muted)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .rounded(cx.theme().radius)
-                                    .line_height(relative(1.))
-                                    .child(SharedString::from(total.to_string())),
-                            )
-                            .text_color(cx.theme().button_foreground)
-                            .rounded(cx.theme().radius)
-                            .hover(|this| this.bg(cx.theme().button_hover))
-                            .active(|this| this.bg(cx.theme().button_active))
+                        SegmentButton::new("all", "All")
+                            .icon(Icon::new(CustomIconName::GitIssueDone))
+                            .count(total)
                             .selected(self.filter == IssueFilter::All)
-                            .when(self.filter == IssueFilter::All, |this| {
-                                this.bg(cx.theme().button_active)
-                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = IssueFilter::All;
                                 cx.notify();
                             })),
                     )
                     .child(
-                        BaseButton::new("open")
-                            .flex()
-                            .items_center()
-                            .h_7()
-                            .px_2()
-                            .gap_1()
-                            .child(Icon::new(CustomIconName::GitIssueOpen))
-                            .child(div().text_sm().child("Open"))
-                            .child(
-                                h_flex()
-                                    .justify_center()
-                                    .ml_2()
-                                    .px_1()
-                                    .py_0p5()
-                                    .min_w_4()
-                                    .text_size(px(8.))
-                                    .bg(cx.theme().muted)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .rounded(cx.theme().radius)
-                                    .line_height(relative(1.))
-                                    .child(SharedString::from(open.to_string())),
-                            )
-                            .text_color(cx.theme().button_foreground)
-                            .rounded(cx.theme().radius)
-                            .hover(|this| this.bg(cx.theme().button_hover))
+                        SegmentButton::new("open", "Open")
+                            .icon(Icon::new(CustomIconName::GitIssueOpen))
+                            .count(open)
                             .selected(self.filter == IssueFilter::Open)
-                            .when(self.filter == IssueFilter::Open, |this| {
-                                this.bg(cx.theme().button_active)
-                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = IssueFilter::Open;
                                 cx.notify();
                             })),
                     )
                     .child(
-                        BaseButton::new("closed")
-                            .flex()
-                            .items_center()
-                            .h_7()
-                            .px_2()
-                            .gap_1()
-                            .child(Icon::new(CustomIconName::GitIssueClosed))
-                            .child(div().text_sm().child("Closed"))
-                            .child(
-                                h_flex()
-                                    .justify_center()
-                                    .ml_2()
-                                    .px_1()
-                                    .py_0p5()
-                                    .min_w_4()
-                                    .text_size(px(8.))
-                                    .bg(cx.theme().muted)
-                                    .text_color(cx.theme().muted_foreground)
-                                    .rounded(cx.theme().radius)
-                                    .line_height(relative(1.))
-                                    .child(SharedString::from(closed.to_string())),
-                            )
-                            .text_color(cx.theme().button_foreground)
-                            .rounded(cx.theme().radius)
-                            .hover(|this| this.bg(cx.theme().button_hover))
+                        SegmentButton::new("closed", "Closed")
+                            .icon(Icon::new(CustomIconName::GitIssueClosed))
+                            .count(closed)
                             .selected(self.filter == IssueFilter::Closed)
-                            .when(self.filter == IssueFilter::Closed, |this| {
-                                this.bg(cx.theme().button_active)
-                            })
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = IssueFilter::Closed;
                                 cx.notify();
@@ -315,19 +231,9 @@ impl IssuesView {
             )
             .child(div().flex_1())
             .child(
-                BaseButton::new("new")
-                    .flex()
-                    .items_center()
-                    .h_7()
-                    .px_2()
-                    .gap_1()
-                    .child(Icon::new(CustomIconName::CirclePlus))
-                    .child(div().text_sm().child("New issue"))
-                    .text_color(cx.theme().button_primary_foreground)
-                    .rounded(cx.theme().radius)
-                    .bg(cx.theme().button_primary)
-                    .hover(|this| this.bg(cx.theme().button_primary_hover))
-                    .active(|this| this.bg(cx.theme().button_primary_active))
+                SegmentButton::new("new", "New issue")
+                    .icon(Icon::new(CustomIconName::CirclePlus))
+                    .primary()
                     .on_click(cx.listener(|this, _event, window, cx| {
                         open_new_issue_dialog(this.store.clone(), window, cx);
                     })),

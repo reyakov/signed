@@ -7,7 +7,6 @@ use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString,
     Window, div, px, relative,
 };
-use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Textarea, TextareaState};
 use gpui_component::scroll::ScrollableElement;
@@ -16,10 +15,9 @@ use gpui_component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, v_flex};
 use nostr::prelude::{Event, EventId, PublicKey};
 use signed_core::activity_subject;
 use signed_state::{ProfileStore, RepoStore};
+use signed_ui::image_cache::{MAX_IMAGES, image_cache};
+use signed_ui::{UserAvatar, placeholder, status_badge};
 use utils::relative_time;
-
-use super::helpers::{placeholder, status_badge};
-use crate::image_cache::{MAX_IMAGES, image_cache};
 
 /// Detail panel of a single issue.
 pub struct IssueDetailView {
@@ -92,13 +90,7 @@ impl IssueDetailView {
                         h_flex()
                             .gap_1()
                             .items_center()
-                            .child(
-                                Avatar::new()
-                                    .name(name.clone())
-                                    .when_some(picture, |this, url| this.src(url))
-                                    .rounded(cx.theme().radius)
-                                    .small(),
-                            )
+                            .child(UserAvatar::new(name.clone()).picture(picture))
                             .child(div().text_sm().truncate().text_ellipsis().child(name))
                             .into_any_element()
                     })),
@@ -170,13 +162,7 @@ impl IssueDetailView {
                             .child(
                                 h_flex()
                                     .gap_1()
-                                    .child(
-                                        Avatar::new()
-                                            .name(author.clone())
-                                            .when_some(picture, |this, url| this.src(url))
-                                            .rounded(cx.theme().radius)
-                                            .small(),
-                                    )
+                                    .child(UserAvatar::new(author.clone()).picture(picture))
                                     .child(author),
                             )
                             .child(
@@ -352,13 +338,8 @@ impl Render for IssueDetailView {
                                                 h_flex()
                                                     .gap_1()
                                                     .child(
-                                                        Avatar::new()
-                                                            .when_some(picture, |this, url| {
-                                                                this.src(url)
-                                                            })
-                                                            .name(author.clone())
-                                                            .rounded(cx.theme().radius)
-                                                            .small(),
+                                                        UserAvatar::new(author.clone())
+                                                            .picture(picture),
                                                     )
                                                     .child(author),
                                             )

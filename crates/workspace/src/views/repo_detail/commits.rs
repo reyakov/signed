@@ -1,17 +1,13 @@
-//! Commits tab of the repository detail view: a virtual list of all
-//! commits reachable from HEAD, newest first, with the total count shown
-//! as a badge on the tab.
-
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, WeakEntity, div, px};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::{ActiveTheme, Sizable, h_flex, v_flex, v_virtual_list};
 use signed_git::FileCommit;
+use signed_ui::placeholder;
 use utils::relative_time_secs;
 
 use super::RepoDetailView;
-use super::helpers::placeholder;
 
 /// Height of one commit row in the virtual list.
 pub(super) const COMMIT_ROW_HEIGHT: f32 = 56.;

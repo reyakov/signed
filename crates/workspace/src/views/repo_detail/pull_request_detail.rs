@@ -10,7 +10,6 @@ use gpui::{
     ScrollStrategy, SharedString, Size, Subscription, Task, WeakEntity, Window, div, px, relative,
     size,
 };
-use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::clipboard::Clipboard;
 use gpui_component::input::{Textarea, TextareaState};
@@ -27,14 +26,14 @@ use nostr::prelude::{Event, EventId, Kind, Nip34Tag, PublicKey};
 use signed_core::{activity_subject, pull_request_patch};
 use signed_git::{CommitDiff, FileCommit, FileDiff, patch_commits, patch_diffs};
 use signed_state::{GitStore, ProfileStore, RepoStore};
+use signed_ui::image_cache::{MAX_IMAGES, image_cache};
+use signed_ui::{UserAvatar, placeholder, status_badge, tree_row};
 use utils::{relative_time, relative_time_secs};
 
 use super::diff::CommitDiffView;
 use super::helpers::{
-    DIFF_ROW_HEIGHT, DiffRow, build_tree_items, diff_rows, find_item, placeholder, render_diff_row,
-    status_badge, tree_items, tree_row,
+    DIFF_ROW_HEIGHT, DiffRow, build_tree_items, diff_rows, find_item, render_diff_row, tree_items,
 };
-use crate::image_cache::{MAX_IMAGES, image_cache};
 
 /// Width of the changed-files column.
 const TREE_WIDTH: f32 = 260.;
@@ -668,13 +667,8 @@ impl PullRequestDetailView {
                                                 h_flex()
                                                     .gap_1()
                                                     .child(
-                                                        Avatar::new()
-                                                            .name(author.clone())
-                                                            .when_some(picture, |this, url| {
-                                                                this.src(url)
-                                                            })
-                                                            .rounded(cx.theme().radius)
-                                                            .small(),
+                                                        UserAvatar::new(author.clone())
+                                                            .picture(picture),
                                                     )
                                                     .child(author),
                                             )
@@ -741,13 +735,7 @@ impl PullRequestDetailView {
                         h_flex()
                             .gap_1()
                             .items_center()
-                            .child(
-                                Avatar::new()
-                                    .name(name.clone())
-                                    .when_some(picture, |this, url| this.src(url))
-                                    .rounded(cx.theme().radius)
-                                    .small(),
-                            )
+                            .child(UserAvatar::new(name.clone()).picture(picture))
                             .child(div().text_sm().truncate().text_ellipsis().child(name))
                             .into_any_element()
                     })),
@@ -937,13 +925,7 @@ impl PullRequestDetailView {
                             .child(
                                 h_flex()
                                     .gap_1()
-                                    .child(
-                                        Avatar::new()
-                                            .name(author.clone())
-                                            .when_some(picture, |this, url| this.src(url))
-                                            .rounded(cx.theme().radius)
-                                            .small(),
-                                    )
+                                    .child(UserAvatar::new(author.clone()).picture(picture))
                                     .child(author),
                             )
                             .child(

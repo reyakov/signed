@@ -1,0 +1,17 @@
+[package]
+name = "signed_ui"
+description = "Reusable UI components and elements for Signed, built on gpui-base and gpui-component."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+assets = { path = "../assets" }
+signed_core = { path = "../signed_core" }
+
+gpui.workspace = true
+gpui-base.workspace = true
+gpui-component.workspace = true
+
+futures.workspace = true
+log.workspace = true

@@ -18,11 +18,11 @@ use gpui_component::{
     ActiveTheme, Sizable, StyledExt, VirtualListScrollHandle, h_flex, v_flex, v_virtual_list,
 };
 use signed_git::{CommitDiff, DiffStatus, FileCommit, FileDiff};
+use signed_ui::{placeholder, tree_row};
 use utils::relative_time_secs;
 
 use super::helpers::{
-    DIFF_ROW_HEIGHT, DiffRow, build_tree_items, diff_rows, find_item, placeholder, render_diff_row,
-    tree_items, tree_row,
+    DIFF_ROW_HEIGHT, DiffRow, build_tree_items, diff_rows, find_item, render_diff_row, tree_items,
 };
 
 /// Width of the changed-files column.

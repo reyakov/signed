@@ -3,8 +3,8 @@ use gpui::prelude::*;
 use gpui::{Context, Entity, Render, Subscription, Window, div, px};
 use gpui_component::{Root, StyledExt, Theme};
 use signed_state::{Backend, BackendEvent};
+use signed_ui::image_cache::{MAX_IMAGES, image_cache};
 
-use crate::image_cache::{MAX_IMAGES, image_cache};
 use crate::views::SidebarPanel;
 use crate::views::sidebar::passphrase_dialog;
 

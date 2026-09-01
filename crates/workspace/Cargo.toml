@@ -11,6 +11,7 @@ paths = { path = "../paths" }
 signed_core = { path = "../signed_core" }
 signed_git = { path = "../signed_git" }
 signed_state = { path = "../signed_state" }
+signed_ui = { path = "../signed_ui" }
 utils = { path = "../utils" }
 
 gpui.workspace = true

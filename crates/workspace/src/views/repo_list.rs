@@ -7,8 +7,6 @@ use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
     SharedString, Size, Subscription, WeakEntity, Window, div, px, size,
 };
-use gpui_base::Button as BaseButton;
-use gpui_component::avatar::Avatar;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{
@@ -17,10 +15,11 @@ use gpui_component::{
 };
 use signed_core::Announcement;
 use signed_state::{ProfileStore, RepoListStore, Timestamp};
+use signed_ui::image_cache::{MAX_IMAGES, image_cache};
+use signed_ui::{SegmentButton, UserAvatar};
 use utils::relative_time;
 
 use super::RepoDetailView;
-use crate::image_cache::{MAX_IMAGES, image_cache};
 
 const COLUMNS: usize = 2;
 const CARD_HEIGHT: f32 = 40. + 64. + 48. + 2. + 6.;
@@ -255,13 +254,7 @@ impl RepoListView {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(
-                                Avatar::new()
-                                    .name(owner.name())
-                                    .when_some(owner.picture(), |this, url| this.src(url))
-                                    .rounded(cx.theme().radius)
-                                    .small(),
-                            )
+                            .child(UserAvatar::new(owner.name()).picture(owner.picture()))
                             .child(
                                 div()
                                     .text_xs()
@@ -340,20 +333,9 @@ impl RepoListView {
     ) -> AnyElement {
         let active = self.filter == filter;
 
-        BaseButton::new(label)
-            .flex()
-            .items_center()
-            .h_7()
-            .px_2()
-            .gap_1()
-            .child(Icon::new(filter.icon_name()))
-            .child(div().text_sm().child(label))
-            .text_color(cx.theme().button_foreground)
-            .rounded(cx.theme().radius)
-            .hover(|this| this.bg(cx.theme().button_hover))
-            .active(|this| this.bg(cx.theme().button_active))
+        SegmentButton::new(label, label)
+            .icon(Icon::new(filter.icon_name()))
             .selected(active)
-            .when(active, |this| this.bg(cx.theme().button_active))
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.filter = filter;
                 this.rebuild_rows(cx);

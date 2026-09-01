@@ -8,15 +8,13 @@ use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
 use gix::Repository;
 use gpui::prelude::*;
 use gpui::{
-    Action, Anchor, AnyElement, App, ClipboardItem, Context, Div, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, PathPromptOptions, Pixels, Render, SharedString, Size, Subscription,
-    Task, WeakEntity, Window, div, px, relative, size,
+    Action, Anchor, AnyElement, App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, PathPromptOptions, Pixels, Render, SharedString, Size, Subscription, Task,
+    WeakEntity, Window, div, px, relative, size,
 };
 use gpui_base::{Button as BaseButton, Disableable, Popover};
 use gpui_component::alert::Alert;
-use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::clipboard::Clipboard;
 use gpui_component::combobox::{
     Caret, Combobox, ComboboxEvent, ComboboxState, ComboboxTriggerContext,
 };
@@ -31,9 +29,8 @@ use nostr::prelude::{EventId, RelayUrl, ToBech32};
 use signed_core::Announcement;
 use signed_git::{CommitList, FileCommit};
 use signed_state::{Backend, GitStore, LocalReposStore, ProfileStore, RepoStore};
-
-use crate::image_cache::{MAX_IMAGES, image_cache};
-use crate::pixel_avatar::PixelAvatar;
+use signed_ui::image_cache::{MAX_IMAGES, image_cache};
+use signed_ui::{DropdownButton, PixelAvatar, UserAvatar, copy_row};
 
 mod about;
 mod browser;
@@ -53,9 +50,7 @@ use browser::{
 };
 use commits::COMMIT_ROW_HEIGHT;
 use diff::CommitDiffView;
-use helpers::{
-    BaseDropdownButton, ShareTargets, TreeItemSeed, build_tree_items, is_markdown_path, tree_items,
-};
+use helpers::{ShareTargets, TreeItemSeed, build_tree_items, is_markdown_path, tree_items};
 use issues::{IssuesView, open_new_issue_dialog};
 use pull_requests::{PullRequestsView, open_new_pull_request_dialog};
 
@@ -1358,7 +1353,7 @@ impl RepoDetailView {
                             .gap_2()
                             .justify_end()
                             .child(
-                                BaseDropdownButton::new("issues")
+                                DropdownButton::new("issues")
                                     .action(
                                         BaseButton::new("issues-open")
                                             .child(
@@ -1399,7 +1394,7 @@ impl RepoDetailView {
                                     }),
                             )
                             .child(
-                                BaseDropdownButton::new("prs")
+                                DropdownButton::new("prs")
                                     .action(
                                         BaseButton::new("prs-open")
                                             .child(
@@ -1442,7 +1437,7 @@ impl RepoDetailView {
                                     }),
                             )
                             .child(
-                                BaseDropdownButton::new("share")
+                                DropdownButton::new("share")
                                     .action(
                                         Button::new("link")
                                             .icon(IconName::Copy)
@@ -1523,8 +1518,8 @@ impl RepoDetailView {
                                     )
                                     .content(move |_, _window, cx| {
                                         let state = cx.entity();
-                                        let ngit_row = command_row("copy-ngit", &ngit_command, cx);
-                                        let nak_row = command_row("copy-nak", &nak_command, cx);
+                                        let ngit_row = copy_row("copy-ngit", &ngit_command, cx);
+                                        let nak_row = copy_row("copy-nak", &nak_command, cx);
 
                                         v_flex()
                                             .w(px(440.))
@@ -1570,7 +1565,7 @@ impl RepoDetailView {
                                                         this.children(
                                                             git_commands.iter().enumerate().map(
                                                                 |(ix, cmd)| {
-                                                                    command_row(
+                                                                    copy_row(
                                                                         format!("copy-git-{ix}"),
                                                                         cmd,
                                                                         cx,
@@ -1887,13 +1882,7 @@ impl RepoDetailView {
                         .child(
                             h_flex()
                                 .gap_1()
-                                .child(
-                                    Avatar::new()
-                                        .name(owner_name.clone())
-                                        .when_some(owner_picture, |this, url| this.src(url))
-                                        .rounded(cx.theme().radius)
-                                        .small(),
-                                )
+                                .child(UserAvatar::new(owner_name.clone()).picture(owner_picture))
                                 .child(div().text_xs().whitespace_nowrap().child(owner_name)),
                         )
                         .when(!rest.is_empty(), |this| {
@@ -2025,32 +2014,4 @@ fn nostr_clone_url(announcement: &Announcement, nip05: Option<&str>) -> SharedSt
     url.push_str(&announcement.id);
 
     SharedString::from(url)
-}
-
-fn command_row<E>(copy_id: E, command: &SharedString, cx: &mut App) -> Div
-where
-    E: Into<ElementId>,
-{
-    h_flex()
-        .h_8()
-        .w_full()
-        .px_2()
-        .gap_2()
-        .items_center()
-        .bg(cx.theme().muted)
-        .rounded(cx.theme().radius)
-        .child(
-            h_flex()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_ellipsis()
-                .text_xs()
-                .child(command.clone()),
-        )
-        .child(
-            Clipboard::new(copy_id)
-                .tooltip("Copy")
-                .value(command.clone()),
-        )
 }

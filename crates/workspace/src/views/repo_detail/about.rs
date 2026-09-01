@@ -1,13 +1,11 @@
 use gpui::prelude::*;
 use gpui::{AnyElement, App, SharedString, Window, div, px};
-use gpui_component::avatar::Avatar;
 use gpui_component::clipboard::Clipboard;
-use gpui_component::{ActiveTheme, Sizable, StyledExt, WindowExt, h_flex, v_flex};
+use gpui_component::{ActiveTheme, StyledExt, WindowExt, h_flex, v_flex};
 use nostr::prelude::PublicKey;
 use signed_core::Announcement;
 use signed_state::ProfileStore;
-
-use super::helpers::middle_truncate;
+use signed_ui::{UserAvatar, middle_truncate};
 
 /// Open the "About" dialog: every field of the repository's announcement
 /// event (NIP-34, kind 30617), as parsed into [`Announcement`].
@@ -175,13 +173,7 @@ fn maintainers(maintainers: &[PublicKey], cx: &App) -> AnyElement {
                 .gap_2()
                 .items_center()
                 .min_w_0()
-                .child(
-                    Avatar::new()
-                        .name(name.clone())
-                        .when_some(picture, |this, url| this.src(url))
-                        .rounded(cx.theme().radius)
-                        .small(),
-                )
+                .child(UserAvatar::new(name.clone()).picture(picture))
                 .child(
                     div()
                         .flex_1()

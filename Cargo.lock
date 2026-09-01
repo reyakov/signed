@@ -1800,6 +1800,7 @@ dependencies = [
  "gpui",
  "gpui-base",
  "gpui-component",
+ "signed_ui",
 ]
 
 [[package]]
@@ -7935,6 +7936,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "signed_ui"
+version = "1.0.0"
+dependencies = [
+ "assets",
+ "futures",
+ "gpui",
+ "gpui-base",
+ "gpui-component",
+ "log",
+ "signed_core",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10763,6 +10777,7 @@ dependencies = [
  "signed_core",
  "signed_git",
  "signed_state",
+ "signed_ui",
  "utils",
 ]
 

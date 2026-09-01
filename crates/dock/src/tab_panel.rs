@@ -31,11 +31,11 @@ use gpui_component::menu::DropdownMenu as _;
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, h_flex, v_flex,
 };
+use signed_ui::title_bar_drag_handlers;
 
 use crate::dock_area::SkinShared;
 use crate::{
-    ClosePanel, PanelControl, PanelHandle, TAB_BAR_HEIGHT, ToggleZoom, t, title_bar_drag_handlers,
-    window_controls,
+    ClosePanel, PanelControl, PanelHandle, TAB_BAR_HEIGHT, ToggleZoom, t, window_controls,
 };
 
 /// The size the styled drag preview occupies, reported to base so a drop

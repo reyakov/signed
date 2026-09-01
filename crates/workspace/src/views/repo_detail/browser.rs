@@ -1,8 +1,3 @@
-//! File explorer of the repository detail view: the file tree column and the
-//! content column (README / file preview), backed by persistent
-//! [`TextViewState`]s for markdown documents and persistent [`InputState`]s
-//! for code files.
-
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Entity, SharedString, WeakEntity, Window, div, px};
 use gpui_component::button::{Button, ButtonVariants};
@@ -12,9 +7,10 @@ use gpui_component::spinner::Spinner;
 use gpui_component::text::{TextView, TextViewState};
 use gpui_component::tree::{TreeEntry, TreeState, tree};
 use gpui_component::{ActiveTheme, Sizable, StyledExt, h_flex, v_flex};
+use signed_ui::{placeholder, tree_row};
 
 use super::RepoDetailView;
-use super::helpers::{code_language, is_markdown_path, placeholder, tree_row};
+use super::helpers::{code_language, is_markdown_path};
 
 /// Width of the file explorer column.
 const TREE_WIDTH: f32 = 240.;

@@ -17,7 +17,7 @@ const MIN_FILLED: usize = 5;
 /// mirror symmetry, seeded from a stable string such as the repository id and
 /// owner public key. The same seed always renders the same avatar.
 #[derive(IntoElement)]
-pub(crate) struct PixelAvatar {
+pub struct PixelAvatar {
     seed: u64,
     size: Pixels,
     style: StyleRefinement,
@@ -26,7 +26,7 @@ pub(crate) struct PixelAvatar {
 impl PixelAvatar {
     /// Create an avatar seeded from `seed`. The seed should be a stable string
     /// unique to the entity the avatar represents.
-    pub(crate) fn new(seed: impl AsRef<str>) -> Self {
+    pub fn new(seed: impl AsRef<str>) -> Self {
         Self {
             seed: fnv1a(seed.as_ref().as_bytes()),
             size: px(16.),

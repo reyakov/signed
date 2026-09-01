@@ -4,27 +4,22 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use assets::CustomIconName;
-use dock::{
-    BasePanel, DockArea, DockPlacement, Panel, PanelEvent, TAB_BAR_HEIGHT, panel_handle,
-    title_bar_drag_handlers,
-};
+use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, TAB_BAR_HEIGHT, panel_handle};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, EventEmitter, FocusHandle,
-    Focusable, ObjectFit, Render, SharedString, StyleRefinement, Subscription, WeakEntity, Window,
-    div, img, px, uniform_list,
+    AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, ObjectFit, Render,
+    SharedString, Subscription, WeakEntity, Window, div, img, px, uniform_list,
 };
 use gpui_base::Button as BaseButton;
-use gpui_component::avatar::Avatar;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::InputState;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
 use signed_core::{Announcement, identifier_from_name};
 use signed_state::{Backend, BackendEvent, LocalReposStore, Profile, ProfileStore, RepoListStore};
+use signed_ui::image_cache::{MAX_IMAGES, image_cache};
+use signed_ui::{NavItem, PixelAvatar, UserAvatar, title_bar_drag_handlers};
 
 use super::{RepoDetailView, RepoListView};
-use crate::image_cache::{MAX_IMAGES, image_cache};
-use crate::pixel_avatar::PixelAvatar;
 
 mod create_repo_dialog;
 pub(crate) mod grasp_servers;
@@ -401,13 +396,7 @@ impl SidebarPanel {
                         Button::new("user").text().dropdown_caret(true).child(
                             h_flex()
                                 .gap_1()
-                                .child(
-                                    Avatar::new()
-                                        .name(name.clone())
-                                        .when_some(picture, |this, url| this.src(url))
-                                        .rounded(cx.theme().radius)
-                                        .small(),
-                                )
+                                .child(UserAvatar::new(name.clone()).picture(picture))
                                 .child(div().text_xs().font_semibold().child(name)),
                         ),
                     ),
@@ -607,77 +596,5 @@ impl Render for SidebarPanel {
                         ),
                     ),
             )
-    }
-}
-
-/// A single navigation entry in the sidebar: an arbitrary leading element
-/// (an icon, avatar, ...) and a text label with a hover highlight,
-/// an optional trailing suffix (e.g. a status icon) and an optional click handler.
-#[allow(clippy::type_complexity)]
-#[derive(IntoElement)]
-struct NavItem {
-    id: ElementId,
-    style: StyleRefinement,
-    icon: AnyElement,
-    label: SharedString,
-    /// Trailing element rendered at the right edge of the row, after the (ellipsized) label.
-    suffix: Option<AnyElement>,
-    on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
-}
-
-impl NavItem {
-    fn new<I, L, N>(id: I, label: L, icon: N) -> Self
-    where
-        I: Into<ElementId>,
-        L: Into<SharedString>,
-        N: IntoElement,
-    {
-        Self {
-            id: id.into(),
-            icon: icon.into_any_element(),
-            label: label.into(),
-            style: StyleRefinement::default(),
-            suffix: None,
-            on_click: None,
-        }
-    }
-
-    /// A trailing element rendered at the right edge of the row
-    fn suffix(mut self, suffix: impl IntoElement) -> Self {
-        self.suffix = Some(suffix.into_any_element());
-        self
-    }
-
-    fn on_click(mut self, listener: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
-        self.on_click = Some(Box::new(listener));
-        self
-    }
-}
-
-impl RenderOnce for NavItem {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        h_flex()
-            .id(self.id)
-            .refine_style(&self.style)
-            .px_2()
-            .py_1()
-            .w_full()
-            .gap_2()
-            .rounded(cx.theme().radius)
-            .child(self.icon)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_sm()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(self.label),
-            )
-            .when_some(self.suffix, |this, suffix| {
-                this.child(div().flex_shrink_0().child(suffix))
-            })
-            .hover(|this| this.bg(cx.theme().list_hover))
-            .when_some(self.on_click, |this, listener| this.on_click(listener))
     }
 }
