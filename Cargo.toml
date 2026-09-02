@@ -22,6 +22,7 @@ reqwest_client = { git = "https://github.com/zed-industries/zed" }
 # code preview (fenced code blocks are highlighted with tree-sitter).
 gpui-component = { git = "https://github.com/longbridge/gpui-component", features = ["tree-sitter-languages"] }
 gpui-base = { git = "https://github.com/longbridge/gpui-component" }
+gpui-fps = { git = "https://github.com/longbridge/gpui-component" }
 
 dock = { path = "crates/dock" }
 settings = { path = "crates/settings" }

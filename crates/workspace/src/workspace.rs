@@ -1,23 +1,29 @@
 use dock::{DockArea, DockEvent, DockLayout, DockPlacement, SignedDockSkin, panel_handle};
 use gpui::prelude::*;
-use gpui::{Context, Entity, Render, Subscription, Window, div, px};
+use gpui::{Context, Entity, KeyBinding, Render, Subscription, Window, actions, div, px};
 use gpui_component::{Root, StyledExt, Theme};
+use gpui_fps::{FpsMonitor, FpsOverlay};
 use signed_state::{Backend, BackendEvent};
-use signed_ui::image_cache::{MAX_IMAGES, image_cache};
 
 use crate::views::SidebarPanel;
 use crate::views::sidebar::passphrase_dialog;
 
-/// Root view of the app: dock area (whose center tab bar doubles as the
-/// window title bar), overlays.
+actions!(workspace, [ToggleMonitor]);
+
 pub struct Workspace {
     dock: Entity<DockArea>,
+    fps: Entity<FpsMonitor>,
+    /// Debug HUD, toggled with `cmd-shift-f`.
+    show_fps: bool,
     _subscriptions: Vec<Subscription>,
     _passphrase_subscription: Subscription,
 }
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let fps = cx.new(|cx| FpsMonitor::new(window, cx).continuous(false));
+        cx.bind_keys([KeyBinding::new("cmd-shift-f", ToggleMonitor, None)]);
+
         let dock = cx.new(|cx| {
             let skin = SignedDockSkin::new(cx);
             DockArea::new("dock", Some(1), window, cx).with_renderer(skin)
@@ -36,8 +42,6 @@ impl Workspace {
             );
             dock_area.set_dock_size(DockPlacement::Left, px(240.), window, cx);
         });
-
-        let backend = Backend::global(cx);
 
         let mut subscriptions = vec![];
 
@@ -72,6 +76,8 @@ impl Workspace {
             Theme::sync_system_appearance(Some(window), cx);
         }));
 
+        let backend = Backend::global(cx);
+
         // Ask for the passphrase when the stored identity is NIP-49
         // encrypted. Subscribed via the window, since opening a dialog
         // needs one.
@@ -100,6 +106,8 @@ impl Workspace {
 
         Self {
             dock,
+            show_fps: cfg!(debug_assertions),
+            fps,
             _subscriptions: subscriptions,
             _passphrase_subscription: passphrase_subscription,
         }
@@ -112,14 +120,22 @@ impl Render for Workspace {
         let notification_layer = Root::render_notification_layer(window, cx);
 
         div()
-            .image_cache(image_cache("workspace", MAX_IMAGES))
             .id("workspace")
+            .on_action(
+                cx.listener(|this: &mut Self, _ev: &ToggleMonitor, _window, cx| {
+                    this.show_fps = !this.show_fps;
+                    cx.notify();
+                }),
+            )
             .v_flex()
             .size_full()
+            .relative()
             .child(self.dock.clone())
             // Notifications
             .children(notification_layer)
             // Modals
             .children(dialog_layer)
+            // On top of everything, so it stays readable while debugging.
+            .when(self.show_fps, |this| this.child(FpsOverlay::new(&self.fps)))
     }
 }
