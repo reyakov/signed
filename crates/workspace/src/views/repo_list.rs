@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use assets::CustomIconName;
-use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
+use dock::{BasePanel, DockArea, Panel, PanelEvent};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
@@ -19,7 +19,7 @@ use signed_ui::image_cache::{MAX_IMAGES, image_cache};
 use signed_ui::{SegmentButton, UserAvatar};
 use utils::relative_time;
 
-use super::RepoDetailView;
+use super::open_repo_panel;
 
 const COLUMNS: usize = 2;
 const CARD_HEIGHT: f32 = 40. + 64. + 48. + 2. + 6.;
@@ -173,21 +173,7 @@ impl RepoListView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let dock_area = self.dock_area.clone();
-        let detail =
-            cx.new(|cx| RepoDetailView::new(dock_area.clone(), announcement.clone(), window, cx));
-
-        if let Some(dock_area) = dock_area.upgrade() {
-            dock_area.update(cx, |dock_area, cx| {
-                dock_area.add_panel_view(
-                    panel_handle(detail),
-                    DockPlacement::Center,
-                    None,
-                    window,
-                    cx,
-                );
-            });
-        }
+        open_repo_panel(&self.dock_area, announcement, window, &mut *cx);
     }
 
     fn render_card(
@@ -215,6 +201,26 @@ impl RepoListView {
             .map(|label| SharedString::from(format!("Updated {label}")))
             .unwrap_or_default();
 
+        // Fork badge: the upstream's display name when its announcement is
+        // known locally, otherwise its repository id from the `u` tag.
+        let fork_label: Option<SharedString> =
+            announcement.upstream.as_ref().and_then(|upstream| {
+                let addr = upstream.addr.as_ref()?;
+                let name = self
+                    .store
+                    .read(cx)
+                    .announcements
+                    .iter()
+                    .find(|a| a.addr() == *addr)
+                    .map(|a| {
+                        a.name
+                            .clone()
+                            .unwrap_or_else(|| SharedString::from(a.id.clone()))
+                    })
+                    .unwrap_or_else(|| SharedString::from(addr.identifier.clone()));
+                Some(SharedString::from(format!("forked from {name}")))
+            });
+
         v_flex()
             .id(ix)
             .flex_1()
@@ -228,11 +234,29 @@ impl RepoListView {
             .child(
                 h_flex()
                     .h_10()
-                    .text_sm()
-                    .font_semibold()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .child(name),
+                    .gap_1p5()
+                    .items_center()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_sm()
+                            .font_semibold()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(name),
+                    )
+                    .when_some(fork_label, |this, label| {
+                        this.child(
+                            h_flex()
+                                .gap_1()
+                                .items_center()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .whitespace_nowrap()
+                                .child(Icon::new(CustomIconName::GitBranch).small())
+                                .child(label),
+                        )
+                    }),
             )
             .child(
                 div()

@@ -19,7 +19,7 @@ use signed_state::{Backend, BackendEvent, LocalReposStore, Profile, ProfileStore
 use signed_ui::image_cache::{MAX_IMAGES, image_cache};
 use signed_ui::{NavItem, PixelAvatar, UserAvatar, title_bar_drag_handlers};
 
-use super::{RepoDetailView, RepoListView};
+use super::{RepoDetailView, RepoListView, open_repo_panel};
 
 mod create_repo_dialog;
 pub(crate) mod grasp_servers;
@@ -100,7 +100,8 @@ impl SidebarPanel {
     fn refresh_my_repos(&mut self, cx: &mut Context<Self>) {
         self.my_repos_subscription = None;
 
-        let author = Backend::global(cx).read(cx).current_user();
+        let backend = Backend::global(cx);
+        let author = backend.read(cx).current_user();
         self.my_repos = author.map(|author| cx.new(|cx| RepoListStore::new(Some(author), cx)));
 
         if let Some(store) = self.my_repos.as_ref() {
@@ -158,19 +159,7 @@ impl SidebarPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let detail = cx.new(|cx| {
-            RepoDetailView::new(self.dock_area.clone(), announcement.clone(), window, cx)
-        });
-
-        let _ = self.dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel_view(
-                panel_handle(detail),
-                DockPlacement::Center,
-                None,
-                window,
-                cx,
-            );
-        });
+        open_repo_panel(&self.dock_area, announcement, window, &mut *cx);
     }
 
     /// Open a local repository's detail view in the dock's center; the

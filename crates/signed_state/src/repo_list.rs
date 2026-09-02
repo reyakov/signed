@@ -202,7 +202,8 @@ impl RepoListStore {
     fn run_refresh(&mut self, cx: &mut Context<Self>) {
         self.refreshing = true;
 
-        let client = Backend::global(cx).read(cx).client();
+        let backend = Backend::global(cx);
+        let client = backend.read(cx).client();
         let author = self.author;
 
         let work = cx.background_spawn(async move {

@@ -6,11 +6,11 @@ use crate::RepoAddr;
 
 /// Kinds that make up the activity of a repository.
 pub const ACTIVITY_KINDS: [Kind; 9] = [
+    Kind::Comment,
     Kind::GitPatch,
     Kind::GitPullRequest,
     Kind::GitPullRequestUpdate,
     Kind::GitIssue,
-    Kind::Comment,
     Kind::GitStatusOpen,
     Kind::GitStatusApplied,
     Kind::GitStatusClosed,

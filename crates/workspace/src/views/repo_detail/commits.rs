@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Context, WeakEntity, div, px};
+use gpui::{AnyElement, App, Context, Window, div, px};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::{ActiveTheme, Sizable, h_flex, v_flex, v_virtual_list};
@@ -12,17 +12,12 @@ use super::RepoDetailView;
 /// Height of one commit row in the virtual list.
 pub(super) const COMMIT_ROW_HEIGHT: f32 = 56.;
 
-/// One row of the commit list: id, summary, author and relative time.
-/// Clicking a row opens the diff of that commit in a new panel.
-fn commit_row(
+pub(super) fn commit_row(
     ix: usize,
     commit: &FileCommit,
-    view: &WeakEntity<RepoDetailView>,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
     cx: &App,
 ) -> AnyElement {
-    let view = view.clone();
-    let id = commit.id.clone();
-
     h_flex()
         .id(ix)
         .px_4()
@@ -70,11 +65,7 @@ fn commit_row(
                         .child(relative_time_secs(commit.time)),
                 ),
         )
-        .on_click(move |_event, window, cx| {
-            if let Some(view) = view.upgrade() {
-                view.update(cx, |this, cx| this.open_commit_diff(&id, window, cx));
-            }
-        })
+        .on_click(move |_event, window, cx| on_click(window, cx))
         .into_any_element()
 }
 
@@ -114,22 +105,34 @@ impl RepoDetailView {
             .w_full()
             .min_h_0()
             .child(
-                v_virtual_list(
-                    view,
-                    "repo-commits",
-                    sizes,
-                    move |this, range, _window, cx| {
-                        let commits = this
-                            .all_commits
-                            .as_ref()
-                            .map(|list| list.commits.as_slice())
-                            .unwrap_or(&[]);
-                        let view = cx.entity().downgrade();
-                        range
-                            .map(|ix| commit_row(ix, &commits[ix], &view, cx))
-                            .collect()
-                    },
-                )
+                v_virtual_list(view, "commits", sizes, move |this, range, _window, cx| {
+                    let view = cx.entity().downgrade();
+                    let commits = this
+                        .all_commits
+                        .as_ref()
+                        .map(|list| list.commits.as_slice())
+                        .unwrap_or(&[]);
+
+                    range
+                        .map(|ix| {
+                            let id = commits[ix].id.clone();
+                            let view = view.clone();
+
+                            commit_row(
+                                ix,
+                                &commits[ix],
+                                move |window, cx| {
+                                    if let Some(view) = view.upgrade() {
+                                        view.update(cx, |this, cx| {
+                                            this.open_commit_diff(&id, window, cx)
+                                        });
+                                    }
+                                },
+                                cx,
+                            )
+                        })
+                        .collect()
+                })
                 .track_scroll(&scroll_handle)
                 .size_full(),
             )

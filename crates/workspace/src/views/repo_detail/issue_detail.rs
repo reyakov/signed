@@ -21,16 +21,13 @@ use utils::relative_time;
 
 /// Detail panel of a single issue.
 pub struct IssueDetailView {
-    focus_handle: FocusHandle,
     /// Repo store holding the issues and their statuses.
     store: Entity<RepoStore>,
     issue_id: EventId,
+    contents: HashMap<EventId, SharedString>,
     /// Input state of the "leave a comment" textarea.
     comment_input: Entity<TextareaState>,
-    /// Issue/comment bodies as shared strings, keyed by event ID, so
-    /// re-renders don't clone full contents again (events are immutable,
-    /// so the cache never needs invalidation).
-    contents: HashMap<EventId, SharedString>,
+    focus_handle: FocusHandle,
 }
 
 impl IssueDetailView {
@@ -283,7 +280,13 @@ impl Render for IssueDetailView {
             let content = self
                 .contents
                 .entry(issue.id)
-                .or_insert_with(|| SharedString::from(issue.content.clone()))
+                .or_insert_with(|| {
+                    if issue.content.is_empty() {
+                        SharedString::from("No description provided.")
+                    } else {
+                        SharedString::from(&issue.content)
+                    }
+                })
                 .clone();
 
             (
@@ -338,8 +341,7 @@ impl Render for IssueDetailView {
                                                 h_flex()
                                                     .gap_1()
                                                     .child(
-                                                        UserAvatar::new(author.clone())
-                                                            .picture(picture),
+                                                        UserAvatar::new(&author).picture(picture),
                                                     )
                                                     .child(author),
                                             )

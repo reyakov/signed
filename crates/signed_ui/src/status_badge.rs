@@ -10,11 +10,11 @@ use signed_core::RepoStatus;
 pub fn status_badge(status: RepoStatus, cx: &App) -> AnyElement {
     let (icon, label, tooltip, bg, fg) = match status {
         RepoStatus::Open => (
-            CustomIconName::GitIssueDone,
+            CustomIconName::GitIssueOpen,
             "open",
             "Issue is open",
-            cx.theme().primary,
-            cx.theme().primary_foreground,
+            cx.theme().secondary,
+            cx.theme().secondary_foreground,
         ),
         RepoStatus::Closed => (
             CustomIconName::GitIssueClosed,
@@ -31,11 +31,11 @@ pub fn status_badge(status: RepoStatus, cx: &App) -> AnyElement {
             cx.theme().accent_foreground,
         ),
         RepoStatus::Applied => (
-            CustomIconName::GitIssueOpen,
+            CustomIconName::GitIssueDone,
             "applied",
             "Issue is completed",
-            cx.theme().secondary,
-            cx.theme().secondary_foreground,
+            cx.theme().primary,
+            cx.theme().primary_foreground,
         ),
     };
 

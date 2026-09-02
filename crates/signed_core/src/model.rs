@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use gpui::SharedString;
 use nostr::prelude::*;
 
+use crate::RepoAddr;
+
 /// Parsed NIP-34 repository announcement (plain data, ready for the UI).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Announcement {
@@ -28,9 +30,51 @@ pub struct Announcement {
     pub maintainers: Vec<PublicKey>,
     /// Value of a `u` tag, if any: this repository is a subordinate fork of
     /// the referenced upstream (NIP-34).
-    pub upstream: Option<String>,
+    pub upstream: Option<Upstream>,
     /// Hashtags labelling the repository (`t` tags).
     pub hashtags: Vec<String>,
+}
+
+/// The `u` tag of a fork announcement (NIP-34)
+/// the repository this one is a subordinate fork of. The first value is
+/// the upstream coordinate (`30617:<pubkey>:<id>`) or a git URL.
+/// The second is an optional relay hint for the upstream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upstream {
+    /// Raw first value of the `u` tag (coordinate or git URL).
+    pub raw: String,
+    /// The upstream `30617:<pubkey>:<id>` coordinate, when the `u` tag
+    /// references a NIP-34 repository; `None` for the git-URL form.
+    pub addr: Option<RepoAddr>,
+    /// Relay hint for the upstream, if the `u` tag carries one.
+    pub relay_hint: Option<RelayUrl>,
+}
+
+impl Upstream {
+    /// Parse the `u` tag values. The first is the upstream coordinate or a
+    /// git URL (the coordinate form may append `|git-url`; the coordinate is
+    /// the part before the first `|`), the second an optional relay hint.
+    fn parse(raw: &str, relay_hint: Option<&str>) -> Self {
+        let coordinate = raw.split('|').next().unwrap_or(raw);
+        let addr = coordinate
+            .parse::<Coordinate>()
+            .ok()
+            .filter(|c| c.kind == Kind::GitRepoAnnouncement);
+        Self {
+            raw: raw.to_owned(),
+            addr,
+            relay_hint: relay_hint.and_then(|hint| RelayUrl::parse(hint).ok()),
+        }
+    }
+
+    /// Text for display: the upstream coordinate when it is a NIP-34
+    /// repository, otherwise the raw `u` value (git-URL form).
+    pub fn display(&self) -> SharedString {
+        match &self.addr {
+            Some(addr) => SharedString::from(addr.to_string()),
+            None => SharedString::from(self.raw.clone()),
+        }
+    }
 }
 
 /// Subject of a NIP-34 issue or pull request event: the `subject` tag,
@@ -193,7 +237,7 @@ impl Announcement {
         let mut relays: Vec<RelayUrl> = Vec::new();
         let mut euc: Option<String> = None;
         let mut maintainers: Vec<PublicKey> = Vec::new();
-        let mut upstream: Option<String> = None;
+        let mut upstream: Option<Upstream> = None;
 
         for tag in event.tags.iter() {
             match Nip34Tag::parse(tag.as_slice()) {
@@ -208,9 +252,13 @@ impl Announcement {
             }
 
             // The `u` tag is not modelled by the SDK's `Nip34Tag`; parse it
-            // manually (first value wins).
+            // manually (first wins).
             if upstream.is_none() && tag.kind() == "u" {
-                upstream = tag.content().map(str::to_owned);
+                let values = tag.as_slice();
+                let raw = values.get(1).map(String::as_str).unwrap_or_default();
+                if !raw.is_empty() {
+                    upstream = Some(Upstream::parse(raw, values.get(2).map(String::as_str)));
+                }
             }
         }
 
@@ -391,14 +439,55 @@ mod tests {
     fn parses_upstream_tag() {
         let event = announcement_event(&[
             &["d", "my-fork"],
-            &["u", "30617:abc:upstream|https://example.com/upstream.git"],
+            &[
+                "u",
+                "30617:68d81165918100b7da43fc28f7d1fc12554466e1115886b9e7bb326f65ec4272:upstream|https://example.com/upstream.git",
+                "wss://relay.example.com",
+            ],
         ]);
 
         let announcement = Announcement::from_event(&event).expect("parses");
+        let upstream = announcement.upstream.expect("parses the u tag");
 
+        // The coordinate part resolves to a repository address; the raw
+        // value keeps the `|git-url` suffix.
         assert_eq!(
-            announcement.upstream.as_deref(),
-            Some("30617:abc:upstream|https://example.com/upstream.git")
+            upstream.addr,
+            Some(crate::repo_addr(
+                PublicKey::from_hex(MAINTAINER_HEX).expect("valid pubkey"),
+                "upstream"
+            ))
+        );
+        assert_eq!(
+            upstream.raw,
+            "30617:68d81165918100b7da43fc28f7d1fc12554466e1115886b9e7bb326f65ec4272:upstream|https://example.com/upstream.git"
+        );
+        assert_eq!(
+            upstream.relay_hint,
+            Some(RelayUrl::parse("wss://relay.example.com").expect("valid relay"))
+        );
+        assert_eq!(
+            upstream.display().to_string(),
+            "30617:68d81165918100b7da43fc28f7d1fc12554466e1115886b9e7bb326f65ec4272:upstream"
+        );
+    }
+
+    #[test]
+    fn parses_git_url_upstream() {
+        // The `u` tag may reference a non-nostr upstream by git URL only;
+        // there is no repository address to navigate to.
+        let event = announcement_event(&[
+            &["d", "my-fork"],
+            &["u", "https://example.com/upstream.git"],
+        ]);
+
+        let announcement = Announcement::from_event(&event).expect("parses");
+        let upstream = announcement.upstream.expect("parses the u tag");
+
+        assert_eq!(upstream.addr, None);
+        assert_eq!(
+            upstream.display().to_string(),
+            "https://example.com/upstream.git"
         );
     }
 

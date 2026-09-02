@@ -28,22 +28,13 @@ use super::helpers::{
 /// Width of the changed-files column.
 const TREE_WIDTH: f32 = 260.;
 
-/// Detail panel showing the diff of one commit.
-pub struct CommitDiffView {
-    focus_handle: FocusHandle,
-    /// Local clone the commit lives in.
-    worktree: PathBuf,
-    /// Display name of the repository the commit belongs to.
-    repo_name: SharedString,
-    /// The commit being shown (header and tab title). Starts as an id-only
-    /// stub; [`Self::load`] replaces it with the full metadata, which the
-    /// history list intentionally omits.
-    commit: FileCommit,
-    /// Loaded diff; `None` while loading or after a failure.
+/// The tree + per-file diff body shared by the commit diff panel and the
+/// compare view of the new-pull-request panel. Owns the changed-files
+/// explorer and the virtual list of the selected file's hunks; the host
+/// feeds it a [`CommitDiff`] via [`DiffPane::set_diff`].
+pub struct DiffPane {
+    /// Loaded diff; `None` until [`Self::set_diff`] is called.
     diff: Option<CommitDiff>,
-    /// The diff is being computed on a background task.
-    loading: bool,
-    error: Option<SharedString>,
     /// Changed-files explorer state.
     tree_state: Entity<TreeState>,
     /// Path of the file whose diff is shown in the detail column.
@@ -55,114 +46,60 @@ pub struct CommitDiffView {
     item_sizes: Rc<Vec<Size<Pixels>>>,
     /// Virtual list state of the diff rows.
     scroll_handle: VirtualListScrollHandle,
-    /// In-flight tasks; pruned on every push (see [`helpers::track`]).
-    tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
 }
 
-impl CommitDiffView {
-    pub fn new(
-        worktree: PathBuf,
-        repo_name: SharedString,
-        commit_id: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let tree_state = cx.new(|cx| TreeState::new(cx));
-
-        // Defer until the window is ready, like the repository detail view.
-        cx.defer_in(window, |this, window, cx| {
-            this.load(window, cx);
-        });
-
+impl DiffPane {
+    pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
-            focus_handle: cx.focus_handle(),
-            worktree,
-            repo_name,
-            commit: FileCommit {
-                id: commit_id,
-                summary: String::new(),
-                description: None,
-                author: String::new(),
-                time: 0,
-            },
             diff: None,
-            loading: true,
-            error: None,
-            tree_state,
+            tree_state: cx.new(|cx| TreeState::new(cx)),
             selected_file: None,
             rows: Vec::new(),
             item_sizes: Rc::new(Vec::new()),
             scroll_handle: VirtualListScrollHandle::new(),
-            tasks: Vec::new(),
         }
     }
 
-    /// Load the commit diff (and the full commit metadata) on a background
-    /// task and populate the tree.
-    fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.loading = true;
-        self.error = None;
-        cx.notify();
+    /// The loaded diff, for stats and badges in the host's header.
+    pub fn diff(&self) -> Option<&CommitDiff> {
+        self.diff.as_ref()
+    }
 
-        let worktree = self.worktree.clone();
-        let id = self.commit.id.clone();
-
-        let task = cx.spawn_in(window, async move |this, cx| {
-            let commit = cx
-                .background_spawn({
-                    let worktree = worktree.clone();
-                    let id = id.clone();
-                    async move { signed_git::worktree_commit(&worktree, &id) }
-                })
-                .await;
-            let diff = cx
-                .background_spawn({
-                    let worktree = worktree.clone();
-                    let id = id.clone();
-                    async move { signed_git::worktree_commit_diff(&worktree, &id) }
-                })
-                .await;
-
-            this.update_in(cx, |this, _window, cx| {
-                this.loading = false;
-                if let Ok(Some(commit)) = commit {
-                    this.commit = commit;
-                }
-                match diff {
-                    Ok(diff) => {
-                        let mut paths: Vec<PathBuf> = diff
-                            .files
-                            .iter()
-                            .map(|file| PathBuf::from(&file.path))
-                            .collect();
-                        paths.sort();
-                        let items = tree_items(build_tree_items(&paths), true);
-                        let first = diff
-                            .files
-                            .first()
-                            .map(|file| SharedString::from(file.path.as_str()));
-                        this.tree_state.update(cx, |state, cx| {
-                            state.set_items(items.clone(), cx);
-                            let item = find_item(&items, first.as_deref());
-                            state.set_selected_item(item, cx);
-                        });
-                        this.selected_file = first.clone();
-                        this.diff = Some(diff);
-                        if let Some(path) = first {
-                            this.set_diff_rows(path.as_ref());
-                        }
-                    }
-                    Err(error) => {
-                        this.error = Some(error.to_string().into());
-                    }
-                }
-                cx.notify();
-            })?;
-
-            Ok(())
+    /// Replace the diff and rebuild the tree and the selected file's rows.
+    pub fn set_diff(&mut self, diff: CommitDiff, cx: &mut Context<Self>) {
+        let mut paths: Vec<PathBuf> = diff
+            .files
+            .iter()
+            .map(|file| PathBuf::from(&file.path))
+            .collect();
+        paths.sort();
+        let items = tree_items(build_tree_items(&paths), true);
+        let first = diff
+            .files
+            .first()
+            .map(|file| SharedString::from(file.path.as_str()));
+        self.tree_state.update(cx, |state, cx| {
+            state.set_items(items.clone(), cx);
+            let item = find_item(&items, first.as_deref());
+            state.set_selected_item(item, cx);
         });
+        self.selected_file = first.clone();
+        self.diff = Some(diff);
+        if let Some(path) = first {
+            self.set_diff_rows(path.as_ref());
+        }
+    }
 
-        self.tasks.push(task);
+    /// Forget the diff (e.g. when the compared branches changed): clear the
+    /// tree, the selection and the diff rows.
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.diff = None;
+        self.selected_file = None;
+        self.rows = Vec::new();
+        self.item_sizes = Rc::new(Vec::new());
+        self.tree_state.update(cx, |state, cx| {
+            state.set_items(Vec::new(), cx);
+        });
     }
 
     /// Show the diff of the file at `path` (selected in the tree).
@@ -226,8 +163,8 @@ impl CommitDiffView {
                             .p_2(),
                         )
                     })
-                    .when(self.diff.is_none() && !self.loading, |this| {
-                        this.child(placeholder("Failed to load diff", cx))
+                    .when(self.diff.is_none(), |this| {
+                        this.child(placeholder("No changes", cx))
                     }),
             )
             .into_any_element()
@@ -235,23 +172,12 @@ impl CommitDiffView {
 
     /// Right column: header of the selected file plus its diff.
     fn render_detail_column(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.loading {
-            return v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .child(Spinner::new().small())
-                .into_any_element();
-        }
-        if let Some(error) = self.error.clone() {
-            return placeholder(&error, cx);
-        }
         let Some(diff) = self.diff.as_ref() else {
-            return placeholder("Failed to load diff", cx);
+            return placeholder("No changes", cx);
         };
         let Some(path) = self.selected_file.clone() else {
             return if diff.files.is_empty() {
-                placeholder("No files changed in this commit", cx)
+                placeholder("No files changed", cx)
             } else {
                 placeholder("Select a file", cx)
             };
@@ -377,11 +303,126 @@ impl CommitDiffView {
             .child(div().id("commit-diff-body").flex_1().min_h_0().child(body))
             .into_any_element()
     }
+}
+
+impl Render for DiffPane {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .size_full()
+            .min_h_0()
+            .bg(cx.theme().background)
+            .child(self.render_tree_column(cx))
+            .child(self.render_detail_column(cx))
+    }
+}
+
+/// Detail panel showing the diff of one commit: a metadata header plus the
+/// shared [`DiffPane`] body.
+pub struct CommitDiffView {
+    focus_handle: FocusHandle,
+    /// Local clone the commit lives in.
+    worktree: PathBuf,
+    /// Display name of the repository the commit belongs to.
+    repo_name: SharedString,
+    /// The commit being shown (header and tab title). Starts as an id-only
+    /// stub; [`Self::load`] replaces it with the full metadata, which the
+    /// history list intentionally omits.
+    commit: FileCommit,
+    /// The diff is being computed on a background task.
+    loading: bool,
+    error: Option<SharedString>,
+    /// Changed-files explorer and per-file diff, shared with the compare
+    /// view of the new-pull-request panel.
+    pane: Entity<DiffPane>,
+    /// In-flight tasks; pruned on every push (see [`helpers::track`]).
+    tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
+}
+
+impl CommitDiffView {
+    pub fn new(
+        worktree: PathBuf,
+        repo_name: SharedString,
+        commit_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let pane = cx.new(DiffPane::new);
+
+        // Defer until the window is ready, like the repository detail view.
+        cx.defer_in(window, |this, window, cx| {
+            this.load(window, cx);
+        });
+
+        Self {
+            focus_handle: cx.focus_handle(),
+            worktree,
+            repo_name,
+            commit: FileCommit {
+                id: commit_id,
+                summary: String::new(),
+                description: None,
+                author: String::new(),
+                time: 0,
+            },
+            loading: true,
+            error: None,
+            pane,
+            tasks: Vec::new(),
+        }
+    }
+
+    /// Load the commit diff (and the full commit metadata) on a background
+    /// task and populate the tree.
+    fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.loading = true;
+        self.error = None;
+        cx.notify();
+
+        let worktree = self.worktree.clone();
+        let id = self.commit.id.clone();
+
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let commit = cx
+                .background_spawn({
+                    let worktree = worktree.clone();
+                    let id = id.clone();
+                    async move { signed_git::worktree_commit(&worktree, &id) }
+                })
+                .await;
+            let diff = cx
+                .background_spawn({
+                    let worktree = worktree.clone();
+                    let id = id.clone();
+                    async move { signed_git::worktree_commit_diff(&worktree, &id) }
+                })
+                .await;
+
+            this.update_in(cx, |this, _window, cx| {
+                this.loading = false;
+                if let Ok(Some(commit)) = commit {
+                    this.commit = commit;
+                }
+                match diff {
+                    Ok(diff) => {
+                        this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx));
+                    }
+                    Err(error) => {
+                        this.error = Some(error.to_string().into());
+                    }
+                }
+                cx.notify();
+            })?;
+
+            Ok(())
+        });
+
+        self.tasks.push(task);
+    }
 
     /// Header: commit id, summary, author/time and overall change stats.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let commit = &self.commit;
-        let (files, insertions, deletions) = self.diff.as_ref().map_or((0, 0, 0), |diff| {
+        let (files, insertions, deletions) = self.pane.read(cx).diff().map_or((0, 0, 0), |diff| {
             (
                 diff.files.len(),
                 diff.files.iter().map(|file| file.insertions).sum(),
@@ -481,6 +522,19 @@ impl Focusable for CommitDiffView {
 
 impl Render for CommitDiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body: AnyElement = if self.loading {
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .child(Spinner::new().small())
+                .into_any_element()
+        } else if let Some(error) = self.error.clone() {
+            placeholder(&error, cx)
+        } else {
+            self.pane.clone().into_any_element()
+        };
+
         v_resizable("commit-diff")
             .child(
                 resizable_panel()
@@ -490,15 +544,6 @@ impl Render for CommitDiffView {
                     .bg(cx.theme().background)
                     .child(self.render_header(cx)),
             )
-            .child(
-                resizable_panel().child(
-                    h_flex()
-                        .size_full()
-                        .min_h_0()
-                        .bg(cx.theme().background)
-                        .child(self.render_tree_column(cx))
-                        .child(self.render_detail_column(cx)),
-                ),
-            )
+            .child(resizable_panel().child(body))
     }
 }

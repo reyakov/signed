@@ -1302,6 +1302,55 @@ impl Backend {
         })
     }
 
+    /// Broadcast and locally store an already-signed event, like
+    /// [`Self::send`] without the signing step. Callers that signed early
+    /// (e.g. to learn the event id before pushing a commit to the grasp
+    /// servers) publish through this.
+    pub fn publish_event(
+        &mut self,
+        event: Event,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Event, Error>> {
+        let client = self.client.clone();
+
+        cx.spawn(async move |this, cx| {
+            let work = cx.background_spawn(async move {
+                let output = client.send_event(&event).await?;
+
+                if output.success.is_empty() && !output.failed.is_empty() {
+                    let reasons = output
+                        .failed
+                        .values()
+                        .cloned()
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    return Err(anyhow!("event not accepted by any relay: {reasons}"));
+                }
+
+                Ok(event.clone())
+            });
+
+            let result = work.await;
+
+            match &result {
+                Ok(event) => {
+                    this.update(cx, |_this, cx| {
+                        cx.emit(BackendEvent::Published(Box::new(event.clone())));
+                    })
+                    .ok();
+                }
+                Err(e) => {
+                    this.update(cx, |_this, cx| {
+                        cx.emit(BackendEvent::error(e.to_string()));
+                    })
+                    .ok();
+                }
+            }
+
+            result
+        })
+    }
+
     /// Publish a NIP-34 repository announcement (kind 30617) with the
     /// current signer. The returned task yields the published event, so
     /// callers can show inline progress/errors.
@@ -1414,7 +1463,12 @@ async fn connect_repo_relays_only(
         let relays = &relays;
         let sync_opts = sync_opts.clone();
         async move {
-            if let Err(e) = client.sync(filter).with(relays.iter()).opts(sync_opts).await {
+            if let Err(e) = client
+                .sync(filter)
+                .with(relays.iter())
+                .opts(sync_opts)
+                .await
+            {
                 log::warn!("repo relay negentropy sync failed: {e}");
             }
         }
@@ -1469,7 +1523,7 @@ fn with_master_key(uri: &str, keys: &Keys) -> String {
 /// A `https://<host>` (or `http://<host>` for `ws://` grasp servers, like
 /// ngit) base URL for a grasp server. The repository then lives at
 /// `{base}/{npub}/{repo-id}.git`.
-fn grasp_base_url(relay: &RelayUrl) -> Option<String> {
+pub(crate) fn grasp_base_url(relay: &RelayUrl) -> Option<String> {
     // `domain()` drops the port; parse the full URL to keep it (local dev
     // grasp servers commonly run on a custom port).
     let parsed = Url::parse(relay.as_str()).ok()?;

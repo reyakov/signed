@@ -1,4 +1,4 @@
-use dock::{DockArea, DockPlacement, panel_handle};
+use dock::DockArea;
 use gpui::prelude::*;
 use gpui::{App, Entity, PathPromptOptions, SharedString, WeakEntity, Window, div, px};
 use gpui_base::input::TextareaState;
@@ -11,7 +11,7 @@ use settings::SettingsStore;
 use signed_core::Announcement;
 use signed_state::Backend;
 
-use super::super::RepoDetailView;
+use super::super::open_repo_panel;
 use super::grasp_servers::{GraspServersState, grasp_servers_field, load_user_grasp_servers};
 
 /// Shared state for the Create Repository dialog, so async results can be rendered.
@@ -262,13 +262,5 @@ fn open_repo(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let Some(dock_area) = dock_area.upgrade() else {
-        return;
-    };
-
-    let panel = cx.new(|cx| RepoDetailView::new(dock_area.downgrade(), announcement, window, cx));
-
-    dock_area.update(cx, |dock_area, cx| {
-        dock_area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
-    });
+    open_repo_panel(&dock_area, &announcement, window, cx);
 }

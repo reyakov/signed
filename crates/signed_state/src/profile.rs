@@ -163,7 +163,8 @@ impl ProfileStore {
 
     /// Load recently seen profiles from the local database.
     fn load(&mut self, cx: &mut Context<Self>) {
-        let client = Backend::global(cx).read(cx).client();
+        let backend = Backend::global(cx);
+        let client = backend.read(cx).client();
 
         let work = cx.background_spawn(async move {
             let filter = Filter::new().kind(Kind::Metadata).limit(200);
@@ -197,7 +198,8 @@ impl ProfileStore {
 
     /// Re-read the latest metadata of an author from the local database.
     fn apply_author(&mut self, public_key: PublicKey, cx: &mut Context<Self>) {
-        let client = Backend::global(cx).read(cx).client();
+        let backend = Backend::global(cx);
+        let client = backend.read(cx).client();
 
         let work = cx.background_spawn(async move {
             let filter = Filter::new().kind(Kind::Metadata).author(public_key);
@@ -238,7 +240,8 @@ impl ProfileStore {
             return;
         }
 
-        let client = Backend::global(cx).read(cx).client();
+        let backend = Backend::global(cx);
+        let client = backend.read(cx).client();
 
         let work = cx.background_spawn(async move {
             let filter = Filter::new().kind(Kind::Metadata).authors(authors);

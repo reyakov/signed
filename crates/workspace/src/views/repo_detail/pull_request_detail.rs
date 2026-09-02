@@ -12,6 +12,8 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::clipboard::Clipboard;
+use gpui_component::dialog::{DialogDescription, DialogFooter, DialogHeader, DialogTitle};
+use gpui_component::form::{field, v_form};
 use gpui_component::input::{Textarea, TextareaState};
 use gpui_component::list::ListItem;
 use gpui_component::scroll::{ScrollableElement, Scrollbar};
@@ -20,12 +22,13 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::tag::Tag;
 use gpui_component::tree::{TreeEntry, TreeState, tree};
 use gpui_component::{
-    ActiveTheme, Icon, Sizable, StyledExt, VirtualListScrollHandle, h_flex, v_flex, v_virtual_list,
+    ActiveTheme, Icon, Sizable, StyledExt, VirtualListScrollHandle, WindowExt, h_flex, v_flex,
+    v_virtual_list,
 };
 use nostr::prelude::{Event, EventId, Kind, Nip34Tag, PublicKey};
 use signed_core::{activity_subject, pull_request_patch};
 use signed_git::{CommitDiff, FileCommit, FileDiff, patch_commits, patch_diffs};
-use signed_state::{GitStore, ProfileStore, RepoStore};
+use signed_state::{Backend, GitStore, ProfileStore, RepoStore};
 use signed_ui::image_cache::{MAX_IMAGES, image_cache};
 use signed_ui::{UserAvatar, placeholder, status_badge, tree_row};
 use utils::{relative_time, relative_time_secs};
@@ -183,7 +186,7 @@ impl PullRequestDetailView {
                 cx.notify();
                 return;
             };
-            let update = latest_update(store.pull_requests.iter(), &root.id);
+            let update = latest_update(store.pull_requests.iter(), root);
             let tip = update
                 .and_then(current_commit_of)
                 .or_else(|| current_commit_of(root));
@@ -1002,7 +1005,7 @@ impl PullRequestDetailView {
     /// Always-visible header: status badge and title, like the issue panel.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let current_commit = self.current_commit.clone();
-        let (title, status, branch) = {
+        let (title, status, branch, author) = {
             let store = self.store.read(cx);
             let Some(root) = store
                 .pull_requests
@@ -1015,8 +1018,13 @@ impl PullRequestDetailView {
                 activity_subject(root),
                 store.status_of(root),
                 branch_name_of(root),
+                root.pubkey,
             )
         };
+
+        // Only the PR author may publish revisions (kind 1619, NIP-34).
+        let backend = Backend::global(cx);
+        let can_update = backend.read(cx).current_user() == Some(author);
 
         v_flex()
             .px_4()
@@ -1048,6 +1056,38 @@ impl PullRequestDetailView {
                                 .label(branch),
                         )
                     })
+                    .when(can_update, |this| {
+                        this.child(
+                            Button::new("update-pr")
+                                .ghost()
+                                .small()
+                                .icon(CustomIconName::GitPullRequest)
+                                .label("Update")
+                                .tooltip("Publish a new revision of this pull request")
+                                .on_click(cx.listener({
+                                    let store = self.store.clone();
+                                    let pr_id = self.pr_id;
+                                    move |_this, _event, window, cx| {
+                                        let root = store
+                                            .read(cx)
+                                            .pull_requests
+                                            .iter()
+                                            .find(|pr| {
+                                                pr.id == pr_id && pr.kind == Kind::GitPullRequest
+                                            })
+                                            .cloned();
+                                        if let Some(root) = root {
+                                            open_update_pull_request_dialog(
+                                                store.clone(),
+                                                root,
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                    }
+                                })),
+                        )
+                    })
                     .when_some(current_commit, |this, id| {
                         this.child(
                             h_flex()
@@ -1062,6 +1102,68 @@ impl PullRequestDetailView {
             )
             .into_any_element()
     }
+}
+
+/// Open the "update pull request" dialog: a patch input that submits a new
+/// revision through [`RepoStore::update_pull_request`] when confirmed.
+fn open_update_pull_request_dialog(
+    store: Entity<RepoStore>,
+    root: Event,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let patch = cx.new(|cx| {
+        TextareaState::new(window, cx).placeholder("Paste the updated `git format-patch` output...")
+    });
+    // Both the dialog body and the submit button capture the root event;
+    // share it instead of cloning into each closure.
+    let root = Rc::new(root);
+
+    window.open_dialog(cx, move |dialog, _window, _cx| {
+        let store = store.clone();
+        let patch = patch.clone();
+        let root = root.clone();
+
+        dialog
+            .width(px(520.))
+            .margin_top(px(50.))
+            .content(move |body, _window, _cx| {
+                body.child(
+                    DialogHeader::new()
+                        .child(DialogTitle::new().child("Update pull request"))
+                        .child(DialogDescription::new().child(
+                            "Publish a new revision with the output of `git format-patch`.",
+                        )),
+                )
+                .child(
+                    v_form().child(
+                        field()
+                            .label("Patch")
+                            .child(Textarea::new(&patch).h(px(160.))),
+                    ),
+                )
+                .child(
+                    DialogFooter::new().justify_end().child(
+                        Button::new("submit")
+                            .primary()
+                            .label("Update pull request")
+                            .tooltip("Update pull request")
+                            .on_click({
+                                let store = store.clone();
+                                let patch = patch.clone();
+                                let root = root.clone();
+                                move |_event, window, cx| {
+                                    let patch = patch.read(cx).value().to_string();
+                                    store.update(cx, |store, cx| {
+                                        store.update_pull_request(&root, patch, cx);
+                                    });
+                                    window.close_dialog(cx);
+                                }
+                            }),
+                    ),
+                )
+            })
+    });
 }
 
 /// One sidebar section title.
@@ -1121,11 +1223,13 @@ fn branch_name_of(event: &Event) -> Option<String> {
 }
 
 /// The latest PR update (kind 1619) revising `root`, found via its NIP-22
-/// `E` tag pointing at the root PR event.
-fn latest_update<'a>(events: impl Iterator<Item = &'a Event>, root: &EventId) -> Option<&'a Event> {
-    let root_hex = root.to_hex();
+/// `E` tag pointing at the root PR event. Only updates by the PR author
+/// count: the tip of a PR is only mutable by its author (NIP-34).
+fn latest_update<'a>(events: impl Iterator<Item = &'a Event>, root: &Event) -> Option<&'a Event> {
+    let root_hex = root.id.to_hex();
     events
         .filter(|e| e.kind == Kind::GitPullRequestUpdate)
+        .filter(|e| e.pubkey == root.pubkey)
         .filter(|e| {
             e.tags
                 .iter()
@@ -1262,16 +1366,35 @@ mod tests {
         );
 
         let events = [unrelated, revision(200), root.clone(), revision(300)];
-        let latest = latest_update(events.iter(), &root.id).expect("an update");
+        let latest = latest_update(events.iter(), &root).expect("an update");
 
         assert_eq!(latest.created_at.as_secs(), 300);
         assert_eq!(latest.kind, Kind::GitPullRequestUpdate);
     }
 
     #[test]
+    fn latest_update_ignores_other_authors() {
+        let root = pr_root();
+        let root_hex = root.id.to_hex();
+        let other = Keys::new(
+            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
+                .expect("valid secret key"),
+        );
+        let stranger = EventBuilder::new(Kind::GitPullRequestUpdate, "")
+            .tags([Tag::parse(["E", &root_hex]).expect("valid tag")])
+            .custom_created_at(Timestamp::from(999))
+            .finalize(&other)
+            .expect("signed event");
+
+        // The tip of a PR is only mutable by its author: a newer update
+        // from anyone else must not win.
+        assert!(latest_update([&stranger, &root].into_iter(), &root).is_none());
+    }
+
+    #[test]
     fn latest_update_ignores_roots_without_revisions() {
         let root = pr_root();
-        assert!(latest_update([&root].into_iter(), &root.id).is_none());
+        assert!(latest_update([&root].into_iter(), &root).is_none());
     }
 
     #[test]

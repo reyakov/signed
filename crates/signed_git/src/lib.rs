@@ -195,6 +195,185 @@ pub fn apply_patch(repo_path: &Path, patch: &str) -> Result<()> {
     Ok(())
 }
 
+/// The merge base of two revisions (branch names, remote-tracking refs or
+/// commit ids) in the repository at `repo_path`. `Ok(None)` when the
+/// revisions share no common ancestor; unresolvable revisions are errors.
+pub fn merge_base(repo_path: &Path, a: &str, b: &str) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["merge-base", a, b])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to spawn `git merge-base`")?;
+
+    match output.status.code() {
+        // Exit 1: no common ancestor (a valid outcome for a proposal).
+        Some(1) => Ok(None),
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        )),
+        _ => bail!(
+            "git merge-base failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+    }
+}
+
+/// The `git format-patch` series of `base..tip` (mbox), like
+/// `git format-patch --stdout`. Fails when the range has no commits. The
+/// mbox is returned untrimmed; trailing newlines are part of the format.
+pub fn format_patch_between(repo_path: &Path, base: &str, tip: &str) -> Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["format-patch", "--stdout", &format!("{base}..{tip}")])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to spawn `git format-patch`")?;
+
+    if !output.status.success() {
+        bail!(
+            "git format-patch failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let patch = String::from_utf8_lossy(&output.stdout).into_owned();
+    if patch.trim().is_empty() {
+        bail!("no commits between {base} and {tip}");
+    }
+    Ok(patch)
+}
+
+/// Whether `patch` (a `git format-patch` series) applies to the working
+/// tree of `repo_path`, without modifying anything
+/// (`git apply --check --3way`). Best-effort: useful to surface conflicts
+/// before a patch is published or applied.
+pub fn patch_applies(repo_path: &Path, patch: &str) -> Result<()> {
+    let mut child = Command::new("git")
+        .arg("apply")
+        .args(["--check", "--3way", "--whitespace=nowarn", "-"])
+        .current_dir(repo_path)
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn `git apply --check`")?;
+
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin piped")
+        .write_all(patch.as_bytes())?;
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        bail!(
+            "patch does not apply: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Push `commit` to `reference` (e.g. `refs/nostr/<event-id>`) on the git
+/// server at `url`, from the repository at `repo_path`. GRASP servers host
+/// the `refs/nostr` namespace so anyone can contribute a commit; nak pushes
+/// pull request tips there before publishing the PR event, and readers
+/// fetch the ref to get the commit behind a PR's `c` tag.
+pub fn push_commit_ref(repo_path: &Path, url: &str, commit: &str, reference: &str) -> Result<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["push"])
+        .arg(url)
+        .arg(format!("{commit}:{reference}"))
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to spawn `git push`")?;
+
+    if !output.status.success() {
+        bail!(
+            "git push failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Split a `git format-patch` series into its individual patches (mbox
+/// messages). Each message begins with a `From <40-hex> ` boundary line;
+/// `>From` quoting inside bodies means no false positives. A single patch
+/// yields one element; a malformed input yields one element covering it.
+pub fn split_patch_series(patch: &str) -> Vec<&str> {
+    let mut starts = vec![0usize];
+    let mut search_from = 1;
+    while let Some(rel) = patch[search_from..].find("\nFrom ") {
+        let ix = search_from + rel + 1;
+        let hex = patch[ix + 5..]
+            .split(|c: char| !c.is_ascii_hexdigit())
+            .next()
+            .unwrap_or("");
+        if hex.len() == 40 {
+            starts.push(ix);
+        }
+        search_from = ix + 1;
+    }
+
+    starts
+        .iter()
+        .enumerate()
+        .map(|(i, &start)| {
+            let end = starts.get(i + 1).copied().unwrap_or(patch.len());
+            &patch[start..end]
+        })
+        .collect()
+}
+
+/// The commit HEAD points to in the repository at `repo_path`, or `None`
+/// when the repository has no commits yet (unborn HEAD).
+pub fn head_commit_id(repo_path: &Path) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["rev-parse", "HEAD"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to spawn `git rev-parse`")?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+    ))
+}
+
+/// The commits in `base..HEAD` of the repository at `repo_path`, oldest
+/// first (the order `git am` creates them); `HEAD` alone when `base` is
+/// `None`. An empty range yields an empty list.
+pub fn commits_since(repo_path: &Path, base: Option<&str>) -> Result<Vec<String>> {
+    let output = match base {
+        Some(base) => git_in(
+            repo_path,
+            &["rev-list", "--reverse", &format!("{base}..HEAD")],
+        )?,
+        // No `base` (unborn HEAD): there is nothing to walk yet.
+        None => match git_in(repo_path, &["rev-parse", "HEAD"]) {
+            Ok(head) => head,
+            Err(_) => return Ok(Vec::new()),
+        },
+    };
+    Ok(output
+        .lines()
+        .map(str::to_owned)
+        .filter(|line| !line.is_empty())
+        .collect())
+}
+
 fn clone(url: &str, path: &Path) -> Result<gix::Repository> {
     // GRASP servers announce `grasp://<host>/<owner>/<repo>` clone URLs;
     // the transport is git smart HTTP, so rewrite the scheme for gix.
@@ -1882,6 +2061,200 @@ mod tests {
     fn commit_all(repo: &gix::Repository, message: &str) {
         git_run(repo.workdir().expect("workdir"), &["add", "-A"]);
         git_run(repo.workdir().expect("workdir"), &["commit", "-m", message]);
+    }
+
+    #[test]
+    fn merge_base_finds_the_fork_point_and_reports_unrelated_history() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("repo");
+        let initial = init_repository(&path, "My Repo", "desc").expect("init");
+
+        // A feature branch and a mainline commit diverge from the initial
+        // commit; it is their merge base.
+        git_run(&path, &["checkout", "-b", "feature"]);
+        std::fs::write(path.join("feature.txt"), "feature\n").expect("write");
+        commit_all(&gix::open(&path).expect("open"), "feature commit");
+        git_run(&path, &["checkout", "main"]);
+        std::fs::write(path.join("main.txt"), "main\n").expect("write");
+        commit_all(&gix::open(&path).expect("open"), "mainline commit");
+
+        assert_eq!(
+            merge_base(&path, "feature", "main")
+                .expect("merge base")
+                .as_deref(),
+            Some(initial.as_str())
+        );
+
+        // An orphan branch shares no history with main: `Ok(None)`.
+        git_run(&path, &["checkout", "--orphan", "orphan"]);
+        std::fs::write(path.join("orphan.txt"), "orphan\n").expect("write");
+        commit_all(&gix::open(&path).expect("open"), "orphan commit");
+        assert_eq!(merge_base(&path, "orphan", "main").expect("ok"), None);
+
+        // An unresolvable revision is an error, not a missing ancestor.
+        assert!(merge_base(&path, "orphan", "no-such-ref").is_err());
+    }
+
+    #[test]
+    fn format_patch_between_produces_the_series_and_rejects_empty_ranges() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("repo");
+        let initial = init_repository(&path, "My Repo", "desc").expect("init");
+
+        git_run(&path, &["checkout", "-b", "feature"]);
+        std::fs::write(path.join("feature.txt"), "feature\n").expect("write");
+        commit_all(&gix::open(&path).expect("open"), "feature commit");
+
+        let patch = format_patch_between(&path, &initial, "feature").expect("patch");
+        assert!(patch.contains("Subject: [PATCH] feature commit"));
+        assert!(patch.contains("feature.txt"));
+
+        // An empty range has no commits to send.
+        assert!(format_patch_between(&path, "feature", "feature").is_err());
+    }
+
+    #[test]
+    fn patch_applies_checks_without_modifying_the_tree() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("repo");
+        let initial = init_repository(&path, "My Repo", "desc").expect("init");
+
+        git_run(&path, &["checkout", "-b", "feature"]);
+        std::fs::write(path.join("feature.txt"), "feature\n").expect("write");
+        commit_all(&gix::open(&path).expect("open"), "feature commit");
+        let patch = format_patch_between(&path, &initial, "feature").expect("patch");
+
+        // A clone of the initial state accepts the series...
+        let clone = dir.path().join("clone");
+        git_run(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                path.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        git_run(&clone, &["checkout", "-q", &initial]);
+        assert!(patch_applies(&clone, &patch).is_ok());
+        // ...and the check must not have modified the working tree.
+        assert!(!clone.join("feature.txt").exists());
+
+        // A conflicting file makes the same series fail the check.
+        std::fs::write(clone.join("feature.txt"), "conflicting\n").expect("write");
+        assert!(patch_applies(&clone, &patch).is_err());
+    }
+
+    #[test]
+    fn push_commit_ref_pushes_to_the_event_namespace() {
+        // A bare "server" repository reachable via a `file://` URL, like a
+        // grasp server's `{base}/{owner}/{repo-id}.git` layout.
+        let server = tempfile::tempdir().unwrap();
+        let server_repo = server.path().join("npub1test").join("my-repo.git");
+        std::fs::create_dir_all(server_repo.parent().unwrap()).unwrap();
+        let init_status = Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .arg(&server_repo)
+            .status()
+            .expect("spawn git init --bare");
+        assert!(init_status.success());
+
+        let (dir, repo) = fixture(&[("a.txt", b"one")]);
+        commit_all(&repo, "initial");
+        let dir = dir.path();
+        let tip = git_in(dir, &["rev-parse", "HEAD"]).expect("tip");
+
+        let url = format!("file://{}/npub1test/my-repo.git", server.path().display());
+        push_commit_ref(dir, &url, &tip, "refs/nostr/abcd1234").expect("push");
+
+        let refs = git_in(&server_repo, &["show-ref"]).expect("server refs");
+        assert!(refs.contains("refs/nostr/abcd1234"));
+    }
+
+    #[test]
+    fn split_patch_series_splits_real_multi_commit_mboxes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("repo");
+        let initial = init_repository(&path, "My Repo", "desc").expect("init");
+
+        git_run(&path, &["checkout", "-b", "feature"]);
+        std::fs::write(path.join("one.txt"), "one\n").expect("write");
+        commit_all(&gix::open(&path).expect("open"), "first commit");
+        std::fs::write(path.join("two.txt"), "two\n").expect("write");
+        commit_all(&gix::open(&path).expect("open"), "second commit");
+
+        let series = format_patch_between(&path, &initial, "feature").expect("series");
+        let parts = split_patch_series(&series);
+
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].contains("Subject: [PATCH 1/2] first commit"));
+        assert!(parts[1].contains("Subject: [PATCH 2/2] second commit"));
+        // Each part starts its own mbox message with its own commit id.
+        let first = parts[0].lines().next().expect("first header");
+        let second = parts[1].lines().next().expect("second header");
+        assert!(first.starts_with("From ") && first.len() >= 45);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn split_patch_series_keeps_single_patches_whole() {
+        let patch = "From abcdefabcdefabcdefabcdefabcdefabcdefab Mon Sep 17 00:00:00 2001\nFrom: A <a@b>\nSubject: [PATCH] fix\n\n---\n";
+        let parts = split_patch_series(patch);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0], patch);
+    }
+
+    #[test]
+    fn head_commit_and_commits_since_track_applied_commits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("repo");
+        let initial = init_repository(&path, "My Repo", "desc").expect("init");
+
+        assert_eq!(
+            head_commit_id(&path).expect("head").as_deref(),
+            Some(initial.as_str())
+        );
+        // No commits yet: `HEAD` alone.
+        assert_eq!(
+            commits_since(&path, None).expect("commits"),
+            vec![initial.clone()]
+        );
+
+        std::fs::write(path.join("one.txt"), "one\n").expect("write");
+        commit_all(&gix::open(&path).expect("open"), "first commit");
+        let first = head_commit_id(&path).expect("head").expect("on a branch");
+
+        std::fs::write(path.join("two.txt"), "two\n").expect("write");
+        commit_all(&gix::open(&path).expect("open"), "second commit");
+        let second = head_commit_id(&path).expect("head").expect("on a branch");
+
+        // Oldest first, like the order `git am` creates them.
+        assert_eq!(
+            commits_since(&path, Some(&initial)).expect("commits"),
+            vec![first.clone(), second.clone()]
+        );
+        assert_eq!(
+            commits_since(&path, Some(&first)).expect("commits"),
+            vec![second]
+        );
+    }
+
+    #[test]
+    fn head_commit_reports_unborn_repositories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("repo");
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .arg(&path)
+            .status()
+            .expect("spawn git init");
+        assert!(status.success());
+
+        assert_eq!(head_commit_id(&path).expect("head"), None);
+        assert_eq!(
+            commits_since(&path, None).expect("commits"),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

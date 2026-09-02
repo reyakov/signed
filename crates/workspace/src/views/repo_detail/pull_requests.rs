@@ -7,22 +7,23 @@ use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
     SharedString, Size, WeakEntity, Window, div, px, size,
 };
-use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::dialog::{DialogDescription, DialogFooter, DialogHeader, DialogTitle};
-use gpui_component::form::{field, v_form};
-use gpui_component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_base::Button as BaseButton;
+use gpui_component::alert::Alert;
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{
-    ActiveTheme, Icon, VirtualListScrollHandle, WindowExt, h_flex, v_flex, v_virtual_list,
+    ActiveTheme, Icon, IconName, VirtualListScrollHandle, h_flex, v_flex, v_virtual_list,
 };
 use nostr::prelude::{EventId, Kind};
 use signed_core::{RepoStatus, activity_subject};
 use signed_state::{ProfileStore, RepoStore};
 use signed_ui::image_cache::{MAX_IMAGES, image_cache};
-use signed_ui::{SegmentButton, UserAvatar, placeholder, status_badge};
+use signed_ui::{DropdownButton, SegmentButton, UserAvatar, placeholder, status_badge};
 use utils::relative_time;
 
+use super::RepoAction;
+use super::new_pull_request::open_new_pull_panel;
 use super::pull_request_detail::PullRequestDetailView;
+use super::send_patch::open_send_patch_panel;
 
 /// Height of one pull request row in the virtual list; same layout as an
 /// issue row.
@@ -40,8 +41,7 @@ enum PullRequestFilter {
     Closed,
     /// Pull requests whose resolved status is [`RepoStatus::Draft`].
     Draft,
-    /// Pull requests whose resolved status is [`RepoStatus::Applied`]
-    /// (i.e. merged).
+    /// Pull requests whose resolved status is [`RepoStatus::Applied`].
     Merged,
 }
 
@@ -217,7 +217,7 @@ impl PullRequestsView {
             .child(
                 h_flex()
                     .h_12()
-                    .gap_2()
+                    .gap_1()
                     .child(
                         SegmentButton::new("all", "All")
                             .icon(Icon::new(CustomIconName::GitPullRequest))
@@ -271,97 +271,45 @@ impl PullRequestsView {
             )
             .child(div().flex_1())
             .child(
-                SegmentButton::new("new-pr", "New pull request")
-                    .icon(Icon::new(CustomIconName::CirclePlus))
-                    .primary()
-                    .on_click(cx.listener(|this, _event, window, cx| {
-                        open_new_pull_request_dialog(this.store.clone(), window, cx);
-                    })),
+                h_flex().items_center().child(
+                    DropdownButton::new("new-pr-actions")
+                        .action(
+                            BaseButton::new("new-pr")
+                                .child(
+                                    h_flex()
+                                        .h_8()
+                                        .px_2()
+                                        .gap_1()
+                                        .rounded(cx.theme().radius)
+                                        .bg(cx.theme().primary)
+                                        .hover(|this| this.bg(cx.theme().primary_hover))
+                                        .text_sm()
+                                        .text_color(cx.theme().primary_foreground)
+                                        .child(Icon::new(IconName::Plus))
+                                        .child("New"),
+                                )
+                                .on_click(cx.listener(|this, _event, window, cx| {
+                                    open_new_pull_panel(
+                                        this.dock_area.clone(),
+                                        this.store.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                        .dropdown_menu(|menu, _, _| {
+                            menu.menu_element(Box::new(RepoAction::SendPatch), |_, _| {
+                                h_flex()
+                                    .gap_2()
+                                    .text_sm()
+                                    .child(Icon::new(IconName::File))
+                                    .child("Send Patch")
+                            })
+                        }),
+                ),
             )
             .into_any_element()
     }
-}
-
-/// Open the "new pull request" dialog: a title, an optional description and
-/// a patch input that submit through [`RepoStore::open_pull_request`] when
-/// confirmed.
-pub(super) fn open_new_pull_request_dialog(
-    store: Entity<RepoStore>,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let subject = cx.new(|cx| InputState::new(window, cx).placeholder("Pull request title"));
-    let description =
-        cx.new(|cx| TextareaState::new(window, cx).placeholder("Describe the change..."));
-    let patch = cx
-        .new(|cx| TextareaState::new(window, cx).placeholder("Paste `git format-patch` output..."));
-
-    window.open_dialog(cx, move |dialog, _window, _cx| {
-        let subject = subject.clone();
-        let description = description.clone();
-        let patch = patch.clone();
-        let store = store.clone();
-
-        dialog
-            .width(px(520.))
-            .margin_top(px(50.))
-            .content(move |body, _window, _cx| {
-                body.child(
-                    DialogHeader::new()
-                        .child(DialogTitle::new().child("New pull request"))
-                        .child(
-                            DialogDescription::new()
-                                .child("Propose a change with the output of `git format-patch`."),
-                        ),
-                )
-                .child(
-                    v_form()
-                        .child(
-                            field()
-                                .label("Title")
-                                .required(true)
-                                .child(Input::new(&subject)),
-                        )
-                        .child(
-                            field()
-                                .label("Description")
-                                .child(Textarea::new(&description).h(px(96.))),
-                        )
-                        .child(
-                            field()
-                                .label("Patch")
-                                .child(Textarea::new(&patch).h(px(160.))),
-                        ),
-                )
-                .child(
-                    DialogFooter::new().justify_end().child(
-                        Button::new("submit")
-                            .primary()
-                            .label("Create pull request")
-                            .tooltip("Create pull request")
-                            .on_click({
-                                let subject = subject.clone();
-                                let description = description.clone();
-                                let patch = patch.clone();
-                                let store = store.clone();
-
-                                move |_event, window, cx| {
-                                    let subject = subject.read(cx).value().to_string();
-                                    let description = description.read(cx).value().to_string();
-                                    let patch = patch.read(cx).value().to_string();
-                                    let subject = (!subject.is_empty()).then_some(subject);
-
-                                    store.update(cx, |store, cx| {
-                                        store.open_pull_request(subject, description, patch, cx);
-                                    });
-
-                                    window.close_dialog(cx);
-                                }
-                            }),
-                    ),
-                )
-            })
-    });
 }
 
 impl BasePanel for PullRequestsView {
@@ -437,10 +385,38 @@ impl Render for PullRequestsView {
         let scroll_handle = self.scroll_handle.clone();
         let view = cx.entity().clone();
 
+        // Non-fatal warnings and errors of the last action (e.g. creating
+        // or updating a PR), shown as dismissible banners above the list.
+        let (last_error, last_warning) = {
+            let store = self.store.read(cx);
+            (store.last_error.clone(), store.last_warning.clone())
+        };
+
         v_flex()
             .size_full()
             .image_cache(image_cache("pull-requests", MAX_IMAGES))
+            .on_action(cx.listener(|this, action: &RepoAction, window, cx| {
+                if action == &RepoAction::SendPatch {
+                    open_send_patch_panel(this.dock_area.clone(), this.store.clone(), window, cx);
+                }
+            }))
             .child(self.render_header(cx))
+            .when_some(last_warning, |this, warning| {
+                this.child(Alert::warning("pr-warning", warning).banner().on_close({
+                    let store = self.store.clone();
+                    move |_event, _window, cx| {
+                        store.update(cx, |store, _| store.last_warning = None);
+                    }
+                }))
+            })
+            .when_some(last_error, |this, error| {
+                this.child(Alert::error("pr-error", error).banner().on_close({
+                    let store = self.store.clone();
+                    move |_event, _window, cx| {
+                        store.update(cx, |store, _| store.last_error = None);
+                    }
+                }))
+            })
             .child(
                 v_flex()
                     .relative()

@@ -60,6 +60,7 @@ fn announcement_rows(announcement: &Announcement, cx: &App) -> AnyElement {
             cx,
         ));
     }
+
     if let Some(euc) = &announcement.euc {
         rows.push(row(
             "Earliest Commit",
@@ -67,13 +68,11 @@ fn announcement_rows(announcement: &Announcement, cx: &App) -> AnyElement {
             cx,
         ));
     }
+
     if let Some(upstream) = &announcement.upstream {
-        rows.push(row(
-            "Upstream",
-            text(SharedString::from(upstream.clone())),
-            cx,
-        ));
+        rows.push(row("Upstream", text(upstream.display()), cx));
     }
+
     if !announcement.hashtags.is_empty() {
         rows.push(row(
             "Hashtags",
@@ -81,6 +80,7 @@ fn announcement_rows(announcement: &Announcement, cx: &App) -> AnyElement {
             cx,
         ));
     }
+
     if !announcement.clone.is_empty() {
         rows.push(row(
             "Clone URLs",
@@ -92,6 +92,7 @@ fn announcement_rows(announcement: &Announcement, cx: &App) -> AnyElement {
             cx,
         ));
     }
+
     if !announcement.relays.is_empty() {
         rows.push(row(
             "Grasp Relays",
@@ -103,6 +104,7 @@ fn announcement_rows(announcement: &Announcement, cx: &App) -> AnyElement {
             cx,
         ));
     }
+
     if !announcement.maintainers.is_empty() {
         rows.push(row(
             "Maintainers",

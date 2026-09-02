@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
 use anyhow::Error;
 use assets::CustomIconName;
@@ -26,9 +27,9 @@ use gpui_component::{
     VirtualListScrollHandle, h_flex, v_flex,
 };
 use nostr::prelude::{EventId, RelayUrl, ToBech32};
-use signed_core::Announcement;
+use signed_core::{Announcement, RepoAddr, filters};
 use signed_git::{CommitList, FileCommit};
-use signed_state::{Backend, GitStore, LocalReposStore, ProfileStore, RepoStore};
+use signed_state::{Backend, GitStore, LocalReposStore, ProfileStore, RepoListStore, RepoStore};
 use signed_ui::image_cache::{MAX_IMAGES, image_cache};
 use signed_ui::{DropdownButton, PixelAvatar, UserAvatar, copy_row};
 
@@ -40,8 +41,10 @@ mod helpers;
 mod init_dialog;
 mod issue_detail;
 mod issues;
+mod new_pull_request;
 mod pull_request_detail;
 mod pull_requests;
+mod send_patch;
 
 use about::open_about_dialog;
 use browser::{
@@ -52,7 +55,10 @@ use commits::COMMIT_ROW_HEIGHT;
 use diff::CommitDiffView;
 use helpers::{ShareTargets, TreeItemSeed, build_tree_items, is_markdown_path, tree_items};
 use issues::{IssuesView, open_new_issue_dialog};
-use pull_requests::{PullRequestsView, open_new_pull_request_dialog};
+use pull_requests::PullRequestsView;
+use send_patch::open_send_patch_panel;
+
+use crate::views::repo_detail::new_pull_request::open_new_pull_panel;
 
 /// What kind of ref the header selectors switch to.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -64,13 +70,17 @@ enum RefKind {
 }
 
 /// Header actions dispatched by the dropdown menus of the header buttons.
+/// `pub(super)`: the pull-request list panel offers the same New-PR / Send-
+/// patch actions in its own dropdown.
 #[derive(Clone, Action, PartialEq, Eq)]
 #[action(namespace = repo_detail, no_json)]
-enum RepoAction {
+pub(super) enum RepoAction {
     /// Open the "new issue" dialog.
     NewIssue,
     /// Open the "new pull request" dialog.
     NewPR,
+    /// Open the "send patch" panel.
+    SendPatch,
     /// Open the about dialog.
     About,
     /// Re-push the repository to its grasp servers.
@@ -188,6 +198,9 @@ pub struct RepoDetailView {
     tasks: Vec<Task<Result<(), Error>>>,
     /// Subscriptions keeping the selectors' confirm events alive.
     _subscriptions: Vec<Subscription>,
+    /// Upstream repository (from this fork's `u` tag) the user asked to
+    /// open, while its announcement is still being fetched.
+    pending_upstream: Option<RepoAddr>,
 }
 
 impl RepoDetailView {
@@ -315,6 +328,7 @@ impl RepoDetailView {
             focus_handle: cx.focus_handle(),
             tasks: Vec::new(),
             _subscriptions: subscriptions,
+            pending_upstream: None,
         }
     }
 
@@ -959,6 +973,77 @@ impl RepoDetailView {
         });
     }
 
+    /// Open the upstream repository (the `u` tag of this fork's announcement).
+    /// When the upstream announcement is not in the local database yet,
+    /// subscribe for it and open the panel as soon as it lands.
+    fn open_upstream(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_upstream.is_some() {
+            return;
+        }
+
+        let Some(announcement) = self.announcement(cx).cloned() else {
+            return;
+        };
+
+        let Some(addr) = announcement.upstream.and_then(|upstream| upstream.addr) else {
+            return;
+        };
+
+        if let Some(found) = RepoListStore::global(cx)
+            .read(cx)
+            .announcements
+            .iter()
+            .find(|a| a.addr() == addr)
+            .cloned()
+        {
+            open_repo_panel(&self.dock_area, &found, window, &mut *cx);
+            return;
+        }
+
+        let backend = Backend::global(cx);
+        backend.update(cx, |backend, cx| {
+            backend.subscribe_bootstrap(vec![filters::announcement(&addr)], cx);
+        });
+        self.pending_upstream = Some(addr);
+
+        let task = cx.spawn_in(window, async move |this, cx| {
+            for _ in 0..60 {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+
+                let opened = this.update_in(cx, |this, window, cx| {
+                    let Some(addr) = this.pending_upstream.clone() else {
+                        return true;
+                    };
+                    let found = RepoListStore::global(cx)
+                        .read(cx)
+                        .announcements
+                        .iter()
+                        .find(|a| a.addr() == addr)
+                        .cloned();
+                    match found {
+                        Some(found) => {
+                            this.pending_upstream = None;
+                            open_repo_panel(&this.dock_area, &found, window, &mut *cx);
+                            true
+                        }
+                        None => false,
+                    }
+                })?;
+
+                if opened {
+                    return Ok(());
+                }
+            }
+
+            this.update(cx, |this, _cx| this.pending_upstream = None)?;
+            Ok(())
+        });
+
+        self.tasks.push(task);
+    }
+
     /// Check out `name` (a branch or tag picked in the header) and refresh
     /// the explorer once the switch completes.
     fn switch_ref(
@@ -1285,7 +1370,12 @@ impl RepoDetailView {
                     }
                     RepoAction::NewPR => {
                         if let Some(store) = this.store.clone() {
-                            open_new_pull_request_dialog(store, window, cx);
+                            open_new_pull_panel(this.dock_area.clone(), store, window, cx);
+                        }
+                    }
+                    RepoAction::SendPatch => {
+                        if let Some(store) = this.store.clone() {
+                            open_send_patch_panel(this.dock_area.clone(), store, window, cx);
                         }
                     }
                     RepoAction::About => {
@@ -1332,6 +1422,7 @@ impl RepoDetailView {
                                     .text_ellipsis()
                                     .child(description),
                             )
+                            .when_some(fork_row(&announcement, cx), |this, row| this.child(row))
                             .child(
                                 h_flex()
                                     .mt_2()
@@ -1432,8 +1523,18 @@ impl RepoDetailView {
                                                 .gap_2()
                                                 .text_sm()
                                                 .child(Icon::new(IconName::Plus))
-                                                .child("New PR")
+                                                .child("New Pull Request")
                                         })
+                                        .menu_element(
+                                            Box::new(RepoAction::SendPatch),
+                                            |_, _| {
+                                                h_flex()
+                                                    .gap_2()
+                                                    .text_sm()
+                                                    .child(Icon::new(IconName::File))
+                                                    .child("Send Patch")
+                                            },
+                                        )
                                     }),
                             )
                             .child(
@@ -2014,4 +2115,77 @@ fn nostr_clone_url(announcement: &Announcement, nip05: Option<&str>) -> SharedSt
     url.push_str(&announcement.id);
 
     SharedString::from(url)
+}
+
+/// The "Forked from …" row of the detail header: a clickable link to the
+/// upstream repository when the `u` tag references a NIP-34 repo,
+/// plain text when it only carries a git URL.
+fn fork_row(announcement: &Announcement, cx: &mut Context<RepoDetailView>) -> Option<AnyElement> {
+    let upstream = announcement.upstream.as_ref()?;
+
+    let (label, clickable) = match &upstream.addr {
+        Some(addr) => {
+            // Prefer the upstream's display name when its announcement
+            // is already known locally fall back to its repository id.
+            let name = RepoListStore::global(cx)
+                .read(cx)
+                .announcements
+                .iter()
+                .find(|a| a.addr() == *addr)
+                .map(|a| {
+                    a.name
+                        .clone()
+                        .unwrap_or_else(|| SharedString::from(a.id.clone()))
+                })
+                .unwrap_or_else(|| SharedString::from(addr.identifier.clone()));
+            (SharedString::from(format!("Forked from {name}")), true)
+        }
+        None => (upstream.display(), false),
+    };
+
+    let row = h_flex()
+        .gap_1()
+        .items_center()
+        .min_w_0()
+        .text_sm()
+        .text_color(cx.theme().muted_foreground)
+        .child(Icon::new(CustomIconName::GitBranch).small())
+        .child(div().whitespace_nowrap().text_ellipsis().child(label));
+
+    Some(if clickable {
+        row.id("fork-upstream")
+            .cursor_pointer()
+            .hover(|this| this.text_color(cx.theme().foreground))
+            .on_click(cx.listener(|this, _ev, window, cx| this.open_upstream(window, cx)))
+            .into_any_element()
+    } else {
+        row.into_any_element()
+    })
+}
+
+/// Open `announcement` as a repository panel in the dock's center, returning
+/// the new detail view. Shared by the explore list, the sidebar and fork
+/// links so every entry point opens repositories identically.
+pub(crate) fn open_repo_panel(
+    dock_area: &WeakEntity<DockArea>,
+    announcement: &Announcement,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<RepoDetailView> {
+    let detail =
+        cx.new(|cx| RepoDetailView::new(dock_area.clone(), announcement.clone(), window, cx));
+
+    if let Some(dock_area) = dock_area.upgrade() {
+        dock_area.update(cx, |dock_area, cx| {
+            dock_area.add_panel_view(
+                panel_handle(detail.clone()),
+                DockPlacement::Center,
+                None,
+                window,
+                cx,
+            );
+        });
+    }
+
+    detail
 }
