@@ -70,8 +70,6 @@ pub(super) fn commit_row(
 }
 
 impl RepoDetailView {
-    /// Full-height body of the Commits tab: all commits in a virtual
-    /// list, or a status message while loading / when there are none.
     pub(super) fn render_commits_tab(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(list) = self.all_commits.as_ref() else {
             return if self.loading_all_commits {
@@ -90,9 +88,9 @@ impl RepoDetailView {
             return placeholder("No commits found", cx);
         }
 
-        // Copy only the values the element tree needs; the list itself is
-        // borrowed inside the renderer below instead of being cloned per
-        // frame (a full history can be tens of thousands of commits).
+        // Copy only the values the element tree needs.
+        // The list is borrowed by the renderer below instead of cloned per frame.
+        // A full history can be tens of thousands of commits.
         let view = cx.entity().clone();
         let sizes = self.item_sizes.clone();
         let scroll_handle = self.scroll_handle.clone();
@@ -137,7 +135,8 @@ impl RepoDetailView {
                 .size_full(),
             )
             .when(shown < total, |this| {
-                // The history is capped; tell the user the list is truncated.
+                // The history is capped.
+                // Tell the user the list is truncated.
                 this.child(
                     div()
                         .py_2()

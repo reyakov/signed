@@ -9,27 +9,30 @@ const GRID_SIZE: usize = 8;
 const FILL_PROBABILITY: f32 = 0.42;
 /// Probability that a filled cell uses the accent shade instead of the main color.
 const ACCENT_PROBABILITY: f32 = 0.25;
-/// Minimum number of filled left-half cells, so a sparse roll still yields a
-/// recognizable shape (each left-half cell is mirrored to a right-half one).
+/// Minimum number of filled left-half cells.
+/// A sparse roll still yields a recognizable shape.
+/// Each left-half cell is mirrored to a right-half one.
 const MIN_FILLED: usize = 5;
 
-/// A deterministic, offline "pixel art" avatar: an 8×8 grid with horizontal
-/// mirror symmetry, seeded from a stable string such as the repository id and
-/// owner public key. The same seed always renders the same avatar.
+/// Side length of the avatar in pixels, no setter.
+const AVATAR_SIZE: Pixels = px(16.);
+
+/// A deterministic, offline pixel-art avatar.
+/// An 8×8 grid with horizontal mirror symmetry.
+/// Seeded from a stable string such as the repository id and owner public key.
+/// The same seed always renders the same avatar.
 #[derive(IntoElement)]
 pub struct PixelAvatar {
     seed: u64,
-    size: Pixels,
     style: StyleRefinement,
 }
 
 impl PixelAvatar {
-    /// Create an avatar seeded from `seed`. The seed should be a stable string
-    /// unique to the entity the avatar represents.
+    /// Create an avatar seeded from `seed`.
+    /// The seed should be a stable string unique to the entity the avatar represents.
     pub fn new(seed: impl AsRef<str>) -> Self {
         Self {
             seed: fnv1a(seed.as_ref().as_bytes()),
-            size: px(16.),
             style: StyleRefinement::default(),
         }
     }
@@ -77,7 +80,7 @@ impl RenderOnce for PixelAvatar {
             .grid()
             .grid_cols(GRID_SIZE as u16)
             .grid_rows(GRID_SIZE as u16)
-            .size(self.size)
+            .size(AVATAR_SIZE)
             .flex_shrink_0()
             .overflow_hidden()
             .bg(main.opacity(0.16))
@@ -85,8 +88,9 @@ impl RenderOnce for PixelAvatar {
     }
 }
 
-/// Generate the 8×8 cell pattern for `seed`. Cells are `0` (empty), `1`
-/// (main color) or `2` (accent shade); the right half mirrors the left half.
+/// Generate the 8×8 cell pattern for `seed`.
+/// Cells are `0` for empty, `1` for main color and `2` for accent shade.
+/// The right half mirrors the left half.
 fn pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
     let mut rng = PixelRng::new(seed);
     let mut pattern = [0u8; GRID_SIZE * GRID_SIZE];
@@ -102,8 +106,8 @@ fn pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
         }
     }
 
-    // Sparse rolls can come out nearly empty; top the pattern up to the
-    // minimum fill, scanning from a seeded starting cell.
+    // Sparse rolls can come out nearly empty.
+    // Top the pattern up to the minimum fill, scanning from a seeded starting cell.
     if filled < MIN_FILLED {
         let half = GRID_SIZE * GRID_SIZE / 2;
         let start = (rng.next() % half as u64) as usize;
@@ -130,7 +134,7 @@ fn set_cell(pattern: &mut [u8; GRID_SIZE * GRID_SIZE], row: usize, col: usize, v
     pattern[row * GRID_SIZE + (GRID_SIZE - 1 - col)] = value;
 }
 
-/// FNV-1a 64-bit hash; stable across platforms and runs.
+/// FNV-1a 64-bit hash, stable across platforms and runs.
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for &byte in bytes {

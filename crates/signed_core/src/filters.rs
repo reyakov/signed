@@ -25,7 +25,7 @@ pub fn announcement(addr: &RepoAddr) -> Filter {
         .identifier(addr.identifier.clone())
 }
 
-/// Latest state event (refs / HEAD) for a repository.
+/// Latest state event for a repository, carrying refs and HEAD.
 pub fn state(addr: &RepoAddr) -> Filter {
     Filter::new()
         .kind(Kind::RepoState)
@@ -33,18 +33,18 @@ pub fn state(addr: &RepoAddr) -> Filter {
         .identifier(addr.identifier.clone())
 }
 
-/// All NIP-34 activity addressed to a repository (`#a` tag): issues, PRs,
-/// patches, statuses and comments (kind 1111).
-///
-/// Note: the `a` tag on status events is optional per NIP-34, so statuses
-/// published without it won't be matched here.
+/// All NIP-34 activity addressed to a repository via its `#a` tag.
+/// Covers issues, PRs, patches, statuses and kind-1111 comments.
+/// The `a` tag is optional on status events per NIP-34.
+/// Statuses published without it are not matched here.
 pub fn activity(addr: &RepoAddr) -> Filter {
     Filter::new().kinds(ACTIVITY_KINDS).coordinate(addr)
 }
 
-/// Status events (`1630..=1633`) referencing any of the given root events
-/// (`#e` tag). Batched: one filter covers all roots, so a negentropy sync
-/// reconciles them in a single session instead of one per root.
+/// Status events, kinds `1630..=1633`, referencing any of the given root events.
+/// They are matched via the `#e` tag. One filter covers all roots.
+///
+/// A negentropy sync reconciles them in a single session, not one per root.
 pub fn statuses_for(roots: impl IntoIterator<Item = EventId>) -> Filter {
     Filter::new()
         .kinds([
@@ -56,33 +56,29 @@ pub fn statuses_for(roots: impl IntoIterator<Item = EventId>) -> Filter {
         .events(roots)
 }
 
-/// Cover notes (kind 1624) and NIP-32 label events (kind 1985) referencing
-/// any of the given root events (`#e` tag), fetched per root like comments
-/// and statuses because they carry no repository `a` tag. Batched, like
-/// [`statuses_for`].
+/// Cover notes and NIP-32 label events referencing any of the given root events.
+/// These are kinds 1624 and 1985, matched via the `#e` tag.
+///
+/// Because they carry no repository `a` tag, they are fetched by root like comments.
+///
+/// Batched, like [`statuses_for`].
 pub fn annotations_for(roots: impl IntoIterator<Item = EventId>) -> Filter {
     Filter::new()
         .kinds([crate::COVER_NOTE_KIND, Kind::Label])
         .events(roots)
 }
 
-/// A user's grasp list (kind `10317`).
+/// A user's grasp list, kind `10317`.
 pub fn grasp_list(public_key: PublicKey) -> Filter {
     Filter::new()
         .kind(Kind::GitUserGraspList)
         .author(public_key)
 }
 
-/// NIP-22 comments (kind `1111`) referencing any of the given root events
-/// (issues, patches, PRs).
+/// NIP-22 comments, kind `1111`, referencing any of the given root events.
+/// The roots are issues, patches and PRs.
 ///
-/// Comments carry no repository `a` tag, so they must be fetched by their
-/// root reference. NIP-22 defines the uppercase `E` tag as the thread root
-/// (used by ngit), but some clients (including Signed) use a lowercase `e`
-/// tag, so both are matched.
-///
-/// Returns two filters because `#E` and `#e` conditions would be ANDed if
-/// combined into one.
+/// Returns two filters, since combining `#E` and `#e` would AND the conditions.
 pub fn comments_for(roots: impl IntoIterator<Item = EventId>) -> Vec<Filter> {
     let roots: Vec<String> = roots.into_iter().map(|id| id.to_hex()).collect();
     if roots.is_empty() {
@@ -98,49 +94,38 @@ pub fn comments_for(roots: impl IntoIterator<Item = EventId>) -> Vec<Filter> {
     ]
 }
 
-/// All repositories announced by an author.
-pub fn announcements_by(public_key: PublicKey) -> Filter {
-    Filter::new()
-        .kind(Kind::GitRepoAnnouncement)
-        .author(public_key)
-}
-
-/// All repository announcements (for global discovery).
-///
-/// Unbounded: intended for negentropy sync, which reconciles sets
-/// efficiently regardless of size. Local database queries with this
-/// filter are served by LMDB, so they stay fast as the database grows.
+/// All repository announcements, for global discovery.
 pub fn all_announcements() -> Filter {
     Filter::new().kind(Kind::GitRepoAnnouncement)
 }
 
 /// How far back deletion requests are fetched and stored.
-///
-/// A deletion request can only target events created before it, and NIP-34
-/// events are all far younger than this window, so older requests can never
-/// match anything shown. Bounding the window keeps the kind-5/62 set (one of
-/// the largest on public relays) from being fully reconciled on every sync.
 const DELETIONS_LOOKBACK: Duration = Duration::from_secs(3 * 365 * 86_400);
 
-/// `now` minus [`DELETIONS_LOOKBACK`], quantized to whole days so identical
-/// filters hash the same and the backend's sync dedup can match them.
+/// `now` minus [`DELETIONS_LOOKBACK`].
+/// Quantized to whole days so identical filters hash the same.
+///
+/// This lets the backend's sync dedup match identical filters.
 fn deletions_since() -> Timestamp {
     let now = Timestamp::now().as_secs();
     Timestamp::from_secs(now - now % 86_400) - DELETIONS_LOOKBACK
 }
 
-/// All deletion-related events (NIP-09 kind `5`, NIP-62 kind `62`) within
-/// [`DELETIONS_LOOKBACK`]. Deletion requests must be known before any other
-/// event can be shown.
+/// All deletion-related events within [`DELETIONS_LOOKBACK`].
+/// These are NIP-09 kind `5` and NIP-62 kind `62`.
+///
+/// Deletion requests must be known before any other event is shown.
 pub fn deletions() -> Filter {
     Filter::new()
         .kinds([Kind::EventDeletion, Kind::RequestToVanish])
         .since(deletions_since())
 }
 
-/// Deletion events relevant to a single repository: requests authored by
-/// the repository owner and requests addressed to the repository
-/// coordinate (`#a` tag).
+/// Deletion events relevant to a single repository.
+///
+/// Requests authored by the repository owner.
+///
+/// Requests addressed to the repository coordinate via its `#a` tag.
 pub fn deletions_for_repo(addr: &RepoAddr) -> Vec<Filter> {
     vec![
         Filter::new()

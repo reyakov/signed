@@ -1,6 +1,6 @@
 use nostr::prelude::*;
 
-/// Format a timestamp as a short relative time (e.g. "3h ago").
+/// Format a timestamp as a short relative time, e.g. `3h ago`.
 pub fn relative_time(timestamp: Timestamp) -> String {
     let now = Timestamp::now().as_secs();
     let secs = now.saturating_sub(timestamp.as_secs());
@@ -20,7 +20,7 @@ pub fn relative_time(timestamp: Timestamp) -> String {
     }
 }
 
-/// Format a unix timestamp in seconds as a short relative time (e.g. "3h ago").
+/// Format a unix timestamp in seconds as a short relative time, e.g. `3h ago`.
 pub fn relative_time_secs(secs: i64) -> String {
     relative_time(Timestamp::from_secs(secs.max(0) as u64))
 }

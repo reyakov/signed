@@ -28,19 +28,15 @@ use super::helpers::{
 /// Width of the changed-files column.
 const TREE_WIDTH: f32 = 260.;
 
-/// The tree + per-file diff body shared by the commit diff panel and the
-/// compare view of the new-pull-request panel. Owns the changed-files
-/// explorer and the virtual list of the selected file's hunks; the host
-/// feeds it a [`CommitDiff`] via [`DiffPane::set_diff`].
+/// Tree and per-file diff body, shared by the commit diff and compare views.
 pub struct DiffPane {
-    /// Loaded diff; `None` until [`Self::set_diff`] is called.
+    /// Loaded diff, `None` until [`Self::set_diff`] is called.
     diff: Option<CommitDiff>,
     /// Changed-files explorer state.
     tree_state: Entity<TreeState>,
     /// Path of the file whose diff is shown in the detail column.
     selected_file: Option<SharedString>,
-    /// Rows of the selected file's diff (hunk headers + lines), backing the
-    /// virtual list in the detail column.
+    /// Rows of the selected file's diff, hunk headers and lines.
     rows: Vec<DiffRow>,
     /// Per-row heights of [`Self::rows`].
     item_sizes: Rc<Vec<Size<Pixels>>>,
@@ -90,8 +86,9 @@ impl DiffPane {
         }
     }
 
-    /// Forget the diff (e.g. when the compared branches changed): clear the
-    /// tree, the selection and the diff rows.
+    /// Forget the diff, e.g. when the compared branches changed.
+    ///
+    /// Clears the tree, the selection and the diff rows.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.diff = None;
         self.selected_file = None;
@@ -102,15 +99,14 @@ impl DiffPane {
         });
     }
 
-    /// Show the diff of the file at `path` (selected in the tree).
+    /// Show the diff of the file at `path`, selected in the tree.
     fn select_file(&mut self, path: &str, cx: &mut Context<Self>) {
         self.selected_file = Some(path.into());
         self.set_diff_rows(path);
         cx.notify();
     }
 
-    /// Rebuild the virtual list state for the file at `path` and scroll back
-    /// to the top.
+    /// Rebuild the virtual list state for `path` and scroll back to the top.
     fn set_diff_rows(&mut self, path: &str) {
         let Some(diff) = self.diff.as_ref() else {
             return;
@@ -123,7 +119,7 @@ impl DiffPane {
         self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
     }
 
-    /// One row of the changed-files tree: icon + name, indented by depth.
+    /// One row of the changed-files tree, icon and name, indented by depth.
     fn render_tree_item(
         ix: usize,
         entry: &TreeEntry,
@@ -140,7 +136,7 @@ impl DiffPane {
         })
     }
 
-    /// Left column: the changed-files tree.
+    /// Left column showing the changed-files tree.
     fn render_tree_column(&self, cx: &mut Context<Self>) -> AnyElement {
         let tree_state = self.tree_state.clone();
         let view = cx.entity().downgrade();
@@ -170,7 +166,7 @@ impl DiffPane {
             .into_any_element()
     }
 
-    /// Right column: header of the selected file plus its diff.
+    /// Right column, header of the selected file plus its diff.
     fn render_detail_column(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(diff) = self.diff.as_ref() else {
             return placeholder("No changes", cx);
@@ -188,8 +184,7 @@ impl DiffPane {
         self.render_file_diff(file, cx.entity(), cx)
     }
 
-    /// The diff of one file: a header with status and stats, then the hunks
-    /// in a virtual list (a large diff is never materialized per frame).
+    /// The diff of one file, with a header showing status and stats.
     fn render_file_diff(&self, file: &FileDiff, view: Entity<Self>, cx: &App) -> AnyElement {
         let status_label = match file.status {
             DiffStatus::Added => "A",
@@ -316,25 +311,21 @@ impl Render for DiffPane {
     }
 }
 
-/// Detail panel showing the diff of one commit: a metadata header plus the
-/// shared [`DiffPane`] body.
+/// Detail panel showing the diff of one commit.
 pub struct CommitDiffView {
     focus_handle: FocusHandle,
     /// Local clone the commit lives in.
     worktree: PathBuf,
     /// Display name of the repository the commit belongs to.
     repo_name: SharedString,
-    /// The commit being shown (header and tab title). Starts as an id-only
-    /// stub; [`Self::load`] replaces it with the full metadata, which the
-    /// history list intentionally omits.
+    /// The commit being shown in the header and tab title.
     commit: FileCommit,
     /// The diff is being computed on a background task.
     loading: bool,
     error: Option<SharedString>,
-    /// Changed-files explorer and per-file diff, shared with the compare
-    /// view of the new-pull-request panel.
+    /// Changed-files explorer and per-file diff, also used by the new PR panel's compare view.
     pane: Entity<DiffPane>,
-    /// In-flight tasks; pruned on every push (see [`helpers::track`]).
+    /// In-flight tasks, pruned on every push.
     tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
 }
 
@@ -371,8 +362,7 @@ impl CommitDiffView {
         }
     }
 
-    /// Load the commit diff (and the full commit metadata) on a background
-    /// task and populate the tree.
+    /// Load the commit diff and the full commit metadata.
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
@@ -419,7 +409,7 @@ impl CommitDiffView {
         self.tasks.push(task);
     }
 
-    /// Header: commit id, summary, author/time and overall change stats.
+    /// Header with the commit id, summary, author/time and overall change stats.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let commit = &self.commit;
         let (files, insertions, deletions) = self.pane.read(cx).diff().map_or((0, 0, 0), |diff| {

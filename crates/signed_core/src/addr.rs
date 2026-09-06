@@ -1,9 +1,9 @@
 use nostr::prelude::*;
 
-/// Address of a NIP-34 repository announcement: `30617:<owner-pubkey>:<repo-id>`.
+/// Address of a NIP-34 repository announcement, `30617:<owner-pubkey>:<repo-id>`.
 ///
-/// The Rust Nostr SDK's [`Coordinate`] already provides parsing, formatting and hashing for this.
-/// The alias keeps the repository-specific vocabulary while reusing the SDK type.
+/// The Rust Nostr SDK's [`Coordinate`] parses, formats and hashes this,
+/// the alias reuses the SDK type while keeping repository-specific vocabulary.
 pub type RepoAddr = Coordinate;
 
 /// Build the address of a NIP-34 repository announcement.

@@ -1,8 +1,3 @@
-//! Render-path smoke tests: the skin reads the dock area while rendering, and
-//! GPUI panics if an entity is read while it is leased (being updated). These
-//! pin that the first frame — docks, groups, tab bars — renders without
-//! tripping the lease check.
-
 use dock::{BasePanel, Panel, SignedDockSkin, panel_handle};
 use gpui::{
     App, AppContext, Context, Empty, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
@@ -84,12 +79,10 @@ fn the_first_frame_renders_the_area_and_its_docks(cx: &mut TestAppContext) {
         });
     });
 
-    // The first frame walks every render hook — the dock frame, each group's
-    // tab bar, the toolbar — all of which read the dock area.
+    // The first frame walks every render hook, all of which read the dock area.
     cx.update(|window, cx| window.draw(cx).clear(cx));
 
-    // Emptying a dock leaves an empty group behind; its render must also be
-    // safe (and draw nothing).
+    // Emptying a dock leaves an empty group, its render must also be safe.
     cx.update(|window, cx| {
         area.update(cx, |area, cx| {
             area.remove_panel(bottom, window, cx);

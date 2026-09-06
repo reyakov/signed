@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use assets::CustomIconName;
-use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
+use dock::{BasePanel, DockArea, Panel, PanelEvent, add_center_panel, panel_handle};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
@@ -16,7 +16,6 @@ use gpui_component::{
 use nostr::prelude::{EventId, Kind};
 use signed_core::{RepoStatus, activity_subject};
 use signed_state::{ProfileStore, RepoStore};
-use signed_ui::image_cache::{MAX_IMAGES, image_cache};
 use signed_ui::{DropdownButton, SegmentButton, UserAvatar, placeholder, status_badge};
 use utils::relative_time;
 
@@ -25,12 +24,10 @@ use super::new_pull_request::open_new_pull_panel;
 use super::pull_request_detail::PullRequestDetailView;
 use super::send_patch::open_send_patch_panel;
 
-/// Height of one pull request row in the virtual list; same layout as an
-/// issue row.
-const PR_ROW_HEIGHT: f32 = 73.;
+/// Height of one pull request row in the virtual list.
+const ROW_HEIGHT: f32 = 73.;
 
-/// Status filter of the pull request list, chosen via the header's filter
-/// buttons.
+/// Status filter of the pull request list, chosen via the header's filter buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PullRequestFilter {
     /// Every pull request, regardless of status.
@@ -70,17 +67,11 @@ pub struct PullRequestsView {
     filter: PullRequestFilter,
     /// Per-row heights of the virtual list.
     item_sizes: Rc<Vec<Size<Pixels>>>,
-    /// Number of rows [`Self::item_sizes`] was built for (the filtered
-    /// pull request count); rebuilt on change.
+    /// The filtered pull request count [`Self::item_sizes`] was built for.
     pr_len: usize,
-    /// Indices into the store's `pull_requests` matching [`Self::filter`]
-    /// (root PR events only; updates are revisions of the root); the
-    /// virtual list renders this slice. Rebuilt only when the store
-    /// version or the filter changes, keyed by [`Self::cache_key`].
+    /// Indices into the store's `pull_requests` matching [`Self::filter`].
     visible_prs: Vec<usize>,
-    /// Header counts `(total, open, closed, draft, merged)` of the root
-    /// pull requests only (revisions are not separate PRs), rebuilt with
-    /// [`Self::visible_prs`].
+    /// Header counts `(total, open, closed, draft, merged)`.
     counts: (usize, usize, usize, usize, usize),
     /// Store version and filter the cached rows/counts were built from.
     cache_key: Option<(u64, PullRequestFilter)>,
@@ -92,10 +83,11 @@ impl PullRequestsView {
     pub fn new(
         dock_area: WeakEntity<DockArea>,
         store: Entity<RepoStore>,
-        repo_name: SharedString,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let repo_name = store.read(cx).name();
+
         Self {
             focus_handle: cx.focus_handle(),
             dock_area,
@@ -111,7 +103,7 @@ impl PullRequestsView {
         }
     }
 
-    /// Open the detail panel of `pr_id` at the bottom of the dock area.
+    /// Open the detail panel of `pr_id` in the dock area.
     fn open_pull_request_detail(
         &mut self,
         pr_id: EventId,
@@ -133,12 +125,13 @@ impl PullRequestsView {
         });
 
         dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+            add_center_panel(dock_area, panel_handle(panel), window, cx);
         });
     }
 
-    /// Render one row of the pull request list; `ix` is the row index and
-    /// `pr_ix` the index of the pull request in the store's `pull_requests`.
+    /// Render one row of the pull request list.
+    ///
+    /// `ix` is the row index, `pr_ix` the index in the store's `pull_requests`.
     fn render_row(&self, ix: usize, pr_ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let pr = &self.store.read(cx).pull_requests[pr_ix];
         let pr_id = pr.id;
@@ -203,8 +196,7 @@ impl PullRequestsView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        // Counts of the last list rebuild (`render` rebuilds first when the
-        // store version or filter changed, so this is never stale).
+        // Counts of the last list rebuild.
         let (total, open, closed, draft, merged) = self.counts;
 
         h_flex()
@@ -339,9 +331,9 @@ impl Render for PullRequestsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filter = self.filter;
 
-        // Rebuild the filtered rows and header counts only when the store
-        // refreshed or the filter changed; other renders reuse the cache.
+        // Rows and counts are rebuilt only when the store refreshed or filter changed.
         let version = self.store.read(cx).version();
+
         if self.cache_key != Some((version, filter)) {
             let store = self.store.read(cx);
             let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -350,43 +342,43 @@ impl Render for PullRequestsView {
                 .iter()
                 .enumerate()
                 .filter_map(|(ix, pr)| {
-                    // Kind-30620 patches are revisions of a root PR (NIP-34),
-                    // not separate pull requests: count only root events, or
-                    // the header counts inflate with every revision (which
-                    // also default to `Open` in `status_of`).
                     if pr.kind != Kind::GitPullRequest {
                         return None;
                     }
+
                     let status = store.status_of(pr);
                     counts.0 += 1;
+
                     match status {
                         RepoStatus::Open => counts.1 += 1,
                         RepoStatus::Closed => counts.2 += 1,
                         RepoStatus::Draft => counts.3 += 1,
                         RepoStatus::Applied => counts.4 += 1,
                     }
+
                     filter.matches(status).then_some(ix)
                 })
                 .collect();
+
             self.counts = counts;
             self.cache_key = Some((version, filter));
         }
 
         let count = self.visible_prs.len();
 
-        // The virtual list's item count comes from `item_sizes`; rebuild it
-        // whenever the filtered pull request count changes.
+        // The virtual list's item count comes from `item_sizes`.
+        // Rebuild it whenever the filtered pull request count changes.
         if count != self.pr_len {
             self.pr_len = count;
-            self.item_sizes = Rc::new(vec![size(px(0.), px(PR_ROW_HEIGHT)); count]);
+            self.item_sizes = Rc::new(vec![size(px(0.), px(ROW_HEIGHT)); count]);
         }
 
         let sizes = self.item_sizes.clone();
         let scroll_handle = self.scroll_handle.clone();
         let view = cx.entity().clone();
 
-        // Non-fatal warnings and errors of the last action (e.g. creating
-        // or updating a PR), shown as dismissible banners above the list.
+        // Non-fatal warnings and errors of the last action, like creating or updating a PR.
+        // Shown as dismissible banners above the list.
         let (last_error, last_warning) = {
             let store = self.store.read(cx);
             (store.last_error.clone(), store.last_warning.clone())
@@ -394,7 +386,7 @@ impl Render for PullRequestsView {
 
         v_flex()
             .size_full()
-            .image_cache(image_cache("pull-requests", MAX_IMAGES))
+            .image_cache(gpui::retain_all("pull-requests"))
             .on_action(cx.listener(|this, action: &RepoAction, window, cx| {
                 if action == &RepoAction::SendPatch {
                     open_send_patch_panel(this.dock_area.clone(), this.store.clone(), window, cx);

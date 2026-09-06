@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use assets::CustomIconName;
 use gpui::prelude::*;
-use gpui::{App, Entity, SharedString, WeakEntity, Window, div, px};
+use gpui::{App, Entity, WeakEntity, Window, px};
 use gpui_base::h_flex;
 use gpui_base::input::TextareaState;
 use gpui_component::button::{Button, ButtonVariants};
@@ -14,22 +14,15 @@ use settings::SettingsStore;
 use signed_state::Backend;
 
 use super::RepoDetailView;
+use crate::views::dialog_state::{DialogProgress, error_row};
 use crate::views::sidebar::grasp_servers::{
     GraspServersState, grasp_servers_field, load_user_grasp_servers,
 };
 
 /// Shared state for the Init dialog, so async results can be rendered.
-#[derive(Default)]
-pub struct InitRepoState {
-    pub busy: bool,
-    pub error: Option<SharedString>,
-}
+pub type InitRepoState = DialogProgress;
 
 /// Open the Init dialog for the local repository at `local_path`.
-///
-/// The dialog loads the user's default grasp servers (kind `10317` grasp
-/// list) and falls back to the shared defaults when none are set. On
-/// success the dialog closes and `view` switches into NIP-34 mode.
 pub fn open(
     local_path: PathBuf,
     view: WeakEntity<RepoDetailView>,
@@ -40,23 +33,25 @@ pub fn open(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
+
+    let grasp_settings = SettingsStore::global(cx)
+        .read(cx)
+        .settings()
+        .grasp_servers
+        .clone();
+
+    let state = cx.new(|_| InitRepoState::default());
+    let grasp_state = cx.new(|_| GraspServersState::new_default(&grasp_settings));
+
+    let relay_input = cx.new(|cx| InputState::new(window, cx).placeholder("relay.example.com"));
     let name_input = cx.new(|cx| InputState::new(window, cx).default_value(default_name));
     let desc_input = cx.new(|cx| {
         TextareaState::new(window, cx)
             .auto_grow(3, 5)
             .placeholder("Short description")
     });
-    let relay_input = cx.new(|cx| {
-        InputState::new(window, cx).placeholder("wss://relay.example.com or relay.example.com")
-    });
-    let state = cx.new(|_| InitRepoState::default());
-    let grasp_settings = SettingsStore::global(cx)
-        .read(cx)
-        .settings()
-        .grasp_servers
-        .clone();
-    let grasp_state = cx.new(|_| GraspServersState::new_default(&grasp_settings));
 
+    // Load the user's grasp servers.
     load_user_grasp_servers(grasp_state.clone(), window, cx);
 
     window.open_dialog(cx, move |dialog, _window, _cx| {
@@ -115,9 +110,7 @@ pub fn open(
                             )
                             .child(grasp_servers_field(&grasp_state, &relay_input, cx)),
                     )
-                    .children(error.map(|message| {
-                        div().text_sm().text_color(cx.theme().danger).child(message)
-                    }))
+                    .children(error_row(&error, cx))
                     .child(
                         DialogFooter::new().justify_end().child(
                             Button::new("init")
@@ -153,8 +146,9 @@ pub fn open(
     });
 }
 
-/// Run the init flow; closes the dialog and switches the repository into
-/// its NIP-34 mode on success.
+/// Run the init flow.
+///
+/// Closes the dialog and switches the repository into NIP-34 mode on success.
 fn init_repository(
     local_path: PathBuf,
     inputs: (Entity<InputState>, Entity<TextareaState>),
@@ -170,23 +164,16 @@ fn init_repository(
     let servers = grasp_state.read(cx).grasp_servers.clone();
 
     if name.is_empty() {
-        state.update(cx, |state, _| {
-            state.error = Some("Repository name is required".into());
-        });
+        state.update(cx, |state, _| state.fail("Repository name is required"));
         return;
     }
 
     if servers.is_empty() {
-        state.update(cx, |state, _| {
-            state.error = Some("Add at least one grasp server".into());
-        });
+        state.update(cx, |state, _| state.fail("Add at least one grasp server"));
         return;
     }
 
-    state.update(cx, |state, _| {
-        state.busy = true;
-        state.error = None;
-    });
+    state.update(cx, |state, _| state.begin());
 
     let backend = Backend::global(cx);
     let task = backend.update(cx, |backend, cx| {
@@ -211,10 +198,7 @@ fn init_repository(
         }
         Err(e) => {
             cx.update_window(handle, |_, _window, cx| {
-                state.update(cx, |state, _| {
-                    state.busy = false;
-                    state.error = Some(e.to_string().into());
-                });
+                state.update(cx, |state, _| state.fail(e.to_string()));
             })
             .ok();
         }

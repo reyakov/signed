@@ -1,11 +1,3 @@
-//! The Signed appearance for a tiles canvas.
-//!
-//! `gpui_base::dock::TilesState` owns the geometry — snapping, the resize
-//! arithmetic, the undo stack, the zoom flag — and draws none of it. The tile
-//! frame, its title bar and its resize affordances are here, ported from
-//! gpui-component's `TilesSkin` (the vendored dock had no tiles canvas, so
-//! there is no local look to preserve).
-
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -18,6 +10,7 @@ use gpui_base::dock::{
     DRAG_BAR_HEIGHT, HANDLE_SIZE, NodeId, ResizeSide, TileContext, TilesRenderer,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::dock::PanelHandle;
 use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{
@@ -25,8 +18,8 @@ use gpui_component::{
 };
 
 use crate::dock_area::SkinShared;
+use crate::t;
 use crate::tab_panel::panel_title;
-use crate::{PanelHandle, t};
 
 /// How far a resize handle sticks out past the tile's edge.
 const HANDLE_OFFSET: Pixels = px(-4.);
@@ -52,9 +45,7 @@ impl Render for DragResizing {
 }
 
 /// One tiles canvas's appearance.
-///
-/// Built per canvas — `DockAreaRenderer::tiles_renderer` is called once per
-/// container — so the scroll position belongs to the canvas it scrolls.
+/// Built once per container, so its scroll position belongs to the canvas it scrolls.
 pub(crate) struct SignedTilesSkin {
     shared: Rc<SkinShared>,
     scroll_handle: ScrollHandle,
@@ -101,11 +92,8 @@ impl SignedTilesSkin {
             })
     }
 
-    /// The trailing controls of a tile's title bar: zoom, close and the
-    /// ellipsis menu. They use click handlers rather than the
-    /// [`ToggleZoom`](crate::ToggleZoom)/[`ClosePanel`](crate::ClosePanel)
-    /// actions, which are dispatched to a focused tab group — a tile is
-    /// not one.
+    /// The trailing controls of a tile's title bar, zoom, close and the ellipsis menu.
+    /// They use click handlers, the zoom and close actions target a focused tab group.
     fn render_tile_controls(
         &self,
         tile: &TileContext,
@@ -213,21 +201,17 @@ impl TilesRenderer for SignedTilesSkin {
             .border_1()
             .border_color(cx.theme().border)
             .rounded(cx.theme().tile_radius)
-            // Room for the title bar, which is positioned over the padding so
-            // the panel below it is never covered. Base draws the panel view
-            // as a plain child, so this is the only way to keep the two from
-            // overlapping.
+            // Room for the title bar, which overlays the top padding.
+            // Base draws the panel as a plain child, this keeps them apart.
             .pt(DRAG_BAR_HEIGHT)
-            // Base installs the stored bounds on an ordinary tile and nothing
-            // at all on a zoomed one — how a zoomed tile fills the dock is
-            // this skin's decision.
+            // Base stores no bounds on a zoomed tile, the skin decides how it fills the dock.
             .when(tile.is_zoomed(), |this| this.size_full())
             .on_mouse_down(MouseButton::Left, {
                 let tile = tile.clone();
                 move |_, window, cx| tile.bring_to_front(window, cx)
             })
-            // A gesture can end with the pointer anywhere, so both halves are
-            // needed; each is a no-op unless this tile is the one moving.
+            // A gesture can end anywhere, so both mouse-up hooks run.
+            // Each is a no-op unless this tile is the one that moved.
             .on_mouse_up(MouseButton::Left, {
                 let tile = tile.clone();
                 move |_, window, cx| {
@@ -274,8 +258,7 @@ impl TilesRenderer for SignedTilesSkin {
             )
             .children(handle.and_then(|handle| handle.title_suffix(window, cx)))
             .child(self.render_tile_controls(tile, window, cx))
-            // A zoomed tile is not at its stored bounds, so there is nothing
-            // for a move to mean; base refuses the gesture too.
+            // A zoomed tile is not at its stored bounds, so moving it would mean nothing.
             .when(!tile.is_zoomed(), |this| {
                 this.cursor_grab()
                     .on_mouse_down(MouseButton::Left, {
@@ -309,10 +292,8 @@ impl TilesRenderer for SignedTilesSkin {
     ) -> AnyElement {
         let bounds = tile.bounds();
 
-        // A passive full-tile box so each handle is positioned against the
-        // tile rather than against whatever the flow put it next to. It
-        // registers no interaction of its own, so it does not shadow the panel
-        // underneath.
+        // A passive full-tile box, so handles sit against the tile, not its flow neighbours.
+        // It registers no interaction, so it does not shadow the panel underneath.
         div()
             .absolute()
             .top_0()
@@ -376,9 +357,7 @@ impl TilesRenderer for SignedTilesSkin {
             .into_any_element()
     }
 
-    /// The panel of a tile gets `size_full` here; base draws the panel as a
-    /// plain child, so without it a panel that does not size itself has no
-    /// size.
+    /// Gives the tile's panel `size_full`, base draws it as a plain child otherwise.
     fn panel_frame(&self, tile: &TileContext, _: &mut Window, _: &mut App) -> Stateful<Div> {
         h_flex()
             .id(("tile-panel", tile.panel_id().as_u64()))
@@ -386,9 +365,8 @@ impl TilesRenderer for SignedTilesSkin {
             .size_full()
     }
 
-    /// The canvas scrollbar. It must be an overlay: the frame is the scroll
-    /// container and base appends the tiles after it, so a scrollbar placed
-    /// inside would paint and hit-test underneath every tile.
+    /// The canvas scrollbar, as an overlay.
+    /// Placed inside the frame it would end up underneath every tile.
     fn render_overlay(
         &self,
         content: Size<Pixels>,

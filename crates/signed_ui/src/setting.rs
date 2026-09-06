@@ -1,15 +1,11 @@
-//! Reusable settings UI: rows and blocks for building a settings dialog, plus
-//! a labeled dropdown option.
-
 use gpui::prelude::*;
 use gpui::{App, SharedString, div};
 use gpui_component::searchable_list::SearchableListItem;
 use gpui_component::{ActiveTheme, StyledExt, h_flex, v_flex};
 
 /// A dropdown option with a display label and a stored value.
-///
-/// Renders the `label` in the trigger and the menu, while `value` is what a
-/// [`gpui_component::select::SelectState`] reports as the selection.
+/// The trigger and menu render the `label`.
+/// The `value` is what [`gpui_component::select::SelectState`] reports as the selection.
 #[derive(Clone)]
 pub struct SelectOption {
     value: SharedString,
@@ -48,7 +44,7 @@ impl SearchableListItem for SelectOption {
     }
 }
 
-/// A settings row: label + description on the left, control on the right.
+/// A settings row with the label and description on the left and the control on the right.
 pub fn setting_row(
     cx: &App,
     title: impl Into<SharedString>,
@@ -85,8 +81,8 @@ pub fn setting_row(
         )
 }
 
-/// A full-width settings block: title + subtitle in one header, `gap_3`
-/// between the header and the control below.
+/// A full-width settings block with title and subtitle in one header.
+/// `gap_3` separates the header from the control below.
 pub fn setting_block(
     cx: &App,
     title: impl Into<SharedString>,

@@ -8,9 +8,11 @@ use nostr_sdk::prelude::*;
 use signed_core::{Announcement, Deletions, RepoAddr, filters, repo_addr};
 
 use crate::backend::{Backend, BackendEvent};
+use crate::refresh::{RefreshGate, RefreshRequest};
 
-/// Delay between a refresh request and the actual re-query, so bursts of
-/// events (e.g. sync progress ticks) collapse into one query.
+/// Delay between a refresh request and the actual re-query.
+///
+/// Bursts of events, e.g. sync progress ticks, collapse into one query.
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// How far back activity events count toward a repository's last activity.
@@ -20,53 +22,45 @@ struct GlobalRepoListStore(Entity<RepoListStore>);
 
 impl Global for GlobalRepoListStore {}
 
-/// Counts of NIP-34 activity events per repository, used to rank the
-/// explore list by popularity. Each patch event is a pushed commit (or a
-/// small series), the closest proxy for commit count in the event data.
+/// NIP-34 activity event counts per repository, ranking the explore list by popularity.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RepoActivityCounts {
     /// Root `30611` issue events addressed to the repository.
     pub issues: u32,
-    /// Root `3063` pull request events addressed to the repository
-    /// (updates to a PR are not new PRs and don't count).
+    /// Root `3063` pull request events addressed to the repository.
+    ///
+    /// PR updates are not new PRs and do not count.
     pub pull_requests: u32,
     /// `1617` patch events addressed to the repository.
     pub commits: u32,
 }
 
 impl RepoActivityCounts {
-    /// Total issues + pull requests + commits; the popularity ranking key.
+    /// Total issues, pull requests and commits, the popularity ranking key.
     pub fn score(self) -> u32 {
         self.issues + self.pull_requests + self.commits
     }
 }
 
-/// Store listing repository announcements (global discovery or per-author).
-///
-/// The all-repos store (`author: None`) is created at startup by
-/// [`crate::init`] and installed as a global, so the explore panel renders
-/// what's in the local database without waiting for relays.
+/// Store listing the discovered repository announcements, newest first.
 pub struct RepoListStore {
     /// Shared so views can clone the list per frame without a deep copy.
     pub announcements: Arc<Vec<Announcement>>,
-    /// Latest known activity timestamp per repository
-    /// (announcements, state updates, patches, PRs, issues, statuses).
+    /// Latest known activity timestamp per repository.
+    /// Covers announcements, state updates, patches, PRs, issues and statuses.
     pub last_activity: Arc<HashMap<RepoAddr, Timestamp>>,
-    /// Issues + pull requests + commits per repository, for the Popular
-    /// ranking of the explore list.
+    /// Issues, pull requests and commits per repository.
+    ///
+    /// Used for the Popular ranking of the explore list.
     pub counts: Arc<HashMap<RepoAddr, RepoActivityCounts>>,
-    author: Option<PublicKey>,
-    refreshing: bool,
-    refresh_dirty: bool,
-    /// A refresh is waiting out [`REFRESH_DEBOUNCE`].
-    debouncing: bool,
+    /// Refresh coalescing, see [`RefreshGate`].
+    refresh: RefreshGate,
     tasks: Vec<Task<Result<(), Error>>>,
     _subscription: Subscription,
 }
 
 impl RepoListStore {
-    /// Retrieve the global explore store (all announcements, created at
-    /// startup by [`crate::init`]).
+    /// Retrieve the global repository list store.
     pub fn global(cx: &App) -> Entity<Self> {
         cx.global::<GlobalRepoListStore>().0.clone()
     }
@@ -75,35 +69,34 @@ impl RepoListStore {
         cx.set_global(GlobalRepoListStore(entity));
     }
 
-    /// Create a store. If `author` is `None`, all announcements are listed.
-    pub fn new(author: Option<PublicKey>, cx: &mut Context<Self>) -> Self {
+    /// Create the store listing all announcements.
+    pub fn new(cx: &mut Context<Self>) -> Self {
         let backend = Backend::global(cx);
 
         let subscription = cx.subscribe(&backend, |this, _backend, event, cx| {
             let relevant = match event {
                 BackendEvent::NostrUpdate(update) => {
-                    // Deletions may target anything we list; always refresh.
+                    // Deletions may target anything we list, always refresh.
                     if update.kind == Kind::EventDeletion || update.kind == Kind::RequestToVanish {
                         true
                     } else if filters::ACTIVITY_KINDS.contains(&update.kind) {
-                        // Activity (patches, issues, ...) is addressed to repos via
-                        // `a` tags, so its author isn't the repo owner; always refresh.
+                        // Activity events are addressed to repos via `a` tags.
+                        // Their author is not the repo owner, always refresh.
                         true
                     } else {
                         let is_announcement = update.kind == Kind::GitRepoAnnouncement;
                         let is_repo_state = update.kind == Kind::RepoState;
-                        let tracked = is_announcement || is_repo_state;
-                        tracked && this.author.is_none_or(|a| a == update.author)
+                        is_announcement || is_repo_state
                     }
                 }
                 BackendEvent::Published(event) => {
-                    let announcement = event.kind == Kind::GitRepoAnnouncement
-                        && this.author.is_none_or(|a| a == event.pubkey);
-                    // Locally published deletions (e.g. deleting a repo)
-                    // are already in the local database; refresh so they
-                    // take effect immediately, like relay deletions.
+                    let announcement = event.kind == Kind::GitRepoAnnouncement;
+
+                    // Locally published deletions are already in the local database.
+                    // Refresh so they take effect immediately, like relay deletions.
                     let deletion =
                         event.kind == Kind::EventDeletion || event.kind == Kind::RequestToVanish;
+
                     announcement || deletion
                 }
                 BackendEvent::Synced | BackendEvent::SyncProgress { .. } => true,
@@ -119,105 +112,90 @@ impl RepoListStore {
             announcements: Arc::new(Vec::new()),
             last_activity: Arc::new(HashMap::new()),
             counts: Arc::new(HashMap::new()),
-            author,
-            refreshing: false,
-            refresh_dirty: false,
-            debouncing: false,
+            refresh: RefreshGate::default(),
             _subscription: subscription,
             tasks: Vec::new(),
         };
 
         store.subscribe_remote(cx);
-        // Query the local database right away; the list never waits for the
-        // relay syncs started above to finish.
+        // Query the local database right away.
+        // The list never waits for the relay syncs started above to finish.
         store.refresh_initial(cx);
         store
     }
 
-    /// Scope the list to an author (or clear the scope with `None`).
-    pub fn set_author(&mut self, author: Option<PublicKey>, cx: &mut Context<Self>) {
-        self.author = author;
-        self.subscribe_remote(cx);
-        self.refresh(cx);
+    /// The announcements of `user`, newest first.
+    pub fn announcements_of(&self, user: &PublicKey) -> Vec<Announcement> {
+        self.announcements
+            .iter()
+            .filter(|a| a.owner == *user)
+            .cloned()
+            .collect()
+    }
+
+    /// Track a spawned task, pruning finished tasks first.
+    ///
+    /// Keeps the store's task list bounded by the number of in-flight tasks.
+    fn push_task(&mut self, task: Task<Result<(), Error>>) {
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(task);
     }
 
     /// Negentropy-sync announcements with the bootstrap relays.
     fn subscribe_remote(&mut self, cx: &mut Context<Self>) {
         let backend = Backend::global(cx);
-        let author = self.author;
 
         backend.update(cx, |backend, cx| {
-            let filter = match author {
-                Some(a) => filters::announcements_by(a),
-                None => filters::all_announcements(),
-            };
-            backend.sync_bootstrap(filter, cx);
-            // Deletion requests (NIP-09/62) must be known before any
-            // announcement can be shown.
+            backend.sync_bootstrap(filters::all_announcements(), cx);
+            // Deletion requests, NIP-09/62, must be known before any announcement is shown.
             backend.sync_bootstrap(filters::deletions(), cx);
         });
     }
 
-    /// One-shot initial load: query the local database immediately (no
-    /// debounce), so stored announcements appear as soon as the app opens.
-    /// Only called from [`Self::new`], before any refresh can be pending.
+    /// One-shot initial load.
+    ///
+    /// Query the local database immediately, no debounce.
+    /// Stored announcements appear as soon as the app opens.
     fn refresh_initial(&mut self, cx: &mut Context<Self>) {
-        debug_assert!(!self.debouncing);
-        if self.refreshing {
-            self.refresh_dirty = true;
+        debug_assert!(!self.refresh.debouncing());
+        if self.refresh.running() {
+            self.refresh.request();
             return;
         }
         self.run_refresh(cx);
     }
 
-    /// Re-query the local database. Latest announcement per repository wins.
-    ///
-    /// Debounced: a short delay collapses bursts of requests (e.g. sync
-    /// progress ticks), and requests that arrive while a query is running
-    /// are folded into one follow-up query. The query and processing run on
-    /// a background thread; only the results are applied on the main thread.
+    /// Re-query the local database.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.refreshing {
-            self.refresh_dirty = true;
+        if self.refresh.request() != RefreshRequest::Schedule {
             return;
         }
-        if self.debouncing {
-            return;
-        }
-        self.debouncing = true;
 
         let task = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REFRESH_DEBOUNCE).await;
 
-            this.update(cx, |this, cx| {
-                this.debouncing = false;
-                this.run_refresh(cx);
-            })
+            this.update(cx, |this, cx| this.run_refresh(cx))
         });
 
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
-    /// One query + apply cycle (debounced entry point).
+    /// One query and apply cycle, the debounced entry point.
     fn run_refresh(&mut self, cx: &mut Context<Self>) {
-        self.refreshing = true;
+        self.refresh.begin();
 
         let backend = Backend::global(cx);
         let client = backend.read(cx).client();
-        let author = self.author;
 
         let work = cx.background_spawn(async move {
-            let filter = match author {
-                Some(a) => filters::announcements_by(a),
-                None => filters::all_announcements(),
-            };
-
+            let filter = filters::all_announcements();
             let events = client.database().query(filter).await?;
+
             let deletion_events = client.database().query(filters::deletions()).await?;
             let deletions = Deletions::from_events(deletion_events);
 
-            // Dedup and sort off the main thread; only the final list
-            // crosses back into the entity.
+            // Dedup and sort off the main thread.
+            // Only the final list crosses back into the entity.
             let mut by_repo: HashMap<RepoAddr, Announcement> = HashMap::new();
 
             for event in events {
@@ -242,8 +220,9 @@ impl RepoListStore {
             let mut announcements: Vec<Announcement> = by_repo.into_values().collect();
             announcements.sort_by_key(|a| std::cmp::Reverse(a.created_at));
 
-            // Last activity per repository: state updates plus all NIP-34
-            // activity events (patches, PRs, issues, statuses).
+            // Last activity per repository.
+            // State updates count, and all NIP-34 activity events.
+            // The activity events are patches, PRs, issues and statuses.
             let mut last_activity: HashMap<RepoAddr, Timestamp> = announcements
                 .iter()
                 .map(|a| (a.addr(), a.created_at))
@@ -264,8 +243,8 @@ impl RepoListStore {
                 *entry = (*entry).max(event.created_at);
             }
 
-            // Bound the activity query to a recent window; older repos fall
-            // back to their announcement / state timestamps.
+            // Bound the activity query to a recent window.
+            // Older repos fall back to their announcement or state timestamps.
             let activity_filter = Filter::new()
                 .kinds(filters::ACTIVITY_KINDS)
                 .since(Timestamp::now() - ACTIVITY_WINDOW);
@@ -277,8 +256,8 @@ impl RepoListStore {
                     if addr.kind != Kind::GitRepoAnnouncement {
                         continue;
                     }
-                    // Skip events for repos we don't list, so the map can't
-                    // grow beyond the number of announcements.
+                    // Skip events for repos we do not list.
+                    // The map cannot grow beyond the number of announcements.
                     let Some(entry) = last_activity.get_mut(&addr) else {
                         continue;
                     };
@@ -286,9 +265,8 @@ impl RepoListStore {
                 }
             }
 
-            // Popularity counts per repository (issues, pull requests and
-            // patches). Unbounded, unlike the windowed activity query
-            // above, so totals are exact.
+            // Popularity counts per repository, issues, pull requests and patches.
+            // Unbounded, unlike the windowed activity query above, so totals are exact.
             let mut counts: HashMap<RepoAddr, RepoActivityCounts> = HashMap::new();
             let count_filter =
                 Filter::new().kinds([Kind::GitIssue, Kind::GitPullRequest, Kind::GitPatch]);
@@ -297,8 +275,8 @@ impl RepoListStore {
                     continue;
                 }
                 for addr in event.tags.coordinates() {
-                    // Skip events for repos we don't list, so the map can't
-                    // grow beyond the number of announcements.
+                    // Skip events for repos we do not list.
+                    // The map cannot grow beyond the number of announcements.
                     if addr.kind != Kind::GitRepoAnnouncement || !last_activity.contains_key(&addr)
                     {
                         continue;
@@ -316,13 +294,13 @@ impl RepoListStore {
             Ok::<_, Error>((announcements, last_activity, counts))
         });
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             let (announcements, last_activity, counts) = match work.await {
                 Ok(results) => results,
-                // Database errors are transient; keep the last list.
+                // Database errors are transient, keep the last list.
                 Err(_) => {
                     return this.update(cx, |this, _cx| {
-                        this.refreshing = false;
+                        this.refresh.abort();
                     });
                 }
             };
@@ -333,17 +311,11 @@ impl RepoListStore {
                 this.counts = Arc::new(counts);
                 cx.notify();
 
-                this.refreshing = false;
-                if this.refresh_dirty {
-                    this.refresh_dirty = false;
-                    true
-                } else {
-                    false
-                }
+                this.refresh.finish()
             })?;
 
-            // Requests that arrived while the refresh was running are
-            // coalesced into one follow-up refresh.
+            // Requests that arrived while the refresh was running.
+            // They are coalesced into one follow-up refresh.
             if again {
                 this.update(cx, |this, cx| this.refresh(cx))?;
             }

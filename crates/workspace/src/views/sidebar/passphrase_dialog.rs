@@ -1,26 +1,25 @@
 use assets::CustomIconName;
 use gpui::prelude::*;
-use gpui::{AnyWindowHandle, App, Entity, SharedString, Subscription, Window, div};
+use gpui::{AnyWindowHandle, App, Entity, Subscription, Window};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dialog::{DialogDescription, DialogFooter, DialogHeader, DialogTitle};
 use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::{ActiveTheme, Disableable, WindowExt};
+use gpui_component::{Disableable, WindowExt};
 use signed_state::Backend;
+
+use crate::views::dialog_state::{DialogProgress, error_row};
 
 /// Shared state for the passphrase dialog, so async results can be rendered.
 #[derive(Default)]
 pub struct PassphraseState {
-    pub busy: bool,
-    pub error: Option<SharedString>,
+    /// Progress of the unlock flow.
+    pub progress: DialogProgress,
     /// Keeps the Enter-to-submit subscription alive while the dialog is open.
     _enter_subscription: Option<Subscription>,
 }
 
-/// Open the dialog asking for the passphrase that protects the stored
-/// NIP-49 encrypted identity (`ncryptsec1...`).
-///
-/// Called when the backend emits [`signed_state::BackendEvent::PassphraseRequired`].
+/// Open the dialog asking for the passphrase that protects the stored identity.
 pub fn open(window: &mut Window, cx: &mut App) {
     let pass_input = cx.new(|cx| {
         InputState::new(window, cx)
@@ -53,8 +52,8 @@ pub fn open(window: &mut Window, cx: &mut App) {
             .overlay_closable(false)
             .keyboard(false)
             .content(move |content, _window, cx| {
-                let busy = state.read(cx).busy;
-                let error = state.read(cx).error.clone();
+                let busy = state.read(cx).progress.busy;
+                let error = state.read(cx).progress.error.clone();
 
                 content
                     .child(
@@ -73,9 +72,7 @@ pub fn open(window: &mut Window, cx: &mut App) {
                                 .child(Input::new(&pass_input)),
                         ),
                     )
-                    .children(error.map(|message| {
-                        div().text_sm().text_color(cx.theme().danger).child(message)
-                    }))
+                    .children(error_row(&error, cx))
                     .child(
                         DialogFooter::new().justify_end().child(
                             Button::new("unlock")
@@ -98,8 +95,7 @@ pub fn open(window: &mut Window, cx: &mut App) {
     });
 }
 
-/// Submit the passphrase to the backend. On success the dialog is closed;
-/// on failure the error is rendered inline and the dialog stays open.
+/// Submit the passphrase to the backend.
 fn unlock(
     pass_input: &Entity<InputState>,
     state: &Entity<PassphraseState>,
@@ -111,15 +107,12 @@ fn unlock(
 
     if pass.is_empty() {
         state.update(cx, |state, _| {
-            state.error = Some("Passphrase must not be empty".into());
+            state.progress.fail("Passphrase must not be empty");
         });
         return;
     }
 
-    state.update(cx, |state, _| {
-        state.busy = true;
-        state.error = None;
-    });
+    state.update(cx, |state, _| state.progress.begin());
 
     let task = backend.update(cx, |backend, cx| backend.restore_with_passphrase(&pass, cx));
     let handle = *handle;
@@ -134,10 +127,7 @@ fn unlock(
         }
         Err(e) => {
             cx.update_window(handle, |_this, _window, cx| {
-                state.update(cx, |state, _| {
-                    state.busy = false;
-                    state.error = Some(e.to_string().into());
-                });
+                state.update(cx, |state, _| state.progress.fail(e.to_string()));
             })
             .ok();
         }

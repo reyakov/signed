@@ -4,8 +4,9 @@ use gpui_component::list::ListItem;
 use gpui_component::tree::TreeEntry;
 use gpui_component::{Icon, IconName, Sizable, h_flex};
 
-/// One row of a file tree: icon + name, indented by depth.
-/// Clicking a file runs `on_click`; folders expand/collapse via the tree itself.
+/// One row of a file tree, an icon and a name indented by depth.
+/// Clicking a file runs `on_click`.
+/// Folders expand and collapse via the tree itself.
 pub fn tree_row<F>(ix: usize, entry: &TreeEntry, selected: bool, on_click: F) -> ListItem
 where
     F: Fn(&mut Window, &mut App) + 'static,

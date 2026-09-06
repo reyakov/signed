@@ -16,8 +16,9 @@ use super::helpers::{code_language, is_markdown_path};
 const TREE_WIDTH: f32 = 240.;
 /// Files larger than this are not previewed.
 pub(super) const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
-/// Preview cache caps: at most this many files (or this many text bytes)
-/// are kept in memory at once; the oldest previews are evicted beyond that.
+/// Preview cache caps, a file count and a text byte count.
+///
+/// The oldest previews are evicted beyond the caps.
 pub(super) const MAX_PREVIEWED_FILES: usize = 32;
 pub(super) const MAX_PREVIEW_CACHE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -34,19 +35,13 @@ pub(super) enum FileContent {
 }
 
 /// A markdown document loaded into a persistent [`TextViewState`].
-///
-/// The state is owned by the view rather than created per render: GPUI
-/// drops keyed element state after one absent frame, which would re-parse
-/// the whole document on every pane switch (README / file / spinner).
 pub(super) struct MarkdownView {
-    /// Source path; `None` means the repository README.
+    /// Source path, `None` means the repository README.
     pub(super) path: Option<SharedString>,
     pub(super) state: Entity<TextViewState>,
 }
 
-/// A code file loaded into a persistent [`InputState`], rendered as a
-/// disabled (read-only) code editor with syntax highlighting, line numbers
-/// and search. Persistent for the same reason as [`MarkdownView`].
+/// A code file loaded into a persistent [`InputState`].
 pub(super) struct CodeView {
     /// Source path, relative to the worktree root.
     pub(super) path: SharedString,
@@ -64,7 +59,7 @@ fn preview_spinner() -> AnyElement {
 }
 
 impl RepoDetailView {
-    /// One row of the file tree: icon + name, indented by depth.
+    /// One row of the file tree with icon and name, indented by depth.
     fn render_tree_item(
         ix: usize,
         entry: &TreeEntry,
@@ -81,7 +76,7 @@ impl RepoDetailView {
         })
     }
 
-    /// Left column: the file tree.
+    /// Left column showing the file tree.
     pub(super) fn render_tree_column(
         tree_state: Entity<TreeState>,
         view: WeakEntity<Self>,
@@ -102,7 +97,7 @@ impl RepoDetailView {
             )))
     }
 
-    /// Right column: README, selected file preview, or status text.
+    /// Right column, README, selected file preview or status text.
     pub(super) fn render_content_column(
         &self,
         pane_title: SharedString,
@@ -148,7 +143,7 @@ impl RepoDetailView {
                         self.code_element(path.as_ref(), cx)
                     }
                 }
-                Some(FileContent::Binary) => placeholder("Binary file — preview not supported", cx),
+                Some(FileContent::Binary) => placeholder("Binary file - preview not supported", cx),
                 Some(FileContent::TooLarge) => placeholder("File is too large to preview", cx),
                 Some(FileContent::Failed(message)) => placeholder(message, cx),
                 None => preview_spinner(),
@@ -159,9 +154,8 @@ impl RepoDetailView {
             placeholder("No README found", cx)
         };
 
-        // Latest commit for the current pane: the selected file, or the README
-        // while nothing is selected. Computed after the body above, which
-        // needs `&mut self`.
+        // Latest commit for the current pane, the selected file or the README.
+        // Computed after the body above, which needs `&mut self`.
         let commit = match &self.selected_file {
             Some(path) => self.commits.get(path.as_ref()),
             None => self
@@ -217,9 +211,6 @@ impl RepoDetailView {
     }
 
     /// Load `text` into the persistent markdown TextView state.
-    ///
-    /// The state is created empty and fed via `push_str`, which parses on a
-    /// background task, so switching files never blocks the main thread.
     pub(super) fn set_markdown(
         &mut self,
         path: Option<SharedString>,
@@ -231,16 +222,19 @@ impl RepoDetailView {
         self.md = Some(MarkdownView { path, state });
     }
 
-    /// The persistent markdown TextView for `path` (`None` = README), or a
-    /// spinner while the document is being loaded/parsed.
+    /// The persistent markdown TextView for `path`, where `None` is the README.
+    ///
+    /// Shows a spinner while the document is being loaded or parsed.
     fn markdown_element(&self, path: Option<&str>, _cx: &mut Context<Self>) -> AnyElement {
         let Some(md) = &self.md else {
             return preview_spinner();
         };
+
         let ready = match path {
             Some(path) => md.path.as_deref() == Some(path),
             None => md.path.is_none(),
         };
+
         if !ready {
             return preview_spinner();
         }
@@ -255,9 +249,7 @@ impl RepoDetailView {
 
     /// Load `text` into the persistent code editor state for `path`.
     ///
-    /// The state is created in code editor mode so the Input renders it as
-    /// a syntax-highlighted, read-only editor; the tree-sitter parse runs
-    /// on a background task like [`set_markdown`]'s.
+    /// Code editor mode makes the Input render it read-only and highlighted.
     pub(super) fn set_code(
         &mut self,
         path: SharedString,
@@ -276,8 +268,7 @@ impl RepoDetailView {
         self.code = Some(CodeView { path, state });
     }
 
-    /// The persistent code editor for `path`, or a spinner while the file is
-    /// being loaded/parsed.
+    /// The persistent code editor for `path`, or a spinner while the file loads or parses.
     fn code_element(&self, path: &str, _cx: &mut Context<Self>) -> AnyElement {
         let Some(code) = &self.code else {
             return preview_spinner();

@@ -15,7 +15,6 @@ use gpui_component::{
 };
 use signed_core::Announcement;
 use signed_state::{ProfileStore, RepoListStore, Timestamp};
-use signed_ui::image_cache::{MAX_IMAGES, image_cache};
 use signed_ui::{SegmentButton, UserAvatar};
 use utils::relative_time;
 
@@ -24,13 +23,13 @@ use super::open_repo_panel;
 const COLUMNS: usize = 2;
 const CARD_HEIGHT: f32 = 40. + 64. + 48. + 2. + 6.;
 
-/// How many of the newest repositories the "Recent" sort shows.
+/// How many of the newest repositories the `Recent` sort shows.
 const RECENT_COUNT: usize = 10;
 
 /// Sort of the explore list, chosen via the header's filter buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum RepoFilter {
-    /// Every repository, newest first (the store's default order).
+    /// Every repository in the store's default order, newest first.
     All,
     #[default]
     /// Repositories ranked by total issues + pull requests + commits.
@@ -40,15 +39,15 @@ enum RepoFilter {
 }
 
 impl RepoFilter {
-    /// Indices into the store's `announcements` included by this filter, in
-    /// display order, narrowed to repositories whose name (or id) contains
-    /// `query`; an empty query matches everything.
+    /// Indices into the store's `announcements` this filter includes, in display order.
+    ///
+    /// Narrowed to repositories whose name or id contains `query`.
     fn visible(self, store: &RepoListStore, query: &str) -> Vec<usize> {
         let announcements = &store.announcements;
         let mut indices: Vec<usize> = (0..announcements.len()).collect();
 
-        // Narrow by the search query first, so "Recent" limits the matches
-        // and "Popular" ranks them.
+        // Narrow by the search query first.
+        // Recent then limits the matches and Popular ranks them.
         let query = query.trim().to_lowercase();
         if !query.is_empty() {
             indices.retain(|&ix| {
@@ -93,10 +92,9 @@ pub struct RepoListView {
     filter: RepoFilter,
     /// Per-row heights of the virtual list.
     item_sizes: Rc<Vec<Size<Pixels>>>,
-    /// Number of rows [`Self::item_sizes`] was built for (the filtered repo count).
+    /// Number of rows [`Self::item_sizes`] was built for, the filtered repo count.
     repo_len: usize,
-    /// Indices into the store's `announcements` matching [`Self::filter`],
-    /// in display order; the virtual list renders this slice.
+    /// Indices matching [`Self::filter`] into the store's `announcements`.
     visible: Vec<usize>,
     /// Search box filtering repositories by name.
     search: Entity<InputState>,
@@ -121,8 +119,8 @@ impl RepoListView {
             }
         });
 
-        // Keep the visible slice and row sizes in sync with the store,
-        // so newly announced repositories appear without waiting for a click.
+        // Keep the visible slice and row sizes in sync with the store.
+        // Newly announced repositories appear without waiting for a click.
         let subscription = cx.observe(&store, |this, _store, cx| {
             this.rebuild_rows(cx);
         });
@@ -141,16 +139,17 @@ impl RepoListView {
             _subscription: subscription,
         };
 
-        // Seed the rows right away; the store may already hold announcements
-        // (it loaded before the panel opened), and the first render must not
-        // depend on a later store update.
+        // Seed the rows right away.
+        // The store may already hold announcements from before the panel opened.
+        // The first render must not depend on a later store update.
         this.rebuild_rows(cx);
 
         this
     }
 
-    /// Rebuild [`Self::visible`] and [`Self::item_sizes`] from the current
-    /// store contents, [`Self::filter`] and the search query.
+    /// Rebuild [`Self::visible`] and [`Self::item_sizes`] from the store.
+    ///
+    /// Uses the store contents, [`Self::filter`] and the search query.
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
         let filter = self.filter;
         let query = self.search.read(cx).value();
@@ -188,12 +187,14 @@ impl RepoListView {
 
         let name = announcement
             .name
-            .clone()
-            .unwrap_or_else(|| SharedString::from(announcement.id.clone()));
+            .as_deref()
+            .map(SharedString::from)
+            .unwrap_or(SharedString::from(announcement.id.clone()));
 
         let description = announcement
             .description
-            .clone()
+            .as_deref()
+            .map(SharedString::from)
             .unwrap_or(SharedString::from("No description"));
 
         let activity = last_activity
@@ -201,8 +202,8 @@ impl RepoListView {
             .map(|label| SharedString::from(format!("Updated {label}")))
             .unwrap_or_default();
 
-        // Fork badge: the upstream's display name when its announcement is
-        // known locally, otherwise its repository id from the `u` tag.
+        // The fork badge shows the upstream name when its announcement is known locally.
+        // Otherwise it shows the repository id from the `u` tag.
         let fork_label: Option<SharedString> =
             announcement.upstream.as_ref().and_then(|upstream| {
                 let addr = upstream.addr.as_ref()?;
@@ -214,7 +215,8 @@ impl RepoListView {
                     .find(|a| a.addr() == *addr)
                     .map(|a| {
                         a.name
-                            .clone()
+                            .as_deref()
+                            .map(SharedString::from)
                             .unwrap_or_else(|| SharedString::from(a.id.clone()))
                     })
                     .unwrap_or_else(|| SharedString::from(addr.identifier.clone()));
@@ -347,8 +349,7 @@ impl RepoListView {
             .into_any_element()
     }
 
-    /// One segmented filter button of the header, styled like the issues
-    /// list's status filter buttons.
+    /// One segmented header filter button, like the issues list's status filter buttons.
     fn filter_button(
         &self,
         filter: RepoFilter,
@@ -398,7 +399,7 @@ impl Render for RepoListView {
 
         v_flex()
             .relative()
-            .image_cache(image_cache("repos", MAX_IMAGES))
+            .image_cache(gpui::retain_all("repos"))
             .size_full()
             .child(self.render_header(count, cx))
             .when(!has_repos, |this| {

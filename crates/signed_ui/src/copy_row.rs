@@ -4,12 +4,14 @@ use gpui_component::clipboard::Clipboard;
 use gpui_component::menu::PopupMenuItem;
 use gpui_component::{ActiveTheme, StyledExt, h_flex};
 
-/// A muted command row with a copy button: the value in a mono-friendly,
-/// truncated line, with a [`Clipboard`] button copying the full value.
-pub fn copy_row<E>(copy_id: E, command: &SharedString, cx: &App) -> Div
+/// A muted command row with a copy button.
+pub fn copy_row<E, T>(copy_id: E, command: T, cx: &App) -> Div
 where
     E: Into<ElementId>,
+    T: Into<SharedString>,
 {
+    let command = command.into();
+
     h_flex()
         .h_8()
         .w_full()
@@ -34,10 +36,7 @@ where
         )
 }
 
-/// One row of a copy menu: a small title above the compact label, with
-/// a copy button that flips to a check while the value is on the clipboard.
-/// Clicking the row copies and dismisses the menu; the copy button stops
-/// propagation so the menu stays open. Both copy `copy`, never the label.
+/// One row of a copy menu, with a small title above the compact label.
 pub fn menu_copy_row(
     id: &'static str,
     title: &'static str,

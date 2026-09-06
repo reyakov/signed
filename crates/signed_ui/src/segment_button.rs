@@ -3,9 +3,9 @@ use gpui::{App, ClickEvent, ElementId, SharedString, StyleRefinement, Window, di
 use gpui_base::{Button as BaseButton, StyledExt};
 use gpui_component::ActiveTheme;
 
-/// A small count badge shown after a label, e.g. on a segmented filter
-/// button ("All 12") or a tab. Rendered from theme tokens; sized for the
-/// compact header buttons it lives on.
+/// A small count badge shown after a label.
+/// Used on segmented filter buttons, like `All 12`, and on tabs.
+/// Rendered from theme tokens and sized for the compact header buttons it lives on.
 #[derive(IntoElement)]
 pub struct CountBadge {
     count: usize,
@@ -46,12 +46,11 @@ impl RenderOnce for CountBadge {
     }
 }
 
-/// A segmented filter/tab button: an icon, a label, an optional [`CountBadge`]
-/// and a selected (pressed) state, styled from the theme's button tokens.
-///
-/// Built on the unstyled `gpui_base::Button`, like the app's other custom
-/// controls; the `primary` variant uses the primary button tokens for
-/// call-to-action buttons ("New issue", "New PR").
+/// A segmented filter/tab button with an icon, a label and an optional [`CountBadge`].
+/// The selected state renders the button pressed, styled from theme button tokens.
+/// Built on the unstyled `gpui_base::Button`, like the app's other custom controls.
+/// The `primary` variant uses the primary button tokens.
+/// It suits call-to-action buttons such as `New issue` and `New PR`.
 #[allow(clippy::type_complexity)]
 #[derive(IntoElement)]
 pub struct SegmentButton {
@@ -101,7 +100,7 @@ impl SegmentButton {
         self
     }
 
-    /// Use the primary button tokens (for call-to-action buttons).
+    /// Use the primary button tokens, for call-to-action buttons.
     pub fn primary(mut self) -> Self {
         self.primary = true;
         self

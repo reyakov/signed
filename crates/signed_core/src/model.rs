@@ -1,59 +1,52 @@
 use std::collections::HashSet;
 
-use gpui::SharedString;
 use nostr::prelude::*;
 
-use crate::RepoAddr;
+use crate::{RepoAddr, repo_addr};
 
-/// Parsed NIP-34 repository announcement (plain data, ready for the UI).
+/// Parsed NIP-34 repository announcement, plain data ready for the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Announcement {
     /// ID of the announcement event itself.
     pub event_id: EventId,
-    /// Repository ID (`d` tag).
+    /// Repository ID, the `d` tag.
     pub id: String,
     /// Author of the announcement event.
     pub owner: PublicKey,
-    /// When the announcement was published (for latest-wins resolution).
+    /// When the announcement was published, used for latest-wins resolution.
     pub created_at: Timestamp,
-    pub name: Option<SharedString>,
-    pub description: Option<SharedString>,
+    pub name: Option<String>,
+    pub description: Option<String>,
     /// Webpage URLs for browsing.
     pub web: Vec<Url>,
     /// URLs for `git clone`.
     pub clone: Vec<Url>,
     /// Relays the repository monitors for patches and issues.
     pub relays: Vec<RelayUrl>,
-    /// Earliest unique commit ID (`r` tag with `euc` marker).
+    /// Earliest unique commit ID, the `r` tag with `euc` marker.
     pub euc: Option<String>,
     /// Other recognized maintainers.
     pub maintainers: Vec<PublicKey>,
-    /// Value of a `u` tag, if any: this repository is a subordinate fork of
-    /// the referenced upstream (NIP-34).
+    /// Marks the repository as a subordinate fork of the upstream, per NIP-34.
     pub upstream: Option<Upstream>,
-    /// Hashtags labelling the repository (`t` tags).
+    /// Hashtags labelling the repository, the `t` tags.
     pub hashtags: Vec<String>,
 }
 
-/// The `u` tag of a fork announcement (NIP-34)
-/// the repository this one is a subordinate fork of. The first value is
-/// the upstream coordinate (`30617:<pubkey>:<id>`) or a git URL.
-/// The second is an optional relay hint for the upstream.
+/// The `u` tag of a fork announcement, per NIP-34.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upstream {
-    /// Raw first value of the `u` tag (coordinate or git URL).
+    /// Raw first value of the `u` tag, a coordinate or git URL.
     pub raw: String,
-    /// The upstream `30617:<pubkey>:<id>` coordinate, when the `u` tag
-    /// references a NIP-34 repository; `None` for the git-URL form.
+    /// Upstream repository coordinate when the `u` tag names a NIP-34 repository.
+    /// `None` for the git-URL form.
     pub addr: Option<RepoAddr>,
     /// Relay hint for the upstream, if the `u` tag carries one.
     pub relay_hint: Option<RelayUrl>,
 }
 
 impl Upstream {
-    /// Parse the `u` tag values. The first is the upstream coordinate or a
-    /// git URL (the coordinate form may append `|git-url`; the coordinate is
-    /// the part before the first `|`), the second an optional relay hint.
+    /// Parse the `u` tag values.
     fn parse(raw: &str, relay_hint: Option<&str>) -> Self {
         let coordinate = raw.split('|').next().unwrap_or(raw);
         let addr = coordinate
@@ -67,19 +60,18 @@ impl Upstream {
         }
     }
 
-    /// Text for display: the upstream coordinate when it is a NIP-34
-    /// repository, otherwise the raw `u` value (git-URL form).
-    pub fn display(&self) -> SharedString {
+    /// Text for display.
+    pub fn display(&self) -> String {
         match &self.addr {
-            Some(addr) => SharedString::from(addr.to_string()),
-            None => SharedString::from(self.raw.clone()),
+            Some(addr) => addr.to_string(),
+            None => self.raw.clone(),
         }
     }
 }
 
-/// Subject of a NIP-34 issue or pull request event: the `subject` tag,
-/// falling back to the first non-empty line of the content.
-pub fn activity_subject(event: &Event) -> SharedString {
+/// Subject of a NIP-34 issue or pull request event.
+/// Taken from the `subject` tag, else the first non-empty line of the content.
+pub fn activity_subject(event: &Event) -> String {
     let subject = event
         .tags
         .iter()
@@ -89,24 +81,18 @@ pub fn activity_subject(event: &Event) -> SharedString {
         });
 
     subject
-        .map(SharedString::from)
         .or_else(|| {
             event
                 .content
                 .lines()
                 .map(str::trim)
                 .find(|line| !line.is_empty())
-                .map(SharedString::from)
+                .map(|value| value.to_string())
         })
-        .unwrap_or(SharedString::from("Untitled"))
+        .unwrap_or("Untitled".to_string())
 }
 
-/// The patch set of a pull request: the root patch event (kind `1617`) the
-/// PR references via its `e` tag, plus every patch of the set chained to it
-/// with NIP-10 `e` reply tags, in series order (oldest first). When the PR
-/// has no `e` tag, falls back to the patch producing the PR's tip commit
-/// (its `commit`/`r` tag, per NIP-34) and walks the reply chain backward to
-/// the root.
+/// The patch set of a pull request.
 ///
 /// Returns an empty list when no patch event can be linked to the PR.
 pub fn pull_request_patches<'a>(
@@ -115,17 +101,18 @@ pub fn pull_request_patches<'a>(
 ) -> Vec<&'a Event> {
     let patches: Vec<&'a Event> = patches.into_iter().collect();
 
-    // The PR references its root patch via an `e` tag; follow the NIP-10
-    // reply chain forward from there (each patch of the set replies to the
-    // previous one). Among several replies (a revision), the newest wins.
+    // The PR references its root patch via an `e` tag.
+    // Follow the NIP-10 reply chain forward from there.
+    // Each patch replies to the previous one, and among several replies the newest wins.
     if let Some(root_id) = pr.tags.event_ids().next()
         && let Some(root) = patches.iter().find(|patch| patch.id == root_id)
     {
         return forward_series(root, &patches);
     }
 
-    // No `e` tag: the last patch of the set carries the PR's tip commit in
-    // its `commit`/`r` tag; walk the reply chain backward to the root.
+    // The PR has no `e` tag.
+    // The last patch of the set carries the tip commit in its `commit` or `r` tag.
+    // Walk the reply chain backward to the root.
     let Some(tip) = current_commit_of(pr) else {
         return Vec::new();
     };
@@ -156,10 +143,7 @@ pub fn pull_request_patches<'a>(
     series
 }
 
-/// The patch content of a pull request: the contents of every patch event of
-/// its patch set (see [`pull_request_patches`]) joined in series order,
-/// falling back to the PR's own content for older PRs that carried the
-/// patch inline.
+/// The patch content of a pull request.
 pub fn pull_request_patch<'a>(pr: &Event, patches: impl IntoIterator<Item = &'a Event>) -> String {
     let patches: Vec<&'a Event> = patches.into_iter().collect();
     let series = pull_request_patches(pr, patches.iter().copied());
@@ -173,7 +157,7 @@ pub fn pull_request_patch<'a>(pr: &Event, patches: impl IntoIterator<Item = &'a 
         .join("\n")
 }
 
-/// The chain of patches replying to `root` (NIP-10 `e` tags), oldest first.
+/// The chain of patches replying to `root` via NIP-10 `e` tags, oldest first.
 fn forward_series<'a>(root: &'a Event, patches: &[&'a Event]) -> Vec<&'a Event> {
     let mut series = vec![root];
     loop {
@@ -195,7 +179,7 @@ fn forward_series<'a>(root: &'a Event, patches: &[&'a Event]) -> Vec<&'a Event> 
     series
 }
 
-/// The `c` tag of an event (tip of the proposed branch), as hex.
+/// The `c` tag of an event, the tip of the proposed branch, as hex.
 fn current_commit_of(event: &Event) -> Option<String> {
     event
         .tags
@@ -206,8 +190,9 @@ fn current_commit_of(event: &Event) -> Option<String> {
         })
 }
 
-/// Whether `patch` produces `commit` (its `commit` or `r` tag), so clients
-/// can find existing patches for a specific commit.
+/// Whether `patch` produces `commit`, found via its `commit` or `r` tag.
+///
+/// It lets clients find existing patches for a specific commit.
 fn patch_produces_commit(patch: &Event, commit: &str) -> bool {
     patch
         .tags
@@ -219,7 +204,9 @@ fn patch_produces_commit(patch: &Event, commit: &str) -> bool {
 }
 
 impl Announcement {
-    /// Parse a kind `30617` event. Returns `None` if the kind is wrong or the `d` tag is missing.
+    /// Parse a kind `30617` event.
+    ///
+    /// Returns `None` when the kind is wrong or the `d` tag is missing.
     pub fn from_event(event: &Event) -> Option<Self> {
         if event.kind != Kind::GitRepoAnnouncement {
             return None;
@@ -230,8 +217,8 @@ impl Announcement {
         let mut hashtags: Vec<String> = Vec::new();
         hashtags.extend(event.tags.hashtags().map(|t| t.to_string()));
 
-        let mut name: Option<SharedString> = None;
-        let mut description: Option<SharedString> = None;
+        let mut name: Option<String> = None;
+        let mut description: Option<String> = None;
         let mut web: Vec<Url> = Vec::new();
         let mut clone: Vec<Url> = Vec::new();
         let mut relays: Vec<RelayUrl> = Vec::new();
@@ -241,8 +228,8 @@ impl Announcement {
 
         for tag in event.tags.iter() {
             match Nip34Tag::parse(tag.as_slice()) {
-                Ok(Nip34Tag::Name(value)) => name = Some(value.into()),
-                Ok(Nip34Tag::Description(value)) => description = Some(value.into()),
+                Ok(Nip34Tag::Name(value)) => name = Some(value),
+                Ok(Nip34Tag::Description(value)) => description = Some(value),
                 Ok(Nip34Tag::Web(urls)) => web.extend(urls),
                 Ok(Nip34Tag::Clone(urls)) => clone.extend(urls),
                 Ok(Nip34Tag::Relays(urls)) => relays.extend(urls),
@@ -251,8 +238,8 @@ impl Announcement {
                 _ => {}
             }
 
-            // The `u` tag is not modelled by the SDK's `Nip34Tag`; parse it
-            // manually (first wins).
+            // The SDK's `Nip34Tag` does not model the `u` tag, so parse it manually.
+            // Only the first `u` tag is used.
             if upstream.is_none() && tag.kind() == "u" {
                 let values = tag.as_slice();
                 let raw = values.get(1).map(String::as_str).unwrap_or_default();
@@ -280,21 +267,40 @@ impl Announcement {
     }
 
     /// The repository address of this announcement.
-    pub fn addr(&self) -> crate::RepoAddr {
-        crate::repo_addr(self.owner, self.id.clone())
+    pub fn addr(&self) -> RepoAddr {
+        repo_addr(self.owner, self.id.clone())
+    }
+
+    /// The name of the repository, or a default if none is provided.
+    pub fn name(&self) -> String {
+        self.name.clone().unwrap_or("Untitled".into())
+    }
+
+    /// Whether this announcement is a fork of the repository at `base`.
+    /// Its `u` tag points at `base`, which also covers permanent forks whose EUC diverged.
+    ///
+    /// Or it shares `base`'s earliest unique commit and is not the base itself.
+    pub fn is_fork_of(&self, base: &RepoAddr, base_euc: Option<&str>) -> bool {
+        if self.addr() == *base {
+            return false;
+        }
+        if self.upstream.as_ref().and_then(|u| u.addr.as_ref()) == Some(base) {
+            return true;
+        }
+        base_euc.is_some_and(|euc| self.euc.as_deref() == Some(euc))
     }
 
     /// The description of the repository, or a default if none is provided.
-    pub fn description(&self) -> SharedString {
+    pub fn description(&self) -> String {
         self.description
             .clone()
-            .unwrap_or(SharedString::from("No description"))
+            .unwrap_or("No description".to_string())
     }
 
-    /// The effective maintainers of this repository: the announced
-    /// `maintainers` plus the announcement author, who asserts themselves as
-    /// a maintainer of the primary project unless a `u` tag marks this
-    /// repository as a subordinate fork (NIP-34).
+    /// The effective maintainers of this repository,
+    /// the announced `maintainers` plus the announcement author.
+    ///
+    /// A `u` tag that marks the repository as a subordinate fork excludes them, per NIP-34.
     pub fn effective_maintainers(&self) -> Vec<PublicKey> {
         let mut maintainers = self.maintainers.clone();
         if self.upstream.is_none() && !maintainers.contains(&self.owner) {
@@ -303,13 +309,12 @@ impl Announcement {
         maintainers
     }
 
-    /// The `git clone` URLs for this repository, deduplicated while
-    /// preserving the announced order (deterministic across calls).
-    pub fn clone_urls(&self) -> Vec<SharedString> {
+    /// The `git clone` URLs for this repository, deduplicated.
+    pub fn clone_urls(&self) -> Vec<String> {
         let mut seen = HashSet::new();
         self.clone
             .iter()
-            .map(|url| SharedString::from(format!("git clone {url}")))
+            .map(|url| format!("git clone {url}"))
             .filter(|command| seen.insert(command.clone()))
             .collect()
     }
@@ -449,8 +454,8 @@ mod tests {
         let announcement = Announcement::from_event(&event).expect("parses");
         let upstream = announcement.upstream.expect("parses the u tag");
 
-        // The coordinate part resolves to a repository address; the raw
-        // value keeps the `|git-url` suffix.
+        // The coordinate part resolves to a repository address.
+        // The raw value keeps the `|git-url` suffix.
         assert_eq!(
             upstream.addr,
             Some(crate::repo_addr(
@@ -474,8 +479,8 @@ mod tests {
 
     #[test]
     fn parses_git_url_upstream() {
-        // The `u` tag may reference a non-nostr upstream by git URL only;
-        // there is no repository address to navigate to.
+        // The `u` tag may reference a non-nostr upstream by git URL only.
+        // There is no repository address to navigate to.
         let event = announcement_event(&[
             &["d", "my-fork"],
             &["u", "https://example.com/upstream.git"],
@@ -492,14 +497,85 @@ mod tests {
     }
 
     #[test]
+    fn is_fork_of_matches_the_u_tag_coordinate() {
+        // The base repository, announced by the `u` tag's owner.
+        let base = crate::repo_addr(
+            PublicKey::from_hex(MAINTAINER_HEX).expect("valid pubkey"),
+            "upstream",
+        );
+        let event = announcement_event(&[&["d", "my-fork"], &["u", &base.to_string()]]);
+        let fork = Announcement::from_event(&event).expect("parses");
+
+        // A `u` tag pointing at the base address marks a fork.
+        // This holds even when neither side announces an EUC.
+        assert!(fork.is_fork_of(&base, None));
+    }
+
+    #[test]
+    fn is_fork_of_matches_a_shared_euc() {
+        let euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
+        // The base repo has no `u` tag. It announces the family EUC.
+        let base_event = announcement_event(&[&["d", "upstream"], &["r", euc, "euc"]]);
+        let base = Announcement::from_event(&base_event).expect("parses");
+        let base_addr = base.addr();
+
+        // A fork with no `u` tag, a pure mirror or cross-hosted clone, shares the EUC.
+        // Clients of the family can then find it.
+        let fork_event = announcement_event(&[&["d", "mirror"], &["r", euc, "euc"]]);
+        let fork = Announcement::from_event(&fork_event).expect("parses");
+        assert!(fork.is_fork_of(&base_addr, base.euc.as_deref()));
+
+        // An unrelated repository with a different EUC is not a fork.
+        let other_event = announcement_event(&[
+            &["d", "other"],
+            &["r", "bb231c4c6a5777dc89b42207b499891a344add5c", "euc"],
+        ]);
+        let other = Announcement::from_event(&other_event).expect("parses");
+        assert!(!other.is_fork_of(&base_addr, base.euc.as_deref()));
+
+        // Without a base EUC there is nothing to compare against.
+        assert!(!fork.is_fork_of(&base_addr, None));
+    }
+
+    #[test]
+    fn is_fork_of_matches_permanent_forks_with_a_diverged_euc() {
+        // A permanent fork re-announces its EUC, the first commit after the fork.
+        // Only the `u` tag still relates it to the base.
+        let base = crate::repo_addr(
+            PublicKey::from_hex(MAINTAINER_HEX).expect("valid pubkey"),
+            "upstream",
+        );
+        let base_euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
+        let event = announcement_event(&[
+            &["d", "my-fork"],
+            &["u", &base.to_string()],
+            &["r", "cc231c4c6a5777dc89b42207b499891a344add5c", "euc"],
+        ]);
+        let fork = Announcement::from_event(&event).expect("parses");
+
+        assert!(fork.is_fork_of(&base, Some(base_euc)));
+    }
+
+    #[test]
+    fn is_fork_of_excludes_the_base_itself() {
+        let euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
+        let event = announcement_event(&[&["d", "upstream"], &["r", euc, "euc"]]);
+        let base = Announcement::from_event(&event).expect("parses");
+        let base_addr = base.addr();
+
+        // The base announcement matches its own EUC but is not a fork of itself.
+        assert!(!base.is_fork_of(&base_addr, base.euc.as_deref()));
+    }
+
+    #[test]
     fn effective_maintainers_include_owner_for_primary_repos() {
         let event = announcement_event(&[&["d", "my-repo"], &["maintainers", MAINTAINER_HEX]]);
 
         let announcement = Announcement::from_event(&event).expect("parses");
         let maintainers = announcement.effective_maintainers();
 
-        // The owner asserts themselves as a maintainer of the primary
-        // project (NIP-34), alongside the announced co-maintainers.
+        // The owner asserts themselves as a maintainer of the primary project, per NIP-34.
+        // Announced co-maintainers are included too.
         assert_eq!(maintainers.len(), 2);
         assert!(maintainers.contains(&announcement.owner));
         assert!(maintainers.contains(&PublicKey::from_hex(MAINTAINER_HEX).expect("valid pubkey")));
@@ -516,8 +592,8 @@ mod tests {
         let announcement = Announcement::from_event(&event).expect("parses");
         let maintainers = announcement.effective_maintainers();
 
-        // A `u` tag marks the repository as a subordinate fork: the author
-        // is not a maintainer of the primary project (NIP-34).
+        // A `u` tag marks the repository as a subordinate fork.
+        // The author is then not a maintainer of the primary project, per NIP-34.
         assert!(!maintainers.contains(&announcement.owner));
         assert_eq!(
             maintainers,
@@ -545,7 +621,7 @@ mod tests {
 
     #[test]
     fn pull_request_patch_falls_back_to_inline_content() {
-        // Older PRs carried the patch in the content; no linked patch event.
+        // Older PRs carried the patch in the content and link no patch event.
         let pr = pr_event("patch-inline", vec![]);
 
         assert_eq!(pull_request_patch(&pr, [] as [&Event; 0]), "patch-inline");
@@ -572,8 +648,8 @@ mod tests {
 
     #[test]
     fn pull_request_patch_joins_the_whole_patch_set() {
-        // NIP-34: a PR references the root patch; later patches of the set
-        // reply to the previous one (NIP-10 `e` tags).
+        // A PR references the root patch, per NIP-34.
+        // Later patches of the set reply to the previous one via NIP-10 `e` tags.
         let root = patch_event("patch-one", vec![], 100);
         let second = patch_event("patch-two", vec![Tag::event(root.id)], 200);
         let pr = pr_event("description", vec![Tag::event(root.id)]);
@@ -625,8 +701,8 @@ mod tests {
 
     #[test]
     fn pull_request_patches_finds_the_set_via_the_tip_commit() {
-        // PRs without an `e` tag: the last patch of the set carries the tip
-        // commit in its `r` tag; walk the reply chain backward to the root.
+        // PRs without an `e` tag fall back to the patch producing the tip commit.
+        // Walk the reply chain backward to the root.
         let root = patch_event("patch-one", vec![], 100);
         let tip = "1111111111111111111111111111111111111111";
         let last = patch_event(

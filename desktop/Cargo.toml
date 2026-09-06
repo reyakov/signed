@@ -17,12 +17,8 @@ workspace = { path = "../crates/workspace" }
 
 gpui.workspace = true
 gpui_platform.workspace = true
-gpui_linux.workspace = true
-gpui_windows.workspace = true
-gpui_macos.workspace = true
 dock = { workspace = true }
 gpui-component.workspace = true
 reqwest_client.workspace = true
-log.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

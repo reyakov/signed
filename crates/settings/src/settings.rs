@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// The default grasp servers offered when the user hasn't published a
-/// grasp list (kind `10317`) yet.
+/// The default grasp servers,
+/// offered while the user has not published a grasp list.
 pub const DEFAULT_GRASP_SERVERS: [&str; 3] = [
     "wss://relay.ngit.dev",
     "wss://gitnostr.com",
@@ -14,7 +14,7 @@ pub const DEFAULT_GRASP_SERVERS: [&str; 3] = [
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppearanceMode {
-    /// Follow the system appearance (light/dark) at runtime.
+    /// Follow the system appearance, light or dark, at runtime.
     #[default]
     System,
     /// Always use the light theme.
@@ -23,12 +23,8 @@ pub enum AppearanceMode {
     Dark,
 }
 
-/// Theme configuration.
-///
-/// The fields mirror the gpui-component `Theme` surface the application
-/// customizes at startup, so applying the settings is a plain field-for-field
-/// copy. The theme names identify entries in the gpui-component theme
-/// registry.
+/// Theme configuration,
+/// fields mirror the gpui-component `Theme` surface customized at startup.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeSettings {
@@ -42,7 +38,7 @@ pub struct ThemeSettings {
     pub mono_font_size: f32,
     /// Corner radius for general elements in pixels.
     pub radius: f32,
-    /// Corner radius for large elements (dialogs, notifications) in pixels.
+    /// Corner radius for large elements, dialogs and notifications, in pixels.
     pub radius_lg: f32,
     /// Whether focused controls draw a ring outside their border.
     pub focus_ring: bool,
@@ -69,8 +65,7 @@ impl Default for ThemeSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GraspServersSettings {
-    /// The servers offered when the user hasn't published a grasp list
-    /// (kind `10317`) yet.
+    /// Servers offered while the user has not published a grasp list, kind `10317`.
     pub default_servers: Vec<String>,
 }
 
@@ -89,9 +84,8 @@ impl Default for GraspServersSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LocalReposSettings {
-    /// The directories scanned for local git repositories.
-    ///
-    /// Defaults to the user's Desktop and Documents folders.
+    /// The directories scanned for local git repositories,
+    /// defaults to the user's Desktop and Documents folders.
     pub scan_paths: Vec<PathBuf>,
 }
 
@@ -107,12 +101,35 @@ impl Default for LocalReposSettings {
     }
 }
 
+/// A remembered association between a local checkout folder and an announced repository,
+/// recorded when the user clones a repository or picks a folder in the New PR panel.
+///
+/// The panel can then prefill the folder later without asking again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CheckoutRecord {
+    /// Local folder of the checkout.
+    pub path: PathBuf,
+    /// Repository address as a string, `30617:<pubkey>:<id>`.
+    pub addr: String,
+    /// Unix seconds of the last use, for freshest-first ordering.
+    pub last_used: u64,
+}
+
+/// Remembered local checkouts, see [`CheckoutRecord`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CheckoutsSettings {
+    /// The remembered records.
+    /// The latest use of a path and repo pair replaces the older record.
+    pub records: Vec<CheckoutRecord>,
+}
+
 /// The create-repository dialog.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CreateRepositorySettings {
-    /// The folder the create-repository dialog defaults to; the user's
-    /// Desktop when unset.
+    /// The folder the create-repository dialog defaults to, the user's Desktop when unset.
     pub default_folder: Option<PathBuf>,
 }
 
@@ -128,6 +145,8 @@ pub struct Settings {
     pub grasp_servers: GraspServersSettings,
     /// Local repository scanning.
     pub local_repos: LocalReposSettings,
+    /// Remembered local checkouts.
+    pub checkouts: CheckoutsSettings,
     /// The create-repository dialog.
     pub create_repository: CreateRepositorySettings,
 }

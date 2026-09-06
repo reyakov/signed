@@ -31,8 +31,7 @@ impl UniversalSignerError {
     }
 }
 
-/// A type-erased signer whose inner signer can be swapped in-place
-/// (e.g. after login/logout). All clones see the swap.
+/// A type-erased signer whose inner signer can be swapped in-place.
 #[derive(Clone, Debug)]
 pub struct UniversalSigner {
     inner: Arc<RwLock<Arc<dyn InnerSigner>>>,

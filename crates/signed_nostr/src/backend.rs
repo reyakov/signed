@@ -12,11 +12,6 @@ use nostr_sdk::prelude::*;
 
 use crate::signer::UniversalSigner;
 
-/// Open (or create) the LMDB database at `db_path` and build a client
-/// configured for Signed, together with a fresh signer.
-///
-/// The SDK manages its own internal tokio runtime.
-/// the returned client can be driven by GPUI's executors.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn new_backend(db_path: impl AsRef<Path>) -> Result<(Client, UniversalSigner)> {
     let signer = UniversalSigner::new(Keys::generate());
@@ -26,7 +21,7 @@ pub async fn new_backend(db_path: impl AsRef<Path>) -> Result<(Client, Universal
     Ok(with_database(signer, database))
 }
 
-/// In-memory database on wasm (no LMDB available).
+/// In-memory database on wasm, LMDB is unavailable there.
 #[cfg(target_arch = "wasm32")]
 pub fn new_backend() -> Result<(Client, UniversalSigner)> {
     let signer = UniversalSigner::new(Keys::generate());

@@ -1,11 +1,11 @@
-use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
+use dock::{BasePanel, DockArea, Panel, PanelEvent, add_center_panel, panel_handle};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString,
-    Subscription, WeakEntity, Window, div, px,
+    WeakEntity, Window, div, px,
 };
 use gpui_base::{Button as BaseButton, StyledExt};
-use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::spinner::Spinner;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
@@ -19,17 +19,16 @@ pub struct SendPatchView {
     store: Entity<RepoStore>,
     /// Display name of the repository, for the panel title.
     repo_name: SharedString,
-    /// Title input (required).
+    /// Title input, required.
     subject: Entity<InputState>,
-    /// Description input (optional).
+    /// Description input, optional.
     description: Entity<TextareaState>,
-    /// The pasted `git format-patch` output (required).
+    /// The pasted `git format-patch` output, required.
     patch: Entity<TextareaState>,
     /// A submit is in flight.
     submitting: bool,
-    /// Error of the last submit attempt (keeps the panel open).
+    /// Error of the last submit attempt, it keeps the panel open.
     error: Option<SharedString>,
-    _subscriptions: Vec<Subscription>,
 }
 
 impl SendPatchView {
@@ -41,21 +40,13 @@ impl SendPatchView {
     ) -> Self {
         let repo_name = store.read(cx).name();
         let subject = cx.new(|cx| InputState::new(window, cx).placeholder("Title"));
+
         let description = cx
             .new(|cx| TextareaState::new(window, cx).placeholder("Describe the change (optional)"));
+
         let patch = cx.new(|cx| {
             TextareaState::new(window, cx).placeholder("diff --git a/file.txt b/file.txt\nindex 1234567..abcdefg 100644\n--- a/file.txt\n+++ b/file.txt")
         });
-
-        // Re-evaluate the Send button's enabled state as the inputs change.
-        let subscriptions = vec![
-            cx.subscribe(&subject, |_this, _state, _event: &InputEvent, cx| {
-                cx.notify();
-            }),
-            cx.subscribe(&patch, |_this, _state, _event: &InputEvent, cx| {
-                cx.notify();
-            }),
-        ];
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -67,24 +58,23 @@ impl SendPatchView {
             patch,
             submitting: false,
             error: None,
-            _subscriptions: subscriptions,
         }
     }
 
-    /// Publish the pull request from the pasted patch. The store validates
-    /// synchronously (patch shape, per-part size, sign-in); on failure the
-    /// panel stays open with the error inline, on success it closes — async
-    /// publish failures surface in the pull request list's banner.
+    /// Publish the pull request from the pasted patch.
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.submitting {
             return;
         }
+
         let subject = self.subject.read(cx).value().to_string();
         let description = self.description.read(cx).value().to_string();
         let patch = self.patch.read(cx).value().to_string();
+
         if patch.is_empty() {
             return;
         }
+
         let store = self.store.clone();
         let dock_area = self.dock_area.clone();
         let entity = cx.entity().clone();
@@ -93,8 +83,7 @@ impl SendPatchView {
         self.error = None;
         cx.notify();
 
-        // Errors the store detects before publishing are returned
-        // synchronously through `last_error`.
+        // Errors the store detects before publishing.
         let sync_error = store.update(cx, |store, cx| {
             store.open_pull_request(
                 (!subject.is_empty()).then_some(subject),
@@ -128,6 +117,7 @@ impl SendPatchView {
                 }
             }
         });
+
         cx.notify();
     }
 
@@ -212,7 +202,7 @@ pub(super) fn open_send_patch_panel(
     let panel = cx.new(|cx| SendPatchView::new(dock_area.clone(), store, window, cx));
 
     let _ = dock_area.update(cx, |dock_area, cx| {
-        dock_area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        add_center_panel(dock_area, panel_handle(panel), window, cx);
     });
 }
 

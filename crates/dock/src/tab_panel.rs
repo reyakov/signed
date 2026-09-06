@@ -1,13 +1,3 @@
-//! The Signed appearance for a tab group.
-//!
-//! `gpui_base::dock::TabGroup` owns the behavior — membership, the displayed
-//! tab, drag hit-testing, the zoom flag — and draws none of it. Everything
-//! visible is here, ported from the vendored dock: the pill tab bar that
-//! doubles as the window title bar (with window controls, title-bar
-//! dragging, and previous/next tab buttons), the toolbar, the ellipsis menu,
-//! the dock collapse affordance, the drop placeholder, and the styled drag
-//! preview.
-
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -27,6 +17,7 @@ use gpui_base::dock::{
 use gpui_base::{ElementExt, InteractiveElementExt, Tab, Tabs};
 use gpui_component::animation::{Lerp as _, ease_out_cubic};
 use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::dock::{ClosePanel, PanelControl, PanelHandle, ToggleZoom};
 use gpui_component::menu::DropdownMenu as _;
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, h_flex, v_flex,
@@ -34,16 +25,12 @@ use gpui_component::{
 use signed_ui::title_bar_drag_handlers;
 
 use crate::dock_area::SkinShared;
-use crate::{
-    ClosePanel, PanelControl, PanelHandle, TAB_BAR_HEIGHT, ToggleZoom, t, window_controls,
-};
+use crate::{TAB_BAR_HEIGHT, t, window_controls};
 
-/// The size the styled drag preview occupies, reported to base so a drop
-/// placeholder knows where to fly in from.
+/// The drag preview's size, reported to base for the drop placeholder.
 const DRAG_PREVIEW_SIZE: gpui::Size<gpui::Pixels> = size(px(96.), px(30.));
 
-/// A panel's title, or its registered name when it reached base without this
-/// crate's handle and so carries no presentation. See [`PanelHandle::of`].
+/// A panel's title, or its registered name when the panel has no handle.
 pub(crate) fn panel_title(
     panel: &Arc<dyn BasePanelView>,
     window: &mut Window,
@@ -56,9 +43,7 @@ pub(crate) fn panel_title(
 }
 
 /// The preview that follows the cursor while a panel is dragged.
-///
-/// `gpui_base::dock::DragPanel` is the payload and draws nothing; this is the
-/// appearance half, reintroduced here.
+/// Base's `DragPanel` is the payload and draws nothing, this is the appearance half.
 struct DragPanelPreview {
     panel: Arc<dyn BasePanelView>,
 }
@@ -83,10 +68,8 @@ impl Render for DragPanelPreview {
     }
 }
 
-/// Where the zoom affordance goes for the group's displayed panel, or `None`
-/// when there is none to offer. Both [`Panel::zoom_control`] (where) and
-/// [`gpui_base::dock::Panel::zoomable`] (whether) must pass; base refuses a
-/// zoom that fails the latter.
+/// The zoom affordance for the group's displayed panel, if it offers one.
+/// The panel must offer a control and be zoomable, base refuses a zoom otherwise.
 fn zoom_control(group: &TabGroupContext, cx: &App) -> Option<PanelControl> {
     let panel = group.active_panel()?;
     panel
@@ -95,8 +78,8 @@ fn zoom_control(group: &TabGroupContext, cx: &App) -> Option<PanelControl> {
         .flatten()
 }
 
-/// The left-most, top-most tab group in a container — where a left dock's
-/// collapse affordance goes. Mirrors the old `StackPanel::left_top_tab_panel`.
+/// The left-most, top-most tab group in a container.
+/// A left dock's collapse button lives in this group.
 fn left_top_group(node: &PaneNode) -> Option<NodeId> {
     match node.kind() {
         PaneRef::Tabs { .. } => Some(node.id()),
@@ -105,9 +88,8 @@ fn left_top_group(node: &PaneNode) -> Option<NodeId> {
     }
 }
 
-/// The right-most, top-most tab group. A vertical split stacks its children,
-/// so its *first* child is the top one; a horizontal split's last child is
-/// the right-most. Mirrors the old `StackPanel::right_top_tab_panel`.
+/// The right-most, top-most tab group.
+/// A vertical split picks its first child, a horizontal split picks its last.
 fn right_top_group(node: &PaneNode) -> Option<NodeId> {
     match node.kind() {
         PaneRef::Tabs { .. } => Some(node.id()),
@@ -120,23 +102,17 @@ fn right_top_group(node: &PaneNode) -> Option<NodeId> {
     }
 }
 
-/// One tab group's appearance. Built once per container, so the tab bar's
-/// scroll position and measured title-bar geometry belong to the group.
+/// One tab group's appearance, built once per container so its geometry is its own.
 pub(crate) struct SignedTabGroupSkin {
     shared: Rc<SkinShared>,
     scroll_handle: ScrollHandle,
-    /// The displayed tab the last frame drew, so a change scrolls the new tab
-    /// into view.
+    /// The tab shown last frame, so a change scrolls the new one into view.
     last_active_ix: Cell<Option<usize>>,
-    /// Bounds of the title bar row (the wrapper around the tab bar), in
-    /// window coordinates. Measured via `on_prepaint` to position the
-    /// title-bar drag overlay.
+    /// Bounds of the title bar row, measured to place the title-bar drag overlay.
     title_bar_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// Bounds of the tab bar's trailing empty space (right after the last
-    /// tab), which marks where the draggable region starts.
+    /// Bounds of the empty strip after the last tab, where the drag region starts.
     title_bar_strip_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// Bounds of the tab bar's suffix (toolbar) area, which marks where the
-    /// draggable region ends.
+    /// Bounds of the suffix area, where the drag region ends.
     title_bar_suffix_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
@@ -152,9 +128,8 @@ impl SignedTabGroupSkin {
         }
     }
 
-    /// A group that is the left dock's whole content with a single panel
-    /// draws no chrome at all — the vendored dock rendered such a panel bare,
-    /// and the sidebar is one.
+    /// A group that is the left dock's only group, with one panel, draws no chrome.
+    /// The vendored dock rendered such a panel bare and the sidebar is one.
     fn is_plain_sidebar_group(&self, group: &TabGroupContext, cx: &mut App) -> bool {
         let Some(area) = self.shared.area().upgrade() else {
             return false;
@@ -169,11 +144,8 @@ impl SignedTabGroupSkin {
         left == group.node() && group.panels().len() == 1
     }
 
-    /// The bottom or right dock whose root tab group this group is, if any.
-    ///
-    /// Base bars a dock's only group from being dragged or closed, so the
-    /// dock cannot be emptied — but a bottom/right panel is supposed to be
-    /// closable, so the skin routes around the bar for these groups.
+    /// The bottom or right dock whose root tab group is this one, if any.
+    /// Base keeps a dock's last group, so the skin removes these docks as a whole.
     fn is_dock_root_group(&self, group: &TabGroupContext, cx: &App) -> Option<DockPlacement> {
         let area = self.shared.area().upgrade()?;
         let area = area.read(cx);
@@ -185,10 +157,8 @@ impl SignedTabGroupSkin {
             })
     }
 
-    /// The drag payload for the tab at `ix`, or `None` when this group must
-    /// not be rearranged. A locked group is never draggable; a group that is
-    /// a bottom/right dock's only content still is, because the center is
-    /// always there to land in.
+    /// The tab's drag payload, or `None` when the group must not be rearranged.
+    /// A locked group never is, a bottom or right dock root always is.
     fn tab_drag(&self, group: &TabGroupContext, ix: usize, cx: &App) -> Option<DragPanel> {
         if group.is_locked() {
             return None;
@@ -199,8 +169,8 @@ impl SignedTabGroupSkin {
         group.drag_panel(ix, cx)
     }
 
-    /// Whether a dock's collapse affordance belongs in *this* group's tab
-    /// bar, and which way it points. `None` means this group draws none.
+    /// A dock's collapse button for this group's bar, or `None` when it does not belong.
+    /// The icon direction depends on whether the dock is open.
     fn dock_toggle_button(
         &self,
         placement: DockPlacement,
@@ -213,8 +183,7 @@ impl SignedTabGroupSkin {
 
         let area = self.shared.area().upgrade()?;
         let area = area.read(cx);
-        // A dock that does not exist is not collapsible, so this covers the
-        // old `left_dock.is_some()` test too.
+        // A missing dock is not collapsible, this also covers the old `left_dock.is_some()` test.
         if !area.is_dock_collapsible(placement) {
             return None;
         }
@@ -263,8 +232,8 @@ impl SignedTabGroupSkin {
         )
     }
 
-    /// The previous/next tab buttons shown in the tab bar's leading prefix.
-    /// Always rendered, disabled at the ends of the strip (or collapsed).
+    /// The previous and next tab buttons in the tab bar's leading prefix.
+    /// Always rendered, disabled at the strip ends or when collapsed.
     fn render_prev_next_tab_buttons(
         &self,
         group: &TabGroupContext,
@@ -306,8 +275,7 @@ impl SignedTabGroupSkin {
             )
     }
 
-    /// The trailing controls: the panel's own buttons, the zoom affordance,
-    /// and the ellipsis menu.
+    /// The trailing controls, the panel's own buttons, zoom and the ellipsis menu.
     fn render_toolbar(
         &self,
         group: &TabGroupContext,
@@ -323,9 +291,8 @@ impl SignedTabGroupSkin {
         let control = zoom_control(group, cx);
         let toolbar_zoom = control.is_some_and(|control| control.toolbar_visible());
         let menu_zoom = control.is_some_and(|control| control.menu_visible());
-        // A bottom/right dock's only panel cannot be closed through the
-        // group (base keeps a dock's last group), but the skin handles that
-        // close by removing the whole dock, so the item is offered.
+        // A bottom or right dock's only panel cannot close through the group.
+        // The close item is offered, the skin removes the whole dock instead.
         let closable = group.is_closable()
             || (self.is_dock_root_group(group, cx).is_some()
                 && group.active_panel().is_some_and(|panel| panel.closable(cx)));
@@ -397,9 +364,9 @@ impl SignedTabGroupSkin {
             )
     }
 
-    /// One tab of the pill strip. While collapsed, tabs lose the active
-    /// style and all interactions, and the strip becomes the way a closed
-    /// bottom dock is opened again.
+    /// One tab of the pill strip.
+    /// While collapsed, tabs lose the active style and all interactions.
+    /// The strip is also how a closed bottom dock is opened again.
     #[allow(clippy::too_many_arguments)]
     fn render_tab(
         &self,
@@ -433,8 +400,7 @@ impl SignedTabGroupSkin {
                 Some(tab_name) => this.child(tab_name),
                 None => this.child(panel_title(&panel, window, cx)),
             })
-            // Pill presentation: the selected tab is the filled pill, the
-            // rest are transparent until hovered.
+            // Pill style, the selected tab is the filled pill, others show only on hover.
             .styles(|styles| {
                 styles.selected(|style| {
                     style
@@ -457,8 +423,7 @@ impl SignedTabGroupSkin {
                 move |_, window, cx| {
                     group.select_tab(ix, window, cx);
 
-                    // Clicking the strip of a collapsed bottom dock is how it
-                    // is opened again.
+                    // Clicking the strip of a collapsed bottom dock reopens it.
                     if is_bottom_dock && collapsed {
                         _ = area.update(cx, |area, cx| {
                             area.toggle_dock(DockPlacement::Bottom, window, cx);
@@ -509,9 +474,8 @@ impl SignedTabGroupSkin {
             })
     }
 
-    /// The strip after the last tab: a drop target for panels and host-owned
-    /// drag items. Its left edge (right after the last tab) marks the start
-    /// of the title-bar drag overlay.
+    /// The strip after the last tab, a drop target for panels and other drag items.
+    /// Its left edge marks where the title-bar drag overlay starts.
     fn render_empty_space(
         &self,
         group: &TabGroupContext,
@@ -541,9 +505,8 @@ impl SignedTabGroupSkin {
                     let group = group.clone();
                     let node = group.node();
                     move |drag: &DragPanel, window, cx| {
-                        // A panel dropped past its own last tab lands in the
-                        // final slot; one from elsewhere is appended in the
-                        // background.
+                        // A panel dropped past its own last tab lands in the final slot.
+                        // A panel from elsewhere is appended in the background.
                         let ix = (drag.source() == node).then(|| tabs_count - 1);
                         group.drop_panel(drag.clone(), ix, false, window, cx);
                     }
@@ -564,37 +527,30 @@ impl SignedTabGroupSkin {
 impl TabGroupRenderer for SignedTabGroupSkin {
     fn frame(&self, group: &TabGroupContext, _: &mut Window, cx: &mut App) -> Stateful<Div> {
         let control = zoom_control(group, cx);
-        // An emptied group — its last panel was dragged away — draws nothing,
-        // so an emptied dock does not leave a bare tab bar behind.
+        // An emptied group draws nothing, so no bare tab bar is left behind.
         if group.panels().is_empty() {
             return div().id("tab-panel");
         }
-        // Closing the only panel of a bottom/right dock would leave an
-        // empty dock, which base refuses; the skin removes the dock instead.
+        // Base refuses an empty dock, so closing its only panel removes the dock.
         let dock_to_remove = (group.panels().len() <= 1)
             .then(|| self.is_dock_root_group(group, cx))
             .flatten();
         let shared = self.shared.clone();
 
-        // `v_flex`, not `div`: gpui's default display is Block, and in block
-        // layout a child's `flex_grow` is ignored — the content region below
-        // the tab bar would resolve to zero height.
+        // `v_flex`, a plain `div` ignores `flex_grow` and the content would collapse.
         v_flex()
             .id("tab-panel")
             .size_full()
             .overflow_hidden()
             .bg(cx.theme().tokens.background)
-            // A collapsed group is a strip of tabs with no content, and the
-            // actions act on content.
+            // A collapsed group has no content, so these actions are not registered.
             .when(!group.is_collapsed(), |this| {
                 this.on_action({
                     let group = group.clone();
                     move |_: &ToggleZoom, window, cx| {
-                        // The affordance decides the control, so a panel
-                        // offering none is not zoomed *in* by the keybinding
-                        // either. Zooming out is never refused: a panel that
-                        // stopped offering the control while zoomed would
-                        // otherwise strand the user with no way back.
+                        // A panel with no zoom control is not zoomed in by the keybinding.
+                        // Zooming out is never refused.
+                        // Otherwise a zoomed panel that lost its control would strand the user.
                         if !group.is_zoomed() && control.is_none() {
                             return;
                         }
@@ -628,8 +584,7 @@ impl TabGroupRenderer for SignedTabGroupSkin {
     fn content_frame(&self, group: &TabGroupContext, _: &mut Window, _: &mut App) -> Stateful<Div> {
         v_flex()
             .id("active-panel")
-            // A collapsed group draws its tab strip and nothing else, so the
-            // content region must not claim any space.
+            // A collapsed group draws its tab strip only, so the content claims no space.
             .when(!group.is_collapsed(), |this| this.flex_1())
     }
 
@@ -639,14 +594,12 @@ impl TabGroupRenderer for SignedTabGroupSkin {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        // An emptied group draws no tab bar; the app prunes the emptied
-        // bottom/right dock a moment later.
+        // An emptied group draws no tab bar, the app prunes the emptied dock later.
         if group.panels().is_empty() {
             return Empty.into_any_element();
         }
 
-        // The sidebar group draws no chrome at all, like the vendored dock's
-        // bare `DockItem::Panel`.
+        // The sidebar group draws no chrome, like the vendored `DockItem::Panel`.
         if self.is_plain_sidebar_group(group, cx) {
             return Empty.into_any_element();
         }
@@ -660,10 +613,9 @@ impl TabGroupRenderer for SignedTabGroupSkin {
         let right_dock_button = self.dock_toggle_button(DockPlacement::Right, group, cx);
         let is_bottom_dock = bottom_dock_button.is_some();
 
-        // macOS: the traffic lights overlay the window's top-left corner.
-        // Only the group whose tab bar actually sits under them reserves the
-        // space — the center's left-most, top-most group when the left dock
-        // is closed or absent.
+        // On macOS the traffic lights overlay the window's top-left corner.
+        // Only the tab bar that sits under them reserves the space.
+        // That is the center's top-left group when the left dock is closed or absent.
         let needs_traffic_light_padding = cfg!(target_os = "macos")
             && self.shared.area().upgrade().is_some_and(|area| {
                 let area = area.read(cx);
@@ -674,8 +626,8 @@ impl TabGroupRenderer for SignedTabGroupSkin {
                         == Some(group.node())
             });
 
-        // Bring a newly displayed tab into view. The group owns selection
-        // now, so the skin notices the change rather than being told about it.
+        // Bring a newly displayed tab into view.
+        // The group owns selection, so the skin watches for the change itself.
         let displayed = group.active_panel().map(|panel| panel.panel_id(cx));
         let visible: Vec<usize> = group
             .panels()
@@ -690,10 +642,8 @@ impl TabGroupRenderer for SignedTabGroupSkin {
             self.scroll_handle.scroll_to_item(visible_ix);
         }
 
-        // The tab strip lays out at content width, so the area after the
-        // last tab has no element. Cover that dead zone (last tab's right
-        // edge to suffix's left edge) with a measured overlay so the whole
-        // non-interactive area can drag the window.
+        // The tab strip ends at the last tab, the bar has no element after it.
+        // Cover that dead zone with an overlay so it can drag the window.
         let drag_overlay = match (
             self.title_bar_bounds.get(),
             self.title_bar_strip_bounds.get(),
@@ -728,8 +678,7 @@ impl TabGroupRenderer for SignedTabGroupSkin {
                 if !panel.visible(cx) {
                     return None;
                 }
-                // A collapsed group shows no tab as active: the strip is a
-                // way back in, not a selection.
+                // Collapsed tabs never show as active, the strip only reopens the dock.
                 if collapsed {
                     active = false;
                 }
@@ -768,7 +717,7 @@ impl TabGroupRenderer for SignedTabGroupSkin {
                                 h_flex()
                                     .items_center()
                                     .top_0()
-                                    // Right -1 for avoid border overlap with the first tab
+                                    // -1 px so the border does not overlap the first tab.
                                     .right(-px(1.))
                                     .h_full()
                                     .gap_2()
@@ -852,9 +801,7 @@ impl TabGroupRenderer for SignedTabGroupSkin {
         cx: &mut App,
     ) -> Option<AnyElement> {
         let (from, to) = (indicator.from(), indicator.to());
-        // The placeholder animates from wherever it was to where the drop
-        // would land, so its own element is positioned at the destination and
-        // the animation only has to walk the difference back to zero.
+        // The element sits at the drop target, the animation walks back from the source.
         let offset = from.origin() - to.origin();
 
         Some(

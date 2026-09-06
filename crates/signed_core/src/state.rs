@@ -1,10 +1,9 @@
 use nostr::prelude::*;
 
-/// Build a kind `30618` repository state event from refs and HEAD.
+/// Build a kind `30618` repository state event from refs and HEAD,
+/// it is published as `ref: refs/heads/<branch>`.
 ///
-/// `refs` are `(refname, commit-id)` pairs (e.g. `refs/heads/main`); `head`
-/// is the short branch name HEAD points to, published as
-/// `ref: refs/heads/<branch>`. The `d` tag matches the repository id.
+/// The `d` tag matches the repository id.
 pub fn build_state(id: &str, refs: &[(String, String)], head: Option<&str>) -> EventBuilder {
     let mut tags: Vec<Tag> = vec![Tag::identifier(id.to_owned())];
     for (name, commit) in refs {
@@ -20,8 +19,8 @@ pub fn build_state(id: &str, refs: &[(String, String)], head: Option<&str>) -> E
 
 /// Parse a kind `30618` repository state event into refs and HEAD.
 ///
-/// `refs` are `(refname, commit-id)` pairs; `head` is the branch pointed to
-/// by the `HEAD` tag, if any.
+/// `refs` are `(refname, commit-id)` pairs.
+/// `head` is the branch pointed to by the `HEAD` tag, if any.
 pub fn parse_state(event: &Event) -> (Vec<(String, String)>, Option<String>) {
     let mut refs = Vec::new();
     let mut head = None;

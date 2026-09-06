@@ -1,13 +1,15 @@
 use nostr::prelude::*;
 
-/// ngit / GitWorkshop cover-note extension (kind 1624): a markdown note
-/// attached to an issue, patch or PR by its author or a repository
-/// maintainer. Not part of the NIP-34 draft; read support for interop.
+/// GitWorkshop and `ngit` cover-note extension, kind 1624.
+///
+/// A markdown note attached to an issue, patch or PR by its author or a maintainer,
+/// not part of the NIP-34 draft, read support for interop.
 pub const COVER_NOTE_KIND: Kind = Kind::Custom(1624);
 
-/// Whether a kind-1985 label event is a valid annotation of `root`: it
-/// references the root via a lowercase `e` tag and was authored by the root
-/// author or a maintainer.
+/// Whether a kind-1985 label event is a valid annotation of `root`.
+///
+/// The event references the root with a lowercase `e` tag,
+/// its author must be the root author or a maintainer.
 fn label_targets_root(event: &Event, root: &Event, maintainers: &[PublicKey]) -> bool {
     if event.kind != Kind::Label {
         return false;
@@ -22,8 +24,8 @@ fn label_targets_root(event: &Event, root: &Event, maintainers: &[PublicKey]) ->
         .any(|tag| tag.kind() == "e" && tag.content().is_some_and(|content| content == root_id))
 }
 
-/// Whether a kind-1985 label event declares the `#t` namespace and carries at
-/// least one `["l", "<value>", "#t"]` label.
+/// Whether a kind-1985 label event declares the `#t` namespace,
+/// it must also carry at least one `["l", "<value>", "#t"]` label.
 fn has_hashtag_labels(event: &Event) -> bool {
     event.tags.iter().any(|tag| tag.as_slice() == ["L", "#t"])
         && event.tags.iter().any(|tag| {
@@ -32,10 +34,12 @@ fn has_hashtag_labels(event: &Event) -> bool {
         })
 }
 
-/// The effective hashtag labels of `root`: the `t` tags on the event itself
-/// (self-reported by its author) plus all labels attached via authorized
-/// NIP-32 kind-1985 events in the `#t` namespace. Labels are additive — all
-/// valid label events contribute (no latest-wins semantics).
+/// Effective hashtag labels of `root`,
+/// the `t` tags on the event itself, self-reported by its author,
+/// authorized NIP-32 kind-1985 events in the `#t` namespace add more.
+///
+/// Labels are additive, so all valid label events contribute,
+/// there is no latest-wins semantics.
 pub fn labels(root: &Event, label_events: &[Event], maintainers: &[PublicKey]) -> Vec<String> {
     let mut labels: Vec<String> = root
         .tags
@@ -61,10 +65,10 @@ pub fn labels(root: &Event, label_events: &[Event], maintainers: &[PublicKey]) -
     labels
 }
 
-/// The effective subject/title override of `root`, from authorized kind-1985
-/// label events in the `#subject` namespace. Only the latest event wins
-/// (tiebreak: lexicographically larger event id, per NIP-01 replaceable
-/// semantics). Returns `None` when no valid override exists.
+/// Subject or title override of `root` from authorized kind-1985 label events,
+/// only label events in the `#subject` namespace count.
+///
+/// Returns `None` when no valid override exists.
 pub fn subject_override(
     root: &Event,
     label_events: &[Event],
@@ -103,8 +107,8 @@ pub fn subject_override(
         })
 }
 
-/// The effective hashtag labels and subject override of `root` in one pass
-/// (mirrors ngit's `get_labels_and_subject`).
+/// Effective hashtag labels and subject override of `root` in one pass,
+/// mirrors ngit's `get_labels_and_subject`.
 pub fn labels_and_subject(
     root: &Event,
     label_events: &[Event],
@@ -116,9 +120,9 @@ pub fn labels_and_subject(
     )
 }
 
-/// The effective cover note of `root`: the latest authorized kind-1624 event
-/// (tiebreak: lexicographically larger event id, per NIP-01 replaceable
-/// semantics). Returns `None` when no valid cover note exists.
+/// Effective cover note of `root`.
+///
+/// Returns `None` when no valid cover note exists.
 pub fn cover_note<'a>(
     root: &Event,
     cover_notes: &'a [Event],

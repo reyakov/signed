@@ -1,10 +1,3 @@
-//! The Settings dialog, opened from the sidebar's Settings entry.
-//!
-//! A custom settings layout that divides related settings into sections
-//! separated by simple horizontal lines — no `GroupBox` boxes and no settings
-//! navigation sidebar. Every control edits the persisted [`SettingsStore`]
-//! and applies the change to the live theme immediately.
-
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -55,8 +48,7 @@ fn theme_options(cx: &App) -> (Vec<SelectOption>, Vec<SelectOption>) {
     (light, dark)
 }
 
-/// Stateful controls of the settings dialog, created once when it opens so
-/// their values survive re-renders of the dialog content.
+/// Stateful controls of the settings dialog, created once when it opens.
 struct SettingsControls {
     appearance: Entity<SelectState<Vec<SelectOption>>>,
     light_theme: Entity<SelectState<Vec<SelectOption>>>,
@@ -66,8 +58,7 @@ struct SettingsControls {
     radius: Entity<InputState>,
     radius_lg: Entity<InputState>,
     grasp_server_input: Entity<InputState>,
-    /// The effective default create-repository folder, shown in the disabled
-    /// folder selector.
+    /// The effective default create-repository folder, shown in the disabled input.
     default_folder: Entity<InputState>,
     /// Keeps the control subscriptions alive for the dialog's lifetime.
     _subscriptions: Vec<Subscription>,
@@ -276,28 +267,19 @@ impl SettingsControls {
 /// Open the Settings dialog.
 pub fn open(window: &mut Window, cx: &mut App) {
     let controls = Rc::new(SettingsControls::new(window, cx));
-    let store = SettingsStore::global(cx);
-    let window_handle = window.window_handle();
-    let store_subscription = cx.observe(&store, move |_, cx| {
-        window_handle
-            .update(cx, |_, window, _| window.refresh())
-            .ok();
-    });
-
-    let dialog_state = Rc::new((controls, store_subscription));
 
     window.open_dialog(cx, move |dialog, _window, cx| {
-        let dialog_state = dialog_state.clone();
+        let controls = controls.clone();
         dialog
             .title("Settings")
             .width(px(650.))
             .h(px(560.))
-            .child(settings_view(&dialog_state.0, cx))
+            .child(settings_view(&controls, cx))
     });
 }
 
-/// The settings content: one section per related setting, divided by
-/// horizontal separator lines.
+/// The settings content, one section per related setting.
+/// Sections are divided by horizontal separator lines.
 fn settings_view(controls: &SettingsControls, cx: &mut App) -> impl IntoElement {
     let store = SettingsStore::global(cx);
     let settings = store.read(cx).settings().clone();
@@ -325,8 +307,7 @@ fn appearance_section(controls: &SettingsControls, cx: &App) -> impl IntoElement
     ))
 }
 
-/// Theme configuration: the theme names in the registry plus
-/// the visual tweaks the application customizes at startup.
+/// Theme configuration, the registry theme names plus tweaks the app customizes at startup.
 fn theme_section(settings: &Settings, controls: &SettingsControls, cx: &App) -> impl IntoElement {
     v_flex()
         .gap_3()
@@ -397,7 +378,7 @@ fn theme_section(settings: &Settings, controls: &SettingsControls, cx: &App) -> 
         ))
 }
 
-/// The default grasp servers offered when the user hasn't published a grasp list (kind `10317`) yet.
+/// Default grasp servers offered until the user publishes a kind `10317` grasp list.
 fn grasp_servers_section(
     settings: &Settings,
     controls: &SettingsControls,
@@ -413,8 +394,8 @@ fn grasp_servers_section(
     ))
 }
 
-/// The editable list of default grasp servers plus an add-relay input,
-/// styled like the grasp-server section of the publish dialogs.
+/// The editable list of default grasp servers plus an add-relay input.
+/// Styled like the grasp-server section of the publish dialogs.
 fn grasp_server_editor(
     servers: &[String],
     controls: &SettingsControls,
@@ -478,8 +459,8 @@ fn grasp_server_editor(
         )
 }
 
-/// The bare host of a grasp server (defaults are entered without a scheme),
-/// matching how the publish dialogs display servers.
+/// The bare host of a grasp server, defaults are entered without a scheme.
+/// Matches how the publish dialogs display servers.
 fn display_server(server: &str) -> SharedString {
     RelayUrl::parse(server)
         .ok()
@@ -513,8 +494,8 @@ fn repositories_section(
         ))
 }
 
-/// The editable list of scan directories plus an add-directory button,
-/// styled like the grasp-server list.
+/// The editable list of scan directories plus an add-directory button.
+/// Styled like the grasp-server list.
 fn scan_paths_editor(scan_paths: &[PathBuf], cx: &App) -> impl IntoElement {
     v_flex()
         .w_full()
@@ -566,8 +547,8 @@ fn scan_paths_editor(scan_paths: &[PathBuf], cx: &App) -> impl IntoElement {
         )
 }
 
-/// The default-folder selector: a disabled input showing the effective
-/// folder plus a picker button, matching the create-repository dialog.
+/// The default-folder selector, a disabled input plus a picker button.
+/// Matches the create-repository dialog.
 fn folder_selector(controls: &SettingsControls) -> impl IntoElement {
     let default_folder = controls.default_folder.clone();
     h_flex()
@@ -590,8 +571,8 @@ fn folder_selector(controls: &SettingsControls) -> impl IntoElement {
         )
 }
 
-/// Parse the server input (accepting a bare host) and append it to the
-/// default grasp servers.
+/// Parse the server input and append it to the default grasp servers.
+/// A bare host is accepted.
 fn add_server(input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     let value = input.read(cx).value().trim().to_owned();
     if value.is_empty() {
@@ -660,8 +641,8 @@ fn add_scan_path(cx: &mut App) {
     .detach();
 }
 
-/// Prompt for the folder the Create Repository dialog should default to,
-/// remembering it in the settings and showing it in the disabled input.
+/// Prompt for the Create Repository dialog's default folder.
+/// Remember it in the settings and show it in the disabled input.
 fn choose_default_folder(default_folder: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
     let default_folder = default_folder.clone();
@@ -695,8 +676,9 @@ fn choose_default_folder(default_folder: &Entity<InputState>, window: &mut Windo
     .detach();
 }
 
-/// Wire a number input to the settings: steps clamp and persist, typed
-/// changes parse, clamp and persist.
+/// Wire a number input to the settings.
+/// Step actions clamp and persist the value.
+/// Typed changes parse, clamp and persist.
 fn wire_number_input(
     state: &Entity<InputState>,
     subscriptions: &mut Vec<Subscription>,

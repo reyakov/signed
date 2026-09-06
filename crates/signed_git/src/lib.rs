@@ -20,6 +20,11 @@ impl GitCache {
         Self { root }
     }
 
+    /// The root directory holding the mirror clones.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Local path of the clone for a repository.
     pub fn repo_path(&self, addr: &RepoAddr) -> PathBuf {
         self.root
@@ -38,8 +43,7 @@ impl GitCache {
         }
     }
 
-    /// Open the local clone if it exists (fetching first), otherwise clone
-    /// from the first working URL in `clone_urls` (the announcement's `clone` tag).
+    /// Open the existing clone, fetching it first.
     pub fn ensure_clone(&self, addr: &RepoAddr, clone_urls: &[String]) -> Result<gix::Repository> {
         let path = self.repo_path(addr);
 
@@ -59,20 +63,17 @@ impl GitCache {
     }
 }
 
-/// Maximum directory nesting depth when scanning for local repositories,
-/// so pathological trees can't stall the scan.
+/// Maximum directory nesting depth when scanning for local repositories.
+///
+/// Pathological trees can't stall the scan.
 const SCAN_MAX_DEPTH: usize = 12;
 
-/// Directories never descended into during a scan: dependency caches that
-/// can be enormous without ever containing user repositories.
-const SCAN_SKIPPED_DIRS: [&str; 1] = ["node_modules"];
-
-/// Walk `root` recursively and collect the paths of git repositories
-/// (directories containing a `.git` entry) below it.
+/// Directories never descended into during a scan.
 ///
-/// Hidden entries and symlinks are skipped; repositories are not descended
-/// into, so nested ones (e.g. submodule worktrees) are not reported.
-/// Results are canonicalized, deduplicated and sorted.
+/// Dependency caches can be enormous without ever containing user repositories.
+const SCAN_SKIPPED_DIR: &str = "node_modules";
+
+/// Walk `root` recursively and collect the paths of git repositories below it.
 pub fn find_git_repos(root: &Path) -> Vec<PathBuf> {
     let mut repos = Vec::new();
     if !root.is_dir() {
@@ -84,8 +85,9 @@ pub fn find_git_repos(root: &Path) -> Vec<PathBuf> {
         if depth > SCAN_MAX_DEPTH {
             continue;
         }
-        // A directory containing a `.git` entry is a repository (a linked
-        // worktree has a `.git` file instead of a directory); don't descend.
+        // A directory containing a `.git` entry is a repository.
+        // A linked worktree has a `.git` file instead of a directory.
+        // Don't descend into repositories.
         if dir.join(".git").exists() {
             if let Ok(path) = dir.canonicalize() {
                 repos.push(path);
@@ -105,7 +107,7 @@ pub fn find_git_repos(root: &Path) -> Vec<PathBuf> {
             }
             let file_name = entry.file_name();
             let name = file_name.to_string_lossy();
-            if name.starts_with('.') || SCAN_SKIPPED_DIRS.contains(&name.as_ref()) {
+            if name.starts_with('.') || name == SCAN_SKIPPED_DIR {
                 continue;
             }
             stack.push((entry.path(), depth + 1));
@@ -117,10 +119,7 @@ pub fn find_git_repos(root: &Path) -> Vec<PathBuf> {
     repos
 }
 
-/// Clone a repository into `path` from the first working URL in
-/// `clone_urls` (the announcement's `clone` tag), then fetch the
-/// `refs/nostr/*` PR refs like the cache clone does. The destination must
-/// not exist yet. When no URL works, the last error is returned.
+/// Clone into `path` from the first working URL in `clone_urls`.
 ///
 /// Unlike [`GitCache::ensure_clone`], the clone is not kept in any cache.
 pub fn clone_repo(clone_urls: &[String], path: &Path) -> Result<()> {
@@ -128,29 +127,16 @@ pub fn clone_repo(clone_urls: &[String], path: &Path) -> Result<()> {
         bail!("destination {} already exists", path.display());
     }
 
-    let mut last_err: Option<anyhow::Error> = None;
-
-    for url in clone_urls {
-        match clone(url, path) {
-            Ok(repo) => {
-                // The initial clone uses the default refspecs; also
-                // fetch the `refs/nostr/*` PR refs.
-                fetch_all(&repo).ok();
-                return Ok(());
-            }
-            Err(e) => last_err = Some(e),
-        }
-    }
-
-    match last_err {
-        Some(e) => Err(e).context("failed to clone from any mirror"),
-        None => bail!("no clone URLs provided"),
-    }
+    try_each_url(clone_urls, "clone", |url| {
+        let repo = clone(url, path)?;
+        // The initial clone uses the default refspecs.
+        // Also fetch the `refs/nostr/*` PR refs.
+        fetch_all(&repo).ok();
+        Ok(())
+    })
 }
 
-/// Fetch all configured refspecs from `origin`, plus the `refs/nostr/*`
-/// namespace where GRASP mirrors serve pull request branches (one ref per
-/// PR event id, as used by ngit).
+/// Fetch all configured refspecs from `origin`, plus the `refs/nostr/*` namespace.
 pub fn fetch_all(repo: &gix::Repository) -> Result<()> {
     let options = gix::remote::ref_map::Options {
         extra_refspecs: vec![
@@ -169,10 +155,10 @@ pub fn fetch_all(repo: &gix::Repository) -> Result<()> {
     Ok(())
 }
 
-/// Apply a `git format-patch` patch (or series) with `git am`.
+/// Apply a `git format-patch` patch or series with `git am`,
+/// uses the git CLI because it handles the mbox format natively.
 ///
-/// Uses the git CLI because it handles the mbox format natively; can be
-/// replaced with a pure-Rust implementation later without changing callers.
+/// TODO: Replaced with a pure-Rust implementation later without changing callers.
 pub fn apply_patch(repo_path: &Path, patch: &str) -> Result<()> {
     let mut child = Command::new("git")
         .arg("am")
@@ -195,35 +181,28 @@ pub fn apply_patch(repo_path: &Path, patch: &str) -> Result<()> {
     Ok(())
 }
 
-/// The merge base of two revisions (branch names, remote-tracking refs or
-/// commit ids) in the repository at `repo_path`. `Ok(None)` when the
-/// revisions share no common ancestor; unresolvable revisions are errors.
+/// The merge base of two revisions in the repository at `repo_path`,
+/// revisions may be branch names, remote-tracking refs or commit ids.
+///
+/// `Ok(None)` when the revisions share no common ancestor.
+///
+/// Unresolvable revisions are errors.
 pub fn merge_base(repo_path: &Path, a: &str, b: &str) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["merge-base", a, b])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to spawn `git merge-base`")?;
-
-    match output.status.code() {
-        // Exit 1: no common ancestor (a valid outcome for a proposal).
-        Some(1) => Ok(None),
-        Some(0) => Ok(Some(
-            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-        )),
-        _ => bail!(
-            "git merge-base failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ),
+    let repo = open_with_cache(repo_path)?;
+    let a = repo.rev_parse_single(a.as_bytes())?;
+    let b = repo.rev_parse_single(b.as_bytes())?;
+    match repo.merge_base(a, b) {
+        Ok(id) => Ok(Some(id.to_string())),
+        // No common ancestor, a valid outcome for a proposal.
+        Err(gix::repository::merge_base::Error::NotFound { .. }) => Ok(None),
+        Err(e) => Err(e.into()),
     }
 }
 
-/// The `git format-patch` series of `base..tip` (mbox), like
-/// `git format-patch --stdout`. Fails when the range has no commits. The
-/// mbox is returned untrimmed; trailing newlines are part of the format.
+/// The `git format-patch` mbox series of `base..tip`, like `git format-patch --stdout`.
+/// Fails when the range has no commits.
+///
+/// The mbox is returned untrimmed. Trailing newlines are part of the format.
 pub fn format_patch_between(repo_path: &Path, base: &str, tip: &str) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
@@ -247,41 +226,7 @@ pub fn format_patch_between(repo_path: &Path, base: &str, tip: &str) -> Result<S
     Ok(patch)
 }
 
-/// Whether `patch` (a `git format-patch` series) applies to the working
-/// tree of `repo_path`, without modifying anything
-/// (`git apply --check --3way`). Best-effort: useful to surface conflicts
-/// before a patch is published or applied.
-pub fn patch_applies(repo_path: &Path, patch: &str) -> Result<()> {
-    let mut child = Command::new("git")
-        .arg("apply")
-        .args(["--check", "--3way", "--whitespace=nowarn", "-"])
-        .current_dir(repo_path)
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to spawn `git apply --check`")?;
-
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin piped")
-        .write_all(patch.as_bytes())?;
-
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        bail!(
-            "patch does not apply: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
-}
-
-/// Push `commit` to `reference` (e.g. `refs/nostr/<event-id>`) on the git
-/// server at `url`, from the repository at `repo_path`. GRASP servers host
-/// the `refs/nostr` namespace so anyone can contribute a commit; nak pushes
-/// pull request tips there before publishing the PR event, and readers
-/// fetch the ref to get the commit behind a PR's `c` tag.
+/// Push `commit` to `reference` on the server at `url`, from `repo_path`.
 pub fn push_commit_ref(repo_path: &Path, url: &str, commit: &str, reference: &str) -> Result<()> {
     let output = Command::new("git")
         .arg("-C")
@@ -303,10 +248,10 @@ pub fn push_commit_ref(repo_path: &Path, url: &str, commit: &str, reference: &st
     Ok(())
 }
 
-/// Split a `git format-patch` series into its individual patches (mbox
-/// messages). Each message begins with a `From <40-hex> ` boundary line;
-/// `>From` quoting inside bodies means no false positives. A single patch
-/// yields one element; a malformed input yields one element covering it.
+/// Split a `git format-patch` series into its individual patches, mbox messages.
+///
+/// A single patch yields one element.
+/// A malformed input yields one element covering it.
 pub fn split_patch_series(patch: &str) -> Vec<&str> {
     let mut starts = vec![0usize];
     let mut search_from = 1;
@@ -332,17 +277,11 @@ pub fn split_patch_series(patch: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The commit HEAD points to in the repository at `repo_path`, or `None`
-/// when the repository has no commits yet (unborn HEAD).
+/// The commit HEAD points to in the repository at `repo_path`.
+///
+/// `None` when the repository has no commits yet, an unborn HEAD.
 pub fn head_commit_id(repo_path: &Path) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["rev-parse", "HEAD"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to spawn `git rev-parse`")?;
+    let output = git_output(repo_path, &["rev-parse", "HEAD"], "git rev-parse")?;
 
     if !output.status.success() {
         return Ok(None);
@@ -352,16 +291,17 @@ pub fn head_commit_id(repo_path: &Path) -> Result<Option<String>> {
     ))
 }
 
-/// The commits in `base..HEAD` of the repository at `repo_path`, oldest
-/// first (the order `git am` creates them); `HEAD` alone when `base` is
-/// `None`. An empty range yields an empty list.
+/// The commits in `base..HEAD` of the repository at `repo_path`, oldest first.
+/// This is the order `git am` creates them.
+///
+/// `HEAD` alone when `base` is `None`.
 pub fn commits_since(repo_path: &Path, base: Option<&str>) -> Result<Vec<String>> {
     let output = match base {
         Some(base) => git_in(
             repo_path,
             &["rev-list", "--reverse", &format!("{base}..HEAD")],
         )?,
-        // No `base` (unborn HEAD): there is nothing to walk yet.
+        // Without `base`, an unborn HEAD means there is nothing to walk.
         None => match git_in(repo_path, &["rev-parse", "HEAD"]) {
             Ok(head) => head,
             Err(_) => return Ok(Vec::new()),
@@ -374,13 +314,41 @@ pub fn commits_since(repo_path: &Path, base: Option<&str>) -> Result<Vec<String>
         .collect())
 }
 
-fn clone(url: &str, path: &Path) -> Result<gix::Repository> {
-    // GRASP servers announce `grasp://<host>/<owner>/<repo>` clone URLs;
-    // the transport is git smart HTTP, so rewrite the scheme for gix.
-    let url = url
-        .strip_prefix("grasp://")
+/// Rewrite a grasp server URL to the https URL the git transport actually uses.
+///
+/// GRASP servers announce `grasp://<host>/<owner>/<repo>` clone URLs.
+/// The transport is git smart HTTP, so the scheme is rewritten for gix.
+fn transport_url(url: &str) -> String {
+    url.strip_prefix("grasp://")
         .map(|rest| format!("https://{rest}"))
-        .unwrap_or_else(|| url.to_owned());
+        .unwrap_or_else(|| url.to_owned())
+}
+
+/// Run `attempt` against each URL in `urls` until one succeeds.
+///
+/// Returns the last error wrapped in `failed to {verb} from any mirror`,
+/// or `no clone URLs provided` when the list is empty.
+fn try_each_url<F>(urls: &[String], verb: &str, mut attempt: F) -> Result<()>
+where
+    F: FnMut(&str) -> Result<()>,
+{
+    let mut last_err: Option<anyhow::Error> = None;
+
+    for url in urls {
+        match attempt(url) {
+            Ok(()) => return Ok(()),
+            Err(e) => last_err = Some(e),
+        }
+    }
+
+    match last_err {
+        Some(e) => Err(e).context(format!("failed to {verb} from any mirror")),
+        None => bail!("no clone URLs provided"),
+    }
+}
+
+fn clone(url: &str, path: &Path) -> Result<gix::Repository> {
+    let url = transport_url(url);
     let url = gix::url::parse(url).context("invalid clone URL")?;
 
     let mut prepare = gix::prepare_clone(url, path)?;
@@ -390,12 +358,12 @@ fn clone(url: &str, path: &Path) -> Result<gix::Repository> {
     Ok(repo)
 }
 
-/// Create a new repository at `path`: initialize a `main` branch, write a
-/// `README.md` derived from `name`/`description`, and create the initial
-/// commit. Returns the initial commit id.
+/// Create a repository at `path` with an initial `main` branch.
+/// Write a `README.md` from `name` and `description`, then create the initial commit.
 ///
-/// Uses the git CLI (like [`apply_patch`]), which handles index writes,
-/// ref updates and default branch selection natively.
+/// Returns the initial commit id.
+///
+/// Uses the git CLI, like [`apply_patch`].
 pub fn init_repository(path: &Path, name: &str, description: &str) -> Result<String> {
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create {}", path.display()))?;
@@ -410,8 +378,8 @@ pub fn init_repository(path: &Path, name: &str, description: &str) -> Result<Str
     std::fs::write(path.join("README.md"), readme).context("failed to write README.md")?;
 
     git_in(path, &["add", "README.md"])?;
-    // Identity and signing are passed per-invocation so the repository is
-    // commitable without a global git identity or signing setup.
+    // Identity and signing are passed per invocation.
+    // The repository then commits without a global git identity or signing setup.
     git_in(
         path,
         &[
@@ -438,43 +406,44 @@ pub fn init_repository(path: &Path, name: &str, description: &str) -> Result<Str
 
 /// Push the `main` branch of the repository at `repo_path` to a grasp server.
 pub fn push_main(repo_path: &Path, base_url: &str, owner: &str, repo_id: &str) -> Result<()> {
-    let url = format!("{base_url}/{owner}/{repo_id}.git");
-
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["push"])
-        .arg(&url)
-        .args(["refs/heads/main:refs/heads/main"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to spawn `git push`")?;
-
-    if !output.status.success() {
-        bail!(
-            "git push to {base_url} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
+    push_refspecs(
+        repo_path,
+        base_url,
+        owner,
+        repo_id,
+        &["refs/heads/main:refs/heads/main"],
+    )
 }
 
-/// Push every local branch and tag of the repository at `repo_path` to a grasp server,
-/// so an initialized repository's whole history is mirrored.
+/// Push every local branch and tag of the repository at `repo_path` to a grasp server.
+///
+/// This mirrors an initialized repository's whole history.
 pub fn push_all(repo_path: &Path, base_url: &str, owner: &str, repo_id: &str) -> Result<()> {
+    push_refspecs(
+        repo_path,
+        base_url,
+        owner,
+        repo_id,
+        &["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"],
+    )
+}
+
+/// Push `refspecs` to the grasp server URL derived from `base_url`, `owner` and `repo_id`.
+fn push_refspecs(
+    repo_path: &Path,
+    base_url: &str,
+    owner: &str,
+    repo_id: &str,
+    refspecs: &[&str],
+) -> Result<()> {
     let url = format!("{base_url}/{owner}/{repo_id}.git");
 
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["push"])
-        .arg(&url)
-        .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to spawn `git push`")?;
+    let mut args: Vec<&str> = Vec::with_capacity(refspecs.len() + 2);
+    args.push("push");
+    args.push(&url);
+    args.extend_from_slice(refspecs);
+
+    let output = git_output(repo_path, &args, "git push")?;
 
     if !output.status.success() {
         bail!(
@@ -482,25 +451,22 @@ pub fn push_all(repo_path: &Path, base_url: &str, owner: &str, repo_id: &str) ->
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-
     Ok(())
 }
 
-/// The earliest unique commit of the repository at `repo_path` (a root
-/// commit, like `git rev-list --max-parents=0 HEAD`), used as the NIP-34
-/// announcement's `euc` marker. `None` for a repository without commits.
+/// The earliest unique commit of the repository at `repo_path`.
+/// Used as the NIP-34 announcement's `euc` marker.
+///
+/// `None` for a repository without commits.
 pub fn root_commit(repo_path: &Path) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["rev-list", "--max-parents=0", "HEAD"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to spawn `git rev-list`")?;
+    let output = git_output(
+        repo_path,
+        &["rev-list", "--max-parents=0", "HEAD"],
+        "git rev-list",
+    )?;
 
-    // An unborn HEAD (no commits yet) makes `rev-list` fail,
-    // there is no unique commit to report then.
+    // An unborn HEAD with no commits yet makes `rev-list` fail.
+    // There is no unique commit to report then.
     if !output.status.success() {
         return Ok(None);
     }
@@ -513,27 +479,198 @@ pub fn root_commit(repo_path: &Path) -> Result<Option<String>> {
 }
 
 /// Add `origin` pointing at `url` when the repository has no remote yet.
+///
 /// No-op if `origin` already exists.
 pub fn ensure_origin(repo_path: &Path, url: &str) -> Result<()> {
     // `git remote get-url origin` exits non-zero when the remote is absent.
     if git_in(repo_path, &["remote", "get-url", "origin"]).is_ok() {
         return Ok(());
     }
+    // `git remote add` already configures the default fetch refspec.
     git_in(repo_path, &["remote", "add", "origin", url])?;
     Ok(())
 }
 
-/// Run a git command in `dir`, returning trimmed stdout. The terminal prompt
-/// is disabled so a credential request fails instead of hanging.
-fn git_in(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+/// Point `origin` at `url`, replacing an existing remote,
+/// used after a clone whose `origin` points at the cloned-from path.
+///
+/// A working copy cloned from a local mirror is re-targeted at the grasp server.
+pub fn set_origin(repo_path: &Path, url: &str) -> Result<()> {
+    // `git remote get-url origin` exits non-zero when the remote is absent.
+    if git_in(repo_path, &["remote", "get-url", "origin"]).is_ok() {
+        git_in(repo_path, &["remote", "set-url", "origin", url])?;
+    } else {
+        git_in(repo_path, &["remote", "add", "origin", url])?;
+    }
+    Ok(())
+}
+
+/// Fetch `refspec` into `repo_path` from the first working URL in `urls`.
+/// When no URL works, the last error is returned.
+///
+/// Never touches the checked-out refs or the worktree.
+pub fn fetch_repo_refs(repo_path: &Path, urls: &[String], refspec: &str) -> Result<()> {
+    try_each_url(urls, "fetch", |url| {
+        let url = transport_url(url);
+
+        let output = git_output(repo_path, &["fetch", &url, refspec], "git fetch")?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+        bail!(
+            "git fetch from {url} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    })
+}
+
+/// Full ref names under `prefix`, sorted lexicographically, like `git for-each-ref`.
+/// `prefix` is a ref namespace like `refs/fork/<owner>/<id>`.
+///
+/// Returns an empty list when nothing matches.
+pub fn refs_with_prefix(repo_path: &Path, prefix: &str) -> Result<Vec<String>> {
+    // `for-each-ref` patterns match whole path components.
+    // A trailing slash would silently change what is matched.
+    let pattern = prefix.trim_end_matches('/');
+    let output = git_output(
+        repo_path,
+        &["for-each-ref", "--format=%(refname)", pattern],
+        "git for-each-ref",
+    )?;
+
+    if !output.status.success() {
+        bail!(
+            "git for-each-ref failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .filter(|name| !name.is_empty())
+        .collect())
+}
+
+/// Delete every ref under `prefix` of the repository at `repo_path`.
+/// `prefix` is a ref namespace like `refs/fork/<owner>/<id>`.
+///
+/// Lets a stale import be pruned before a re-import.
+///
+/// No-op when nothing matches.
+pub fn delete_refs_with_prefix(repo_path: &Path, prefix: &str) -> Result<()> {
+    let refs = refs_with_prefix(repo_path, prefix)?;
+    if refs.is_empty() {
+        return Ok(());
+    }
+
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["update-ref", "--stdin"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn `git update-ref --stdin`")?;
+
+    for name in refs {
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin piped")
+            .write_all(format!("delete {name}\n").as_bytes())?;
+    }
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        bail!(
+            "git update-ref failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// The URL of the `origin` remote of the repository at `workdir`.
+///
+/// `None` when it has no `origin` yet.
+pub fn origin_url(workdir: &Path) -> Result<Option<String>> {
+    let output = git_output(
+        workdir,
+        &["remote", "get-url", "origin"],
+        "git remote get-url",
+    )?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let url = String::from_utf8_lossy(&output.stdout);
+    Ok((!url.trim().is_empty()).then(|| url.trim().to_owned()))
+}
+
+/// Fast-forward local branches that trail their remote-tracking counterpart.
+///
+/// Returns whether any branch moved.
+pub fn fast_forward_branches(workdir: &Path) -> Result<bool> {
+    let current = git_in(workdir, &["branch", "--show-current"]).unwrap_or_default();
+    let heads = refs_with_prefix(workdir, "refs/heads")?;
+    let mut moved = false;
+
+    for head in heads {
+        let Some(branch) = head.strip_prefix("refs/heads/") else {
+            continue;
+        };
+        let remote = format!("refs/remotes/origin/{branch}");
+        // No remote-tracking counterpart means the remote lacks this branch.
+        let Ok(remote_oid) = git_in(workdir, &["rev-parse", "--verify", "--quiet", &remote]) else {
+            continue;
+        };
+        let Ok(local_oid) = git_in(workdir, &["rev-parse", "--verify", "--quiet", &head]) else {
+            continue;
+        };
+        if local_oid == remote_oid {
+            continue;
+        }
+        // Only fast-forward.
+        // Local-only commits or diverged history must never be rewritten by a refresh.
+        if git_in(workdir, &["merge-base", "--is-ancestor", &head, &remote]).is_err() {
+            continue;
+        }
+        if current == branch {
+            // Merge so the checked-out worktree follows the branch.
+            if git_in(workdir, &["merge", "--ff-only", &remote]).is_ok() {
+                moved = true;
+            }
+        } else {
+            git_in(workdir, &["update-ref", &head, &remote_oid])?;
+            moved = true;
+        }
+    }
+
+    Ok(moved)
+}
+
+/// Run `git -C dir args`, disabling the terminal prompt and capturing stderr.
+///
+/// `what` names the command in the spawn error.
+fn git_output(dir: &Path, args: &[&str], what: &str) -> Result<std::process::Output> {
+    Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stderr(Stdio::piped())
         .output()
-        .context("failed to spawn `git`")?;
+        .with_context(|| format!("failed to spawn `{what}`"))
+}
+
+/// Run a git command in `dir`, returning trimmed stdout.
+///
+/// The terminal prompt is disabled so a credential request fails instead of hanging.
+fn git_in(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = git_output(dir, args, "git")?;
 
     if !output.status.success() {
         bail!(
@@ -546,9 +683,10 @@ fn git_in(dir: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-/// Map an untrusted repository id (or display name) to a safe single path
-/// component: everything outside `[A-Za-z0-9._-]` becomes `_`, and the
-/// special components `.` and `..` are rejected.
+/// Map an untrusted repository id or display name to a safe single path component.
+///
+/// Everything outside `[A-Za-z0-9._-]` becomes `_`.
+/// An id that maps to exactly `.` or `..` becomes `_`.
 pub fn sanitize_path_component(id: &str) -> String {
     let sanitized: String = id
         .chars()
@@ -568,20 +706,21 @@ pub fn sanitize_path_component(id: &str) -> String {
     sanitized
 }
 
-/// In-memory object cache for history walks (see [`open_with_cache`]).
-/// Without one, every walk re-decodes the same commit objects from the
-/// object database.
+/// In-memory object cache for history walks, see [`open_with_cache`].
+///
+/// Without one, a walk re-decodes the same commit objects from the object database.
+/// Sized generously: a walk can cover a large portion of the repository's history.
 const OBJECT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Metadata of a commit, as shown in the repository browser's file header.
 #[derive(Debug, Clone)]
 pub struct FileCommit {
-    /// Shortened commit id (7+ hex chars, disambiguated if needed).
+    /// Shortened commit id, 7+ hex chars, disambiguated if needed.
     pub id: String,
     /// First line of the commit message.
     pub summary: String,
-    /// Rest of the commit message after the title; `None` when there is no
-    /// body (single-line commit messages).
+    /// Rest of the commit message after the title.
+    /// `None` for single-line commit messages.
     pub description: Option<String>,
     /// Author name.
     pub author: String,
@@ -589,9 +728,9 @@ pub struct FileCommit {
     pub time: i64,
 }
 
-/// Relative paths of all entries in the worktree (files and directories),
-/// directories first, then alphabetically within each group. The `.git`
-/// directory is skipped.
+/// Relative paths of all entries in the worktree, files and directories.
+///
+/// The `.git` directory is skipped.
 pub fn worktree_entries(repo: &gix::Repository) -> Result<Vec<PathBuf>> {
     let workdir = repo.workdir().context("repository has no worktree")?;
 
@@ -606,8 +745,9 @@ pub fn worktree_entries(repo: &gix::Repository) -> Result<Vec<PathBuf>> {
     Ok(entries.into_iter().map(|(path, _)| path).collect())
 }
 
-/// Read a file from the worktree. Returns `Ok(None)` if the path is missing
-/// or not a regular file.
+/// Read a file from the worktree.
+///
+/// Returns `Ok(None)` if the path is missing or not a regular file.
 pub fn worktree_read(repo: &gix::Repository, rel: &Path) -> Result<Option<Vec<u8>>> {
     let workdir = repo.workdir().context("repository has no worktree")?;
     let path = workdir.join(rel);
@@ -620,9 +760,9 @@ pub fn worktree_read(repo: &gix::Repository, rel: &Path) -> Result<Option<Vec<u8
     }
 }
 
-/// Find the README file in the repository root (returned as a path relative
-/// to the worktree). Case-insensitive; prefers `README.md`, then `.markdown`,
-/// `.mdown`, `.mkdn`, then any other file whose name starts with `readme`.
+/// Find the README file in the repository root.
+///
+/// Falls back to any other file whose name starts with `readme`.
 pub fn find_readme(repo: &gix::Repository) -> Result<Option<PathBuf>> {
     let Some(workdir) = repo.workdir() else {
         return Ok(None);
@@ -658,19 +798,35 @@ pub fn find_readme(repo: &gix::Repository) -> Result<Option<PathBuf>> {
         .and_then(|path| path.strip_prefix(workdir).ok().map(Path::to_path_buf)))
 }
 
-/// Open the repository at `workdir` with an in-memory object cache sized for
-/// history walks.
+/// Open the repository at `workdir` with an in-memory object cache.
+///
+/// Only history walks use it, they re-decode the same commit objects repeatedly.
+/// Single-object reads open the repository plain.
 fn open_with_cache(workdir: &Path) -> Result<gix::Repository> {
     let mut repo = gix::open(workdir)?;
     repo.object_cache_size_if_unset(OBJECT_CACHE_BYTES);
     Ok(repo)
 }
 
-/// A [`FileCommit`] from a walk commit: author, message title and shortened
-/// id. `include_description` controls whether the message body is copied;
-/// history lists never display it, so skipping it saves a string allocation
-/// per listed commit (the diff panel fetches the full commit on demand).
-fn file_commit(commit: &gix::Commit<'_>, include_description: bool) -> Result<FileCommit> {
+/// A [`FileCommit`] from a commit, with author, message title, body and shortened id.
+///
+/// The diff panel fetches the full commit on demand.
+fn file_commit(commit: &gix::Commit<'_>) -> Result<FileCommit> {
+    file_commit_with_description(commit, true)
+}
+
+/// A [`FileCommit`] without the message body, for history lists that never display it.
+///
+/// Skipping the body saves an allocation per listed commit.
+fn file_commit_summary(commit: &gix::Commit<'_>) -> Result<FileCommit> {
+    file_commit_with_description(commit, false)
+}
+
+/// [`file_commit`] and [`file_commit_summary`], `include_description` picks the body.
+fn file_commit_with_description(
+    commit: &gix::Commit<'_>,
+    include_description: bool,
+) -> Result<FileCommit> {
     let author = commit.author()?;
     let message = commit.message()?;
     Ok(FileCommit {
@@ -689,10 +845,9 @@ fn file_commit(commit: &gix::Commit<'_>, include_description: bool) -> Result<Fi
     })
 }
 
-/// Find the most recent commit that changed `rel` (a path relative to the
-/// worktree), like `git log -1 -- <rel>`: the first commit, walking from
-/// `HEAD` newest-first, whose tree entry for `rel` differs from its first
-/// parent's. `Ok(None)` when no commit touched the file (e.g. untracked).
+/// Find the most recent commit that changed `rel`, a path relative to the worktree.
+///
+/// `Ok(None)` when no commit touched the file, e.g. an untracked file.
 pub fn last_commit(repo: &gix::Repository, rel: &Path) -> Result<Option<FileCommit>> {
     let rel = rel.to_path_buf();
     Ok(last_commits(repo, std::slice::from_ref(&rel))?
@@ -701,10 +856,10 @@ pub fn last_commit(repo: &gix::Repository, rel: &Path) -> Result<Option<FileComm
         .map(|(_, commit)| commit))
 }
 
-/// Newest commit touching each of `rels` (relative to the worktree), like
-/// `git log -1 -- <rel>` per path, found in a single history walk: every
-/// commit is decoded once and shared across all paths. Paths without any
-/// commit (e.g. untracked files) are absent from the result.
+/// Newest commit touching each of `rels`, like `git log -1 -- <rel>` per path.
+/// `rels` are paths relative to the worktree.
+///
+/// Paths without any commit, like untracked files, are absent from the result.
 pub fn worktree_last_commits(
     workdir: &Path,
     rels: &[PathBuf],
@@ -712,8 +867,9 @@ pub fn worktree_last_commits(
     last_commits(&open_with_cache(workdir)?, rels)
 }
 
-/// The walk behind [`last_commit`] and [`worktree_last_commits`], stopping as
-/// soon as every pending path has its commit.
+/// The walk behind [`last_commit`] and [`worktree_last_commits`].
+///
+/// Stops as soon as every pending path has its commit.
 fn last_commits(repo: &gix::Repository, rels: &[PathBuf]) -> Result<Vec<(PathBuf, FileCommit)>> {
     use gix::traverse::commit::simple::CommitTimeOrder;
 
@@ -749,8 +905,8 @@ fn last_commits(repo: &gix::Repository, rels: &[PathBuf]) -> Result<Vec<(PathBuf
             None => None,
         };
 
-        // Compare each still-unresolved path against this commit and its
-        // first parent; resolved paths leave the pending set.
+        // Compare each unresolved path against this commit and its first parent.
+        // Resolved paths leave the pending set.
         let mut ix = 0;
         while ix < pending.len() {
             let rel = &pending[ix];
@@ -762,7 +918,7 @@ fn last_commits(repo: &gix::Repository, rels: &[PathBuf]) -> Result<Vec<(PathBuf
 
             if blob.map(|entry| entry.id().detach()) != parent_blob.map(|entry| entry.id().detach())
             {
-                found.push((rel.clone(), file_commit(&commit, true)?));
+                found.push((rel.clone(), file_commit(&commit)?));
                 pending.swap_remove(ix);
             } else {
                 ix += 1;
@@ -773,14 +929,13 @@ fn last_commits(repo: &gix::Repository, rels: &[PathBuf]) -> Result<Vec<(PathBuf
     Ok(found)
 }
 
-/// Cap on [`CommitList::commits`]: the virtual list renders a window at a
-/// time and the tab badge shows the real count, so a huge history is never
-/// fully materialized in memory.
+/// Cap on [`CommitList::commits`]. The virtual list renders a window at a time,
+/// the tab badge shows the real count.
+///
+/// A huge history is never fully materialized in memory.
 pub const MAX_LISTED_COMMITS: usize = 20_000;
 
-/// Commits reachable from `HEAD`, newest first, possibly capped: `commits`
-/// holds at most [`MAX_LISTED_COMMITS`] entries and `total` is the real
-/// count (for the tab badge).
+/// Commits reachable from `HEAD`, newest first, possibly capped.
 pub struct CommitList {
     /// Number of commits reachable from HEAD.
     pub total: usize,
@@ -789,6 +944,7 @@ pub struct CommitList {
 }
 
 /// All commits reachable from `HEAD`, newest first, with author and summary.
+///
 /// Returns an empty list for a repository without any commits yet.
 pub fn all_commits(repo: &gix::Repository) -> Result<CommitList> {
     use gix::traverse::commit::simple::CommitTimeOrder;
@@ -811,14 +967,15 @@ pub fn all_commits(repo: &gix::Repository) -> Result<CommitList> {
         let info = info?;
         total += 1;
         if commits.len() < MAX_LISTED_COMMITS {
-            commits.push(file_commit(&info.object()?, false)?);
+            commits.push(file_commit_summary(&info.object()?)?);
         }
     }
     Ok(CommitList { total, commits })
 }
 
-/// Like [`all_commits`], but opens the repository located at `workdir`
-/// (for non-bare clones the clone root is the worktree) first.
+/// Like [`all_commits`], but opens the repository at `workdir` first.
+///
+/// For non-bare clones the clone root is the worktree.
 pub fn worktree_all_commits(workdir: &Path) -> Result<CommitList> {
     all_commits(&open_with_cache(workdir)?)
 }
@@ -846,8 +1003,7 @@ pub struct DiffLine {
     pub text: String,
 }
 
-/// A hunk of a file diff, like `@@ -a,b +c,d @@`, with the lines between the
-/// two headers (context around the change, then removals and additions).
+/// A hunk of a file diff, like `@@ -a,b +c,d @@`.
 #[derive(Debug, Clone)]
 pub struct DiffHunk {
     /// 1-based start line in the old version.
@@ -874,33 +1030,32 @@ pub enum DiffStatus {
 /// The diff of one file in a commit.
 #[derive(Debug, Clone)]
 pub struct FileDiff {
-    /// Path of the file relative to the repo root (the destination path for
-    /// renames and copies).
+    /// Path of the file relative to the repo root.
+    /// For renames and copies, this is the destination path.
     pub path: String,
     /// Previous path, for renames and copies.
     pub old_path: Option<String>,
     pub status: DiffStatus,
-    /// Number of added lines; 0 for binary files.
+    /// Number of added lines, 0 for binary files.
     pub insertions: usize,
-    /// Number of removed lines; 0 for binary files.
+    /// Number of removed lines, 0 for binary files.
     pub deletions: usize,
-    /// True if either version is binary (then `hunks` is empty).
+    /// True if either version is binary, then `hunks` is empty.
     pub binary: bool,
     pub hunks: Vec<DiffHunk>,
 }
 
-/// The changes of one commit: every file it added, modified, deleted or
-/// renamed, with line-level hunks for text files.
+/// The changes of one commit.
 #[derive(Debug, Clone)]
 pub struct CommitDiff {
     pub files: Vec<FileDiff>,
 }
 
-/// The changes of the commit `id` (short or full) in the repository at
-/// `workdir`, compared against its first parent (the empty tree for the
-/// root commit), like `git show`. Files are sorted by path.
+/// The changes of the commit `id`, short or full, in the repository at `workdir`.
+///
+/// Compared against its first parent, the empty tree for the root commit.
 pub fn worktree_commit_diff(workdir: &Path, id: &str) -> Result<CommitDiff> {
-    commit_diff(&open_with_cache(workdir)?, id)
+    commit_diff(&gix::open(workdir)?, id)
 }
 
 fn commit_diff(repo: &gix::Repository, id: &str) -> Result<CommitDiff> {
@@ -914,11 +1069,11 @@ fn commit_diff(repo: &gix::Repository, id: &str) -> Result<CommitDiff> {
     tree_diff(repo, old_tree.as_ref(), &new_tree)
 }
 
-/// The changes between two commits (`base`..`tip`), like `git diff base tip`.
-/// Same file handling as [`worktree_commit_diff`] (directories and
-/// submodules are skipped, files are sorted by path).
+/// The changes between two commits, `base`..`tip`, like `git diff base tip`.
+///
+/// Directories and submodules are skipped, files are sorted by path.
 pub fn worktree_commit_range_diff(workdir: &Path, base: &str, tip: &str) -> Result<CommitDiff> {
-    let repo = open_with_cache(workdir)?;
+    let repo = gix::open(workdir)?;
     let base_tree = repo
         .rev_parse_single(base.as_bytes())?
         .object()?
@@ -953,13 +1108,12 @@ pub fn worktree_commit_range_commits(
     let mut commits = Vec::new();
     for info in walk.all()? {
         let info = info?;
-        commits.push(file_commit(&info.object()?, false)?);
+        commits.push(file_commit_summary(&info.object()?)?);
     }
     Ok(commits)
 }
 
-/// The changes between two trees, used by both [`commit_diff`] and
-/// [`worktree_commit_range_diff`].
+/// The changes between two trees. Used by both [`commit_diff`] and [`worktree_commit_range_diff`].
 fn tree_diff(
     repo: &gix::Repository,
     old_tree: Option<&gix::Tree<'_>>,
@@ -976,8 +1130,7 @@ fn tree_diff(
     for change in changes {
         let attached = Change::from_change_ref(change.to_ref(), repo, repo);
 
-        // The tree diff also reports directory entries; only their contents
-        // are listed, so skip trees and submodule gitlinks.
+        // Skip directory trees and submodule gitlinks, only files are listed.
         let (path, old_path, status) = match attached {
             Change::Addition {
                 location,
@@ -1033,8 +1186,8 @@ fn tree_diff(
             _ => continue,
         };
 
-        // Always diff with the built-in algorithm: external diff drivers
-        // would shell out, which is out of scope for a read-only viewer.
+        // Always diff with the built-in algorithm.
+        // External diff drivers would shell out, out of scope for a read-only viewer.
         let platform = attached.diff(&mut cache)?;
         platform
             .resource_cache
@@ -1078,14 +1231,7 @@ fn tree_diff(
     Ok(CommitDiff { files })
 }
 
-/// Parse a `git format-patch` output (a single patch or a patch series)
-/// into the same [`CommitDiff`] structure used for commit diffs.
-///
-/// The mbox envelope (From/Subject/... headers, commit body and diffstat)
-/// is skipped; every `diff --git` section becomes one [`FileDiff`]. Paths
-/// are taken from the section headers, with git's C-style quoting undone.
-/// Sections without hunks (pure renames, mode changes, binary files) are
-/// reported without lines.
+/// Parse `git format-patch` output, a single patch or a series.
 pub fn patch_diffs(patch: &str) -> Result<CommitDiff> {
     let lines: Vec<&str> = patch.lines().collect();
     let mut files = Vec::new();
@@ -1104,10 +1250,9 @@ pub fn patch_diffs(patch: &str) -> Result<CommitDiff> {
     Ok(CommitDiff { files })
 }
 
-/// Commits of a `git format-patch` output (a single patch or a patch
-/// series), parsed from the mbox envelope headers of each patch: commit id,
-/// author, summary and author time. Entries appear in patch order (oldest
-/// first, as produced by `git format-patch`).
+/// Commits of a `git format-patch` output, a single patch or a series.
+///
+/// Entries appear in patch order, oldest first as `git format-patch` produces them.
 pub fn patch_commits(patch: &str) -> Vec<FileCommit> {
     let lines: Vec<&str> = patch.lines().collect();
     let mut commits = Vec::new();
@@ -1132,8 +1277,7 @@ pub fn patch_commits(patch: &str) -> Vec<FileCommit> {
         let mut summary = String::new();
         let mut time = 0i64;
 
-        // Envelope headers of this patch, up to the blank line separating
-        // them from the commit message.
+        // Envelope headers run up to the blank line before the commit message.
         i += 1;
         while i < lines.len() && !lines[i].is_empty() {
             let header = lines[i];
@@ -1169,8 +1313,9 @@ fn name_from_address(from: &str) -> String {
     }
 }
 
-/// Strip the `[PATCH]`, `[PATCH 1/2]`, `[RFC PATCH]` ... prefix from a patch
-/// `Subject:` header.
+/// Strip the patch prefix from a `Subject:` header.
+///
+/// Examples are `[PATCH]`, `[PATCH 1/2]` and `[RFC PATCH]`.
 fn strip_patch_prefix(subject: &str) -> String {
     let trimmed = subject.trim();
     let Some(rest) = trimmed.strip_prefix('[') else {
@@ -1186,14 +1331,14 @@ fn strip_patch_prefix(subject: &str) -> String {
     }
 }
 
-/// Parse one file's diff section: everything after its `diff --git` header
-/// up to the next section (or the end of the patch). Returns the section
-/// and the index of the first unconsumed line.
+/// Parse one file's diff section.
+///
+/// Returns the section and the index of the first unconsumed line.
 fn parse_diff_section(header: &str, lines: &[&str], start: usize) -> Result<(FileDiff, usize)> {
     let (header_old, header_new) = header_paths(header)?;
-    // The `---`/`+++` lines name the two sides unambiguously (the header
-    // can't distinguish spaces); fall back to the header for sections
-    // without them (pure renames, mode changes).
+    // The `---` and `+++` lines name the two sides unambiguously.
+    // The `diff --git` header cannot distinguish spaces in paths.
+    // Fall back to the header for sections without them, pure renames and mode changes.
     let mut old_path = header_old;
     let mut new_path = header_new;
 
@@ -1249,14 +1394,14 @@ fn parse_diff_section(header: &str, lines: &[&str], start: usize) -> Result<(Fil
             status = DiffStatus::Renamed;
         } else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
             binary = true;
-            // A literal binary patch may follow; skip it without consuming
-            // the next section's header.
+            // A literal binary patch may follow.
+            // Skip it without consuming the next section's header.
             while i < lines.len() && !lines[i].starts_with("diff --git ") {
                 i += 1;
             }
             break;
         }
-        // Everything else (index/mode/similarity lines) is ignored.
+        // Everything else, index, mode and similarity lines, is ignored.
     }
 
     Ok((
@@ -1274,9 +1419,9 @@ fn parse_diff_section(header: &str, lines: &[&str], start: usize) -> Result<(Fil
     ))
 }
 
-/// Parse one hunk: the `@@ -a,b +c,d @@` header plus every body line up to
-/// the next hunk header, the next `diff --git` section or the end of the
-/// patch. Returns the hunk and the index of the first unconsumed line.
+/// Parse one hunk, the `@@ -a,b +c,d @@` header plus every body line.
+///
+/// Returns the hunk and the index of the first unconsumed line.
 fn parse_hunk(lines: &[&str], start: usize) -> Result<(DiffHunk, usize)> {
     let (old_start, old_lines, new_start, new_lines) = hunk_header(lines[start])?;
 
@@ -1292,9 +1437,9 @@ fn parse_hunk(lines: &[&str], start: usize) -> Result<(DiffHunk, usize)> {
         };
         i += 1;
 
-        // Context lines advance both counters, deletions only the old one
-        // and additions only the new one, so every line ends up with its
-        // real line number in both versions.
+        // Context lines advance both counters.
+        // Deletions advance only the old counter, additions only the new one.
+        // Every line then carries its real number in both versions.
         let (old_no, new_no) = match kind {
             DiffLineKind::Context => {
                 let numbers = (Some(old), Some(new));
@@ -1333,9 +1478,9 @@ fn parse_hunk(lines: &[&str], start: usize) -> Result<(DiffHunk, usize)> {
     ))
 }
 
-/// The kind of a hunk body line, from its first character; lines that don't
-/// belong to the hunk (headers, `\ No newline...`, the next section) yield
-/// `None`.
+/// The kind of a hunk body line, from its first character.
+///
+/// Lines outside a hunk, headers, `\ No newline...` and the next section, yield `None`.
 fn line_prefix_kind(line: &str) -> Option<DiffLineKind> {
     match line.as_bytes().first()? {
         b' ' => Some(DiffLineKind::Context),
@@ -1345,8 +1490,9 @@ fn line_prefix_kind(line: &str) -> Option<DiffLineKind> {
     }
 }
 
-/// Parse a unified-diff hunk header `@@ -a,b +c,d @@`; omitted line counts
-/// default to 1.
+/// Parse a unified-diff hunk header, `@@ -a,b +c,d @@`.
+///
+/// Omitted line counts default to 1.
 fn hunk_header(header: &str) -> Result<(u32, u32, u32, u32)> {
     let rest = header
         .strip_prefix("@@ ")
@@ -1368,12 +1514,7 @@ fn hunk_header(header: &str) -> Result<(u32, u32, u32, u32)> {
     Ok((old_start, old_lines, new_start, new_lines))
 }
 
-/// The old and new paths of a `diff --git a/X b/Y` header, with git's
-/// C-style quoting undone.
-///
-/// Git only quotes paths containing characters that need escaping (non-ASCII
-/// bytes, `"`, `\`); plain spaces are left unquoted, so the two sides of an
-/// unquoted header are split at the last ` b/`.
+/// The old and new paths of a `diff --git a/X b/Y` header.
 fn header_paths(header: &str) -> Result<(String, String)> {
     if header.starts_with('"') {
         // Quoted paths include the `a/` / `b/` prefix inside the quotes.
@@ -1402,10 +1543,7 @@ fn header_paths(header: &str) -> Result<(String, String)> {
     }
 }
 
-/// The path of a `--- a/X` / `+++ b/Y` line: the prefix stripped, git's
-/// trailing padding tab (for paths containing spaces) removed and C-style
-/// quoting undone. These lines name the two sides unambiguously, unlike the
-/// `diff --git` header.
+/// The path of a `--- a/X` or `+++ b/Y` line.
 fn diff_line_path(line: &str, prefix: &str) -> Result<String> {
     let line = line.trim_end_matches('\t');
     if line.starts_with('"') {
@@ -1422,11 +1560,10 @@ fn diff_line_path(line: &str, prefix: &str) -> Result<String> {
     }
 }
 
-/// The content of a git C-style quoted path (opening `"`, escaped content,
-/// closing `"`) and the rest of the input; `None` if unterminated.
+/// The content of a git C-style quoted path and the rest of the input.
+/// The path spans the opening `"`, escaped content and closing `"`.
 ///
-/// Iterates by character so the returned slices always land on UTF-8
-/// boundaries, even for non-ASCII paths.
+/// `None` if unterminated.
 fn take_quoted(input: &str) -> Option<(&str, &str)> {
     let mut end = 1; // byte after the opening quote
     let mut rest = &input[1..];
@@ -1434,7 +1571,7 @@ fn take_quoted(input: &str) -> Option<(&str, &str)> {
         let len = ch.len_utf8();
         match ch {
             '\\' => {
-                // Consume the escaped character too (it may be multi-byte).
+                // Consume the escaped character too, it may be multi-byte.
                 let escaped = rest[len..].chars().next()?;
                 let consumed = len + escaped.len_utf8();
                 end += consumed;
@@ -1450,64 +1587,22 @@ fn take_quoted(input: &str) -> Option<(&str, &str)> {
     None
 }
 
-/// Undo git's C-style path quoting (`\NNN` octal escapes, `\"`, `\\`).
+/// Undo git's C-style path quoting, `\NNN` octal escapes, `\"` and `\\`.
+///
+/// Delegates to gitoxide's C-style quote implementation, `gix::quote::ansi_c::undo`.
+/// It expects the surrounding double quotes, which are re-added around the interior.
 fn unquote_path(path: &str) -> Result<String> {
     if !path.contains('\\') {
         return Ok(path.to_owned());
     }
 
-    let mut out = Vec::with_capacity(path.len());
-    let mut bytes = path.as_bytes();
-    while let Some((&b, rest)) = bytes.split_first() {
-        bytes = rest;
-        if b == b'\\' {
-            match bytes.split_first() {
-                Some((&b'"', rest)) | Some((&b'\\', rest)) => {
-                    out.push(b);
-                    bytes = rest;
-                }
-                Some((&b'n', rest)) => {
-                    out.push(b'\n');
-                    bytes = rest;
-                }
-                Some((&b't', rest)) => {
-                    out.push(b'\t');
-                    bytes = rest;
-                }
-                Some((&d1, rest)) if (b'0'..=b'7').contains(&d1) => {
-                    let Some((&d2, rest)) = rest.split_first() else {
-                        bail!("malformed octal escape in quoted path");
-                    };
-                    let Some((&d3, rest)) = rest.split_first() else {
-                        bail!("malformed octal escape in quoted path");
-                    };
-                    if !(b'0'..=b'7').contains(&d2) || !(b'0'..=b'7').contains(&d3) {
-                        bail!("malformed octal escape in quoted path");
-                    }
-                    let code =
-                        (d1 - b'0') as u16 * 64 + (d2 - b'0') as u16 * 8 + (d3 - b'0') as u16;
-                    if code > u8::MAX as u16 {
-                        bail!("octal escape out of range in quoted path");
-                    }
-                    out.push(code as u8);
-                    bytes = rest;
-                }
-                _ => bail!("malformed escape in quoted path"),
-            }
-        } else {
-            out.push(b);
-        }
-    }
-
-    String::from_utf8(out).context("invalid UTF-8 in quoted path")
+    let quoted = format!("\"{path}\"");
+    let (unquoted, _) = gix::quote::ansi_c::undo(gix::bstr::BStr::new(quoted.as_bytes()))
+        .map_err(|e| anyhow::anyhow!("malformed quoted path: {e}"))?;
+    String::from_utf8(unquoted.into_owned().to_vec()).context("invalid UTF-8 in quoted path")
 }
 
 /// Collects the hunks of one blob diff while tracking per-line numbers.
-///
-/// The unified-diff headers give the 1-based start line of the hunk in each
-/// file; context lines advance both counters, removals only the old one and
-/// additions only the new one, so each line ends up with its real line
-/// numbers in both versions.
 struct HunkCollector<'a> {
     hunks: &'a mut Vec<DiffHunk>,
     insertions: &'a mut usize,
@@ -1579,35 +1674,33 @@ impl ConsumeHunk for HunkCollector<'_> {
     fn finish(self) {}
 }
 
-/// The commit HEAD points to, like `git log -1`. Returns `Ok(None)` for a
-/// repository without commits yet (unborn HEAD).
+/// The commit HEAD points to, like `git log -1`.
+///
+/// `Ok(None)` for a repository without commits yet, an unborn HEAD.
 pub fn head_commit(repo: &gix::Repository) -> Result<Option<FileCommit>> {
     let Some(head) = repo.head_id().ok() else {
         return Ok(None);
     };
     let commit = head.object()?.into_commit();
-    Ok(Some(file_commit(&commit, true)?))
+    Ok(Some(file_commit(&commit)?))
 }
 
-/// Full metadata of the commit `id` (short or full) in the repository at
-/// `workdir`, like [`head_commit`] for an arbitrary commit. Returns
-/// `Ok(None)` when the id cannot be resolved.
+/// Full metadata of the commit `id`, short or full, in the repository at `workdir`.
+/// Like [`head_commit`] for an arbitrary commit.
 ///
-/// The commit list ([`all_commits`]) omits message bodies to keep the walk
-/// cheap; the diff panel uses this to fetch the full commit on demand.
+/// `Ok(None)` when the id cannot be resolved.
 pub fn worktree_commit(workdir: &Path, id: &str) -> Result<Option<FileCommit>> {
-    let repo = open_with_cache(workdir)?;
+    let repo = gix::open(workdir)?;
     match repo.rev_parse_single(id.as_bytes()) {
         Ok(commit_id) => {
             let commit = commit_id.object()?.into_commit();
-            Ok(Some(file_commit(&commit, true)?))
+            Ok(Some(file_commit(&commit)?))
         }
         Err(_) => Ok(None),
     }
 }
 
-/// Short names of local branches (`refs/heads/*`) of `repo`, sorted
-/// alphabetically.
+/// Short names of local branches, `refs/heads/*`, of `repo`, sorted alphabetically.
 pub fn repo_branches(repo: &gix::Repository) -> Result<Vec<String>> {
     let mut names = Vec::new();
     for reference in repo.references()?.local_branches()? {
@@ -1618,7 +1711,7 @@ pub fn repo_branches(repo: &gix::Repository) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// Short names of tags (`refs/tags/*`) of `repo`, sorted alphabetically.
+/// Short names of tags, `refs/tags/*`, of `repo`, sorted alphabetically.
 pub fn repo_tags(repo: &gix::Repository) -> Result<Vec<String>> {
     let mut names = Vec::new();
     for reference in repo.references()?.tags()? {
@@ -1629,18 +1722,14 @@ pub fn repo_tags(repo: &gix::Repository) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// Short names of local branches (`refs/heads/*`), sorted alphabetically.
+/// Short names of local branches, `refs/heads/*`, sorted alphabetically.
 pub fn worktree_branches(workdir: &Path) -> Result<Vec<String>> {
-    repo_branches(&open_with_cache(workdir)?)
+    repo_branches(&gix::open(workdir)?)
 }
 
-/// Short names of tags (`refs/tags/*`), sorted alphabetically.
-pub fn worktree_tags(workdir: &Path) -> Result<Vec<String>> {
-    repo_tags(&open_with_cache(workdir)?)
-}
-
-/// Short name of the branch HEAD points to, or `None` when detached (e.g.
-/// after checking out a tag or a commit directly).
+/// Short name of the branch HEAD points to, or `None` when detached.
+///
+/// Detached after checking out a tag or a commit directly.
 pub fn current_branch(repo: &gix::Repository) -> Result<Option<String>> {
     let head = repo.head()?;
     let Some(name) = head.referent_name() else {
@@ -1649,8 +1738,9 @@ pub fn current_branch(repo: &gix::Repository) -> Result<Option<String>> {
     Ok(Some(String::from_utf8_lossy(name.shorten()).into_owned()))
 }
 
-/// Branch, tag and HEAD refs of a repository, ready for a NIP-34 kind-30618
-/// repository state announcement.
+/// Branch, tag and HEAD refs of a repository.
+///
+/// Ready for a NIP-34 kind-30618 repository state announcement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRefState {
     /// `(full refname, commit id)` pairs for heads and tags, sorted.
@@ -1659,8 +1749,10 @@ pub struct RepoRefState {
     pub head: Option<String>,
 }
 
-/// Collect the refs of `repo`: local branches and tags as
-/// `(refname, commit-id)` pairs, plus the branch HEAD points to.
+/// Collect the refs of `repo`.
+///
+/// Local branches and tags become `(refname, commit-id)` pairs.
+/// Also reports the branch HEAD points to.
 pub fn repo_ref_state(repo: &gix::Repository) -> Result<RepoRefState> {
     let mut refs = Vec::new();
 
@@ -1693,7 +1785,7 @@ pub fn repo_ref_state(repo: &gix::Repository) -> Result<RepoRefState> {
 
 /// [`repo_ref_state`] for the repository at `workdir`.
 pub fn worktree_ref_state(workdir: &Path) -> Result<RepoRefState> {
-    repo_ref_state(&open_with_cache(workdir)?)
+    repo_ref_state(&gix::open(workdir)?)
 }
 
 /// Everything the browser needs to refresh after a branch or tag switch.
@@ -1704,16 +1796,17 @@ pub struct WorktreeSnapshot {
     pub readme_path: Option<PathBuf>,
     /// Contents of the README, if any.
     pub readme: Option<Vec<u8>>,
-    /// Branch HEAD points to (`None` when detached, e.g. on a tag).
+    /// Branch HEAD points to, `None` when detached, for example on a tag.
     pub current_branch: Option<String>,
-    /// Commit HEAD points to, if any (see [`head_commit`]).
+    /// Commit HEAD points to, if any, see [`head_commit`].
     pub head_commit: Option<FileCommit>,
 }
 
-/// Snapshot the worktree after a branch/tag switch: entries, README, the
-/// branch HEAD points to and its commit, opening the repository once.
+/// Snapshot the worktree after a branch or tag switch.
+///
+/// Collects entries, the README, the branch HEAD points to and its commit.
 pub fn worktree_snapshot(workdir: &Path) -> Result<WorktreeSnapshot> {
-    let repo = open_with_cache(workdir)?;
+    let repo = gix::open(workdir)?;
     let readme_path = find_readme(&repo)?;
     let readme = match &readme_path {
         Some(path) => worktree_read(&repo, path)?,
@@ -1728,9 +1821,9 @@ pub fn worktree_snapshot(workdir: &Path) -> Result<WorktreeSnapshot> {
     })
 }
 
-/// Switch the checked-out ref and update the worktree to match, like
-/// `git checkout --force`. Local modifications are discarded since these
-/// clones are read-only browser copies.
+/// Switch the checked-out ref and update the worktree, like `git checkout --force`.
+///
+/// Local modifications are discarded, these clones are read-only browser copies.
 fn checkout(workdir: &Path, args: &[&str]) -> Result<()> {
     let output = Command::new("git")
         .arg("checkout")
@@ -1749,15 +1842,15 @@ fn checkout(workdir: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Check out the local branch `name`; HEAD stays attached to it.
+/// Check out the local branch `name`, HEAD stays attached to it.
 pub fn worktree_checkout_branch(workdir: &Path, name: &str) -> Result<()> {
-    // The short name (not `refs/heads/<name>`) keeps HEAD attached; the
-    // full ref name would be treated as a commit-ish and detach it.
+    // The short name, not `refs/heads/<name>`, keeps HEAD attached.
+    // The full ref name would be treated as a commit-ish and detach it.
     checkout(workdir, &[name])
 }
 
-/// Check out the tag `name`; HEAD becomes detached at the tagged commit,
-/// which [`current_branch`] reports as `None`.
+/// Check out the tag `name`, HEAD becomes detached at the tagged commit.
+/// [`current_branch`] reports this as `None`.
 pub fn worktree_checkout_tag(workdir: &Path, name: &str) -> Result<()> {
     // `--detach` pins the full tag ref so HEAD always ends up detached.
     checkout(workdir, &["--detach", &format!("refs/tags/{name}")])
@@ -1831,8 +1924,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
 
-        // Repositories are found at any depth; a linked worktree (a `.git`
-        // file instead of a directory) counts too.
+        // Repositories are found at any depth.
+        // A linked worktree, with a `.git` file instead of a directory, counts too.
         let nested = root.join("a/b/project");
         std::fs::create_dir_all(nested.join(".git")).unwrap();
         let worktree = root.join("wt");
@@ -1850,8 +1943,8 @@ mod tests {
         std::fs::create_dir_all(root.join(".hidden/repo/.git")).unwrap();
         std::fs::create_dir_all(root.join("node_modules/pkg/.git")).unwrap();
 
-        // A repository is not descended into, so repositories inside it
-        // (submodule worktrees) are not reported.
+        // A repository is not descended into.
+        // Repositories inside it, like submodule worktrees, are not reported.
         let outer = root.join("outer");
         std::fs::create_dir_all(outer.join(".git")).unwrap();
         std::fs::create_dir_all(outer.join("sub/other/.git")).unwrap();
@@ -1895,8 +1988,8 @@ mod tests {
 
     #[test]
     fn push_all_mirrors_branches_and_tags() {
-        // A bare "server" repository reachable via a `file://` URL, like a
-        // grasp server's `{base}/{owner}/{repo-id}.git` layout.
+        // A bare server repository reachable via a `file://` URL.
+        // Mirrors a grasp server's `{base}/{owner}/{repo-id}.git` layout.
         let server = tempfile::tempdir().unwrap();
         let server_repo = server.path().join("npub1test").join("my-repo.git");
         std::fs::create_dir_all(server_repo.parent().unwrap()).unwrap();
@@ -1929,8 +2022,8 @@ mod tests {
 
     #[test]
     fn push_all_tolerates_a_missing_ref_kind() {
-        // A repository with only tags (no branches) still pushes: wildcard
-        // refspecs without a local match are ignored.
+        // A repository with only tags and no branches still pushes.
+        // Wildcard refspecs without a local match are ignored.
         let server = tempfile::tempdir().unwrap();
         let server_repo = server.path().join("npub1test").join("my-repo.git");
         std::fs::create_dir_all(server_repo.parent().unwrap()).unwrap();
@@ -1996,7 +2089,7 @@ mod tests {
         assert_eq!(state.refs.len(), 3);
     }
 
-    /// Build a throwaway non-bare repository with the given files (rel → bytes).
+    /// Build a throwaway non-bare repository from `(rel, bytes)` file pairs.
     fn fixture(files: &[(&str, &[u8])]) -> (tempfile::TempDir, gix::Repository) {
         let dir = tempfile::tempdir().expect("tempdir");
         let repo = gix::init(&dir).expect("init");
@@ -2056,8 +2149,8 @@ mod tests {
         );
     }
 
-    /// Stage everything and create a commit with the git CLI (like
-    /// [`apply_patch`], the crate already shells out to the CLI).
+    /// Stage everything and create a commit with the git CLI.
+    /// Like [`apply_patch`], the crate already shells out to the CLI.
     fn commit_all(repo: &gix::Repository, message: &str) {
         git_run(repo.workdir().expect("workdir"), &["add", "-A"]);
         git_run(repo.workdir().expect("workdir"), &["commit", "-m", message]);
@@ -2069,8 +2162,8 @@ mod tests {
         let path = dir.path().join("repo");
         let initial = init_repository(&path, "My Repo", "desc").expect("init");
 
-        // A feature branch and a mainline commit diverge from the initial
-        // commit; it is their merge base.
+        // A feature branch and a mainline commit diverge from the initial commit.
+        // The initial commit is their merge base.
         git_run(&path, &["checkout", "-b", "feature"]);
         std::fs::write(path.join("feature.txt"), "feature\n").expect("write");
         commit_all(&gix::open(&path).expect("open"), "feature commit");
@@ -2085,7 +2178,7 @@ mod tests {
             Some(initial.as_str())
         );
 
-        // An orphan branch shares no history with main: `Ok(None)`.
+        // An orphan branch shares no history with main, so `Ok(None)`.
         git_run(&path, &["checkout", "--orphan", "orphan"]);
         std::fs::write(path.join("orphan.txt"), "orphan\n").expect("write");
         commit_all(&gix::open(&path).expect("open"), "orphan commit");
@@ -2114,41 +2207,9 @@ mod tests {
     }
 
     #[test]
-    fn patch_applies_checks_without_modifying_the_tree() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("repo");
-        let initial = init_repository(&path, "My Repo", "desc").expect("init");
-
-        git_run(&path, &["checkout", "-b", "feature"]);
-        std::fs::write(path.join("feature.txt"), "feature\n").expect("write");
-        commit_all(&gix::open(&path).expect("open"), "feature commit");
-        let patch = format_patch_between(&path, &initial, "feature").expect("patch");
-
-        // A clone of the initial state accepts the series...
-        let clone = dir.path().join("clone");
-        git_run(
-            dir.path(),
-            &[
-                "clone",
-                "-q",
-                path.to_str().unwrap(),
-                clone.to_str().unwrap(),
-            ],
-        );
-        git_run(&clone, &["checkout", "-q", &initial]);
-        assert!(patch_applies(&clone, &patch).is_ok());
-        // ...and the check must not have modified the working tree.
-        assert!(!clone.join("feature.txt").exists());
-
-        // A conflicting file makes the same series fail the check.
-        std::fs::write(clone.join("feature.txt"), "conflicting\n").expect("write");
-        assert!(patch_applies(&clone, &patch).is_err());
-    }
-
-    #[test]
     fn push_commit_ref_pushes_to_the_event_namespace() {
-        // A bare "server" repository reachable via a `file://` URL, like a
-        // grasp server's `{base}/{owner}/{repo-id}.git` layout.
+        // A bare server repository reachable via a `file://` URL.
+        // Mirrors a grasp server's `{base}/{owner}/{repo-id}.git` layout.
         let server = tempfile::tempdir().unwrap();
         let server_repo = server.path().join("npub1test").join("my-repo.git");
         std::fs::create_dir_all(server_repo.parent().unwrap()).unwrap();
@@ -2214,7 +2275,7 @@ mod tests {
             head_commit_id(&path).expect("head").as_deref(),
             Some(initial.as_str())
         );
-        // No commits yet: `HEAD` alone.
+        // No commits yet, `HEAD` alone.
         assert_eq!(
             commits_since(&path, None).expect("commits"),
             vec![initial.clone()]
@@ -2275,7 +2336,7 @@ mod tests {
 
         let branch = current_branch(&repo).expect("branch").expect("on a branch");
         assert_eq!(branch, "main");
-        // [`FileCommit`] carries the short id; the full id is 40 chars.
+        // [`FileCommit`] carries the short id, the full id is 40 chars.
         assert_eq!(
             head_commit(&repo).expect("head").expect("commit").id,
             &commit[..7]
@@ -2312,6 +2373,12 @@ mod tests {
             git_in(&path, &["remote", "get-url", "origin"]).expect("url"),
             "https://gitnostr.com/npub1test/repo.git"
         );
+        // The standard fetch mapping is configured with the remote.
+        // Later `git fetch origin` updates `refs/remotes/origin/*`.
+        assert_eq!(
+            git_in(&path, &["config", "remote.origin.fetch"]).expect("refspec"),
+            "+refs/heads/*:refs/remotes/origin/*"
+        );
 
         // A second call must not override the existing remote.
         ensure_origin(&path, "https://other.example/repo.git").expect("keep");
@@ -2319,6 +2386,274 @@ mod tests {
             git_in(&path, &["remote", "get-url", "origin"]).expect("url"),
             "https://gitnostr.com/npub1test/repo.git"
         );
+    }
+
+    #[test]
+    fn origin_url_reads_the_remote_or_reports_none() {
+        let (dir, _repo) = fixture(&[("a.txt", b"one")]);
+        commit_all(&_repo, "initial");
+        let dir = dir.path();
+
+        // No remote configured yet.
+        assert_eq!(origin_url(dir).expect("read"), None);
+
+        ensure_origin(dir, "https://gitnostr.com/npub1test/repo.git").expect("add");
+        assert_eq!(
+            origin_url(dir).expect("read").as_deref(),
+            Some("https://gitnostr.com/npub1test/repo.git")
+        );
+    }
+
+    #[test]
+    fn set_origin_creates_or_replaces_the_remote() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("my-repo");
+        init_repository(&path, "My Repo", "").expect("init");
+
+        // No origin yet, so one is added.
+        set_origin(&path, "https://gitnostr.com/npub1test/repo.git").expect("add");
+        assert_eq!(
+            origin_url(&path).expect("url").as_deref(),
+            Some("https://gitnostr.com/npub1test/repo.git")
+        );
+
+        // An existing origin is replaced, not duplicated.
+        // A clone's origin points at the cloned-from path.
+        // It is re-targeted at the grasp server.
+        set_origin(&path, "https://grasp.example/npub1test/repo.git").expect("replace");
+        assert_eq!(
+            origin_url(&path).expect("url").as_deref(),
+            Some("https://grasp.example/npub1test/repo.git")
+        );
+    }
+
+    #[test]
+    fn working_copy_cloned_from_the_mirror_matches_head_and_origin() {
+        // The mirror is a freshly initialized repository.
+        // Its `origin` points at the grasp server.
+        // `Backend::create_repository` leaves it in the GitCache.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mirror = dir.path().join("mirror");
+        let commit = init_repository(&mirror, "My Repo", "Does things.").expect("init");
+        ensure_origin(&mirror, "https://gitnostr.com/npub1test/my-repo.git").expect("origin");
+
+        // The working copy is cloned from the mirror.
+        // It then shares the announced history exactly.
+        // `origin` is re-pointed at the grasp server instead of the mirror path.
+        let destination = dir.path().join("folder").join("My_Repo");
+        std::fs::create_dir_all(destination.parent().unwrap()).expect("parent");
+        clone_repo(&[format!("file://{}", mirror.display())], &destination).expect("clone");
+        set_origin(&destination, "https://gitnostr.com/npub1test/my-repo.git").expect("set origin");
+
+        assert_eq!(
+            origin_url(&destination).expect("url").as_deref(),
+            Some("https://gitnostr.com/npub1test/my-repo.git")
+        );
+        assert_eq!(
+            head_commit_id(&destination).expect("head").as_deref(),
+            Some(commit.as_str())
+        );
+        assert!(destination.join("README.md").is_file());
+    }
+
+    #[test]
+    fn fast_forward_branches_moves_the_mirror_and_keeps_local_work() {
+        // A bare server, like a grasp server's `{base}/{owner}/{repo}.git` layout.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base_server = dir.path().join("npub1test").join("repo.git");
+        std::fs::create_dir_all(base_server.parent().unwrap()).unwrap();
+        let init_status = Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .arg(&base_server)
+            .status()
+            .expect("spawn git init --bare");
+        assert!(init_status.success());
+
+        // The owner's working repo pushes the initial commit.
+        let (work_dir, work_repo) = fixture(&[("a.txt", b"one")]);
+        commit_all(&work_repo, "initial");
+        let work = work_dir.path();
+        let base_url = format!("file://{}", dir.path().display());
+        push_all(work, &base_url, "npub1test", "repo").expect("push");
+
+        // A mirror clone, like the app's GitCache clones.
+        let mirror = dir.path().join("mirror");
+        git_run(
+            dir.path(),
+            &[
+                "clone",
+                "-q",
+                &format!("{base_url}/npub1test/repo.git"),
+                mirror.to_str().unwrap(),
+            ],
+        );
+        let initial = git_in(&mirror, &["rev-parse", "HEAD"]).expect("initial");
+
+        // The owner pushes a new commit.
+        // The mirror fetches it, but its local `main` and worktree stay behind.
+        std::fs::write(work.join("new.txt"), b"new\n").expect("write");
+        commit_all(&gix::open(work).expect("open"), "new commit");
+        push_all(work, &base_url, "npub1test", "repo").expect("push");
+        git_run(&mirror, &["fetch", "origin"]);
+        let remote = git_in(&mirror, &["rev-parse", "refs/remotes/origin/main"]).expect("remote");
+        assert_eq!(
+            git_in(&mirror, &["rev-parse", "HEAD"]).expect("local"),
+            initial
+        );
+        assert_ne!(remote, initial);
+
+        // Fast-forwarding catches the branch and its worktree up.
+        // The second call has nothing left to move.
+        assert!(fast_forward_branches(&mirror).expect("ff"));
+        assert_eq!(
+            git_in(&mirror, &["rev-parse", "HEAD"]).expect("local"),
+            remote
+        );
+        assert!(mirror.join("new.txt").is_file());
+        assert!(!fast_forward_branches(&mirror).expect("idle"));
+
+        // A branch with local commits of its own is never touched.
+        git_run(&mirror, &["checkout", "-b", "wip"]);
+        std::fs::write(mirror.join("wip.txt"), b"wip\n").expect("write");
+        commit_all(&gix::open(&mirror).expect("open"), "local wip");
+        let wip = git_in(&mirror, &["rev-parse", "HEAD"]).expect("wip");
+        assert!(!fast_forward_branches(&mirror).expect("wip skipped"));
+        assert_eq!(
+            git_in(&mirror, &["rev-parse", "HEAD"]).expect("wip kept"),
+            wip
+        );
+    }
+
+    #[test]
+    fn fetch_repo_refs_imports_heads_under_a_prefix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // A bare base server holding the initial commit.
+        // Like a grasp server's `{base}/{owner}/{repo-id}.git` layout.
+        let base_server = dir.path().join("npub1base").join("base.git");
+        std::fs::create_dir_all(base_server.parent().unwrap()).unwrap();
+        let init_status = Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .arg(&base_server)
+            .status()
+            .expect("spawn git init --bare");
+        assert!(init_status.success());
+
+        let (upstream_dir, upstream_repo) = fixture(&[("a.txt", b"one")]);
+        commit_all(&upstream_repo, "initial");
+        let upstream_path = upstream_dir.path();
+        let initial = git_in(upstream_path, &["rev-parse", "HEAD"]).expect("initial");
+        push_all(
+            upstream_path,
+            &format!("file://{}", dir.path().display()),
+            "npub1base",
+            "base",
+        )
+        .expect("push");
+
+        // The base mirror is a plain clone of the base server.
+        let base_url = format!("file://{}", base_server.display());
+        let mirror = dir.path().join("mirror");
+        git_run(
+            dir.path(),
+            &["clone", "-q", &base_url, mirror.to_str().unwrap()],
+        );
+
+        // The fork server has the same initial commit.
+        // It also carries a feature commit on its own `feature` branch.
+        let fork_work = dir.path().join("fork-work");
+        git_run(
+            dir.path(),
+            &["clone", "-q", &base_url, fork_work.to_str().unwrap()],
+        );
+        git_run(&fork_work, &["checkout", "-b", "feature"]);
+        std::fs::write(fork_work.join("feature.txt"), "feature\n").expect("write");
+        commit_all(&gix::open(&fork_work).expect("open"), "feature commit");
+        let tip = git_in(&fork_work, &["rev-parse", "HEAD"]).expect("tip");
+
+        let fork_server = dir.path().join("npub1fork").join("fork.git");
+        std::fs::create_dir_all(fork_server.parent().unwrap()).unwrap();
+        let init_status = Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .arg(&fork_server)
+            .status()
+            .expect("spawn git init --bare");
+        assert!(init_status.success());
+        push_commit_ref(
+            &fork_work,
+            &format!("file://{}", fork_server.display()),
+            &tip,
+            "refs/heads/feature",
+        )
+        .expect("push");
+
+        // Import the fork's heads into the mirror under a private prefix.
+        // The first dead URL is skipped, the second works.
+        let dead = format!("file://{}/missing.git", dir.path().display());
+        fetch_repo_refs(
+            &mirror,
+            &[dead, format!("file://{}", fork_server.display())],
+            "+refs/heads/*:refs/fork/npub1fork/fork/*",
+        )
+        .expect("fetch");
+
+        // The imported refs are listed under the prefix only.
+        assert_eq!(
+            refs_with_prefix(&mirror, "refs/fork/npub1fork/fork").expect("refs"),
+            vec!["refs/fork/npub1fork/fork/feature"]
+        );
+        // Nothing leaked into the normal ref namespaces.
+        assert_eq!(
+            refs_with_prefix(&mirror, "refs/heads/fork").expect("refs"),
+            Vec::<String>::new()
+        );
+
+        // The mirror can now range across both histories.
+        // The fork point is the shared initial commit, the proposal covers the fork commit.
+        assert_eq!(
+            merge_base(
+                &mirror,
+                "refs/remotes/origin/main",
+                "refs/fork/npub1fork/fork/feature",
+            )
+            .expect("merge base")
+            .as_deref(),
+            Some(initial.as_str())
+        );
+        let patch = format_patch_between(&mirror, &initial, "refs/fork/npub1fork/fork/feature")
+            .expect("patch");
+        assert!(patch.contains("Subject: [PATCH] feature commit"));
+        assert!(patch.contains("feature.txt"));
+
+        // Pruning the prefix removes the import again.
+        delete_refs_with_prefix(&mirror, "refs/fork/npub1fork/fork").expect("delete");
+        assert_eq!(
+            refs_with_prefix(&mirror, "refs/fork/npub1fork/fork").expect("refs"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn fetch_repo_refs_fails_when_every_url_fails() {
+        let (_dir, repo) = fixture(&[("a.txt", b"one")]);
+        commit_all(&repo, "initial");
+        let dir = _dir.path();
+
+        let dead = format!("file://{}/missing.git", dir.display());
+        let err = fetch_repo_refs(dir, &[dead], "+refs/heads/*:refs/fork/x/*")
+            .expect_err("all URLs fail");
+        assert!(err.to_string().contains("failed to fetch"));
+
+        // Without any URL there is nothing to try.
+        let err = fetch_repo_refs(dir, &[], "+refs/heads/*:refs/fork/x/*").expect_err("no URLs");
+        assert!(err.to_string().contains("no clone URLs"));
+    }
+
+    #[test]
+    fn delete_refs_with_prefix_is_a_noop_without_matches() {
+        let (_dir, repo) = fixture(&[("a.txt", b"one")]);
+        commit_all(&repo, "initial");
+        delete_refs_with_prefix(_dir.path(), "refs/fork/nothing").expect("noop");
     }
 
     /// Run a git command in `dir`, asserting success.
@@ -2420,7 +2755,7 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), b"feature").expect("write");
         commit_all(&repo, "feature change");
         run(&["checkout", "-"]);
-        // --no-ff forces a merge commit; it is the latest commit changing a.txt.
+        // `--no-ff` forces a merge commit, it is the latest commit changing a.txt.
         run(&["merge", "--no-ff", "--no-edit", "feature"]);
 
         let commit = last_commit(&repo, Path::new("a.txt"))
@@ -2448,7 +2783,7 @@ mod tests {
             &[
                 PathBuf::from("a.txt"),
                 PathBuf::from("b.txt"),
-                // Untracked paths are simply absent from the result.
+                // Untracked paths are absent from the result.
                 PathBuf::from("missing.txt"),
             ],
         )
@@ -2494,7 +2829,7 @@ mod tests {
     fn head_commit_reports_head() {
         let (_dir, repo) = fixture(&[("a.txt", b"one")]);
 
-        // Unborn HEAD: no commit yet.
+        // Unborn HEAD means no commit yet.
         assert!(head_commit(&repo).expect("head").is_none());
 
         commit_all(&repo, "initial");
@@ -2517,15 +2852,15 @@ mod tests {
         git_run(dir, &["tag", "v0.9"]);
         git_run(dir, &["tag", "v1.0"]);
 
-        // The initial branch name depends on git configuration; only the
-        // branch we created is fixed.
+        // The initial branch name depends on git configuration.
+        // Only the branch we created is fixed.
         let branches = worktree_branches(dir).expect("branches");
         assert_eq!(branches.len(), 2);
         assert!(branches.contains(&"feature".to_string()));
         assert!(branches.windows(2).all(|pair| pair[0] <= pair[1]), "sorted");
 
         assert_eq!(
-            worktree_tags(dir).expect("tags"),
+            repo_tags(&repo).expect("tags"),
             vec!["v0.9".to_string(), "v1.0".to_string()]
         );
     }
@@ -2655,8 +2990,8 @@ mod tests {
         assert_eq!(modified.deletions, 1);
         assert!(!modified.binary);
         let lines = &modified.hunks[0].lines;
-        // One hunk with context around the single-line change: the removed
-        // line is old 2, the added line is new 2.
+        // One hunk with context around the single-line change.
+        // The removed line is old 2, the added line is new 2.
         assert!(lines.iter().any(|line| {
             line.kind == DiffLineKind::Deletion
                 && line.old == Some(2)
@@ -2753,7 +3088,7 @@ mod tests {
         let (dir, repo) = fixture(&[("a.txt", b"one\n")]);
         commit_all(&repo, "initial");
 
-        // The root commit diffs against the empty tree: everything is added.
+        // The root commit diffs against the empty tree, everything is added.
         let head = repo.head_id().expect("head").shorten_or_id().to_string();
         let diff = worktree_commit_diff(dir.path(), &head).expect("diff");
         assert_eq!(diff.files.len(), 1);
@@ -2815,7 +3150,7 @@ mod tests {
             .expect("file");
         assert_eq!(file.status, DiffStatus::Renamed);
         assert_eq!(file.old_path.as_deref(), Some("old.txt"));
-        // A pure rename has no content change; the file is still listed.
+        // A pure rename has no content change, the file is still listed.
         assert!(file.hunks.is_empty());
         assert_eq!(file.insertions, 0);
         assert_eq!(file.deletions, 0);
@@ -3021,8 +3356,8 @@ Subject: [RFC PATCH v3 4/7] the real title
 
     #[test]
     fn patch_commits_handles_missing_headers() {
-        // A hand-written patch without author/date headers still lists a
-        // commit; time stays 0 and the author falls back to the raw value.
+        // A hand-written patch without author or date headers still lists a commit.
+        // Time stays 0 and the author stays empty.
         let patch = r#"From 1111111111111111111111111111111111111111 Mon Sep 17 00:00:00 2001
 Subject: [PATCH] plain
 
@@ -3040,7 +3375,7 @@ Subject: [PATCH] plain
     fn patch_commits_ignores_non_patch_lines() {
         assert!(patch_commits("").is_empty());
         assert!(patch_commits("just some text\nFrom 123\n").is_empty());
-        // A diff-only body (no mbox envelope) has no commits.
+        // A diff-only body without an mbox envelope has no commits.
         let patch = "diff --git a/x b/x\n--- a/x\n+++ b/x\n";
         assert!(patch_commits(patch).is_empty());
     }
@@ -3120,10 +3455,10 @@ index 123..456 100644
 
     #[test]
     fn parses_real_format_patch_output() {
-        // Build a commit touching a mix of file kinds, then feed genuine
-        // `git format-patch` output through the parser: quoted paths (space
-        // in the name), octal-escaped paths (UTF-8 name), a rename-free
-        // modification, an addition and a binary deletion.
+        // Build a commit touching a mix of file kinds.
+        // Feed genuine `git format-patch` output through the parser.
+        // It covers quoted and octal-escaped paths.
+        // There are also a rename-free modification, an addition and a binary deletion.
         let (dir, repo) = fixture(&[
             ("src/main.rs", b"fn main() {\n    println!(\"one\");\n}\n"),
             ("my file.txt", b"hello\n"),
@@ -3168,12 +3503,12 @@ index 123..456 100644
                 .unwrap_or_else(|| panic!("missing file {path:?}"))
         };
 
-        // Space in the name: git quotes the path in the header.
+        // Space in the name makes git quote the path in the header.
         let file = by_path("my file.txt");
         assert_eq!(file.status, DiffStatus::Modified);
         assert_eq!(file.insertions, 1);
 
-        // UTF-8 name: git emits the path as octal escapes.
+        // UTF-8 names are emitted as octal escapes.
         let file = by_path("\u{8bf4}\u{660e}.md");
         assert_eq!(file.status, DiffStatus::Modified);
         assert_eq!(file.insertions, 1);
@@ -3188,8 +3523,8 @@ index 123..456 100644
         assert_eq!(file.status, DiffStatus::Added);
         assert_eq!(file.insertions, 1);
 
-        // Binary deletion: git emits no ---/+++ lines, only the mode and
-        // the "Binary files" marker.
+        // A binary deletion emits no `---` or `+++` lines.
+        // Only the mode line and the `Binary files` marker remain.
         let file = by_path("img.png");
         assert_eq!(file.status, DiffStatus::Deleted);
         assert!(file.binary);

@@ -3,7 +3,6 @@ mod workspace;
 
 use gpui::{App, AppContext, Entity, Window};
 use gpui_component::Root;
-pub use signed_ui::image_cache;
 pub use views::{RepoListView, SidebarPanel};
 pub use workspace::Workspace;
 

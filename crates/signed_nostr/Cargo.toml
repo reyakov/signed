@@ -5,9 +5,6 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-signed_core = { path = "../signed_core" }
-
-nostr.workspace = true
 nostr-sdk.workspace = true
 nostr-connect.workspace = true
 nostr-gossip-memory.workspace = true

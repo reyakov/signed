@@ -45,10 +45,7 @@ impl Workspace {
 
         let mut subscriptions = vec![];
 
-        // A bottom/right dock whose last panel was dragged away is removed
-        // entirely: base keeps the emptied region, which would otherwise
-        // linger as a bare strip. Deferred, because the event arrives while
-        // the area is mid-update.
+        // A bottom or right dock whose last panel was dragged away is removed entirely.
         let dock_for_pruning = dock.clone();
         subscriptions.push(cx.subscribe_in(
             &dock,
@@ -78,9 +75,7 @@ impl Workspace {
 
         let backend = Backend::global(cx);
 
-        // Ask for the passphrase when the stored identity is NIP-49
-        // encrypted. Subscribed via the window, since opening a dialog
-        // needs one.
+        // Ask for the passphrase when the stored identity is NIP-49 encrypted.
         let passphrase_subscription =
             window.subscribe(&backend, cx, |_backend, event, window, cx| {
                 if matches!(event, BackendEvent::PassphraseRequired) {
@@ -88,9 +83,8 @@ impl Workspace {
                 }
             });
 
-        // The event may have fired before this window existed (the backend
-        // is initialized before the first window opens); fall back to the
-        // backend state in that case.
+        // The event may have fired before this window existed.
+        // Fall back to the backend state in that case.
         if backend.read(cx).passphrase_required() {
             passphrase_dialog::open(window, cx);
         }

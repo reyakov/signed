@@ -9,7 +9,9 @@ struct GlobalSettingsStore(Entity<SettingsStore>);
 
 impl Global for GlobalSettingsStore {}
 
-/// The application settings, loaded from disk at startup and persisted whenever they change.
+/// The application settings,
+/// loaded from disk at startup and saved whenever they change.
+///
 /// Installed as a global by the app so any part of the UI can read and edit them.
 pub struct SettingsStore {
     path: PathBuf,
@@ -17,7 +19,7 @@ pub struct SettingsStore {
 }
 
 impl SettingsStore {
-    /// Retrieve the global settings store (created at startup by the app).
+    /// Retrieve the global settings store, created at startup by the app.
     pub fn global(cx: &App) -> Entity<Self> {
         cx.global::<GlobalSettingsStore>().0.clone()
     }
@@ -27,9 +29,11 @@ impl SettingsStore {
         cx.set_global(GlobalSettingsStore(entity));
     }
 
-    /// Load the settings from `path`, falling back to the defaults when the
-    /// file is missing or unreadable. Missing keys merge with the defaults,
-    /// so older settings files keep working as new settings are added.
+    /// Load the settings from `path`,
+    /// falls back to defaults when the file is missing or unreadable.
+    ///
+    /// Missing keys merge with the defaults,
+    /// older settings files keep working as new settings are added.
     pub fn new(path: impl AsRef<Path>, _cx: &mut Context<Self>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
@@ -78,8 +82,7 @@ impl SettingsStore {
         }
     }
 
-    /// Write the settings to disk, replacing the file atomically
-    /// so a crash mid-write cannot corrupt the settings.
+    /// Write the settings to disk, replacing the file atomically.
     fn save(&self) -> Result<()> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;

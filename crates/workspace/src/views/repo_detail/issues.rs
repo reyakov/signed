@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use assets::CustomIconName;
-use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
+use dock::{BasePanel, DockArea, Panel, PanelEvent, add_center_panel, panel_handle};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
@@ -18,14 +18,12 @@ use gpui_component::{
 use nostr::prelude::EventId;
 use signed_core::{RepoStatus, activity_subject};
 use signed_state::{ProfileStore, RepoStore};
-use signed_ui::image_cache::{MAX_IMAGES, image_cache};
 use signed_ui::{SegmentButton, UserAvatar, placeholder, status_badge};
 use utils::relative_time;
 
 use super::issue_detail::IssueDetailView;
 
-/// Height of one issue row in the virtual list: `py_2` padding, a 32px
-/// title line (`h_8`), a 24px meta line (`h_6`) and the 1px bottom border.
+/// Height of one issue row in the virtual list.
 const ISSUE_ROW_HEIGHT: f32 = 73.;
 
 /// Status filter of the issues list, chosen via the header's filter buttons.
@@ -35,8 +33,7 @@ enum IssueFilter {
     All,
     /// Issues whose resolved status is [`RepoStatus::Open`].
     Open,
-    /// Issues whose resolved status is [`RepoStatus::Closed`] or
-    /// [`RepoStatus::Applied`] (both are "done" states).
+    /// Issues whose resolved status is [`RepoStatus::Closed`].
     Closed,
 }
 
@@ -63,14 +60,11 @@ pub struct IssuesView {
     filter: IssueFilter,
     /// Per-row heights of the virtual list.
     item_sizes: Rc<Vec<Size<Pixels>>>,
-    /// Number of rows [`Self::item_sizes`] was built for (the filtered issue count).
+    /// The filtered issue count [`Self::item_sizes`] was built for.
     issue_len: usize,
-    /// Indices into the store's `issues` matching [`Self::filter`]; the
-    /// virtual list renders this slice. Rebuilt only when the store
-    /// version or the filter changes, keyed by [`Self::cache_key`].
+    /// Indices into the store's `issues` matching [`Self::filter`].
     visible_issues: Vec<usize>,
-    /// Header counts `(total, open, closed)`, rebuilt with
-    /// [`Self::visible_issues`].
+    /// Header counts `(total, open, closed)`, rebuilt with [`Self::visible_issues`].
     counts: (usize, usize, usize),
     /// Store version and filter the cached rows/counts were built from.
     cache_key: Option<(u64, IssueFilter)>,
@@ -82,10 +76,11 @@ impl IssuesView {
     pub fn new(
         dock_area: WeakEntity<DockArea>,
         store: Entity<RepoStore>,
-        repo_name: SharedString,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let repo_name = store.read(cx).name();
+
         Self {
             focus_handle: cx.focus_handle(),
             dock_area,
@@ -101,7 +96,7 @@ impl IssuesView {
         }
     }
 
-    /// Open the detail panel of `issue_id` at the bottom of the dock area.
+    /// Open the detail panel of `issue_id` in the dock area.
     fn open_issue_detail(
         &mut self,
         issue_id: EventId,
@@ -115,12 +110,10 @@ impl IssuesView {
         let panel = cx.new(|cx| IssueDetailView::new(self.store.clone(), issue_id, window, cx));
 
         dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+            add_center_panel(dock_area, panel_handle(panel), window, cx);
         });
     }
 
-    /// Render one row of the issue list; `ix` is the row index and
-    /// `issue_ix` the index of the issue in the store's `issues`.
     fn render_row(&self, ix: usize, issue_ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let issue = &self.store.read(cx).issues[issue_ix];
         let title = activity_subject(issue);
@@ -183,8 +176,7 @@ impl IssuesView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        // Counts of the last list rebuild (`render` rebuilds first when the
-        // store version or filter changed, so this is never stale).
+        // Counts of the last list rebuild.
         let (total, open, closed) = self.counts;
 
         h_flex()
@@ -242,8 +234,7 @@ impl IssuesView {
     }
 }
 
-/// Open the "new issue" dialog: a title and a content input that submit
-/// through [`RepoStore::open_issue`] when confirmed.
+/// Open the new issue dialog, a title and a content input.
 pub(super) fn open_new_issue_dialog(store: Entity<RepoStore>, window: &mut Window, cx: &mut App) {
     let subject = cx.new(|cx| InputState::new(window, cx).placeholder("Issue title"));
     let content = cx.new(|cx| TextareaState::new(window, cx).placeholder("Describe the issue..."));
@@ -332,9 +323,9 @@ impl Render for IssuesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filter = self.filter;
 
-        // Rebuild the filtered rows and header counts only when the store
-        // refreshed or the filter changed; other renders reuse the cache.
+        // Rows and counts are rebuilt only when the store refreshed or filter changed.
         let version = self.store.read(cx).version();
+
         if self.cache_key != Some((version, filter)) {
             let store = self.store.read(cx);
             let mut counts = (0usize, 0usize, 0usize);
@@ -359,8 +350,8 @@ impl Render for IssuesView {
 
         let count = self.visible_issues.len();
 
-        // The virtual list's item count comes from `item_sizes`; rebuild it
-        // whenever the filtered issue count changes.
+        // The virtual list's item count comes from `item_sizes`.
+        // Rebuild it whenever the filtered issue count changes.
         if count != self.issue_len {
             self.issue_len = count;
             self.item_sizes = Rc::new(vec![size(px(0.), px(ISSUE_ROW_HEIGHT)); count]);
@@ -371,7 +362,7 @@ impl Render for IssuesView {
 
         v_flex()
             .size_full()
-            .image_cache(image_cache("issues", MAX_IMAGES))
+            .image_cache(gpui::retain_all("issues"))
             .child(self.render_header(cx))
             .child(
                 v_flex()

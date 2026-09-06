@@ -147,8 +147,7 @@ pub(crate) fn window_controls(window: &mut Window, cx: &mut App) -> impl IntoEle
         .items_center()
         .flex_shrink_0()
         .h_full()
-        // Like native windows apps, the controls span the title bar but never
-        // grow past the tab bar height.
+        // The controls span the title bar but never grow past the tab bar height.
         .when(cfg!(target_os = "windows"), |this| {
             this.max_h(TAB_BAR_HEIGHT)
         })

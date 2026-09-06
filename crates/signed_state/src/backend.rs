@@ -1,11 +1,13 @@
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{Error, anyhow, bail};
+use anyhow::{Context as AnyhowContext, Error, anyhow, bail};
 use bitcoin_hashes::sha1::Hash as Sha1Hash;
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Global, Task};
 use nostr::event::IntoEventBuilder;
@@ -17,8 +19,7 @@ use signed_nostr::{SignedAuthUrlHandler, UniversalSigner, Update};
 
 use crate::git_store::GitStore;
 
-/// Keyring entry holding the user credential (`nsec1...` or `bunker://...`
-/// with an embedded `?master=<nsec>` NIP-46 session key).
+/// Keyring entry for the user credential.
 pub const USER_KEYRING: &str = "Signed Safe Storage";
 /// Timeout for NIP-46 signer responses.
 pub const NOSTR_CONNECT_TIMEOUT: u64 = 60;
@@ -31,34 +32,25 @@ pub const BOOTSTRAP_RELAYS: [&str; 4] = [
     "wss://profiles.nostr1.com",
 ];
 
-/// Relays used for indexing user's relay list (NIP-65).
+/// Relays used to index the user's NIP-65 relay list.
 pub const INDEXER_RELAYS: [&str; 2] = ["wss://indexer.coracle.social", "wss://user.kindpag.es"];
 
-/// How long an identical fetch/sync request is suppressed after it started.
-/// A second panel for the same repository (or the global and per-author
-/// list stores at login) doesn't duplicate a sync that just ran; after the
-/// window, re-fetching is allowed again so data stays fresh.
+/// How long an identical fetch or sync request is suppressed after it started.
 const FETCH_DEDUP_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
     /// User has no signer configured.
     SignerRequired,
-    /// The stored identity is NIP-49 encrypted (`ncryptsec1...`); a
-    /// passphrase is required to decrypt it before the session can resume.
+    /// The stored identity is NIP-49 encrypted key.
     PassphraseRequired,
-    /// The signer has changed (login/logout/account switch).
+    /// The signer changed on login, logout or account switch.
     SignerChanged,
-    /// Relay bootstrap finished.
-    Connected,
     /// A new event was received from a relay and stored in the database.
     NostrUpdate(Update),
-    /// A negentropy sync completed; the database was updated directly,
-    /// so stores should re-query (no [`BackendEvent::NostrUpdate`] is fired
-    /// for synced events).
+    /// A negentropy sync completed.
     Synced,
-    /// A negentropy sync is in flight. Stores may re-query to render
-    /// incrementally; UI can show `current`/`total` progress.
+    /// A negentropy sync is in flight.
     SyncProgress {
         /// Total events to process.
         total: u64,
@@ -80,28 +72,42 @@ impl BackendEvent {
     }
 }
 
-/// Global backend entity: owns the nostr client, the signer and the
-/// notification pump. Stores subscribe to [`BackendEvent`] and re-query the
-/// local database when relevant updates arrive.
+/// The global backend entity.
+///
+/// Owns the nostr client, the signer and the notification pump.
 pub struct Backend {
     client: Client,
     signer: UniversalSigner,
     current_user: Option<PublicKey>,
-    connected: bool,
     sync_progress: Option<(u64, u64)>,
-    /// Whether the stored credential is NIP-49 encrypted and a passphrase
-    /// is still needed to resume the session.
+    /// True when the stored credential is NIP-49 encrypted.
     passphrase_required: bool,
-    /// Fingerprints of recently started fetches/syncs (relay + filter set),
-    /// so duplicate requests within [`FETCH_DEDUP_WINDOW`] collapse into
-    /// one. Entries are pruned lazily on the next request.
+    /// Fingerprints of recently started fetches and syncs, a relay plus filter set.
     recent_fetches: HashMap<u64, Instant>,
+    /// Repositories with a push in flight, mirror or checkout based.
+    pushing_repos: Arc<Mutex<HashSet<RepoAddr>>>,
     tasks: Vec<Task<Result<(), Error>>>,
 }
 
 struct GlobalBackend(Entity<Backend>);
 
 impl Global for GlobalBackend {}
+
+/// Removes its repository from the in-flight push set when dropped.
+///
+/// A push task cancelled by its panel closing cannot leave the repository locked.
+struct PushGuard {
+    repos: Arc<Mutex<HashSet<RepoAddr>>>,
+    addr: RepoAddr,
+}
+
+impl Drop for PushGuard {
+    fn drop(&mut self) {
+        if let Ok(mut repos) = self.repos.lock() {
+            repos.remove(&self.addr);
+        }
+    }
+}
 
 impl EventEmitter<BackendEvent> for Backend {}
 
@@ -143,10 +149,10 @@ impl Backend {
             client,
             signer,
             current_user: None,
-            connected: false,
             sync_progress: None,
             passphrase_required: false,
             recent_fetches: HashMap::new(),
+            pushing_repos: Arc::new(Mutex::new(HashSet::new())),
             tasks: vec![pump],
         };
 
@@ -154,8 +160,17 @@ impl Backend {
         this
     }
 
-    /// Bootstrap the client: connect to the default relays (indexers as
-    /// discovery-only) and restore the saved session, if any.
+    /// Track a spawned task, pruning finished tasks first.
+    ///
+    /// Keeps the store's task list bounded by the number of in-flight tasks.
+    fn push_task(&mut self, task: Task<Result<(), Error>>) {
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(task);
+    }
+
+    /// Bootstrap the client.
+    ///
+    /// Restore the saved session, if any.
     fn bootstrap(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
 
@@ -173,14 +188,10 @@ impl Backend {
             Ok::<(), Error>(())
         });
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             match task.await {
                 Ok(()) => {
-                    this.update(cx, |this, cx| {
-                        this.connected = true;
-                        cx.emit(BackendEvent::Connected);
-                        cx.notify();
-                    })?;
+                    this.update(cx, |_this, cx| cx.notify())?;
                 }
                 Err(e) => {
                     this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
@@ -192,10 +203,11 @@ impl Backend {
         self.restore_session(cx);
     }
 
-    /// Restore the saved session from the keyring. Emits
-    /// [`BackendEvent::SignerRequired`] if no credential is stored, or
-    /// [`BackendEvent::PassphraseRequired`] if the stored identity is
-    /// NIP-49 encrypted.
+    /// Restore the saved session from the keyring.
+    ///
+    /// Emits [`BackendEvent::SignerRequired`] when no credential is stored.
+    ///
+    /// Emits [`BackendEvent::PassphraseRequired`] for a NIP-49 encrypted identity.
     pub fn restore_session(&mut self, cx: &mut Context<Self>) {
         if cfg!(target_arch = "wasm32") {
             cx.emit(BackendEvent::SignerRequired);
@@ -204,7 +216,7 @@ impl Backend {
 
         let user = cx.read_credentials(USER_KEYRING);
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             let content = match user.await {
                 Ok(Some((_username, secret))) => String::from_utf8(secret)?,
                 _ => {
@@ -229,8 +241,8 @@ impl Backend {
                     signer.auth_url_handler(SignedAuthUrlHandler);
                     this.update(cx, |this, cx| this.set_signer(signer, cx))?;
                 } else if content.starts_with("ncryptsec1") {
-                    // Encrypted identity: a passphrase is required to
-                    // decrypt it before the session can resume.
+                    // Encrypted identity.
+                    // A passphrase is required to decrypt it before the session can resume.
                     log::warn!("stored identity is ncryptsec-encrypted; waiting for passphrase");
                     this.update(cx, |this, cx| {
                         this.passphrase_required = true;
@@ -255,11 +267,7 @@ impl Backend {
         }));
     }
 
-    /// Decrypt the NIP-49 encrypted credential stored in the keyring with
-    /// the given passphrase and resume the session.
-    ///
-    /// The scrypt decryption runs off the UI thread. The task yields the
-    /// public key, or the failure reason (e.g. wrong passphrase).
+    /// Decrypt the NIP-49 keyring credential with the given passphrase.
     pub fn restore_with_passphrase(
         &mut self,
         password: &str,
@@ -294,12 +302,7 @@ impl Backend {
         })
     }
 
-    /// Create a new identity: generate keys, encrypt the secret key with the
-    /// passphrase (NIP-49) and persist it in the keyring, then publish the
-    /// user's NIP-65 relay list, metadata and grasp list.
-    ///
-    /// The encryption runs off the UI thread; the task yields the new
-    /// public key.
+    /// Create a new identity.
     pub fn create_identity(
         &mut self,
         name: &str,
@@ -335,8 +338,7 @@ impl Backend {
             write.await?;
 
             this.update(cx, |this, cx| {
-                // Become the new identity, so the publishes below are
-                // signed with the new keys.
+                // Become the new identity so later publishes are signed with the new keys.
                 this.signer.swap_inner(keys);
                 this.current_user = Some(public_key);
                 this.bootstrap_user(public_key, cx);
@@ -387,47 +389,45 @@ impl Backend {
         })
     }
 
-    /// Create a new repository: initialize a local clone with a `main`
-    /// branch and a `README.md`, publish the NIP-34 announcement and the
-    /// repository state to the grasp relays, then push the initial commit
-    /// to each grasp server.
+    /// Initialize a local clone with a `main` branch and a `README.md`.
     ///
-    /// The events must reach the grasp servers *before* the push: GRASP
-    /// servers hold the signed state event in "purgatory" and only accept
-    /// a push for a not-yet-existing repository while that authorization is
-    /// pending (it expires after 30 minutes), like gitworkshop and ngit.
-    ///
-    /// The git work runs on background threads; the task yields the
-    /// published announcement.
+    /// The task yields the announcement and the path of the working copy.
     pub fn create_repository(
         &mut self,
         name: &str,
         description: &str,
+        folder: PathBuf,
         grasp_servers: Vec<RelayUrl>,
         cx: &mut Context<Self>,
-    ) -> Task<Result<Announcement, Error>> {
+    ) -> Task<Result<(Announcement, PathBuf), Error>> {
         let name = name.trim().to_owned();
         let description = description.trim().to_owned();
 
         if name.is_empty() {
             return Task::ready(Err(anyhow!("Repository name is required")));
         }
+
         if grasp_servers.is_empty() {
             return Task::ready(Err(anyhow!("Add at least one grasp server")));
         }
+
+        if !folder.is_dir() {
+            return Task::ready(Err(anyhow!("Choose a folder for the repository")));
+        }
+
         let Some(public_key) = self.current_user else {
             return Task::ready(Err(anyhow!("Sign in to create a repository")));
         };
 
-        // The repository identifier is derived from the name, like ngit and
-        // gitworkshop: spaces become hyphens, other non-alphanumeric
-        // characters (except `/`) become hyphens, case is preserved.
+        // The repository identifier is derived from the name.
         let repo_id = identifier_from_name(&name);
+
         if repo_id.is_empty() || repo_id.len() > 100 {
             return Task::ready(Err(anyhow!(
                 "Repository name must produce an identifier of 1-100 characters"
             )));
         }
+
         if !repo_id.chars().any(|c| c.is_ascii_alphanumeric()) {
             return Task::ready(Err(anyhow!(
                 "Repository name must contain at least one alphanumeric character"
@@ -437,15 +437,14 @@ impl Backend {
         let addr = repo_addr(public_key, repo_id.clone());
         let cache = GitStore::global(cx).cache().clone();
         let path = cache.repo_path(&addr);
-        let owner = public_key
-            .to_bech32()
-            .unwrap_or_else(|_| public_key.to_hex());
+        let owner = public_key.to_bech32().unwrap();
         let servers = grasp_servers.clone();
 
         cx.spawn(async move |this, cx| {
-            // Initialize the local clone (main branch + README + initial commit).
+            // Initialize the local clone and create the user's working copy from it.
             let work = cx.background_spawn({
                 let path = path.clone();
+                let folder = folder.clone();
                 let name = name.clone();
                 let description = description.clone();
                 let owner = owner.clone();
@@ -459,20 +458,48 @@ impl Backend {
                     std::fs::create_dir_all(parent)?;
                     let commit = signed_git::init_repository(&path, &name, &description)?;
 
-                    // Point `origin` at the first grasp server so later
-                    // fetches (and pushes) have a target, like ngit.
+                    // Point `origin` at the first grasp server.
+                    // Later fetches and pushes have a target, like ngit.
                     if let Some(base) = servers.first().and_then(grasp_base_url) {
                         let url = format!("{base}/{owner}/{repo_id}.git");
                         signed_git::ensure_origin(&path, &url).ok();
                     }
 
-                    Ok::<_, Error>(commit)
+                    // A working copy at `<folder>/<name>`, like the header's Clone action.
+                    // Cloned from the mirror above so it shares the announced history.
+                    // `origin` is set to the first grasp server, not the mirror path.
+                    let destination = {
+                        let dir_name = signed_git::sanitize_path_component(&name);
+                        let dir_name = if dir_name.is_empty() {
+                            "repository".to_owned()
+                        } else {
+                            dir_name
+                        };
+                        folder.join(dir_name)
+                    };
+
+                    let mirror_url = Url::from_file_path(&path)
+                        .map_err(|_| anyhow!("invalid mirror path"))?
+                        .to_string();
+
+                    signed_git::clone_repo(&[mirror_url], &destination).with_context(|| {
+                        format!(
+                            "failed to create the working copy at {}",
+                            destination.display()
+                        )
+                    })?;
+
+                    if let Some(base) = servers.first().and_then(grasp_base_url) {
+                        let url = format!("{base}/{owner}/{repo_id}.git");
+                        signed_git::set_origin(&destination, &url)?;
+                    }
+
+                    Ok::<_, Error>((commit, destination))
                 }
             });
 
-            let commit = work.await?;
-            let commit_sha =
-                Sha1Hash::from_str(&commit).map_err(|_| anyhow!("invalid initial commit id"))?;
+            let (commit, checkout_path) = work.await?;
+            let commit_sha = Sha1Hash::from_str(&commit).map_err(|_| anyhow!("invalid id"))?;
 
             // The nostr client queues events until each relay is connected.
             this.update(cx, |this, cx| {
@@ -480,8 +507,7 @@ impl Backend {
                 this.add_relays(urls, cx);
             })?;
 
-            // The state event is the push authorization ("purgatory"), so
-            // it must be accepted before the push below.
+            // The state event is the push authorization. It must be accepted before the push below.
             let announcement = GitRepositoryAnnouncement {
                 id: repo_id.clone(),
                 name: Some(name.clone()),
@@ -527,8 +553,7 @@ impl Backend {
                 }
             };
 
-            // Push to every grasp server; creation only fails when no
-            // server accepted it.
+            // Push to every grasp server. Creation fails only when no server accepted it.
             let push = cx.background_spawn({
                 let path = path.clone();
                 let owner = owner.clone();
@@ -536,9 +561,9 @@ impl Backend {
                 let servers = servers.clone();
                 push_to_grasp_servers(path, owner, repo_id, servers, signed_git::push_main)
             });
+
             if let Err(e) = push.await {
-                // The events are already published; retract them so the
-                // repository doesn't remain announced without content.
+                // The events are already published. Retract them so the repository is not left announced without content.
                 this.update(cx, |this, cx| {
                     this.retract_events(&[event.clone(), state_event.clone()], cx);
                 })
@@ -550,17 +575,14 @@ impl Backend {
                 ));
             }
 
-            Announcement::from_event(&event).ok_or_else(|| anyhow!("failed to parse announcement"))
+            let announcement = Announcement::from_event(&event)
+                .ok_or_else(|| anyhow!("failed to parse announcement"))?;
+
+            Ok((announcement, checkout_path))
         })
     }
 
-    /// Publish an existing local repository to NIP-34: read its current
-    /// branches, tags and HEAD, publish the announcement and the repository
-    /// state to the grasp relays, then push every branch and tag to each
-    /// grasp server. Also points `origin` at the first grasp server.
-    ///
-    /// Same ordering constraint as [`Self::create_repository`]: the state
-    /// event ("purgatory") must be accepted before the push.
+    /// Publish an existing local repository to NIP-34.
     pub fn publish_local_repo(
         &mut self,
         path: PathBuf,
@@ -584,8 +606,7 @@ impl Backend {
             return Task::ready(Err(anyhow!("Sign in to publish a repository")));
         };
 
-        // The repository identifier is derived from the name as in
-        // [`Self::create_repository`].
+        // The identifier derives from the name, as in [`Self::create_repository`].
         let repo_id = identifier_from_name(&name);
 
         if repo_id.is_empty() || repo_id.len() > 100 {
@@ -620,8 +641,7 @@ impl Backend {
                 this.add_relays(urls, cx);
             })?;
 
-            // The state event is the push authorization ("purgatory"), so
-            // it must be accepted before the push below.
+            // The state event is the push authorization. It must be accepted before the push below.
             let announcement = GitRepositoryAnnouncement {
                 id: repo_id.clone(),
                 name: Some(name.clone()),
@@ -665,9 +685,9 @@ impl Backend {
                 }
             };
 
-            // Push every branch and tag to each grasp server; the init
-            // only fails when no server accepted it. An empty repository
-            // has nothing to push.
+            // Push every branch and tag to each grasp server. The push fails only when no server accepted it.
+            //
+            // An empty repository has nothing to push.
             if !refs.is_empty() {
                 let push = cx.background_spawn({
                     let path = path.clone();
@@ -689,8 +709,7 @@ impl Backend {
                 }
             }
 
-            // Point `origin` at the first grasp server so later pushes
-            // have a target.
+            // Point `origin` at the first grasp server so later pushes have a target.
             if let Some(base) = servers.first().and_then(grasp_base_url) {
                 let url = format!("{base}/{owner}/{repo_id}.git");
                 let path = path.clone();
@@ -704,35 +723,92 @@ impl Backend {
         })
     }
 
-    /// Re-push the repository's current refs to the grasp servers announced
-    /// in its `relays` tag: publishes a fresh state event (the push
-    /// authorization), then pushes every branch and tag, like the init
-    /// flow. The repository must have a local clone in the cache.
+    /// Re-push the repository's current refs to the grasp servers in its `relays` tag.
     pub fn push_repository(
         &mut self,
         announcement: Announcement,
         cx: &mut Context<Self>,
     ) -> Task<Result<(), Error>> {
-        let addr = announcement.addr();
         let cache = GitStore::global(cx).cache().clone();
-        let path = cache.repo_path(&addr);
-        let owner = announcement
-            .owner
-            .to_bech32()
-            .unwrap_or_else(|_| announcement.owner.to_hex());
+        let path = cache.repo_path(&announcement.addr());
+        self.push_repo_from(announcement, path, None, cx)
+    }
+
+    /// Push the refs of a local checkout to the grasp servers in its `relays` tag.
+    /// The checkout is the working copy of the user's own repository.
+    ///
+    /// Publish a fresh state event, then push every branch and tag of the checkout.
+    pub fn push_checkout(
+        &mut self,
+        announcement: Announcement,
+        checkout: PathBuf,
+        announced_head: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), Error>> {
+        self.push_repo_from(announcement, checkout, announced_head, cx)
+    }
+
+    /// Shared body of the mirror-based and checkout-based pushes.
+    fn push_repo_from(
+        &mut self,
+        announcement: Announcement,
+        path: PathBuf,
+        announced_head: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), Error>> {
+        let addr = announcement.addr();
+        let guard = {
+            let mut pushing = self
+                .pushing_repos
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !pushing.insert(addr.clone()) {
+                return Task::ready(Err(anyhow!(
+                    "A push to this repository is already in progress"
+                )));
+            }
+            PushGuard {
+                repos: self.pushing_repos.clone(),
+                addr: addr.clone(),
+            }
+        };
+
+        let owner = announcement.owner.to_bech32().unwrap();
         let repo_id = announcement.id.clone();
         let relays = announcement.relays.clone();
 
         cx.spawn(async move |this, cx| {
-            let work = cx.background_spawn({
-                let path = path.clone();
-                async move { signed_git::worktree_ref_state(&path) }
-            });
-            let state = work.await?;
+            // Held for the whole task. Dropped on completion, on error and on cancellation alike.
+            let _guard = guard;
+
+            let mut state = {
+                let work = cx.background_spawn({
+                    let path = path.clone();
+                    async move { signed_git::worktree_ref_state(&path) }
+                });
+                work.await?
+            };
+
+            // The state event announces the pushed refs.
+            // Keep the announced default branch in `HEAD` when it is among the pushed refs.
+            //
+            // Otherwise `HEAD` stays the checkout's current branch.
+            let heads: Vec<&str> = state
+                .refs
+                .iter()
+                .filter_map(|(name, _)| name.strip_prefix("refs/heads/"))
+                .collect();
+
+            if let Some(head) = announced_head
+                && heads.iter().any(|branch| *branch == head)
+            {
+                state.head = Some(head);
+            }
 
             // Grasp servers authorize a push by the state they have seen.
             let refs = state.refs.clone();
             let head = state.head.clone();
+
             this.update(cx, |this, cx| {
                 let builder = build_state(&repo_id, &refs, head.as_deref());
                 this.send(builder, cx)
@@ -757,10 +833,9 @@ impl Backend {
         })
     }
 
-    /// Delete the repository from nostr: publish NIP-09 deletions for its
-    /// announcement, state and activity events (issues, pull requests,
-    /// patches, statuses, comments). Only the repository owner may delete
-    /// it.
+    /// Delete the repository from nostr.
+    ///
+    /// Only the repository owner may delete it.
     pub fn delete_repository(
         &mut self,
         addr: RepoAddr,
@@ -801,8 +876,7 @@ impl Backend {
         })
     }
 
-    /// Login with an `nsec1...` key or a `bunker://...` URI, dispatching on
-    /// the credential's prefix.
+    /// Login with an `nsec1...` key or a `bunker://...` URI.
     pub fn login(&mut self, credential: &str, cx: &mut Context<Self>) {
         let credential = credential.trim();
 
@@ -817,8 +891,7 @@ impl Backend {
         }
     }
 
-    /// Create a fresh identity and login with it. The generated key is
-    /// persisted in the keyring like any other `nsec` credential.
+    /// Create a fresh identity and login with it.
     pub fn login_with_new_identity(&mut self, cx: &mut Context<Self>) {
         let nsec = Keys::generate()
             .secret_key()
@@ -827,8 +900,7 @@ impl Backend {
         self.login_with_nsec(&nsec, cx);
     }
 
-    /// Login with an `nsec1...` secret key. The credential is verified by
-    /// the signer flow and persisted in the keyring.
+    /// Login with an `nsec1...` secret key.
     pub fn login_with_nsec(&mut self, nsec: &str, cx: &mut Context<Self>) {
         let keys = match SecretKey::parse(nsec) {
             Ok(secret) => Keys::new(secret),
@@ -842,7 +914,7 @@ impl Backend {
         let pubkey = keys.public_key().to_hex();
         let write = cx.write_credentials(USER_KEYRING, &pubkey, nsec.as_bytes());
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             if let Err(e) = write.await {
                 this.update(cx, |_, cx| cx.emit(BackendEvent::error(e.to_string())))?;
                 return Ok(());
@@ -852,11 +924,7 @@ impl Backend {
         }));
     }
 
-    /// Login with a `bunker://...` URI (NIP-46). A fresh session key is
-    /// generated and embedded into the stored URI as `?master=<nsec>`, so
-    /// no separate keyring entry is needed. The auth URL, if any, is opened
-    /// in the default browser. The credential is persisted in the keyring
-    /// after the signer proves reachable.
+    /// Login with a `bunker://...` URI, NIP-46.
     pub fn login_with_bunker(&mut self, uri: &str, cx: &mut Context<Self>) {
         let uri_string = uri.trim().to_owned();
 
@@ -872,7 +940,7 @@ impl Backend {
         let credential = with_master_key(&uri_string, &keys);
         let write = cx.write_credentials(USER_KEYRING, "bunker", credential.as_bytes());
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             let result = async {
                 let mut signer = NostrConnect::new(
                     connect_uri,
@@ -904,7 +972,7 @@ impl Backend {
     pub fn logout(&mut self, cx: &mut Context<Self>) {
         let delete = cx.delete_credentials(USER_KEYRING);
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             delete.await.ok();
 
             this.update(cx, |this, cx| {
@@ -920,29 +988,20 @@ impl Backend {
         }));
     }
 
-    /// Fetch the user's grasp list (kind `10317`) and add the listed grasp
-    /// servers as relays.
+    /// Fetch the user's grasp list and add the listed grasp servers as relays.
     fn bootstrap_user(&mut self, public_key: PublicKey, cx: &mut Context<Self>) {
         let client = self.client.clone();
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             let result = async {
-                let events = client.fetch_events(filters::grasp_list(public_key)).await?;
-
-                let urls: Vec<String> = events
+                let events: Vec<Event> = client
+                    .fetch_events(filters::grasp_list(public_key))
+                    .await?
                     .into_iter()
-                    .max_by_key(|e| e.created_at)
-                    .map(|e| {
-                        e.tags
-                            .iter()
-                            .filter(|t| t.kind() == "g")
-                            .filter_map(|t| t.content().map(str::to_owned))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                    .collect();
 
-                for url in urls {
-                    client.add_relay(&url).await.ok();
+                for url in latest_grasp_list_servers(events) {
+                    client.add_relay(url.as_str()).await.ok();
                 }
                 client.connect().await;
 
@@ -973,8 +1032,7 @@ impl Backend {
         self.current_user
     }
 
-    /// Whether the stored credential is NIP-49 encrypted and a passphrase
-    /// is still needed to resume the session.
+    /// True when the stored credential is NIP-49 encrypted.
     pub fn passphrase_required(&self) -> bool {
         self.passphrase_required
     }
@@ -984,18 +1042,12 @@ impl Backend {
         cx.emit(BackendEvent::error(message));
     }
 
-    /// Whether the relay bootstrap has completed.
-    pub fn is_connected(&self) -> bool {
-        self.connected
-    }
-
-    /// Progress of the in-flight negentropy sync, if any: `(total, current)`.
+    /// Progress of the in-flight negentropy sync, if any.
     pub fn sync_progress(&self) -> Option<(u64, u64)> {
         self.sync_progress
     }
 
-    /// Update the signer (any type implementing the async signer traits,
-    /// e.g. `Keys`, `NostrConnect`, a browser extension proxy).
+    /// Update the signer.
     pub fn set_signer<T>(&mut self, new_signer: T, cx: &mut Context<Self>)
     where
         T: AsyncGetPublicKey + AsyncSignEvent + AsyncNip44 + 'static,
@@ -1024,7 +1076,7 @@ impl Backend {
 
             Ok(())
         });
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     /// Add relays and connect to them.
@@ -1039,14 +1091,10 @@ impl Backend {
             Ok::<(), Error>(())
         });
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             match task.await {
                 Ok(()) => {
-                    this.update(cx, |this, cx| {
-                        this.connected = true;
-                        cx.emit(BackendEvent::Connected);
-                        cx.notify();
-                    })?;
+                    this.update(cx, |_this, cx| cx.notify())?;
                 }
                 Err(e) => {
                     this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
@@ -1056,48 +1104,9 @@ impl Backend {
         }));
     }
 
-    /// Add relays used only for discovery (e.g. NIP-65 indexers) and
-    /// connect to them. No subscriptions or writes are routed through them.
-    pub fn add_discovery_relays(&mut self, urls: Vec<String>, cx: &mut Context<Self>) {
-        let client = self.client.clone();
-
-        let task = cx.background_spawn(async move {
-            for url in urls {
-                client
-                    .add_relay(&url)
-                    .capabilities(RelayCapabilities::DISCOVERY)
-                    .await?;
-            }
-            client.connect().await;
-            Ok::<(), Error>(())
-        });
-
-        self.tasks.push(cx.spawn(async move |this, cx| {
-            if let Err(e) = task.await {
-                this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
-            }
-            Ok(())
-        }));
-    }
-
-    /// Start a persistent subscription. Matching events are stored in the
-    /// database automatically and surface as [`BackendEvent::NostrUpdate`].
-    pub fn subscribe(&mut self, filter: Filter, cx: &mut Context<Self>) {
-        let client = self.client.clone();
-
-        let task = cx.background_spawn(async move { client.subscribe(filter).await.map(|_| ()) });
-
-        self.tasks.push(cx.spawn(async move |this, cx| {
-            if let Err(e) = task.await {
-                this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
-            }
-            Ok(())
-        }));
-    }
-
-    /// Whether an identical fetch was started within [`FETCH_DEDUP_WINDOW`]
-    /// and is still recent enough to suppress a duplicate. Records the
-    /// fingerprint (after pruning expired entries) when returning `false`.
+    /// Whether an identical fetch started within [`FETCH_DEDUP_WINDOW`] is still recent.
+    ///
+    /// Records the fingerprint when returning `false`, pruning expired entries first.
     fn fetch_recently_started(&mut self, fingerprint: u64) -> bool {
         self.recent_fetches
             .retain(|_, started| started.elapsed() < FETCH_DEDUP_WINDOW);
@@ -1108,17 +1117,7 @@ impl Backend {
         false
     }
 
-    /// Connect to relays announced by a repository (NIP-34 `relays` tag) and
-    /// fetch its events from them: a one-shot auto-closing subscription for
-    /// `filters`, plus a negentropy sync so issues, patches and PRs stored
-    /// only on those relays are not missed.
-    ///
-    /// Deduplicated: an identical request (same relays and filters) started
-    /// within [`FETCH_DEDUP_WINDOW`] is skipped, so a second panel for the
-    /// same repository doesn't re-run the fetch.
-    ///
-    /// Best-effort: failures are logged, not surfaced. The relays stay in
-    /// the pool, so later publishes for this repository also reach them.
+    /// Connect to a repository's announced relays, its NIP-34 `relays` tag.
     pub fn connect_repo_relays(
         &mut self,
         relays: Vec<RelayUrl>,
@@ -1134,7 +1133,7 @@ impl Backend {
 
         let client = self.client.clone();
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             if let Err(e) = connect_repo_relays_only(&client, relays, filters).await {
                 log::warn!("repo relay fetch failed: {e}");
                 // Allow an immediate retry after a failure.
@@ -1147,17 +1146,14 @@ impl Backend {
         }));
     }
 
-    /// Start a one-shot subscription targeted only at the bootstrap relays,
-    /// auto-closing after EOSE or a short timeout. Matching events are stored
-    /// in the database and surface as [`BackendEvent::NostrUpdate`] while the
-    /// subscription is open.
+    /// One-shot subscription on the bootstrap relays only.
     pub fn subscribe_bootstrap(&mut self, filters: Vec<Filter>, cx: &mut Context<Self>) {
         let client = self.client.clone();
 
         let task =
             cx.background_spawn(async move { subscribe_bootstrap_only(&client, filters).await });
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             if let Err(e) = task.await {
                 this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
             }
@@ -1165,14 +1161,7 @@ impl Backend {
         }));
     }
 
-    /// Negentropy-sync the given filter against the bootstrap relays:
-    /// reconciles the local database with the relays in both directions.
-    /// Emits [`BackendEvent::SyncProgress`] while running (throttled to
-    /// whole-percent changes) and [`BackendEvent::Synced`] on completion.
-    ///
-    /// Deduplicated: an identical sync started within
-    /// [`FETCH_DEDUP_WINDOW`] is skipped. Observers still see the original
-    /// sync's progress and completion events.
+    /// Negentropy-sync the given filter against the bootstrap relays.
     pub fn sync_bootstrap(&mut self, filter: Filter, cx: &mut Context<Self>) {
         let fingerprint = fetch_fingerprint(&BOOTSTRAP_RELAYS, std::slice::from_ref(&filter));
         if self.fetch_recently_started(fingerprint) {
@@ -1187,7 +1176,7 @@ impl Backend {
 
         let (tx, mut rx) = SyncProgress::channel();
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             let mut last_percent: u64 = 0;
 
             while rx.changed().await.is_ok() {
@@ -1220,7 +1209,7 @@ impl Backend {
             sync_bootstrap_only(&client, filter, opts).await
         });
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             match task.await {
                 Ok(summary) => {
                     log::debug!(
@@ -1247,12 +1236,7 @@ impl Backend {
         }));
     }
 
-    /// Sign, broadcast and locally store an event. Emits
-    /// [`BackendEvent::Published`] on success so stores can refresh.
-    ///
-    /// The task yields the outcome of this specific action (for inline
-    /// progress/errors) and is owned by the caller; dropping it cancels
-    /// the publish.
+    /// Sign, broadcast and locally store an event.
     pub fn send(
         &mut self,
         builder: EventBuilder,
@@ -1261,76 +1245,32 @@ impl Backend {
         let client = self.client.clone();
         let signer = self.signer.clone();
 
-        cx.spawn(async move |this, cx| {
-            // Sign with the current signer, broadcast, and save locally so
-            // the event is immediately visible to database queries.
-            let work = cx.background_spawn(async move {
-                let event = builder.finalize_async(&signer).await?;
-                let output = client.send_event(&event).await?;
-
-                if output.success.is_empty() && !output.failed.is_empty() {
-                    let reasons = output
-                        .failed
-                        .values()
-                        .cloned()
-                        .collect::<Vec<String>>()
-                        .join(", ");
-                    return Err(anyhow!("event not accepted by any relay: {reasons}"));
-                }
-
-                Ok(event)
-            });
-
-            let result = work.await;
-
-            match &result {
-                Ok(event) => {
-                    this.update(cx, |_this, cx| {
-                        cx.emit(BackendEvent::Published(Box::new(event.clone())));
-                    })
-                    .ok();
-                }
-                Err(e) => {
-                    this.update(cx, |_this, cx| {
-                        cx.emit(BackendEvent::error(e.to_string()));
-                    })
-                    .ok();
-                }
-            }
-
-            result
+        self.publish_task(cx, async move {
+            // Sign with the current signer, broadcast and save locally.
+            // The event is immediately visible to database queries.
+            let event = builder.finalize_async(&signer).await?;
+            broadcast_event(&client, &event).await
         })
     }
 
-    /// Broadcast and locally store an already-signed event, like
-    /// [`Self::send`] without the signing step. Callers that signed early
-    /// (e.g. to learn the event id before pushing a commit to the grasp
-    /// servers) publish through this.
+    /// Broadcast and locally store an already-signed event.
     pub fn publish_event(
         &mut self,
         event: Event,
         cx: &mut Context<Self>,
     ) -> Task<Result<Event, Error>> {
         let client = self.client.clone();
+        self.publish_task(cx, async move { broadcast_event(&client, &event).await })
+    }
 
+    /// Run `work` in the background, then emit its outcome as a [`BackendEvent`].
+    fn publish_task(
+        &mut self,
+        cx: &mut Context<Self>,
+        work: impl Future<Output = Result<Event, Error>> + 'static + Send,
+    ) -> Task<Result<Event, Error>> {
         cx.spawn(async move |this, cx| {
-            let work = cx.background_spawn(async move {
-                let output = client.send_event(&event).await?;
-
-                if output.success.is_empty() && !output.failed.is_empty() {
-                    let reasons = output
-                        .failed
-                        .values()
-                        .cloned()
-                        .collect::<Vec<String>>()
-                        .join(", ");
-                    return Err(anyhow!("event not accepted by any relay: {reasons}"));
-                }
-
-                Ok(event.clone())
-            });
-
-            let result = work.await;
+            let result = cx.background_spawn(work).await;
 
             match &result {
                 Ok(event) => {
@@ -1351,24 +1291,11 @@ impl Backend {
         })
     }
 
-    /// Publish a NIP-34 repository announcement (kind 30617) with the
-    /// current signer. The returned task yields the published event, so
-    /// callers can show inline progress/errors.
-    pub fn publish_announcement(
-        &mut self,
-        announcement: GitRepositoryAnnouncement,
-        cx: &mut Context<Self>,
-    ) -> Task<Result<Event, Error>> {
-        self.send(announcement.into_event_builder(), cx)
-    }
-
-    /// Sign, broadcast and store an event without awaiting the result;
-    /// failures surface through [`BackendEvent::Error`]. The spawned task is
-    /// owned by the backend, so it is cancelled when the backend is dropped.
+    /// Sign, broadcast and store an event without awaiting the result.
     fn send_fire_and_forget(&mut self, builder: EventBuilder, cx: &mut Context<Self>) {
         let task = self.send(builder, cx);
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             if let Err(e) = task.await {
                 this.update(cx, |_this, cx| {
                     cx.emit(BackendEvent::error(e.to_string()));
@@ -1379,10 +1306,7 @@ impl Backend {
         }));
     }
 
-    /// Publish a NIP-09 deletion event for `events` (best-effort), so a
-    /// publish that fails midway can retract the events that were already
-    /// broadcast to relays. Failures are logged, not surfaced: the caller's
-    /// error already told the user what happened.
+    /// Publish NIP-09 deletions for `events`, best-effort.
     fn retract_events(&mut self, events: &[Event], cx: &mut Context<Self>) {
         if events.is_empty() {
             return;
@@ -1397,7 +1321,7 @@ impl Backend {
 
         let task = self.send(EventBuilder::new(Kind::EventDeletion, "").tags(tags), cx);
 
-        self.tasks.push(cx.spawn(async move |_this, _cx| {
+        self.push_task(cx.spawn(async move |_this, _cx| {
             if let Err(e) = task.await {
                 log::warn!("failed to retract repository events: {e}");
             }
@@ -1406,8 +1330,28 @@ impl Backend {
     }
 }
 
-/// Fingerprint of a relay + filter set, for fetch dedup. Relays and
-/// filters are sorted first so the fingerprint is order-independent.
+/// Broadcast an event and fail when no relay accepted it.
+///
+/// The client stores accepted events locally, visible to database queries.
+async fn broadcast_event(client: &Client, event: &Event) -> Result<Event, Error> {
+    let output = client.send_event(event).await?;
+
+    if output.success.is_empty() && !output.failed.is_empty() {
+        let reasons = output
+            .failed
+            .values()
+            .cloned()
+            .collect::<Vec<String>>()
+            .join(", ");
+        return Err(anyhow!("event not accepted by any relay: {reasons}"));
+    }
+
+    Ok(event.clone())
+}
+
+/// Fingerprint of a relay and filter set, for fetch dedup.
+///
+/// Relays and filters are sorted first, so the fingerprint is order-independent.
 fn fetch_fingerprint(relays: &[&str], filters: &[Filter]) -> u64 {
     let mut relays: Vec<&str> = relays.to_vec();
     relays.sort_unstable();
@@ -1420,11 +1364,7 @@ fn fetch_fingerprint(relays: &[&str], filters: &[Filter]) -> u64 {
     hasher.finish()
 }
 
-/// Add the given relays, connect to them, and fetch the filters: a one-shot
-/// subscription (auto-closing after EOSE) plus a negentropy sync per filter
-/// as a second pass, so events that race with the subscription or relays
-/// with flaky EOSE behavior can't be missed. Relays without NEG-XX support
-/// just fail the sync step; the subscription already covered them.
+/// Add the given relays, connect and fetch the filters.
 async fn connect_repo_relays_only(
     client: &Client,
     relays: Vec<RelayUrl>,
@@ -1438,8 +1378,8 @@ async fn connect_repo_relays_only(
     for url in &relays {
         added |= client.add_relay(url).await?;
     }
-    // Connecting is only needed when the pool grew; connected relays no-op,
-    // but the call still iterates every relay in the pool.
+
+    // Connect only when the pool grew.
     if added {
         client.connect().await;
     }
@@ -1454,9 +1394,7 @@ async fn connect_repo_relays_only(
         .collect();
     client.subscribe(target).close_on(opts).await?;
 
-    // Sync the filters concurrently: each reconciles against every relay
-    // either way, and a relay without NEG-XX support otherwise serializes
-    // its initial timeout behind every other filter.
+    // Sync the filters concurrently.
     let sync_opts = SyncOptions::default().initial_timeout(Duration::from_secs(5));
     let syncs = filters.into_iter().map(|filter| {
         let client = &client;
@@ -1473,14 +1411,13 @@ async fn connect_repo_relays_only(
             }
         }
     });
+
     futures::future::join_all(syncs).await;
 
     Ok(())
 }
 
-/// Subscribe only on the bootstrap relays, auto-closing after EOSE or a
-/// short timeout. Use for one-shot data fetches (repo events, profiles)
-/// instead of persistent gossip-routed subscriptions.
+/// Subscribe only on the bootstrap relays.
 pub(crate) async fn subscribe_bootstrap_only(
     client: &Client,
     filters: Vec<Filter>,
@@ -1520,17 +1457,15 @@ fn with_master_key(uri: &str, keys: &Keys) -> String {
     format!("{uri}{separator}master={nsec}")
 }
 
-/// A `https://<host>` (or `http://<host>` for `ws://` grasp servers, like
-/// ngit) base URL for a grasp server. The repository then lives at
-/// `{base}/{npub}/{repo-id}.git`.
+/// Base URL of a grasp server, `https://<host>`.
+///
+/// `ws://` grasp servers use `http://<host>`, like ngit.
 pub(crate) fn grasp_base_url(relay: &RelayUrl) -> Option<String> {
-    // `domain()` drops the port; parse the full URL to keep it (local dev
-    // grasp servers commonly run on a custom port).
+    // `domain()` drops the port.
     let parsed = Url::parse(relay.as_str()).ok()?;
     let host = parsed.host_str()?;
     let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
-    // `ws://` grasp servers (e.g. local dev relays) speak plain HTTP;
-    // everything else is HTTPS, matching ngit.
+    // `ws://` grasp servers, e.g. local dev relays, speak plain HTTP.
     let scheme = if relay.scheme().is_secure() {
         "https"
     } else {
@@ -1539,18 +1474,66 @@ pub(crate) fn grasp_base_url(relay: &RelayUrl) -> Option<String> {
     Some(format!("{scheme}://{host}{port}"))
 }
 
-/// The GRASP clone URL of a repository on a grasp server, matching the
-/// format ngit announces: `https://<host>/<npub>/<repo-id>.git`.
+/// GRASP clone URL of a repository on a grasp server.
 fn grasp_clone_url(relay: &RelayUrl, owner: &str, repo_id: &str) -> Option<Url> {
     let base = grasp_base_url(relay)?;
     Url::parse(&format!("{base}/{owner}/{repo_id}.git")).ok()
 }
 
-/// Push the repository at `path` to every grasp server: a server that
-/// rejects the push is logged, but the push only fails when no server
-/// accepted it. `push` performs the single-server push (e.g.
-/// [`signed_git::push_main`] for the create flow, [`signed_git::push_all`]
-/// for the init flow).
+/// GRASP-06 contributor namespace URL of a pull request tip.
+pub(crate) fn grasp06_prs_url(base_url: &str, npub: &str, repo_id: &str) -> String {
+    format!("{base_url}/prs/{npub}/{repo_id}.git")
+}
+
+/// Assemble the `clone` URLs of a pull request.
+///
+/// The author's GRASP-06 `/prs/` URLs come first.
+pub(crate) fn pr_clone_urls(prs_urls: Vec<Url>, base_clone_urls: Vec<Url>) -> Vec<Url> {
+    let mut seen = std::collections::HashSet::new();
+    let mut urls = Vec::new();
+    for url in prs_urls.into_iter().chain(base_clone_urls) {
+        if seen.insert(url.to_string()) {
+            urls.push(url);
+        }
+    }
+    urls
+}
+
+/// The `g` tag servers of one kind-10317 grasp list event, in tag order.
+fn grasp_list_servers(event: &Event) -> Vec<RelayUrl> {
+    event
+        .tags
+        .iter()
+        .filter(|tag| tag.kind() == "g")
+        .filter_map(|tag| tag.content())
+        .filter_map(|url| RelayUrl::parse(url).ok())
+        .collect()
+}
+
+/// Grasp servers of the newest kind-10317 grasp list among `events`.
+fn latest_grasp_list_servers(events: Vec<Event>) -> Vec<RelayUrl> {
+    events
+        .into_iter()
+        .max_by_key(|event| event.created_at)
+        .map(|event| grasp_list_servers(&event))
+        .unwrap_or_default()
+}
+
+/// Resolve the user's published grasp servers from the local database.
+pub async fn user_grasp_list_servers(
+    client: Client,
+    user: PublicKey,
+) -> Result<Vec<RelayUrl>, Error> {
+    let events: Vec<Event> = client
+        .database()
+        .query(filters::grasp_list(user))
+        .await?
+        .into_iter()
+        .collect();
+    Ok(latest_grasp_list_servers(events))
+}
+
+/// Push the repository at `path` to every grasp server.
 async fn push_to_grasp_servers(
     path: PathBuf,
     owner: String,
@@ -1587,7 +1570,6 @@ async fn push_to_grasp_servers(
 }
 
 /// Split a stored bunker credential into the plain URI and the session key.
-/// Credentials without an embedded key (legacy) get a fresh one.
 fn extract_master_key(credential: &str) -> (&str, Keys) {
     match credential.split_once("master=") {
         Some((base, nsec)) => {
@@ -1627,5 +1609,91 @@ mod tests {
             url.to_string(),
             "https://gitnostr.com/npub1test/my-repo.git"
         );
+    }
+
+    #[test]
+    fn grasp06_prs_url_matches_ngit_format() {
+        assert_eq!(
+            grasp06_prs_url("https://relay.ngit.dev", "npub1author", "my-repo"),
+            "https://relay.ngit.dev/prs/npub1author/my-repo.git"
+        );
+        // `ws://` grasp servers, local dev, keep their plain-HTTP base.
+        assert_eq!(
+            grasp06_prs_url("http://localhost:8080", "npub1author", "my-repo"),
+            "http://localhost:8080/prs/npub1author/my-repo.git"
+        );
+    }
+
+    #[test]
+    fn pr_clone_urls_orders_author_first_and_deduplicates() {
+        let prs = vec![
+            Url::parse("https://a.example/prs/npub1me/repo.git").expect("url"),
+            Url::parse("https://a.example/prs/npub1me/repo.git").expect("url"),
+        ];
+        let base = vec![
+            Url::parse("https://a.example/npub1owner/repo.git").expect("url"),
+            Url::parse("https://b.example/npub1owner/repo.git").expect("url"),
+            Url::parse("https://b.example/npub1owner/repo.git").expect("url"),
+        ];
+
+        let urls = pr_clone_urls(prs, base);
+        assert_eq!(
+            urls.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec![
+                "https://a.example/prs/npub1me/repo.git",
+                "https://a.example/npub1owner/repo.git",
+                "https://b.example/npub1owner/repo.git",
+            ]
+        );
+    }
+
+    fn grasp_list_event(servers: &[&str], created_at: u64) -> Event {
+        let keys = Keys::generate();
+        let tags: Vec<Tag> = servers
+            .iter()
+            .map(|url| Tag::parse(vec!["g", *url]).expect("valid tag"))
+            .collect();
+        EventBuilder::new(Kind::GitUserGraspList, "")
+            .tags(tags)
+            .custom_created_at(Timestamp::from(created_at))
+            .finalize(&keys)
+            .expect("signed event")
+    }
+
+    #[test]
+    fn grasp_list_servers_reads_g_tags_in_order() {
+        let event = grasp_list_event(
+            &["wss://first.example", "wss://second.example", "not a url"],
+            1000,
+        );
+
+        let servers = grasp_list_servers(&event);
+        assert_eq!(
+            servers.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec!["wss://first.example", "wss://second.example"]
+        );
+    }
+
+    #[test]
+    fn latest_grasp_list_servers_takes_the_newest_list_and_falls_back_empty() {
+        let old = grasp_list_event(&["wss://old.example"], 1000);
+        let fresh = grasp_list_event(&["wss://fresh.example", "wss://also.example"], 2000);
+
+        // The newest list wins, its `g` order preserved.
+        let servers = latest_grasp_list_servers(vec![old.clone(), fresh.clone()]);
+        assert_eq!(
+            servers.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec!["wss://fresh.example", "wss://also.example"]
+        );
+
+        // The order of the input events does not matter.
+        let servers = latest_grasp_list_servers(vec![fresh, old]);
+        assert_eq!(
+            servers.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec!["wss://fresh.example", "wss://also.example"]
+        );
+
+        // No list at all, empty, so the caller falls back to the defaults.
+        assert!(latest_grasp_list_servers(Vec::new()).is_empty());
     }
 }

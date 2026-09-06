@@ -6,27 +6,24 @@ use gpui_component::input::{Input, InputState};
 use gpui_component::{ActiveTheme, IconName, Sizable, h_flex, v_flex};
 use nostr::prelude::*;
 use settings::{DEFAULT_GRASP_SERVERS, GraspServersSettings};
-use signed_core::filters;
 use signed_state::Backend;
 
-/// State of the grasp-server section of a publish dialog, so async
-/// results can be rendered.
+/// State of the grasp-server section of a publish dialog, so async results can be rendered.
 #[derive(Default)]
 pub struct GraspServersState {
-    /// The user's grasp list (kind `10317`) is being loaded.
+    /// The user's grasp list of kind `10317` is being loaded.
     pub loading_servers: bool,
     pub grasp_servers: Vec<RelayUrl>,
-    /// Whether the grasp server section is shown; defaults to shown.
+    /// Whether the grasp server section is shown. Defaults to shown.
     pub servers_enabled: bool,
-    /// Error of the last grasp-server edit (e.g. an invalid relay URL).
+    /// Error of the last grasp-server edit, an invalid relay URL for example.
     pub error: Option<SharedString>,
 }
 
 impl GraspServersState {
-    /// Defaults until the user's grasp list arrives; replaced by it when it lists any servers.
+    /// Defaults used until the user's grasp list loads, which replaces them when non-empty.
     ///
-    /// The servers come from the persisted settings, falling back to the
-    /// built-in defaults when the configured list is empty.
+    /// Persisted settings supply the defaults, an empty list falls back to the built-ins.
     pub fn new_default(settings: &GraspServersSettings) -> Self {
         let urls: Vec<String> = if settings.default_servers.is_empty() {
             DEFAULT_GRASP_SERVERS
@@ -48,10 +45,7 @@ impl GraspServersState {
     }
 }
 
-/// The "Grasp servers" form field shared by the publish dialogs: an
-/// expandable toggle, the configured servers (each removable) and an
-/// add-relay input, with a loading hint while the user's grasp list
-/// (kind `10317`) is being fetched.
+/// The Grasp servers form field shared by the publish dialogs.
 pub fn grasp_servers_field(
     state: &Entity<GraspServersState>,
     relay_input: &Entity<InputState>,
@@ -143,7 +137,7 @@ pub fn grasp_servers_field(
         }))
 }
 
-/// A grasp server row: the host as a tag plus a remove button.
+/// One grasp server row, the host in a tag plus a remove button.
 fn render_server_row(
     ix: usize,
     relay: &RelayUrl,
@@ -182,7 +176,7 @@ fn render_server_row(
         )
 }
 
-/// The bare host of a grasp server (defaults are entered without a scheme).
+/// The bare host of a grasp server, defaults are entered without a scheme.
 fn display_server(relay: &RelayUrl) -> SharedString {
     relay
         .domain()
@@ -190,7 +184,7 @@ fn display_server(relay: &RelayUrl) -> SharedString {
         .unwrap_or_else(|| SharedString::from(relay.to_string()))
 }
 
-/// Parse the relay input (accepting a bare host) and append it to the list.
+/// Parse the relay input, accepting a bare host, and append it to the list.
 fn add_relay(
     state: &Entity<GraspServersState>,
     input: &Entity<InputState>,
@@ -226,8 +220,9 @@ fn add_relay(
     }
 }
 
-/// Load the user's grasp list (kind `10317`) from the local database and
-/// replace the defaults with it when it lists any servers.
+/// Load the user's grasp list of kind `10317` from the local database.
+///
+/// It replaces the defaults when it lists any servers.
 pub fn load_user_grasp_servers(
     state: Entity<GraspServersState>,
     window: &mut Window,
@@ -242,30 +237,7 @@ pub fn load_user_grasp_servers(
     let handle = window.window_handle();
 
     cx.spawn(async move |cx| {
-        let result: anyhow::Result<Vec<RelayUrl>> = async {
-            let mut events: Vec<Event> = client
-                .database()
-                .query(filters::grasp_list(user))
-                .await?
-                .into_iter()
-                .collect();
-            events.sort_by_key(|event| event.created_at);
-
-            Ok(events
-                .into_iter()
-                .last()
-                .map(|event| {
-                    event
-                        .tags
-                        .iter()
-                        .filter(|tag| tag.kind() == "g")
-                        .filter_map(|tag| tag.content())
-                        .filter_map(|url| RelayUrl::parse(url).ok())
-                        .collect()
-                })
-                .unwrap_or_default())
-        }
-        .await;
+        let result = signed_state::user_grasp_list_servers(client, user).await;
 
         let _ = cx.update_window(handle, |_, _window, cx| {
             state.update(cx, |state, _| {

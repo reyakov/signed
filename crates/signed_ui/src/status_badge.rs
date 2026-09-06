@@ -5,8 +5,8 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Icon, Sizable, v_flex};
 use signed_core::RepoStatus;
 
-/// The status badge shown next to an issue or pull request: icon + colored square,
-/// with a tooltip describing the status.
+/// The status badge shown next to an issue or pull request.
+/// It has an icon and a colored square, with a tooltip describing the status.
 pub fn status_badge(status: RepoStatus, cx: &App) -> AnyElement {
     let (icon, label, tooltip, bg, fg) = match status {
         RepoStatus::Open => (

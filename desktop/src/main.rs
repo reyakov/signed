@@ -17,14 +17,14 @@ fn main() {
             gpui_component::init(cx);
             theme::init(cx);
 
-            // Load the persisted settings before applying the theme,
-            // so the stored appearance and theme configuration take effect at startup.
+            // Load the persisted settings before applying the theme.
+            // Stored appearance and theme settings then take effect at startup.
             let store = cx.new(|cx| SettingsStore::new(paths::settings_file(), cx));
             SettingsStore::set_global(store.clone(), cx);
             let settings = store.read(cx).settings().clone();
 
-            // Register the built-in "Signed" theme (light + dark variants)
-            // and make it the active theme, following the stored appearance.
+            // Register the built-in Signed theme, light and dark variants.
+            // The stored appearance then selects the active theme.
             let registry = ThemeRegistry::global_mut(cx);
             for (name, content) in Assets.themes() {
                 if let Err(err) = registry.load_themes_from_str(&content) {
@@ -74,11 +74,13 @@ fn main() {
 
             // Connects relays and restores the session.
             std::fs::create_dir_all(paths::nostr_dir()).ok();
-            signed_state::init(paths::nostr_dir(), settings.local_repos.scan_paths, cx);
-
-            // Local git clone cache for browsing repository contents.
             std::fs::create_dir_all(paths::repos_dir()).ok();
-            signed_state::GitStore::set_global(paths::repos_dir().clone(), cx);
+            signed_state::init(
+                paths::nostr_dir(),
+                paths::repos_dir().clone(),
+                settings.local_repos.scan_paths,
+                cx,
+            );
 
             cx.set_app_identity("su.reya.signed", "Signed");
 

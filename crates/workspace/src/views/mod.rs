@@ -1,3 +1,4 @@
+mod dialog_state;
 mod repo_detail;
 mod repo_list;
 pub(crate) mod sidebar;

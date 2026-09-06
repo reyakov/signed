@@ -5,20 +5,18 @@ use std::time::Duration;
 
 use anyhow::Error;
 use assets::CustomIconName;
-use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
+use dock::{BasePanel, DockArea, Panel, PanelEvent, add_center_panel, panel_handle};
 use gix::Repository;
 use gpui::prelude::*;
 use gpui::{
     Action, Anchor, AnyElement, App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
     Focusable, PathPromptOptions, Pixels, Render, SharedString, Size, Subscription, Task,
-    WeakEntity, Window, div, px, relative, size,
+    WeakEntity, Window, div, px, relative, size, transparent_white,
 };
 use gpui_base::{Button as BaseButton, Disableable, Popover};
 use gpui_component::alert::Alert;
 use gpui_component::button::{Button, ButtonVariants};
-use gpui_component::combobox::{
-    Caret, Combobox, ComboboxEvent, ComboboxState, ComboboxTriggerContext,
-};
+use gpui_component::combobox::{Combobox, ComboboxEvent, ComboboxState};
 use gpui_component::menu::DropdownMenu;
 use gpui_component::searchable_list::SearchableVec;
 use gpui_component::tree::TreeState;
@@ -26,12 +24,14 @@ use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, ThemeStyled,
     VirtualListScrollHandle, h_flex, v_flex,
 };
-use nostr::prelude::{EventId, RelayUrl, ToBech32};
-use signed_core::{Announcement, RepoAddr, filters};
+use nostr::prelude::{RelayUrl, ToBech32};
+use signed_core::{Announcement, RepoAddr, RepoStatus, filters};
 use signed_git::{CommitList, FileCommit};
-use signed_state::{Backend, GitStore, LocalReposStore, ProfileStore, RepoListStore, RepoStore};
-use signed_ui::image_cache::{MAX_IMAGES, image_cache};
-use signed_ui::{DropdownButton, PixelAvatar, UserAvatar, copy_row};
+use signed_state::{
+    Backend, CheckoutStatus, CheckoutsStore, GitStore, LocalReposStore, ProfileStore,
+    RepoListStore, RepoStore, pr_proposes_checkout,
+};
+use signed_ui::{CountBadge, DropdownButton, PixelAvatar, UserAvatar, copy_row};
 
 mod about;
 mod browser;
@@ -53,7 +53,10 @@ use browser::{
 };
 use commits::COMMIT_ROW_HEIGHT;
 use diff::CommitDiffView;
-use helpers::{ShareTargets, TreeItemSeed, build_tree_items, is_markdown_path, tree_items};
+use helpers::{
+    ShareTargets, TreeItemSeed, build_tree_items, is_markdown_path, ref_selector_trigger,
+    tree_items,
+};
 use issues::{IssuesView, open_new_issue_dialog};
 use pull_requests::PullRequestsView;
 use send_patch::open_send_patch_panel;
@@ -63,35 +66,36 @@ use crate::views::repo_detail::new_pull_request::open_new_pull_panel;
 /// What kind of ref the header selectors switch to.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RefKind {
-    /// A local branch (`refs/heads/*`); HEAD stays attached.
+    /// A local branch `refs/heads/*`, HEAD stays attached.
     Branch,
-    /// A tag (`refs/tags/*`); HEAD becomes detached.
+    /// A tag `refs/tags/*`, HEAD becomes detached.
     Tag,
 }
 
 /// Header actions dispatched by the dropdown menus of the header buttons.
-/// `pub(super)`: the pull-request list panel offers the same New-PR / Send-
-/// patch actions in its own dropdown.
+/// `pub(super)` because the pull-request list panel shares this action set.
+/// It offers the New-PR and Send-patch actions in its own dropdown.
 #[derive(Clone, Action, PartialEq, Eq)]
 #[action(namespace = repo_detail, no_json)]
 pub(super) enum RepoAction {
-    /// Open the "new issue" dialog.
+    /// Open the new issue dialog.
     NewIssue,
-    /// Open the "new pull request" dialog.
+    /// Open the new pull request dialog.
     NewPR,
-    /// Open the "send patch" panel.
+    /// Open the send patch panel.
     SendPatch,
     /// Open the about dialog.
     About,
     /// Re-push the repository to its grasp servers.
     Push,
-    /// Delete the repository from nostr (owner only).
+    /// Delete the repository from nostr, owner only.
     Delete,
 }
 
-/// Everything loaded from the local clone for the explorer: the tree seeds,
-/// README, refs and HEAD commit. Computed on a background thread (see
-/// [`load_repo_data`]) and applied on the main thread.
+/// Everything loaded from the local clone for the explorer.
+/// The tree seeds, README, refs and HEAD commit.
+/// Computed on a background thread, see [`load_repo_data`].
+/// Applied on the main thread.
 struct RepoData {
     tree: Vec<TreeItemSeed>,
     readme_path: Option<PathBuf>,
@@ -103,68 +107,54 @@ struct RepoData {
     head_commit: Option<FileCommit>,
 }
 
-/// Derived NIP-34 header data, cached so renders don't re-encode bech32
-/// share targets and rebuild clone command strings on every frame.
-struct HeaderCache {
-    /// Announcement event ID and owner NIP-05 this cache was built from;
-    /// rebuilt when either changes (a new announcement version, or the
-    /// owner's profile arriving with a NIP-05 identifier).
-    key: (EventId, Option<String>),
-    announcement: Rc<Announcement>,
-    share: Rc<ShareTargets>,
-    ngit_command: SharedString,
-    nak_command: SharedString,
-    git_commands: Rc<Vec<SharedString>>,
-}
-
-/// Detail view of a repository: header, stats, a file explorer with README
-/// preview (cloned from the announcement's `clone` URLs), and metadata.
+/// Detail view of a repository, header, stats and metadata.
+/// A file explorer with README preview, cloned from the announcement's `clone` URLs.
 pub struct RepoDetailView {
     focus_handle: FocusHandle,
-    /// Dock area the detail view lives in; new panels (commit diffs) are
-    /// added there.
+    /// Dock area the detail view lives in.
+    /// New panels, commit diffs, are added there.
     dock_area: WeakEntity<DockArea>,
-    /// Snapshot taken at open time, shown until the store's first refresh
-    /// completes (and as a fallback while the store has no announcement).
+    /// Snapshot taken at open time.
+    /// Shown until the store's first refresh completes.
+    /// Also a fallback while the store has no announcement.
     /// `None` for local repositories that haven't been published yet.
     initial: Option<Announcement>,
-    /// Per-repository nostr store (announcement, issues, PRs, statuses).
-    /// `None` until a local repository is initialized (published) to
-    /// NIP-34.
+    /// Per-repository nostr store, holding announcement, issues, PRs and statuses.
+    /// `None` until a local repository is initialized to NIP-34.
     store: Option<Entity<RepoStore>>,
-    /// Path of the local repository when opened from the scan; `None` once
-    /// it has been initialized to NIP-34 (or for announced repositories).
+    /// Path of the local repository when opened from the scan.
+    /// `None` once it is initialized to NIP-34, or for announced repositories.
     local_path: Option<PathBuf>,
-    /// File explorer state (worktree of the local clone).
+    /// File explorer state, the worktree of the local clone.
     tree_state: Entity<TreeState>,
     /// Root of the local clone, for reading files on demand.
     worktree: Option<PathBuf>,
-    /// Markdown document currently in the preview pane (README or a file).
+    /// Markdown document currently in the preview pane, README or a file.
     md: Option<MarkdownView>,
     /// Code file currently in the preview pane.
     code: Option<CodeView>,
     readme_name: Option<SharedString>,
-    /// Currently previewed file (relative path) and its contents.
+    /// Currently previewed file, a relative path, and its contents.
     selected_file: Option<SharedString>,
     files: HashMap<String, FileContent>,
-    /// Paths of cached previews, oldest first; feeds the eviction caps in
-    /// [`Self::evict_previews`].
+    /// Paths of cached previews, oldest first.
+    /// Feeds the eviction caps in [`Self::evict_previews`].
     file_order: VecDeque<String>,
     /// Total text bytes held by [`Self::files`].
     preview_bytes: usize,
     /// Reads in flight, to avoid duplicate loads.
     loading_files: HashSet<String>,
-    /// Latest commit touching a previewed file (or the README), keyed by path.
+    /// Latest commit touching a previewed file or the README, keyed by path.
     commits: HashMap<String, FileCommit>,
-    /// Paths queued for the next batched commit query (see [`Self::load_commits`]).
+    /// Paths queued for the next batched commit query, see [`Self::load_commits`].
     pending_commits: Vec<String>,
     /// A batched commit query is in flight.
     loading_commits: bool,
-    /// Active header tab: 0 = Files (tree), 1 = Commits.
+    /// Active header tab, 0 = Files tree, 1 = Commits.
     active_tab: usize,
-    /// Commits reachable from HEAD, newest first; `None` until the walk
-    /// finishes (or fails). `commits` may be capped by
-    /// [`CommitList`]; `total` feeds the tab badge.
+    /// Commits reachable from HEAD, newest first.
+    /// `None` until the walk finishes or fails.
+    /// [`CommitList`] caps the list, `total` feeds the tab badge.
     all_commits: Option<CommitList>,
     /// Commit walk in flight.
     loading_all_commits: bool,
@@ -173,59 +163,74 @@ pub struct RepoDetailView {
     item_sizes: Rc<Vec<Size<Pixels>>>,
     /// A clone/fetch is in flight.
     loading: bool,
-    /// The header clone button is cloning into a user-chosen folder.
-    cloning: bool,
-    /// A push to the grasp servers is in flight.
-    pushing: bool,
     error: Option<SharedString>,
     /// Commit HEAD currently points to, shown in the header button.
     head_commit: Option<FileCommit>,
-    /// Branch selector (header): local branches, searchable.
+    /// Branch selector in the header, local branches, searchable.
     branch_select: Entity<ComboboxState<SearchableVec<SharedString>>>,
-    /// Tag selector (header): tags, searchable.
+    /// Tag selector in the header, tags, searchable.
     tag_select: Entity<ComboboxState<SearchableVec<SharedString>>>,
-    /// A branch/tag switch is in flight (checkout plus explorer reload).
+    /// A branch/tag switch is in flight, checkout plus explorer reload.
     switching_ref: bool,
-    /// Bumped on every branch/tag switch; in-flight loads tagged with an
-    /// older generation are discarded when they complete.
+    /// Bumped on every branch/tag switch.
+    /// In-flight loads with an older generation are discarded when they complete.
     ref_generation: u64,
-    /// Derived NIP-34 header data (share targets, clone commands),
-    /// rebuilt only when the announcement or the owner's NIP-05 changes
-    /// instead of on every render.
-    header_cache: Option<HeaderCache>,
-    /// In-flight tasks; finished tasks are pruned on every push, so the vec
-    /// stays bounded by the number of concurrent loads.
+    /// In-flight tasks, finished tasks are pruned on every push.
+    /// The vec stays bounded by the number of concurrent loads.
     tasks: Vec<Task<Result<(), Error>>>,
     /// Subscriptions keeping the selectors' confirm events alive.
     _subscriptions: Vec<Subscription>,
-    /// Upstream repository (from this fork's `u` tag) the user asked to
-    /// open, while its announcement is still being fetched.
+    /// `(path, branch)` ready-suggestions dismissed by the user, per panel.
+    banner_dismissed: HashSet<(PathBuf, String)>,
+    /// The announced HEAD the ready statuses were last requested with.
+    /// Whether they were requested at all.
+    /// Re-requested only when the HEAD, the base default, changes.
+    /// e.g. when the store's first refresh lands.
+    ready_requested: bool,
+    ready_head: Option<String>,
+    /// The global checkouts store's ready-to-contribute statuses of this
+    /// repository, last seen when they drove a render.
+    ///
+    /// The store notifies on any recompute pass; the observer re-renders this
+    /// panel only when these slices changed.
+    ready_statuses: Vec<CheckoutStatus>,
+    /// The global checkouts store's ready-to-push statuses of this repository,
+    /// last seen when they drove a render.
+    push_statuses: Vec<CheckoutStatus>,
+    /// Upstream repository, from this fork's `u` tag, the user asked to open.
+    /// Its announcement is still being fetched.
     pending_upstream: Option<RepoAddr>,
 }
 
 impl RepoDetailView {
-    /// Open a repository announced on NIP-34: the store connects to the
-    /// announcement's relays and loads issues, PRs and statuses.
+    /// Open a repository announced.
+    ///
+    /// The store connects to the announcement's relays and loads issues, PRs and statuses.
     pub fn new(
         dock_area: WeakEntity<DockArea>,
         initial: Announcement,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // The announcement we opened from already carries the repository's
-        // NIP-34 `relays` tag, so the store can connect to those relays
-        // immediately instead of waiting for the bootstrap fetch.
+        // The announcement we opened from already carries the NIP-34 `relays` tag.
+        // The store connects to those relays immediately, no bootstrap fetch wait.
         let addr = initial.addr();
         let relays = initial.relays.clone();
         let store = cx.new(|cx| RepoStore::new(addr, relays, cx));
 
-        Self::new_common(dock_area, Some(initial), Some(store), None, window, cx)
+        let mut view = Self::new_common(
+            dock_area,
+            Some(initial),
+            Some(store.clone()),
+            None,
+            window,
+            cx,
+        );
+        view.attach_store(&store, cx);
+        view
     }
 
-    /// Open a local repository discovered by the scan. There is no
-    /// announcement and no nostr store until the user initializes
-    /// (publishes) it to NIP-34, so the header shows an Init button
-    /// instead of the NIP-34 actions.
+    /// Open a local repository discovered by the scan.
     pub fn new_local(
         dock_area: WeakEntity<DockArea>,
         local_path: PathBuf,
@@ -235,8 +240,9 @@ impl RepoDetailView {
         Self::new_common(dock_area, None, None, Some(local_path), window, cx)
     }
 
-    /// Shared construction: file explorer state, ref selectors and the
-    /// deferred repository load.
+    /// Shared construction.
+    ///
+    /// File explorer state, ref selectors and the deferred repository load.
     fn new_common(
         dock_area: WeakEntity<DockArea>,
         initial: Option<Announcement>,
@@ -247,7 +253,7 @@ impl RepoDetailView {
     ) -> Self {
         let tree_state = cx.new(|cx| TreeState::new(cx));
 
-        // Empty until the clone completes; populated with the local refs.
+        // Empty until the clone completes, then filled with the local refs.
         let branch_select: Entity<ComboboxState<SearchableVec<SharedString>>> = cx.new(|cx| {
             ComboboxState::new(
                 SearchableVec::new(Vec::<SharedString>::new()),
@@ -267,11 +273,11 @@ impl RepoDetailView {
             .searchable(true)
         });
 
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&branch_select, window, |this, _state, event, window, cx| {
-                // `Change` fires only when the selection actually changed
-                // (picking the already-selected branch emits nothing), so a
-                // confirmed value always means a switch.
+                // `Change` fires only when the selection actually changed.
+                // Picking the already-selected branch emits nothing.
+                // A confirmed value always means a switch.
                 if let ComboboxEvent::Change(values) = event
                     && let Some(name) = values.first()
                 {
@@ -286,6 +292,17 @@ impl RepoDetailView {
                 }
             }),
         ];
+
+        // The ready-to-contribute and ready-to-push banners are driven by the
+        // global checkouts store. It notifies on every recompute; compare the
+        // statuses of this repository so unrelated updates (the sidebar badges,
+        // other open panels) do not re-render this panel.
+        let checkouts = CheckoutsStore::global(cx);
+        subscriptions.push(cx.observe(&checkouts, |this, _checkouts, cx| {
+            if this.refresh_statuses(cx) {
+                cx.notify();
+            }
+        }));
 
         // Defer loading the repository until the window is ready.
         cx.defer_in(window, |this, window, cx| {
@@ -316,34 +333,35 @@ impl RepoDetailView {
             scroll_handle: VirtualListScrollHandle::new(),
             item_sizes: Rc::new(Vec::new()),
             loading: true,
-            cloning: false,
-            pushing: false,
             error: None,
             head_commit: None,
             branch_select,
             tag_select,
             switching_ref: false,
             ref_generation: 0,
-            header_cache: None,
+            banner_dismissed: HashSet::new(),
+            ready_requested: false,
+            ready_head: None,
+            ready_statuses: Vec::new(),
+            push_statuses: Vec::new(),
+            pending_upstream: None,
             focus_handle: cx.focus_handle(),
             tasks: Vec::new(),
             _subscriptions: subscriptions,
-            pending_upstream: None,
         }
     }
 
-    /// Load the repository and populate the file explorer. A local
-    /// (not yet published) repository is opened straight from disk. An
-    /// announced repository's local clone (if any) is loaded first without
-    /// touching the network, so an unreachable server can't block the
-    /// panel; a background fetch then refreshes the refs and commit list.
+    /// Load the repository and populate the file explorer.
+    ///
+    /// A local, not yet published, repository opens straight from disk.
+    /// An announced repository's clone, if any, loads first without touching the network.
     fn load_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
         cx.notify();
 
-        // Local repositories live on disk at their scan path; there is no
-        // clone to ensure and no network refresh.
+        // Local repositories live on disk at their scan path.
+        // No clone step or network refresh applies here.
         if let Some(local_path) = self.local_path.clone() {
             let task = cx.spawn_in(window, async move |this, cx| {
                 let data = cx
@@ -361,20 +379,25 @@ impl RepoDetailView {
                     this.loading = false;
                     cx.notify();
                 })?;
+
                 Ok(())
             });
+
             self.tasks.push(task);
+
             return;
         }
 
         let Some(initial) = self.initial.as_ref() else {
             return;
         };
+
         let cache = GitStore::global(cx).cache().clone();
         let addr = initial.addr();
         let clone_urls: Vec<String> = initial.clone.iter().map(ToString::to_string).collect();
-        // Captured before the loads start: a branch/tag switch bumps it, and
-        // the refresh below is discarded when that happens.
+
+        // Captured before the loads start.
+        // A branch/tag switch bumps the generation, discarding the refresh below.
         let refresh_generation = self.ref_generation;
 
         let disk = {
@@ -392,7 +415,7 @@ impl RepoDetailView {
             let disk = disk.await;
             let had_clone = matches!(&disk, Ok(Some(_)));
 
-            // No local clone yet: clone from the network (blocking), then load.
+            // No local clone yet, so clone from the network then load.
             let data = match disk {
                 Ok(Some(data)) => Ok(data),
                 Ok(None) => {
@@ -417,12 +440,13 @@ impl RepoDetailView {
                 cx.notify();
             })?;
 
-            // Refresh the clone from the network in the background; when it
-            // completes, update the refs and commit list. Loads started
-            // before a branch/tag switch are discarded via the generation.
+            // Refresh the clone from the network in the background.
+            // When it completes, update the refs and commit list.
+            // Loads started before a branch/tag switch are discarded via the generation.
             if !had_clone {
                 return Ok(());
             }
+
             let refresh = {
                 let cache = cache.clone();
                 let addr = addr.clone();
@@ -430,10 +454,24 @@ impl RepoDetailView {
                     let Some(repo) = cache.open(&addr)? else {
                         return Ok::<_, Error>(None);
                     };
-                    // Best-effort: a failed fetch (e.g. offline) keeps the
-                    // cached state, which is already shown.
+
+                    // Best-effort, a fetch failure, e.g. offline, keeps the cached state.
+                    // The state is already shown.
                     signed_git::fetch_all(&repo).ok();
+
                     let worktree = repo.workdir().map(Path::to_path_buf);
+                    // A fetch never moves a mirror's local branches.
+                    // A push landing on the grasp servers would never show up.
+                    // That covers own repo pushes from a checkout and updates fetched here.
+                    // Fast-forward branches from the remote, like `git pull --ff-only`.
+                    // Only the checked-out branch's worktree can change on disk.
+                    let moved = match &worktree {
+                        Some(worktree) => {
+                            signed_git::fast_forward_branches(worktree).unwrap_or(false)
+                        }
+                        None => false,
+                    };
+
                     let (branches, tags) = match &worktree {
                         Some(_) => (
                             signed_git::repo_branches(&repo).unwrap_or_default(),
@@ -441,9 +479,11 @@ impl RepoDetailView {
                         ),
                         None => (Vec::new(), Vec::new()),
                     };
+
                     let current_branch = signed_git::current_branch(&repo).unwrap_or(None);
                     let head_commit = signed_git::head_commit(&repo).unwrap_or(None);
-                    Ok::<_, Error>(Some((branches, tags, current_branch, head_commit)))
+
+                    Ok::<_, Error>(Some((moved, branches, tags, current_branch, head_commit)))
                 })
             }
             .await;
@@ -452,7 +492,16 @@ impl RepoDetailView {
                 if refresh_generation != this.ref_generation {
                     return;
                 }
-                if let Ok(Some((branches, tags, current_branch, head_commit))) = refresh {
+                if let Ok(Some((moved, branches, tags, current_branch, head_commit))) = refresh {
+                    if moved {
+                        // The mirror caught up with the remote.
+                        // E.g. the push of an owned checkout just landed.
+                        // Rebuild the explorer, previews and commit list from the worktree.
+                        this.reload_worktree(cx);
+                        cx.notify();
+                        return;
+                    }
+
                     let branches: Vec<SharedString> = branches.iter().map(Into::into).collect();
                     let tags: Vec<SharedString> = tags.iter().map(Into::into).collect();
 
@@ -489,8 +538,7 @@ impl RepoDetailView {
         self.tasks.push(task);
     }
 
-    /// Apply the loaded repository data: explorer tree, README preview,
-    /// ref selectors and HEAD commit, then start the commit-list walk.
+    /// Apply the loaded repository data.
     fn apply_repo_data(&mut self, data: RepoData, window: &mut Window, cx: &mut Context<Self>) {
         let RepoData {
             tree,
@@ -513,8 +561,8 @@ impl RepoDetailView {
             state.set_items(tree_items(tree, false), cx);
         });
 
-        // Populate the branch/tag selectors with the local refs,
-        // selecting the branch HEAD points to.
+        // Populate the branch/tag selectors with the local refs.
+        // Select the branch HEAD points to.
         let branches: Vec<SharedString> = branches.into_iter().map(Into::into).collect();
         let tags: Vec<SharedString> = tags.into_iter().map(Into::into).collect();
 
@@ -541,22 +589,19 @@ impl RepoDetailView {
         }
     }
 
-    /// Clone the repository into a folder chosen by the user (outside the cache),
-    /// then open the new clone in the system file manager.
+    /// Clone the repository into a user-chosen folder outside the cache.
     fn clone_to_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.cloning {
+        let Some(store) = self.store.clone() else {
             return;
-        }
+        };
 
-        let (clone_urls, name) = {
+        let name = {
             let Some(announcement) = self.announcement(cx) else {
                 return;
             };
             let addr = announcement.addr();
-            let clone_urls: Vec<String> =
-                announcement.clone.iter().map(ToString::to_string).collect();
-            // Directory name: the display name, falling back to the repo id;
-            // both sanitized to a safe single path component.
+            // Directory name, the display name falling back to the repo id.
+            // Both are sanitized to a safe single path component.
             let name = announcement
                 .name
                 .as_ref()
@@ -564,16 +609,12 @@ impl RepoDetailView {
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or_else(|| addr.identifier.clone());
             let name = signed_git::sanitize_path_component(&name);
-            let name = if name.is_empty() {
+            if name.is_empty() {
                 "repository".to_owned()
             } else {
                 name
-            };
-            (clone_urls, name)
+            }
         };
-
-        self.cloning = true;
-        cx.notify();
 
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -583,36 +624,31 @@ impl RepoDetailView {
         });
 
         let task = cx.spawn_in(window, async move |this, cx| {
-            // `Ok(Ok(Some(paths)))` means the user picked a folder; a
-            // cancel (or a picker failure) resolves to anything else.
+            // `Ok(Ok(Some(paths)))` means the user picked a folder.
+            // A cancel or picker failure resolves to anything else.
             let picked = match prompt.await {
                 Ok(Ok(Some(mut paths))) => paths.pop(),
                 _ => None,
             };
             let Some(folder) = picked else {
-                this.update_in(cx, |this, _window, cx| {
-                    this.cloning = false;
-                    cx.notify();
-                })?;
                 return Ok(());
             };
 
             let destination = folder.join(&name);
             let destination_for_open = destination.clone();
-            let result = cx
-                .background_spawn(async move { signed_git::clone_repo(&clone_urls, &destination) })
-                .await;
 
-            this.update_in(cx, |this, _window, cx| {
-                this.cloning = false;
-                match result {
-                    Ok(_) => cx.open_with_system(&destination_for_open),
-                    Err(error) => {
-                        this.error = Some(format!("Failed to clone: {error}").into());
-                    }
-                }
-                cx.notify();
+            // The store owns the clone, its busy flag and error reporting.
+            let clone = this.update_in(cx, |_this, _window, cx| {
+                store.update(cx, |store, cx| store.clone_to_folder(destination, cx))
             })?;
+
+            // Reveal the new clone in the system file manager on success.
+            // Failures already surfaced in the store's error banner.
+            if let Ok(()) = clone.await {
+                this.update_in(cx, |_this, _window, cx| {
+                    cx.open_with_system(&destination_for_open);
+                })?;
+            }
 
             Ok(())
         });
@@ -620,15 +656,14 @@ impl RepoDetailView {
         self.tasks.push(task);
     }
 
-    /// Preview the file at `path` (relative to the worktree root).
+    /// Preview the file at `path`, relative to the worktree root.
     fn open_file(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.selected_file = Some(path.into());
 
         if self.files.contains_key(path) {
-            // The file is cached, but the persistent markdown/code state may
-            // still hold a different file; re-point it at this one (the parse
-            // runs on a background task either way). Without this, the pane
-            // would show a spinner forever.
+            // The file is cached, but the markdown or code state may hold a different file.
+            // Re-point it at this one, the parse runs on a background task either way.
+            // Without this, the pane would show a spinner forever.
             if let Some(FileContent::Text(text)) = self.files.get(path) {
                 let text = text.clone();
                 if is_markdown_path(path) {
@@ -647,8 +682,8 @@ impl RepoDetailView {
             return;
         }
 
-        // Paths come from our own tree walk, but never trust them: refuse
-        // anything that could escape the worktree.
+        // Paths come from our own tree walk, but never trust them.
+        // Refuse anything that could escape the worktree.
         let rel = Path::new(path);
         let unsafe_path = rel.is_absolute()
             || rel.components().any(|c| {
@@ -668,6 +703,7 @@ impl RepoDetailView {
 
         self.loading_files.insert(path.to_string());
         let path = path.to_string();
+
         self.load_commit(&path, cx);
         let generation = self.ref_generation;
 
@@ -676,9 +712,9 @@ impl RepoDetailView {
             let content = cx
                 .background_spawn(async move {
                     let full = worktree.join(&path_for_read);
-                    // Refuse oversized files before reading them: reading a
-                    // multi-gigabyte file just to classify it as too large
-                    // would waste the disk and memory bandwidth.
+                    // Refuse oversized files before reading them.
+                    // Reading a multi-gigabyte file just to classify it is wasteful.
+                    // It would burn disk and memory bandwidth.
                     let metadata = match std::fs::metadata(&full) {
                         Ok(metadata) => metadata,
                         Err(error) => return Err(anyhow::anyhow!("{}", error)),
@@ -698,10 +734,10 @@ impl RepoDetailView {
                 .await;
 
             this.update_in(cx, |this, window, cx| {
-                // The worktree was switched while this file was reading;
-                // the result belongs to the previous branch. Clear the
-                // in-flight marker either way, or the path could never be
-                // loaded again.
+                // The worktree was switched while this file was reading.
+                // The result belongs to the previous branch.
+                // Clear the in-flight marker either way.
+                // Otherwise the path could never be loaded again.
                 if generation != this.ref_generation {
                     this.loading_files.remove(&path);
                     return;
@@ -743,8 +779,8 @@ impl RepoDetailView {
         self.tasks.push(task);
     }
 
-    /// Queue `path` for the per-file commit query; requests are batched into
-    /// one history walk (see [`Self::load_commits`]).
+    /// Queue `path` for the per-file commit query.
+    /// Requests are batched into one history walk, see [`Self::load_commits`].
     fn load_commit(&mut self, path: &str, cx: &mut Context<Self>) {
         if self.commits.contains_key(path) || self.pending_commits.iter().any(|p| p == path) {
             return;
@@ -755,10 +791,10 @@ impl RepoDetailView {
         }
     }
 
-    /// Walk history once for every queued path on a background task, and
-    /// cache the latest commit touching each of them in [`Self::commits`]
-    /// (for the file header in the content column). Batching shares one
-    /// walk across all paths queued while the previous walk was in flight.
+    /// Walk history once for every queued path on a background task.
+    /// Cache the latest commit touching each path in [`Self::commits`].
+    /// That feeds the file header in the content column.
+    /// Batching shares one walk across paths queued while the previous walk ran.
     fn load_commits(&mut self, cx: &mut Context<Self>) {
         if self.pending_commits.is_empty() || self.loading_commits {
             return;
@@ -790,10 +826,9 @@ impl RepoDetailView {
                             .insert(path.to_string_lossy().into_owned(), commit);
                     }
                 }
-                // Paths queued while the walk was in flight start the next
-                // batch. A stale walk (branch switched mid-flight) must not
-                // strand them, so this runs under the current generation
-                // regardless of whether the result was applied.
+                // Paths queued while the walk was in flight start the next batch.
+                // A stale walk, branch switched mid-flight, must not strand them.
+                // This runs under the current generation regardless of the result.
                 if !this.pending_commits.is_empty() {
                     this.load_commits(cx);
                 }
@@ -806,9 +841,9 @@ impl RepoDetailView {
         self.tasks.push(task);
     }
 
-    /// Walk all commits reachable from HEAD on a background task, for the
-    /// Commits tab and its total-count badge. The list is capped by
-    /// [`CommitList`]; only the newest commits are materialized.
+    /// Walk all commits reachable from HEAD on a background task.
+    /// For the Commits tab and its total-count badge.
+    /// [`CommitList`] caps the list, only the newest commits are materialized.
     fn load_all_commits(&mut self, cx: &mut Context<Self>) {
         if self.loading_all_commits || self.all_commits.is_some() {
             return;
@@ -827,8 +862,8 @@ impl RepoDetailView {
                 .await;
 
             this.update(cx, |this, cx| {
-                // A stale walk (branch switched mid-flight) must not leave
-                // the flag set, or the Commits tab would spin forever.
+                // A stale walk, branch switched mid-flight, must not leave the flag set.
+                // Otherwise the Commits tab would spin forever.
                 if generation != this.ref_generation {
                     this.loading_all_commits = false;
                     return;
@@ -848,9 +883,7 @@ impl RepoDetailView {
         self.tasks.push(task);
     }
 
-    /// Open a new panel showing the diff of `commit_id` (all files it
-    /// changed, with the line diff of each). Called from the Commits tab
-    /// rows and the latest-commit button in the header.
+    /// Open a new panel showing the diff of `commit_id`.
     fn open_commit_diff(&mut self, commit_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(worktree) = self.worktree.clone() else {
             return;
@@ -867,65 +900,71 @@ impl RepoDetailView {
             cx.new(|cx| CommitDiffView::new(worktree, repo_name, commit_id.into(), window, cx));
 
         dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+            add_center_panel(dock_area, panel_handle(panel), window, cx);
         });
     }
 
-    /// Re-push the repository's refs to its announced grasp servers; the
-    /// menu trigger shows a spinner while the push is in flight, failures
-    /// appear in the panel's error banner.
-    fn push_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pushing {
-            return;
-        }
-        let Some(announcement) = self.announcement(cx).cloned() else {
+    /// Re-push the repository's refs to its announced grasp servers.
+    fn push_repository(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else {
             return;
         };
-        self.pushing = true;
+
         self.error = None;
         cx.notify();
 
-        let backend = Backend::global(cx);
-        let task = backend.update(cx, |backend, cx| backend.push_repository(announcement, cx));
-
-        self.tasks.push(cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
-            this.update_in(cx, |this, _window, cx| {
-                if let Err(error) = result {
-                    this.error = Some(format!("Push failed: {error}").into());
-                }
-                this.pushing = false;
-                cx.notify();
-            })?;
-            Ok(())
-        }));
+        self.tasks
+            .push(store.update(cx, |store, cx| store.push_repository(cx)));
     }
 
-    /// Delete the repository from nostr (announcement, state and activity);
-    /// only offered to the repository owner. The sidebar list updates when
-    /// the deletion events arrive.
-    fn delete_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(announcement) = self.announcement(cx).cloned() else {
+    /// Push the unpushed commits of the local checkout at `path`.
+    fn push_unpushed_checkout(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(store) = self.store.clone() else {
             return;
         };
-        let backend = Backend::global(cx);
-        let task = backend.update(cx, |backend, cx| {
-            backend.delete_repository(announcement.addr(), cx)
+
+        if store.read(cx).pushing {
+            return;
+        }
+
+        self.error = None;
+        cx.notify();
+
+        let task = cx.spawn_in(window, async move |this, cx| {
+            // The store owns the push, its busy flag and error reporting.
+            let push = this.update_in(cx, |_this, _window, cx| {
+                store.update(cx, |store, cx| store.push_checkout(path.clone(), cx))
+            })?;
+
+            // The remote moved, refresh the mirror browsing.
+            // Failures already surfaced in the store's error banner.
+            if let Ok(()) = push.await {
+                this.update_in(cx, |this, window, cx| {
+                    this.load_repo(window, cx);
+                })?;
+            }
+
+            Ok(())
         });
 
-        self.tasks.push(cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
-            this.update_in(cx, |this, _window, cx| {
-                if let Err(error) = result {
-                    this.error = Some(format!("Delete failed: {error}").into());
-                }
-                cx.notify();
-            })?;
-            Ok(())
-        }));
+        self.tasks.push(task);
     }
 
-    /// Open the issues panel at the bottom of the dock area.
+    /// Delete the repository from nostr, announcement, state and activity.
+    fn delete_repository(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        self.tasks
+            .push(store.update(cx, |store, cx| store.delete_repository(cx)));
+    }
+
+    /// Open the issues list panel in the dock area.
     fn open_issue_detail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(store) = self.store.clone() else {
             return;
@@ -934,22 +973,14 @@ impl RepoDetailView {
             return;
         };
 
-        let panel = cx.new(|cx| {
-            IssuesView::new(
-                self.dock_area.clone(),
-                store,
-                self.display_name(cx),
-                window,
-                cx,
-            )
-        });
+        let panel = cx.new(|cx| IssuesView::new(self.dock_area.clone(), store, window, cx));
 
         dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+            add_center_panel(dock_area, panel_handle(panel), window, cx);
         });
     }
 
-    /// Open the pull requests panel at the bottom of the dock area.
+    /// Open the pull requests list panel in the dock area.
     fn open_pull_request_detail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(store) = self.store.clone() else {
             return;
@@ -958,24 +989,16 @@ impl RepoDetailView {
             return;
         };
 
-        let panel = cx.new(|cx| {
-            PullRequestsView::new(
-                self.dock_area.clone(),
-                store,
-                self.display_name(cx),
-                window,
-                cx,
-            )
-        });
+        let panel = cx.new(|cx| PullRequestsView::new(self.dock_area.clone(), store, window, cx));
 
         dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+            add_center_panel(dock_area, panel_handle(panel), window, cx);
         });
     }
 
-    /// Open the upstream repository (the `u` tag of this fork's announcement).
-    /// When the upstream announcement is not in the local database yet,
-    /// subscribe for it and open the panel as soon as it lands.
+    /// Open the upstream repository, the `u` tag of this fork's announcement.
+    /// The upstream announcement may not be in the local database yet.
+    /// Subscribe for it and open the panel as soon as it lands.
     fn open_upstream(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending_upstream.is_some() {
             return;
@@ -1044,8 +1067,8 @@ impl RepoDetailView {
         self.tasks.push(task);
     }
 
-    /// Check out `name` (a branch or tag picked in the header) and refresh
-    /// the explorer once the switch completes.
+    /// Check out `name`, a branch or tag picked in the header.
+    /// Refresh the explorer once the switch completes.
     fn switch_ref(
         &mut self,
         kind: RefKind,
@@ -1060,9 +1083,9 @@ impl RepoDetailView {
             return;
         };
 
-        // Branches and tags are mutually exclusive states of HEAD: selecting
-        // one clears the other selector. Remember the previous selections so
-        // they can be restored if the checkout fails.
+        // Branches and tags are mutually exclusive states of HEAD.
+        // Selecting one clears the other selector.
+        // Remember the previous selections to restore them if the checkout fails.
         let previous_branch = self.branch_select.read(cx).selected_value();
         let previous_tag = self.tag_select.read(cx).selected_value();
 
@@ -1077,8 +1100,7 @@ impl RepoDetailView {
             }
         }
         self.switching_ref = true;
-        // In-flight loads of the previous branch are discarded when they
-        // complete.
+        // In-flight loads of the previous branch are discarded when they complete.
         self.ref_generation += 1;
         cx.notify();
 
@@ -1116,7 +1138,7 @@ impl RepoDetailView {
         self.tasks.push(task);
     }
 
-    /// Restore a selector to `previous`, or clear it (after a failed switch).
+    /// Restore a selector to `previous`, or clear it after a failed switch.
     fn restore_selection(
         &self,
         select: &Entity<ComboboxState<SearchableVec<SharedString>>>,
@@ -1130,46 +1152,10 @@ impl RepoDetailView {
         });
     }
 
-    /// Trigger body for the branch/tag selectors: the kind icon, the
-    /// selection (or placeholder) and the caret. `Combobox` replaces its
-    /// default trigger entirely, the only way to show an icon inside it.
-    fn render_ref_trigger(
-        ctx: &ComboboxTriggerContext<SearchableVec<SharedString>>,
-        icon: CustomIconName,
-        cx: &App,
-    ) -> AnyElement {
-        let muted = cx.theme().muted_foreground;
-
-        h_flex()
-            .w_full()
-            .min_w_0()
-            .gap_1()
-            .items_center()
-            .child(Icon::new(icon).small().flex_shrink_0())
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .whitespace_nowrap()
-                    .when(ctx.selection().is_empty(), |this| this.text_color(muted))
-                    .child(
-                        ctx.selection()
-                            .first()
-                            .map(|(_, item)| item.clone())
-                            .or_else(|| ctx.placeholder().cloned())
-                            .unwrap_or_default(),
-                    ),
-            )
-            .child(Caret::new(ctx.size()).text_color(muted))
-            .into_any_element()
-    }
-
-    /// Refresh the file explorer, preview pane and commit list after a
-    /// successful branch or tag switch. The selectors were already updated
-    /// by [`Self::switch_ref`]; [`Self::switching_ref`] stays set until this
-    /// reload finishes, so a second switch cannot interleave.
+    /// Refresh the file explorer, preview pane and commit list after a successful switch.
+    /// The selectors were already updated by [`Self::switch_ref`].
+    /// [`Self::switching_ref`] stays set until this reload finishes.
+    /// A second switch cannot interleave.
     fn reload_worktree(&mut self, cx: &mut Context<Self>) {
         let Some(worktree) = self.worktree.clone() else {
             return;
@@ -1190,9 +1176,9 @@ impl RepoDetailView {
                 match result {
                     Ok((snapshot, tree)) => {
                         this.head_commit = snapshot.head_commit;
-                        // Rebuild the tree from scratch: entries of the
-                        // previous branch are gone, and with them the
-                        // expansion state.
+                        // Rebuild the tree from scratch.
+                        // Entries of the previous branch are gone.
+                        // The expansion state goes with them.
                         this.tree_state.update(cx, |state, cx| {
                             state.set_items(tree_items(tree, false), cx);
                         });
@@ -1239,9 +1225,10 @@ impl RepoDetailView {
         self.tasks.push(task);
     }
 
-    /// Drop the oldest previews beyond the cache caps, keeping the currently
-    /// selected file. The parsed editor state of an evicted file is dropped
-    /// along with its entry, so re-opening it re-parses on a background task.
+    /// Drop the oldest previews beyond the cache caps.
+    /// Keep the currently selected file.
+    /// An evicted file's parsed editor state drops with its entry.
+    /// Re-opening it re-parses on a background task.
     fn evict_previews(&mut self) {
         while (self.files.len() > MAX_PREVIEWED_FILES
             || self.preview_bytes > MAX_PREVIEW_CACHE_BYTES)
@@ -1269,7 +1256,7 @@ impl RepoDetailView {
         }
     }
 
-    /// The latest announcement from the store, or the open-time snapshot;
+    /// The latest announcement from the store or the open-time snapshot.
     /// `None` for local repositories that haven't been published yet.
     fn announcement<'a>(&'a self, cx: &'a App) -> Option<&'a Announcement> {
         let store = self.store.as_ref()?;
@@ -1280,8 +1267,8 @@ impl RepoDetailView {
             .or(self.initial.as_ref())
     }
 
-    /// Display name: the announcement's name (or ID) for announced
-    /// repositories, the directory name for local ones.
+    /// Display name, the announcement's name or ID for announced repositories.
+    /// The directory name for local ones.
     fn display_name(&self, cx: &App) -> SharedString {
         if let Some(path) = &self.local_path {
             return SharedString::from(
@@ -1294,15 +1281,15 @@ impl RepoDetailView {
             .map(|announcement| {
                 announcement
                     .name
-                    .clone()
+                    .as_deref()
+                    .map(SharedString::from)
                     .unwrap_or_else(|| SharedString::from(announcement.id.clone()))
             })
             .unwrap_or_default()
     }
 
-    /// The NIP-34 header (actions, issues/PR counts) or, for a local
-    /// repository that hasn't been published yet, the local header with an
-    /// Init button.
+    /// The NIP-34 header, actions and issues/PR counts.
+    /// Or the local header with an Init button for an unpublished repository.
     fn render_header(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.local_path.is_some() {
             return self.render_local_header(cx);
@@ -1311,17 +1298,21 @@ impl RepoDetailView {
         let Some(store_entity) = self.store.as_ref() else {
             return div().into_any_element();
         };
+
         let store = store_entity.read(cx);
         let issue_count = SharedString::from(store.issue_count().to_string());
         let pr_count = SharedString::from(store.pull_request_count().to_string());
+
+        // Busy flags are owned by the store; observers re-render on their changes.
+        let pushing = store.pushing;
+        let cloning = store.cloning;
 
         let Some(source) = store.announcement.as_ref().or(self.initial.as_ref()) else {
             return div().into_any_element();
         };
 
-        // The header derives bech32 share targets and clone command strings
-        // from the announcement; rebuild them only when the announcement or
-        // the owner's NIP-05 changes, not on every render.
+        // Derived NIP-34 header data, share targets and clone commands.
+        // Rebuilt per frame: two bech32 encodes and a couple of format strings.
         let nip05 = ProfileStore::global(cx)
             .read(cx)
             .get(&source.owner)
@@ -1329,32 +1320,14 @@ impl RepoDetailView {
             .nip05
             .clone()
             .filter(|nip05| !nip05.trim().is_empty());
-        let key = (source.event_id, nip05);
 
-        if self
-            .header_cache
-            .as_ref()
-            .is_none_or(|cache| cache.key != key)
-        {
-            let announcement = source.clone();
-            let share = ShareTargets::from_announcement(&announcement);
-            let nostr_url = nostr_clone_url(&announcement, key.1.as_deref());
-            self.header_cache = Some(HeaderCache {
-                ngit_command: SharedString::from(format!("git clone {nostr_url}")),
-                nak_command: SharedString::from(format!("nak git clone {nostr_url}")),
-                git_commands: Rc::new(announcement.clone_urls()),
-                share: Rc::new(share),
-                announcement: Rc::new(announcement),
-                key,
-            });
-        }
+        let announcement = Rc::new(source.clone());
+        let share = Rc::new(ShareTargets::from_announcement(&announcement));
 
-        let cache = self.header_cache.as_ref().expect("cache just built");
-        let announcement = cache.announcement.clone();
-        let share = cache.share.clone();
-        let ngit_command = cache.ngit_command.clone();
-        let nak_command = cache.nak_command.clone();
-        let git_commands = cache.git_commands.clone();
+        let nostr_url = nostr_clone_url(&announcement, nip05.as_deref());
+        let ngit_command = SharedString::from(format!("git clone {nostr_url}"));
+        let nak_command = SharedString::from(format!("nak git clone {nostr_url}"));
+        let git_commands = Rc::new(announcement.clone_urls());
 
         let name = self.display_name(cx);
         let description = announcement.description();
@@ -1387,8 +1360,7 @@ impl RepoDetailView {
                     RepoAction::Delete => this.delete_repository(window, cx),
                 }),
             )
-            .px_4()
-            .pb_4()
+            .p_4()
             .w_full()
             .gap_8()
             .border_b_1()
@@ -1561,8 +1533,8 @@ impl RepoDetailView {
                                     .tooltip("Repository management")
                                     .compact()
                                     .secondary()
-                                    .loading(self.pushing)
-                                    .disabled(self.pushing)
+                                    .loading(pushing)
+                                    .disabled(pushing)
                                     .dropdown_menu(move |menu, _, cx| {
                                         let backend = Backend::global(cx);
                                         let current_user = backend.read(cx).current_user();
@@ -1613,8 +1585,8 @@ impl RepoDetailView {
                                         Button::new("clone")
                                             .icon(CustomIconName::GitClone)
                                             .tooltip("Clone")
-                                            .loading(self.cloning)
-                                            .disabled(self.cloning)
+                                            .loading(cloning)
+                                            .disabled(cloning)
                                             .primary(),
                                     )
                                     .content(move |_, _window, cx| {
@@ -1708,9 +1680,8 @@ impl RepoDetailView {
             .into_any_element()
     }
 
-    /// Header for a local (not yet published) repository: the directory
-    /// name and path with an Init button instead of the NIP-34 actions
-    /// (issues, pull requests, share, info, clone).
+    /// Header for a local, not yet published, repository.
+    /// The directory name and path with an Init button instead of the NIP-34 actions.
     fn render_local_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let name = self.display_name(cx);
         let path = self
@@ -1772,8 +1743,7 @@ impl RepoDetailView {
             .into_any_element()
     }
 
-    /// Open the dialog guiding the user through publishing the local
-    /// repository to NIP-34.
+    /// Open the dialog guiding the user through publishing the local repository to NIP-34.
     fn open_init_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(local_path) = self.local_path.clone() else {
             return;
@@ -1782,32 +1752,350 @@ impl RepoDetailView {
         init_dialog::open(local_path, view, window, cx);
     }
 
-    /// Switch the repository into its NIP-34 mode after a successful init:
-    /// create the nostr store for the announced repository and drop the
-    /// local (scan) identity. The worktree is unchanged, so the file
-    /// explorer keeps its loaded content.
+    /// Switch the repository into its NIP-34 mode after a successful init.
+    /// Creates the nostr store for the announced repository.
+    /// Drops the local scan identity.
+    /// The worktree is unchanged, so the explorer keeps its loaded content.
     pub(crate) fn apply_announcement(
         &mut self,
         announcement: Announcement,
         cx: &mut Context<Self>,
     ) {
-        // The repository is no longer a bare local repo: drop it from the
-        // scan results so it leaves the sidebar's local section immediately.
+        // The repository is no longer a bare local repo.
+        // Drop it from the scan results so it leaves the sidebar's local section.
         if let Some(path) = self.local_path.take() {
             LocalReposStore::global(cx).update(cx, |store, cx| store.remove(&path, cx));
         }
         let store =
             cx.new(|cx| RepoStore::new(announcement.addr(), announcement.relays.clone(), cx));
-        // Re-render when the store refreshes (issues, PRs, statuses).
-        self._subscriptions
-            .push(cx.observe(&store, |_this, _store, cx| cx.notify()));
+        // Re-render on store refreshes, issues, PRs and statuses.
+        // Keep the ready-to-contribute statuses of this repository requested.
+        self.attach_store(&store, cx);
         self.store = Some(store);
         self.initial = Some(announcement);
         cx.notify();
     }
 
-    /// The tab row shared by both header variants: Files/Commits tabs, the
-    /// HEAD commit button and the branch/tag selectors.
+    /// Observe the repository's store, re-render on refreshes.
+    /// Request the ready-to-contribute statuses for it.
+    fn attach_store(&mut self, store: &Entity<RepoStore>, cx: &mut Context<Self>) {
+        self._subscriptions
+            .push(cx.observe(store, |this, _store, cx| {
+                this.refresh_ready_statuses(cx);
+                cx.notify();
+            }));
+        self.refresh_ready_statuses(cx);
+    }
+
+    /// Request the statuses of this repository again when the announced HEAD changes.
+    /// The HEAD is the base the checkouts are compared against.
+    /// Owned repositories are watched for unpushed commits.
+    /// Other repositories for ready-to-contribute checkouts.
+    fn refresh_ready_statuses(&mut self, cx: &mut Context<Self>) {
+        let Some(entity) = self.store.clone() else {
+            return;
+        };
+
+        let head = entity.read(cx).head.clone();
+
+        if self.ready_requested && self.ready_head == head {
+            return;
+        }
+
+        self.ready_requested = true;
+        self.ready_head = head.clone();
+
+        let addr = entity.read(cx).addr().clone();
+        let backend = Backend::global(cx);
+        let checkout = CheckoutsStore::global(cx);
+
+        let owned = backend
+            .read(cx)
+            .current_user()
+            .is_some_and(|user| entity.read(cx).is_author(&user));
+
+        checkout.update(cx, |store, cx| {
+            // The ready statuses keep the fast poll running while the panel is open.
+            // The sidebar's push watch alone polls slower.
+            store.request_statuses(&addr, head, cx);
+
+            if owned {
+                store.request_push_statuses(&addr, cx);
+            }
+        });
+    }
+
+    /// The ready-to-push statuses of this repository in the global checkouts
+    /// store changed since they last drove a render.
+    ///
+    /// Updates the cached slices. `None` store (a local, not yet published,
+    /// repository) has no statuses.
+    fn refresh_statuses(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(entity) = self.store.clone() else {
+            return false;
+        };
+        let addr = entity.read(cx).addr().clone();
+        let checkouts = CheckoutsStore::global(cx).read(cx);
+        let ready_statuses = checkouts.ready_statuses_of(&addr);
+        let push_statuses = checkouts.push_statuses_of(&addr);
+
+        let changed = ready_statuses != self.ready_statuses || push_statuses != self.push_statuses;
+        self.ready_statuses = ready_statuses;
+        self.push_statuses = push_statuses;
+        changed
+    }
+
+    /// The first checkout ready for a pull request on this repository.
+    /// Not covered by an open PR of the signed-in user.
+    /// Not dismissed in this panel.
+    /// The repository's own checkouts are not suggested here.
+    /// Their work is pushed, see [`Self::push_suggestion`].
+    fn ready_suggestion(&self, cx: &App) -> Option<CheckoutStatus> {
+        let store = self.store.as_ref()?;
+        let addr = store.read(cx).addr().clone();
+        let user = Backend::global(cx).read(cx).current_user()?;
+        if store.read(cx).is_author(&user) {
+            return None;
+        }
+
+        let statuses = CheckoutsStore::global(cx).read(cx).ready_statuses_of(&addr);
+
+        'status: for status in statuses {
+            if self
+                .banner_dismissed
+                .contains(&(status.path.clone(), status.branch.clone()))
+            {
+                continue;
+            }
+            let store = store.read(cx);
+            for pr in &store.pull_requests {
+                if pr_proposes_checkout(pr, store.status_of(pr) == RepoStatus::Open, user, &status)
+                {
+                    continue 'status;
+                }
+            }
+            return Some(status);
+        }
+
+        None
+    }
+
+    /// The first checkout of this owned repository with unpushed commits.
+    ///
+    /// Not dismissed in this panel.
+    fn push_suggestion(&self, cx: &App) -> Option<CheckoutStatus> {
+        let entity = self.store.as_ref()?;
+        let user = Backend::global(cx).read(cx).current_user()?;
+
+        if !entity.read(cx).is_author(&user) {
+            return None;
+        }
+
+        let addr = entity.read(cx).addr().clone();
+        let statuses = CheckoutsStore::global(cx).read(cx).push_statuses_of(&addr);
+
+        statuses.into_iter().find(|status| {
+            !self
+                .banner_dismissed
+                .contains(&(status.path.clone(), status.branch.clone()))
+        })
+    }
+
+    /// The ready-to-push banner of an owned repository.
+    ///
+    /// A local checkout has unpushed commits, with a Push action and a dismiss control.
+    fn render_push_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let status = self.push_suggestion(cx)?;
+        let key = (status.path.clone(), status.branch.clone());
+        let path = status.path.clone();
+        // The push busy flag lives on the store; it disables the banner's triggers.
+        let pushing = self
+            .store
+            .as_ref()
+            .is_some_and(|store| store.read(cx).pushing);
+
+        let commits = if status.ahead == 1 {
+            SharedString::from("1 commit")
+        } else {
+            SharedString::from(format!("{} commits", status.ahead))
+        };
+
+        Some(
+            h_flex()
+                .p_4()
+                .gap_2()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .bg(cx.theme().muted)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(cx.theme().info)
+                        .child(
+                            h_flex()
+                                .px_1()
+                                .rounded(cx.theme().radius)
+                                .border_1()
+                                .border_color(cx.theme().info)
+                                .bg(cx.theme().info.mix_oklab(transparent_white(), 0.04))
+                                .text_xs()
+                                .font_semibold()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(status.branch),
+                        )
+                        .child("has")
+                        .child(
+                            h_flex()
+                                .px_1()
+                                .rounded(cx.theme().radius)
+                                .border_1()
+                                .border_color(cx.theme().info)
+                                .bg(cx.theme().info.mix_oklab(transparent_white(), 0.04))
+                                .text_xs()
+                                .font_semibold()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(commits),
+                        )
+                        .child("ready to push"),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("push-checkout-banner")
+                                .icon(IconName::ArrowUp)
+                                .label("Push")
+                                .small()
+                                .info()
+                                .loading(pushing)
+                                .disabled(pushing)
+                                .on_click(cx.listener(move |this, _event, window, cx| {
+                                    this.push_unpushed_checkout(path.clone(), window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("close-repo")
+                                .icon(IconName::Close)
+                                .tooltip("Dismiss")
+                                .small()
+                                .ghost()
+                                .disabled(pushing)
+                                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                    this.banner_dismissed.insert(key.clone());
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The ready-to-contribute banner of the repository panel.
+    ///
+    /// A checkout has commits ahead of its base branch, with a Create action
+    /// opening the prefilled New PR panel, and a dismiss control.
+    fn render_ready_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let status = self.ready_suggestion(cx)?;
+        let key = (status.path.clone(), status.branch.clone());
+
+        let commits = if status.ahead == 1 {
+            SharedString::from("1 commit")
+        } else {
+            SharedString::from(format!("{} commits", status.ahead))
+        };
+
+        Some(
+            h_flex()
+                .p_4()
+                .gap_2()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .bg(cx.theme().muted)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(cx.theme().info)
+                        .child(
+                            h_flex()
+                                .px_1()
+                                .rounded(cx.theme().radius)
+                                .border_1()
+                                .border_color(cx.theme().info)
+                                .bg(cx.theme().info.mix_oklab(transparent_white(), 0.04))
+                                .text_xs()
+                                .font_semibold()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(status.branch),
+                        )
+                        .child("is")
+                        .child(
+                            h_flex()
+                                .px_1()
+                                .rounded(cx.theme().radius)
+                                .border_1()
+                                .border_color(cx.theme().info)
+                                .bg(cx.theme().info.mix_oklab(transparent_white(), 0.04))
+                                .text_xs()
+                                .font_semibold()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(commits),
+                        )
+                        .child("ahead of")
+                        .child(
+                            h_flex()
+                                .px_1()
+                                .rounded(cx.theme().radius)
+                                .border_1()
+                                .border_color(cx.theme().info)
+                                .bg(cx.theme().info.mix_oklab(transparent_white(), 0.04))
+                                .text_xs()
+                                .font_semibold()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(status.base),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("create-pr-from-banner")
+                                .icon(IconName::Plus)
+                                .label("Create")
+                                .small()
+                                .info()
+                                .on_click(cx.listener(|this, _event, window, cx| {
+                                    if let Some(store) = this.store.clone() {
+                                        open_new_pull_panel(
+                                            this.dock_area.clone(),
+                                            store,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                })),
+                        )
+                        .child(
+                            Button::new("dismiss-ready-banner")
+                                .icon(IconName::Close)
+                                .tooltip("Dismiss")
+                                .small()
+                                .ghost()
+                                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                    this.banner_dismissed.insert(key.clone());
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The tab row shared by both header variants.
+    /// Files and Commits tabs, the HEAD commit button and the branch/tag selectors.
     fn render_header_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
         let commits_count = self.all_commits.as_ref().map(|list| list.total);
         let worktree_empty = self.switching_ref || self.worktree.is_none();
@@ -1857,19 +2145,7 @@ impl RepoDetailView {
                             .child("Commits"),
                     )
                     .when_some(commits_count, |this, count| {
-                        this.child(
-                            h_flex()
-                                .justify_center()
-                                .px_1()
-                                .py_0p5()
-                                .min_w_4()
-                                .text_size(px(8.))
-                                .bg(cx.theme().muted)
-                                .text_color(cx.theme().muted_foreground)
-                                .rounded(cx.theme().radius)
-                                .line_height(relative(1.))
-                                .child(SharedString::from(count.to_string())),
-                        )
+                        this.child(CountBadge::new(count))
                     })
                     .text_color(cx.theme().button_foreground)
                     .rounded(cx.theme().radius)
@@ -1933,7 +2209,7 @@ impl RepoDetailView {
                                 .bg(cx.theme().muted)
                                 .rounded(cx.theme().radius)
                                 .render_trigger(|ctx, _window, cx| {
-                                    Self::render_ref_trigger(ctx, CustomIconName::GitBranch, cx)
+                                    ref_selector_trigger(ctx, CustomIconName::GitBranch, cx)
                                 }),
                         ),
                     )
@@ -1947,7 +2223,7 @@ impl RepoDetailView {
                                 .bg(cx.theme().muted)
                                 .rounded(cx.theme().radius)
                                 .render_trigger(|ctx, _window, cx| {
-                                    Self::render_ref_trigger(ctx, CustomIconName::Tag, cx)
+                                    ref_selector_trigger(ctx, CustomIconName::Tag, cx)
                                 }),
                         ),
                     ),
@@ -2031,17 +2307,33 @@ impl Render for RepoDetailView {
             .or_else(|| self.readme_name.clone())
             .unwrap_or_else(|| "Overview".into());
 
+        let banner = self
+            .render_ready_banner(cx)
+            .or_else(|| self.render_push_banner(cx));
+
+        // View-level load/switch errors, plus the errors of the store-owned
+        // operations, republish, checkout push, delete and clone-to-folder.
+        let error = self.error.clone().or_else(|| {
+            self.store
+                .as_ref()
+                .and_then(|store| store.read(cx).last_error.clone().map(SharedString::from))
+        });
+
         v_flex()
-            .image_cache(image_cache("repo", MAX_IMAGES))
+            .image_cache(gpui::retain_all("repo"))
             .id("repo")
             .size_full()
+            .when_some(banner, |this, banner| this.child(banner))
             .child(self.render_header(cx))
-            .when_some(self.error.clone(), |this, error| {
+            .when_some(error, |this, error| {
                 this.child(
                     Alert::error("repo-error", error)
                         .banner()
                         .on_close(cx.listener(|this, _event, _window, cx| {
                             this.error = None;
+                            if let Some(store) = this.store.clone() {
+                                store.update(cx, |store, _| store.last_error = None);
+                            }
                             cx.notify();
                         })),
                 )
@@ -2061,8 +2353,9 @@ impl Render for RepoDetailView {
     }
 }
 
-/// Read the worktree state of `repo` (no network): entries, README, refs
-/// and HEAD commit.
+/// Read the worktree state of `repo`, no network.
+///
+/// Entries, README, refs and HEAD commit.
 fn load_repo_data(repo: &Repository) -> Result<RepoData, Error> {
     let entries = signed_git::worktree_entries(repo)?;
     let tree = build_tree_items(&entries);
@@ -2072,8 +2365,9 @@ fn load_repo_data(repo: &Repository) -> Result<RepoData, Error> {
         None => None,
     };
     let worktree = repo.workdir().map(Path::to_path_buf);
-    // Ref listing is auxiliary UI: a broken ref must not prevent the
-    // explorer from loading, so failures degrade to empty selectors.
+    // Ref listing is auxiliary UI.
+    // A broken ref must not prevent the explorer from loading.
+    // Failures degrade to empty selectors.
     let (branches, tags, current_branch) = match &worktree {
         Some(_) => (
             signed_git::repo_branches(repo).unwrap_or_default(),
@@ -2096,15 +2390,12 @@ fn load_repo_data(repo: &Repository) -> Result<RepoData, Error> {
     })
 }
 
-/// The `nostr://...` clone URL of an announcement (NIP-34): the owner as a
-/// NIP-05 identifier when known (npub otherwise), the first announced relay
-/// as a hint, and the repository identifier. `nip05` is the owner's
-/// NIP-05 identifier from the profile store, already blank-filtered.
+/// The `nostr://...` clone URL of an announcement, NIP-34.
 fn nostr_clone_url(announcement: &Announcement, nip05: Option<&str>) -> SharedString {
     let owner = announcement.owner;
     let user = nip05
         .map(str::to_owned)
-        .unwrap_or_else(|| owner.to_bech32().unwrap_or_else(|_| owner.to_hex()));
+        .unwrap_or_else(|| owner.to_bech32().unwrap());
 
     let mut url = format!("nostr://{user}");
     if let Some(hint) = announcement.relays.first().and_then(RelayUrl::domain) {
@@ -2117,16 +2408,17 @@ fn nostr_clone_url(announcement: &Announcement, nip05: Option<&str>) -> SharedSt
     SharedString::from(url)
 }
 
-/// The "Forked from …" row of the detail header: a clickable link to the
-/// upstream repository when the `u` tag references a NIP-34 repo,
-/// plain text when it only carries a git URL.
+/// The forked-from row of the detail header.
+///
+/// Clickable link to the upstream repository when the `u` tag references a NIP-34 repo.
+/// Plain text when it only carries a git URL.
 fn fork_row(announcement: &Announcement, cx: &mut Context<RepoDetailView>) -> Option<AnyElement> {
     let upstream = announcement.upstream.as_ref()?;
 
     let (label, clickable) = match &upstream.addr {
         Some(addr) => {
-            // Prefer the upstream's display name when its announcement
-            // is already known locally fall back to its repository id.
+            // Prefer the upstream's display name when its announcement is known locally.
+            // Fall back to its repository id otherwise.
             let name = RepoListStore::global(cx)
                 .read(cx)
                 .announcements
@@ -2134,13 +2426,14 @@ fn fork_row(announcement: &Announcement, cx: &mut Context<RepoDetailView>) -> Op
                 .find(|a| a.addr() == *addr)
                 .map(|a| {
                     a.name
-                        .clone()
+                        .as_deref()
+                        .map(SharedString::from)
                         .unwrap_or_else(|| SharedString::from(a.id.clone()))
                 })
                 .unwrap_or_else(|| SharedString::from(addr.identifier.clone()));
             (SharedString::from(format!("Forked from {name}")), true)
         }
-        None => (upstream.display(), false),
+        None => (SharedString::from(upstream.display().as_str()), false),
     };
 
     let row = h_flex()
@@ -2163,9 +2456,7 @@ fn fork_row(announcement: &Announcement, cx: &mut Context<RepoDetailView>) -> Op
     })
 }
 
-/// Open `announcement` as a repository panel in the dock's center, returning
-/// the new detail view. Shared by the explore list, the sidebar and fork
-/// links so every entry point opens repositories identically.
+/// Open `announcement` as a repository panel in the dock's center.
 pub(crate) fn open_repo_panel(
     dock_area: &WeakEntity<DockArea>,
     announcement: &Announcement,
@@ -2177,13 +2468,7 @@ pub(crate) fn open_repo_panel(
 
     if let Some(dock_area) = dock_area.upgrade() {
         dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel_view(
-                panel_handle(detail.clone()),
-                DockPlacement::Center,
-                None,
-                window,
-                cx,
-            );
+            add_center_panel(dock_area, panel_handle(detail.clone()), window, cx);
         });
     }
 

@@ -1,5 +1,6 @@
-/// `[head chars]...[tail chars]` middle truncation; the value is left alone
-/// when it is too short for the ellipsis to save space.
+/// `[head chars]...[tail chars]` middle truncation.
+///
+/// Values too short for the ellipsis to save space are left alone.
 pub fn middle_truncate(value: &str, head: usize, tail: usize) -> String {
     let len = value.chars().count();
     if len <= head + tail + 3 {
@@ -32,7 +33,7 @@ mod tests {
             ),
             "30617:a008...3564d:ngit"
         );
-        // Too short to save space with the ellipsis: left alone.
+        // Too short to save space with the ellipsis, left alone.
         assert_eq!(middle_truncate("short", 10, 10), "short");
     }
 }

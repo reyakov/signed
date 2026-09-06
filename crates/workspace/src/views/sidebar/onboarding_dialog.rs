@@ -1,24 +1,18 @@
 use gpui::prelude::*;
-use gpui::{App, Entity, SharedString, Window, div, px};
+use gpui::{App, Entity, Window, px};
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dialog::{DialogDescription, DialogFooter, DialogHeader, DialogTitle};
 use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputState};
-use gpui_component::{ActiveTheme, Disableable, WindowExt};
+use gpui_component::{Disableable, WindowExt};
 use signed_state::Backend;
 
+use crate::views::dialog_state::{DialogProgress, error_row};
+
 /// Shared state for the Onboarding dialog, so async results can be rendered.
-#[derive(Default)]
-pub struct OnboardingState {
-    pub busy: bool,
-    pub error: Option<SharedString>,
-}
+pub type OnboardingState = DialogProgress;
 
 /// Open the Onboarding dialog for creating a new identity.
-///
-/// The caller is responsible for creating the input and state entities and
-/// passing them in. This function only builds the dialog UI and wires up
-/// the continue-button handler.
 pub fn open(
     name_input: Entity<InputState>,
     pass_input: Entity<InputState>,
@@ -66,9 +60,7 @@ pub fn open(
                             )
                             .child(field().required(true).child(Input::new(&repass_input))),
                     )
-                    .children(error.map(|message| {
-                        div().text_sm().text_color(cx.theme().danger).child(message)
-                    }))
+                    .children(error_row(&error, cx))
                     .child(
                         DialogFooter::new().justify_end().child(
                             Button::new("continue")
@@ -91,17 +83,12 @@ pub fn open(
 
                                         if pass != repass {
                                             state.update(cx, |state, _| {
-                                                state.busy = false;
-                                                state.error =
-                                                    Some("Passphrases do not match".into());
+                                                state.fail("Passphrases do not match");
                                             });
                                             return;
                                         }
 
-                                        state.update(cx, |state, _| {
-                                            state.busy = true;
-                                            state.error = None;
-                                        });
+                                        state.update(cx, |state, _| state.begin());
 
                                         let task = backend.update(cx, |backend, cx| {
                                             backend.create_identity(&name, &pass, cx)
@@ -119,8 +106,7 @@ pub fn open(
                                             Err(e) => {
                                                 cx.update_window(handle, |_, _window, cx| {
                                                     state.update(cx, |state, _| {
-                                                        state.busy = false;
-                                                        state.error = Some(e.to_string().into());
+                                                        state.fail(e.to_string());
                                                     });
                                                 })
                                                 .ok();

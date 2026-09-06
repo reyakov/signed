@@ -1,15 +1,12 @@
 use nostr_sdk::prelude::*;
 
-/// A lightweight "something changed" signal for the UI.
-///
-/// Heavy data stays in the database; consumers re-query on receipt.
+/// A lightweight change notification for the UI.
 #[derive(Debug, Clone)]
 pub struct Update {
     pub kind: Kind,
-    /// First `a` tag value of the event, if any (e.g. the repository coordinate).
+    /// First `a` tag value of the event, if any, for example the repository coordinate.
     pub coordinate: Option<Coordinate>,
     pub author: PublicKey,
-    pub event_id: EventId,
 }
 
 impl Update {
@@ -21,7 +18,6 @@ impl Update {
             kind: event.kind,
             coordinate,
             author: event.pubkey,
-            event_id: event.id,
         }
     }
 }

@@ -1,22 +1,26 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use assets::CustomIconName;
-use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, TAB_BAR_HEIGHT, panel_handle};
+use dock::{
+    BasePanel, DockArea, Panel, PanelEvent, TAB_BAR_HEIGHT, add_center_panel, panel_handle,
+};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, ObjectFit, Render,
-    SharedString, Subscription, WeakEntity, Window, div, img, px, uniform_list,
+    AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, ObjectFit, Render,
+    SharedString, Subscription, WeakEntity, Window, div, img, px, relative, uniform_list, white,
 };
 use gpui_base::Button as BaseButton;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::InputState;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
-use signed_core::{Announcement, identifier_from_name};
-use signed_state::{Backend, BackendEvent, LocalReposStore, Profile, ProfileStore, RepoListStore};
-use signed_ui::image_cache::{MAX_IMAGES, image_cache};
+use signed_core::{Announcement, RepoAddr, identifier_from_name};
+use signed_state::{
+    Backend, BackendEvent, CheckoutsStore, LocalReposStore, Profile, ProfileStore, RepoListStore,
+};
 use signed_ui::{NavItem, PixelAvatar, UserAvatar, title_bar_drag_handlers};
 
 use super::{RepoDetailView, RepoListView, open_repo_panel};
@@ -30,87 +34,176 @@ mod settings_dialog;
 
 use self::onboarding_dialog::OnboardingState;
 
-/// Left-dock panel with navigation entries. Entries open content panels in
-/// the dock area.
 pub struct SidebarPanel {
     focus_handle: FocusHandle,
     dock_area: WeakEntity<DockArea>,
     explore: Option<WeakEntity<RepoListView>>,
-    logged_in: bool,
-    /// Repositories announced by the current user, listed under
-    /// "All Repositories". Recreated when the signer changes.
-    my_repos: Option<Entity<RepoListStore>>,
-    /// Observes the current user's repo store so the list re-renders.
-    my_repos_subscription: Option<Subscription>,
-    /// Banner artwork shown behind the sign-in screen,
-    /// picked at random from the bundled `backgrounds/` assets.
+    /// Artwork for the sign-in screen.
     banner: SharedString,
-    /// Observes the local-repository scan so new discoveries re-render.
-    _local_repos_subscription: Subscription,
-    _subscription: Subscription,
+    /// The signed-in user's announced repositories, newest first.
+    announcements: Arc<Vec<Announcement>>,
+    /// Local repositories found by the scan that are not announced yet.
+    local_repos: Arc<Vec<PathBuf>>,
+    /// A local scan is currently running.
+    scanning: bool,
+    /// Unpushed local commits per announced repository, the row badge counts.
+    unpushed: HashMap<RepoAddr, usize>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl SidebarPanel {
     pub fn new(dock_area: WeakEntity<DockArea>, cx: &mut Context<Self>) -> Self {
-        let local_repos_store = LocalReposStore::global(cx);
         let backend = Backend::global(cx);
-        let logged_in = backend.read(cx).current_user().is_some();
+        let repos = RepoListStore::global(cx);
+        let local = LocalReposStore::global(cx);
+        let checkouts = CheckoutsStore::global(cx);
 
-        let subscription = cx.subscribe(&backend, |this, backend, event, cx| {
-            match event {
-                BackendEvent::SignerChanged => {
-                    this.logged_in = backend.read(cx).current_user().is_some();
-                    this.refresh_my_repos(cx);
-                }
-                BackendEvent::SignerRequired => {
-                    this.logged_in = false;
-                    this.banner = pick_banner();
-                    this.my_repos = None;
-                    this.my_repos_subscription = None;
-                }
-                _ => return,
+        let mut subscriptions = Vec::new();
+
+        // Identity changes swap the whole sidebar between the sign-in screen and the signed-in content.
+        subscriptions.push(cx.subscribe(&backend, |this, _backend, event, cx| {
+            let signer_changed = matches!(event, BackendEvent::SignerChanged);
+            let signer_required = matches!(event, BackendEvent::SignerRequired);
+
+            if !signer_changed && !signer_required {
+                return;
             }
-            cx.notify();
-        });
 
-        let local_repos_subscription = cx.observe(&local_repos_store, |_, _, cx| {
-            cx.notify();
-        });
+            if signer_required {
+                this.banner = pick_banner();
+            }
 
-        let mut panel = Self {
+            if this.refresh(cx) || signer_required {
+                cx.notify();
+            }
+        }));
+
+        // The merged list re-derives when announcements or the local scan change.
+        subscriptions.push(cx.observe(&repos, |this, _repos, cx| {
+            if this.refresh(cx) {
+                cx.notify();
+            }
+        }));
+
+        // The local scan re-derives when announcements or the local scan change.
+        subscriptions.push(cx.observe(&local, |this, _local, cx| {
+            if this.refresh(cx) {
+                cx.notify();
+            }
+        }));
+
+        // Push statuses are recomputed in the background; only the badge counts change.
+        subscriptions.push(cx.observe(&checkouts, |this, _checkouts, cx| {
+            if this.refresh_unpushed(cx) {
+                cx.notify();
+            }
+        }));
+
+        let mut this = Self {
             focus_handle: cx.focus_handle(),
             dock_area,
-            logged_in,
             explore: None,
-            my_repos: None,
-            my_repos_subscription: None,
             banner: pick_banner(),
-            _local_repos_subscription: local_repos_subscription,
-            _subscription: subscription,
+            announcements: Arc::new(Vec::new()),
+            local_repos: Arc::new(Vec::new()),
+            scanning: false,
+            unpushed: HashMap::new(),
+            _subscriptions: subscriptions,
         };
 
-        if logged_in {
-            panel.refresh_my_repos(cx);
-        }
+        // Seed the snapshot right away.
+        // The stores may already hold data from before the panel opened.
+        // The first render must not depend on a later store update.
+        this.refresh(cx);
 
-        panel
+        this
     }
 
-    /// (Re)create the store listing the current user's repositories.
-    fn refresh_my_repos(&mut self, cx: &mut Context<Self>) {
-        self.my_repos_subscription = None;
-
+    /// The sidebar renders only its own derived fields, never the stores
+    /// directly. Because the panel is a cached view, a store update alone does
+    /// not re-render it: the observers notify this panel, which re-runs
+    /// `render` over the fresh snapshot.
+    ///
+    /// Returns `true` when a rendered field changed.
+    fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
         let backend = Backend::global(cx);
-        let author = backend.read(cx).current_user();
-        self.my_repos = author.map(|author| cx.new(|cx| RepoListStore::new(Some(author), cx)));
+        let user = backend.read(cx).current_user();
 
-        if let Some(store) = self.my_repos.as_ref() {
-            self.my_repos_subscription = Some(cx.observe(store, |_, _, cx| cx.notify()));
+        let repo_list = RepoListStore::global(cx);
+        let announcements = user
+            .as_ref()
+            .map(|user| repo_list.read(cx).announcements_of(user))
+            .unwrap_or_default();
+
+        // A scanned repository is dropped from the local list
+        // once the user announces it, so it is not listed twice.
+        let local = LocalReposStore::global(cx);
+        let scanning = local.read(cx).scanning;
+
+        let local_repos = {
+            let ids: HashSet<String> = announcements.iter().map(|a| a.id.clone()).collect();
+            local
+                .read(cx)
+                .repos
+                .iter()
+                .filter(|path| {
+                    let Some(name) = path.file_name() else {
+                        return true;
+                    };
+                    !ids.contains(&identifier_from_name(&name.to_string_lossy()))
+                })
+                .cloned()
+                .collect()
+        };
+
+        let announcements_changed = *self.announcements != announcements;
+        let local_changed = *self.local_repos != local_repos;
+        let scanning_changed = self.scanning != scanning;
+
+        self.announcements = Arc::new(announcements);
+        self.local_repos = Arc::new(local_repos);
+        self.scanning = scanning;
+
+        if announcements_changed {
+            self.request_push_watches(cx);
+            self.unpushed.clear();
         }
+
+        announcements_changed || local_changed || scanning_changed
     }
 
-    /// Open the Explore (repository list) panel in the center of the dock
-    /// area. No-op if it's already open.
+    /// Recompute the badge counts from the global checkouts store's ready-to-push statuses
+    fn refresh_unpushed(&mut self, cx: &mut Context<Self>) -> bool {
+        let checkouts = CheckoutsStore::global(cx).read(cx);
+        let mut unpushed = HashMap::with_capacity(self.announcements.len());
+
+        for announcement in self.announcements.iter() {
+            let addr = announcement.addr();
+            let count = checkouts.unpushed(&addr);
+            if count > 0 {
+                unpushed.insert(addr, count);
+            }
+        }
+
+        if unpushed == self.unpushed {
+            return false;
+        }
+
+        self.unpushed = unpushed;
+        true
+    }
+
+    /// Keep the `ready to push` statuses of the announced repositories current.
+    fn request_push_watches(&self, cx: &mut Context<Self>) {
+        let checkouts = CheckoutsStore::global(cx);
+        checkouts.update(cx, |checkouts, cx| {
+            for announcement in self.announcements.iter() {
+                checkouts.request_push_statuses(&announcement.addr(), cx);
+            }
+        });
+    }
+
+    /// Open the Explore repository list panel in the dock area's center.
     pub fn open_explore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .explore
@@ -125,7 +218,7 @@ impl SidebarPanel {
         self.explore = Some(panel.downgrade());
 
         let _ = self.dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+            add_center_panel(dock_area, panel_handle(panel), window, cx);
         });
     }
 
@@ -162,32 +255,24 @@ impl SidebarPanel {
         open_repo_panel(&self.dock_area, announcement, window, &mut *cx);
     }
 
-    /// Open a local repository's detail view in the dock's center; the
-    /// detail view offers to publish it to NIP-34.
+    /// Open a local repository's detail view in the dock's center.
+    ///
+    /// The detail view offers to publish it to NIP-34.
     fn open_local_repo(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let detail =
             cx.new(|cx| RepoDetailView::new_local(self.dock_area.clone(), path, window, cx));
 
-        let _ = self.dock_area.update(cx, |dock_area, cx| {
-            dock_area.add_panel_view(
-                panel_handle(detail),
-                DockPlacement::Center,
-                None,
-                window,
-                cx,
-            );
-        });
+        self.dock_area
+            .update(cx, |dock_area, cx| {
+                add_center_panel(dock_area, panel_handle(detail), window, cx);
+            })
+            .ok();
     }
 
-    /// The "All Repositories" section: header with the create button and
-    /// the current user's repositories below it, lazily rendered through a
-    /// [`uniform_list`], followed by the local git repositories discovered
-    /// by the startup scan.
-    fn render_my_repos(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let store = self.my_repos.as_ref();
-        let local = LocalReposStore::global(cx);
-        let local_repos = local.read(cx).repos.clone();
-        let scanning = local.read(cx).scanning;
+    fn render_repos(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let announcements = self.announcements.clone();
+        let local_repos = self.local_repos.clone();
+        let scanning = self.scanning;
 
         v_flex()
             .px_2()
@@ -234,58 +319,36 @@ impl SidebarPanel {
                             ),
                     ),
             )
-            .when_some(store, |builder, store| {
-                let announcements = store.read(cx).announcements.clone();
-                // Local repositories that have already been published to
-                // NIP-34 are listed among the user's repositories above;
-                // hide them from the local section (matched by the
-                // identifier derived from the directory name, like the
-                // init dialog's default name).
-                let announced_ids: HashSet<String> =
-                    announcements.iter().map(|a| a.id.clone()).collect();
-                let local_repos: Vec<PathBuf> = local_repos
-                    .iter()
-                    .filter(|path| {
-                        let Some(name) = path.file_name() else {
-                            return true;
-                        };
-                        !announced_ids.contains(&identifier_from_name(&name.to_string_lossy()))
-                    })
-                    .cloned()
-                    .collect();
-                // One merged list: the user's NIP-34 repositories first,
-                // then the local repositories discovered by the scan.
+            .map(|this| {
+                // Merged list, the user's NIP-34 repositories and local repositories discovered.
                 let total = announcements.len() + local_repos.len();
 
                 if total == 0 {
-                    builder.child(
+                    this.child(
                         div()
                             .flex_1()
                             .px_2()
                             .py_1()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(if scanning {
-                                "Scanning for local repositories…"
-                            } else {
-                                "No repositories yet"
+                            .map(|this| {
+                                if scanning {
+                                    this.child("Scanning for local repositories…")
+                                } else {
+                                    this.child("No repositories yet")
+                                }
                             }),
                     )
                 } else {
-                    builder.child(
+                    this.child(
                         uniform_list(
                             "repos",
                             total,
-                            cx.processor(move |this, range: Range<usize>, _window, cx| {
+                            cx.processor(move |this, range: Range<usize>, _, cx| {
                                 range
                                     .map(|ix| {
-                                        this.render_repo_row_at(
-                                            &announcements,
-                                            &local_repos,
-                                            ix,
-                                            cx,
-                                        )
-                                        .into_any_element()
+                                        this.render_repo_at(&announcements, &local_repos, ix, cx)
+                                            .into_any_element()
                                     })
                                     .collect()
                             }),
@@ -297,9 +360,8 @@ impl SidebarPanel {
             })
     }
 
-    /// One row of the merged sidebar list: a NIP-34 repository or a local
-    /// repository.
-    fn render_repo_row_at(
+    /// One row of the merged sidebar list, a NIP-34 or a local repository.
+    fn render_repo_at(
         &self,
         announcements: &[Announcement],
         local_repos: &[PathBuf],
@@ -323,42 +385,60 @@ impl SidebarPanel {
         announcement: &Announcement,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let name = announcement
-            .name
-            .clone()
-            .unwrap_or_else(|| SharedString::from(announcement.id.clone()));
+        let name = announcement.name().map(SharedString::from);
         let avatar = PixelAvatar::new(format!("{}:{}", announcement.owner, announcement.id));
         let announcement = announcement.clone();
 
-        NavItem::new(format!("my-repo:{}", announcement.id), name, avatar).on_click(
+        // Badge with the unpushed commit count of the repository's local checkouts.
+        let unpushed = self
+            .unpushed
+            .get(&announcement.addr())
+            .copied()
+            .unwrap_or(0);
+
+        let mut row = NavItem::new(format!("repo:{}", announcement.id), name, avatar);
+
+        if unpushed > 0 {
+            row = row.suffix(
+                v_flex()
+                    .flex_shrink_0()
+                    .size_4()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .line_height(relative(1.))
+                    .bg(cx.theme().red_light)
+                    .text_color(white())
+                    .text_size(px(8.))
+                    .child(SharedString::from(unpushed.to_string())),
+            );
+        }
+
+        row.on_click(
             cx.listener(move |this, _ev, window, cx| this.open_repo(&announcement, window, cx)),
         )
     }
 
-    /// One local repository row: a deterministic pixel avatar seeded from
-    /// the path, the directory name, and a warning suffix marking it as
-    /// not yet set up for NIP-34. Clicking it opens the repository's
-    /// detail view, which offers to initialize it.
+    /// One local repository row.
+    ///
+    /// The directory name and a warning suffix, the repo is not yet set up for NIP-34.
     fn render_local_row(&self, path: &Path, cx: &mut Context<Self>) -> impl IntoElement {
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string());
+            .unwrap_or("Untitled".into());
         let path = path.to_path_buf();
+        let avatar = PixelAvatar::new(path.to_string_lossy());
 
-        NavItem::new(
-            format!("local-repo:{}", path.display()),
-            name,
-            PixelAvatar::new(path.to_string_lossy()),
-        )
-        .suffix(
-            Icon::new(IconName::TriangleAlert)
-                .small()
-                .text_color(cx.theme().warning),
-        )
-        .on_click(cx.listener(move |this, _ev, window, cx| {
-            this.open_local_repo(path.clone(), window, cx);
-        }))
+        NavItem::new(format!("local-repo:{}", path.display()), name, avatar)
+            .suffix(
+                Icon::new(IconName::TriangleAlert)
+                    .small()
+                    .text_color(cx.theme().warning),
+            )
+            .on_click(cx.listener(move |this, _ev, window, cx| {
+                this.open_local_repo(path.clone(), window, cx);
+            }))
     }
 
     /// Show the Import Identity dialog.
@@ -366,7 +446,7 @@ impl SidebarPanel {
         import_dialog::open(window, cx);
     }
 
-    /// Render the user avatar and name in the sidebar, wrapped in the window titlebar drag area.
+    /// Render the user avatar and name in the sidebar, inside the titlebar drag area.
     fn render_user(
         &self,
         profile: &Profile,
@@ -396,8 +476,7 @@ impl SidebarPanel {
         )
     }
 
-    /// Sign-in placeholder shown while logged out: banner artwork behind a
-    /// scrim so the CTA buttons stay readable in both themes.
+    /// Sign-in placeholder shown while logged out.
     fn render_sign_in(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         v_flex()
             .size_full()
@@ -503,10 +582,6 @@ impl Focusable for SidebarPanel {
 
 impl Render for SidebarPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.logged_in {
-            return self.render_sign_in(window, cx);
-        }
-
         let backend = Backend::global(cx);
         let profile_store = ProfileStore::global(cx);
 
@@ -515,10 +590,14 @@ impl Render for SidebarPanel {
             .current_user()
             .map(|public_key| profile_store.read(cx).get(&public_key));
 
+        if profile.is_none() {
+            return self.render_sign_in(window, cx);
+        }
+
         v_flex()
             .size_full()
             .justify_between()
-            .image_cache(image_cache("sidebar", MAX_IMAGES))
+            .image_cache(gpui::retain_all("sidebar"))
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
             .child(
@@ -561,7 +640,7 @@ impl Render for SidebarPanel {
                                 )),
                             ),
                     )
-                    .child(self.render_my_repos(cx)),
+                    .child(self.render_repos(cx)),
             )
             .child(
                 v_flex()

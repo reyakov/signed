@@ -2,10 +2,10 @@ use nostr::prelude::*;
 
 use crate::RepoAddr;
 
-/// Target of a `nostr://` clone URL (NIP-34 "Nostr Clone URL format").
+/// Target of a `nostr://` clone URL, as defined by NIP-34.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloneTarget {
-    /// `nostr://<naddr1...>` — direct repository address.
+    /// `nostr://<naddr1...>` encodes a direct repository address.
     Addr(RepoAddr),
     /// `nostr://<npub|nip05>/[relay-hint/]<identifier>`
     UserRepo {

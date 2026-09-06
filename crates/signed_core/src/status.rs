@@ -1,6 +1,6 @@
 use nostr::prelude::*;
 
-/// Status of a root patch, pull request or issue (kinds `1630..=1633`).
+/// Status of a root patch, pull request or issue, kinds `1630..=1633`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RepoStatus {
     Open,
@@ -30,9 +30,9 @@ impl RepoStatus {
     }
 }
 
-/// Check whether an event references the given root event via an `e` or `E`
-/// tag. NIP-10 / NIP-34 use the lowercase `e` tag; NIP-22 comments (kind
-/// `1111`) use the uppercase `E` tag for the root of the thread.
+/// NIP-10 and NIP-34 use the lowercase `e` tag.
+///
+/// NIP-22 comments, kind `1111`, use the uppercase `E` tag for the thread root.
 pub fn references_root(event: &Event, root: &EventId) -> bool {
     let root = root.to_hex();
     event
@@ -41,8 +41,8 @@ pub fn references_root(event: &Event, root: &EventId) -> bool {
         .any(|tag| matches!(tag.kind(), "e" | "E") && tag.content() == Some(root.as_str()))
 }
 
-/// Resolve the status of a root event per NIP-34:
-/// the most recent status event from the root author or a maintainer wins.
+/// Resolve the status of a root event per NIP-34.
+///
 /// Defaults to [`RepoStatus::Open`].
 pub fn resolve_status<'a, I>(
     status_events: I,

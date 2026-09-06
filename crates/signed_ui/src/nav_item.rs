@@ -2,9 +2,10 @@ use gpui::prelude::*;
 use gpui::{App, ClickEvent, ElementId, SharedString, StyleRefinement, Window, div};
 use gpui_component::{ActiveTheme, StyledExt, h_flex};
 
-/// A single navigation entry in a sidebar: an arbitrary leading element
-/// (an icon, avatar, ...) and a text label with a hover highlight,
-/// an optional trailing suffix (e.g. a status icon) and an optional click handler.
+/// A single navigation entry in a sidebar.
+/// It has an arbitrary leading element, such as an icon or avatar, and a text label.
+/// Hover highlights the row.
+/// It can carry a trailing suffix, such as a status icon, and an optional click handler.
 #[allow(clippy::type_complexity)]
 #[derive(IntoElement)]
 pub struct NavItem {
@@ -12,7 +13,7 @@ pub struct NavItem {
     style: StyleRefinement,
     icon: gpui::AnyElement,
     label: SharedString,
-    /// Trailing element rendered at the right edge of the row, after the (ellipsized) label.
+    /// Trailing element at the right edge of the row, after the ellipsized label.
     suffix: Option<gpui::AnyElement>,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
 }

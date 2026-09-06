@@ -1,31 +1,26 @@
+use std::path::PathBuf;
+
 use dock::DockArea;
 use gpui::prelude::*;
-use gpui::{App, Entity, PathPromptOptions, SharedString, WeakEntity, Window, div, px};
+use gpui::{App, Entity, PathPromptOptions, WeakEntity, Window, div, px};
 use gpui_base::input::TextareaState;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dialog::{DialogDescription, DialogFooter, DialogHeader, DialogTitle};
 use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputState, Textarea};
-use gpui_component::{ActiveTheme, Disableable, IconName, WindowExt, h_flex};
+use gpui_component::{Disableable, IconName, WindowExt, h_flex};
 use settings::SettingsStore;
 use signed_core::Announcement;
-use signed_state::Backend;
+use signed_state::{Backend, CheckoutsStore};
 
 use super::super::open_repo_panel;
 use super::grasp_servers::{GraspServersState, grasp_servers_field, load_user_grasp_servers};
+use crate::views::dialog_state::{DialogProgress, error_row};
 
 /// Shared state for the Create Repository dialog, so async results can be rendered.
-#[derive(Default)]
-pub struct CreateRepoState {
-    pub busy: bool,
-    pub error: Option<SharedString>,
-}
+pub type CreateRepoState = DialogProgress;
 
 /// Open the Create Repository dialog.
-///
-/// The dialog loads the user's default grasp servers (kind `10317` grasp
-/// list) and falls back to the shared defaults when none are set. On
-/// success the dialog closes and the new repository opens in the dock.
 pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) {
     let settings = SettingsStore::global(cx);
     let default_folder = settings
@@ -56,7 +51,7 @@ pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) 
 
     window.open_dialog(cx, move |dialog, _window, _cx| {
         const DESC: &str = "Publish a new repository to your grasp servers.";
-        const FOLDER_NOTE: &str = "Where the repository is stored.";
+        const FOLDER_NOTE: &str = "Where the repository's working copy is created.";
 
         let name_input = name_input.clone();
         let desc_input = desc_input.clone();
@@ -119,9 +114,7 @@ pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) 
                             )
                             .child(grasp_servers_field(&grasp_state, &relay_input, cx)),
                     )
-                    .children(error.map(|message| {
-                        div().text_sm().text_color(cx.theme().danger).child(message)
-                    }))
+                    .children(error_row(&error, cx))
                     .child(
                         DialogFooter::new().justify_end().child(
                             Button::new("create")
@@ -134,6 +127,7 @@ pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) 
                                 .on_click({
                                     let name_input = name_input.clone();
                                     let desc_input = desc_input.clone();
+                                    let folder_input = folder_input.clone();
                                     let state = state.clone();
                                     let grasp_state = grasp_state.clone();
                                     let dock_area = dock_area.clone();
@@ -142,6 +136,7 @@ pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) 
                                         create_repository(
                                             name_input.clone(),
                                             desc_input.clone(),
+                                            folder_input.clone(),
                                             state.clone(),
                                             grasp_state.clone(),
                                             dock_area.clone(),
@@ -156,10 +151,7 @@ pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) 
     });
 }
 
-/// Prompt the user to pick the folder the repository will be stored in, using
-/// the platform's native folder picker, and show the result in the disabled
-/// folder input. The picked folder is remembered in the settings so it
-/// becomes the default next time.
+/// Pick the repository's storage folder with the platform's native folder picker.
 fn choose_folder(folder_input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
     let folder_input = folder_input.clone();
@@ -194,10 +186,14 @@ fn choose_folder(folder_input: &Entity<InputState>, window: &mut Window, cx: &mu
     .detach();
 }
 
-/// Run the create-repository flow; closes the dialog and opens the new repository on success.
+/// Run the create-repository flow.
+///
+/// Opens the new working copy and the repository panel on success.
+#[allow(clippy::too_many_arguments)]
 fn create_repository(
     name_input: Entity<InputState>,
     desc_input: Entity<TextareaState>,
+    folder_input: Entity<InputState>,
     state: Entity<CreateRepoState>,
     grasp_state: Entity<GraspServersState>,
     dock_area: WeakEntity<DockArea>,
@@ -206,48 +202,47 @@ fn create_repository(
 ) {
     let name = name_input.read(cx).value().trim().to_owned();
     let description = desc_input.read(cx).value().trim().to_owned();
+    let folder = PathBuf::from(folder_input.read(cx).value().trim());
     let servers = grasp_state.read(cx).grasp_servers.clone();
 
     if name.is_empty() {
-        state.update(cx, |state, _| {
-            state.error = Some("Repository name is required".into());
-        });
+        state.update(cx, |state, _| state.fail("Repository name is required"));
         return;
     }
     if servers.is_empty() {
-        state.update(cx, |state, _| {
-            state.error = Some("Add at least one grasp server".into());
-        });
+        state.update(cx, |state, _| state.fail("Add at least one grasp server"));
         return;
     }
 
-    state.update(cx, |state, _| {
-        state.busy = true;
-        state.error = None;
-    });
+    state.update(cx, |state, _| state.begin());
 
     let backend = Backend::global(cx);
     let task = backend.update(cx, |backend, cx| {
-        backend.create_repository(&name, &description, servers, cx)
+        backend.create_repository(&name, &description, folder, servers, cx)
     });
+
     let handle = window.window_handle();
     let state = state.clone();
     let dock_area = dock_area.clone();
 
     cx.spawn(async move |cx| match task.await {
-        Ok(announcement) => {
+        Ok((announcement, local_path)) => {
             cx.update_window(handle, |_, window, cx| {
                 window.close_dialog(cx);
+                // Record the new working copy as a checkout of this repository.
+                // The New PR panel then pre-fills it.
+                let checkouts = CheckoutsStore::global(cx);
+                checkouts.update(cx, |store, cx| {
+                    store.record(local_path.clone(), announcement.addr(), cx);
+                });
+                cx.open_with_system(&local_path);
                 open_repo(dock_area, announcement, window, cx);
             })
             .ok();
         }
         Err(e) => {
             cx.update_window(handle, |_, _window, cx| {
-                state.update(cx, |state, _| {
-                    state.busy = false;
-                    state.error = Some(e.to_string().into());
-                });
+                state.update(cx, |state, _| state.fail(e.to_string()));
             })
             .ok();
         }

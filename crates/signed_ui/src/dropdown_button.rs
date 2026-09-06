@@ -7,11 +7,10 @@ use gpui_base::{Button as BaseButton, Popover, Selectable, StyledExt};
 use gpui_component::menu::PopupMenu;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex};
 
-/// A split dropdown button built on `gpui_base::Popover`: an action element
-/// with a separate caret trigger that opens a [`PopupMenu`].
-///
-/// The action and the caret are caller-supplied elements, so the look stays
-/// in the application; this component only owns the popover wiring.
+/// A split dropdown button built on `gpui_base::Popover`.
+/// An action element with a separate caret trigger that opens a [`PopupMenu`].
+/// The action and the caret are caller-supplied elements, so the look stays in the app.
+/// This component only owns the popover wiring.
 #[derive(IntoElement)]
 pub struct DropdownButton {
     id: ElementId,
@@ -38,15 +37,16 @@ impl DropdownButton {
         }
     }
 
-    /// The action half of the button. It keeps its own icon, label, tooltip
-    /// and click handler.
+    /// The action half of the button.
+    /// It keeps its own icon, label, tooltip and click handler.
     pub fn action(mut self, action: impl IntoElement + 'static) -> Self {
         self.action = Some(action.into_any_element());
         self
     }
 
-    /// The menu built by `builder` — the same signature as gpui-component's
-    /// `DropdownButton::dropdown_menu`, so existing menu code keeps working.
+    /// The menu built by `builder`.
+    /// Matches gpui-component's `DropdownButton::dropdown_menu` signature.
+    /// Existing menu code keeps working.
     pub fn dropdown_menu(
         mut self,
         builder: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
@@ -55,10 +55,9 @@ impl DropdownButton {
         self
     }
 
-    /// Which corner of the caret the menu anchors to. Defaults to
-    /// [`Anchor::TopRight`], so the menu's right edge lines up with the
-    /// caret's.
-    #[allow(dead_code)] // API knob; current call sites use the default anchor.
+    /// Which corner of the caret the menu anchors to.
+    /// Defaults to [`Anchor::TopRight`], lining the menu's right edge up with the caret's.
+    #[allow(dead_code)] // API knob, current call sites use the default anchor.
     pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
         self.anchor = anchor.into();
         self
@@ -71,8 +70,8 @@ impl Styled for DropdownButton {
     }
 }
 
-/// Holds the [`PopupMenu`] entity of one popover between renders. Dismissal
-/// drops it, so the menu is rebuilt with fresh items on the next open.
+/// Holds the [`PopupMenu`] entity of one popover between renders.
+/// Dismissal drops it, so the menu is rebuilt with fresh items on the next open.
 #[derive(Default)]
 struct DropdownMenuState {
     menu: Option<Entity<PopupMenu>>,
@@ -85,7 +84,8 @@ impl RenderOnce for DropdownButton {
             "a DropdownButton needs a `dropdown_menu`"
         );
 
-        // The popover needs its own id: both the container and the popover register keyed state on this window.
+        // The popover needs its own id.
+        // The container and the popover both register keyed state on this window.
         let popover_id = SharedString::from(format!("{}-popover", self.id));
         let anchor = self.anchor;
         let menu_state =
@@ -109,8 +109,8 @@ impl RenderOnce for DropdownButton {
                 this.child(
                     Popover::new(popover_id)
                         .anchor(anchor)
-                        // The menu dismisses itself on outside click or Escape;
-                        // the subscription below closes the popover along with it.
+                        // The menu dismisses itself on outside click or Escape.
+                        // The subscription below closes the popover along with it.
                         .overlay_closable(false)
                         .trigger_with(caret)
                         .content(
@@ -148,8 +148,8 @@ impl RenderOnce for DropdownButton {
     }
 }
 
-/// The default caret: a chevron button the height of a medium button, tinted
-/// by the theme, with hover and menu-open states.
+/// The default caret, a chevron button the height of a medium button.
+/// It is tinted by the theme and styled for hover and menu-open states.
 fn default_caret(id: impl Into<ElementId>, cx: &App) -> BaseButton {
     BaseButton::new(id)
         .h(px(32.))

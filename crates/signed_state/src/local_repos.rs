@@ -45,9 +45,7 @@ impl LocalReposStore {
         store
     }
 
-    /// Forget a repository that has just been published to NIP-34,
-    /// so it leaves the local list immediately. A later rescan re-discovers it from disk,
-    /// the sidebar additionally hides published repositories by identifier.
+    /// Forget a repository that has just been published to NIP-34.
     pub fn remove(&mut self, path: &Path, cx: &mut Context<Self>) {
         self.repos = Arc::new(
             self.repos
@@ -95,8 +93,7 @@ impl LocalReposStore {
                 dirty
             })?;
 
-            // Scans requested while this one was running are coalesced into
-            // a single follow-up scan.
+            // Scans requested while this one ran are coalesced into one follow-up scan.
             if again {
                 this.update(cx, |this, cx| this.rescan(cx))?;
             }

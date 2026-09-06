@@ -1,7 +1,3 @@
-//! The dock-area appearance: the outer frame, the split frames, and one
-//! dock's chrome. Ported from the vendored dock's `DockArea`/`Dock` render
-//! onto `gpui_base::dock::DockAreaRenderer`.
-
 use std::cell::Cell;
 use std::ops::Deref as _;
 use std::rc::Rc;
@@ -26,8 +22,7 @@ use crate::tab_panel::SignedTabGroupSkin;
 use crate::tiles::SignedTilesSkin;
 use crate::{TAB_BAR_HEIGHT, panel_handle};
 
-/// What every part of the skin reads, and the dock area it belongs to.
-/// Shared by reference with the per-container renderers.
+/// State the skin shares with its per-container renderers.
 pub(crate) struct SkinShared {
     area: WeakEntity<DockArea>,
     toggle_button_visible: Cell<bool>,
@@ -53,16 +48,14 @@ impl SkinShared {
         &self.resizing_dock
     }
 
-    /// Redraw the area after a setting changed. The skin is not an entity, so
-    /// nothing else would notice.
+    /// Redraw the area after a setting changed. The skin is not an entity, so nothing else would.
     pub(crate) fn notify(&self, cx: &mut App) {
         _ = self.area.update(cx, |_, cx| cx.notify());
     }
 }
 
 /// The Signed appearance for a [`DockArea`].
-///
-/// Install it at construction, where the area's own weak handle is available:
+/// Install it in the constructor, the only place the area's weak handle is available.
 ///
 /// ```ignore
 /// let dock = cx.new(|cx| {
@@ -90,8 +83,7 @@ impl SignedDockSkin {
         &self.shared
     }
 
-    /// Whether tab bars offer the affordance that collapses a neighbouring
-    /// dock.
+    /// Whether tab bars offer the affordance that collapses a neighbouring dock.
     pub fn is_toggle_button_visible(&self) -> bool {
         self.shared.is_toggle_button_visible()
     }
@@ -112,8 +104,9 @@ impl SignedDockSkin {
     }
 }
 
-/// The payload a dock's resize handle drags. It draws nothing: the handle
-/// itself is the affordance.
+/// Payload a dock's resize handle drags.
+///
+/// It draws nothing, the handle element is the visible affordance.
 #[derive(Clone)]
 struct ResizePanel;
 
@@ -144,9 +137,7 @@ impl DockAreaRenderer for SignedDockSkin {
     }
 
     fn split_frame(&self, node: NodeId, _: Axis, _: &mut Window, cx: &mut App) -> Stateful<Div> {
-        // `size_full` is what the old `StackPanel::render` carried; `flex_1`
-        // is belt and braces so the frame never collapses to zero height in
-        // an unsizing parent.
+        // `size_full` and `flex_1` stop the frame collapsing in an unsizing parent.
         div()
             .id(("dock-split-frame", node.as_u64()))
             .size_full()
@@ -166,8 +157,8 @@ impl DockAreaRenderer for SignedDockSkin {
         let placement = dock.placement();
         let open = dock.is_open();
 
-        // A closed left or right dock takes no space at all; a closed bottom
-        // dock keeps a strip so its tab bar stays clickable.
+        // A closed left or right dock takes no space.
+        // A closed bottom dock keeps a strip so its tab bar stays clickable.
         if !open && !placement.is_bottom() {
             return div().into_any_element();
         }
@@ -183,8 +174,7 @@ impl DockAreaRenderer for SignedDockSkin {
                 // Base never builds a dock for the centre.
                 DockPlacement::Center => this,
             })
-            // The closed bottom dock's strip is the tab bar itself, which is
-            // a full tab bar tall.
+            // The closed bottom dock's strip is the tab bar itself, a full tab bar tall.
             .when(!open && placement.is_bottom(), |this| {
                 this.h(TAB_BAR_HEIGHT)
             })
@@ -197,9 +187,8 @@ impl DockAreaRenderer for SignedDockSkin {
             .into_any_element()
     }
 
-    /// The "unknown panel" message the old `InvalidPanel` drew. It answers
-    /// `dump` with the state it was handed, so a layout written by a build
-    /// that knows the panel survives a load and save here.
+    /// Placeholder for a panel this build cannot construct.
+    /// It dumps the state it was handed, so the layout survives a load and save.
     fn build_placeholder(
         &self,
         state: &PanelState,
@@ -241,10 +230,8 @@ impl SignedDockSkin {
     }
 }
 
-/// Turns the window's mouse stream into dock resizing. A resize is driven
-/// by pointer moves anywhere in the window, so this paints nothing and
-/// exists for its `paint` hook — the only place a window-level mouse
-/// listener can be registered.
+/// Turns the window's mouse stream into dock resizing.
+/// It draws nothing, the `paint` hook is the only window listener registration point.
 struct DockResizeTracker {
     dock: DockContext,
     shared: Rc<SkinShared>,
@@ -310,10 +297,8 @@ impl Element for DockResizeTracker {
                 if !phase.bubble() || shared.resizing_dock().get() != Some(placement) {
                     return;
                 }
-                // Dragging a closed dock's handle reopens it. The live
-                // state is read rather than the render-time snapshot in
-                // `dock`, which would still say closed for the rest of the
-                // frame and toggle it shut again on the next move.
+                // Dragging a closed dock's handle reopens it.
+                // Read the live state, the snapshot in `dock` would toggle it shut again.
                 let open = shared
                     .area()
                     .upgrade()
@@ -332,8 +317,8 @@ impl Element for DockResizeTracker {
                     return;
                 }
                 shared.resizing_dock().set(None);
-                // The size lives on the dock, not in the layout tree, so
-                // nothing else tells a subscriber to persist it.
+                // The size lives on the dock, not the layout tree.
+                // Nothing else tells a subscriber to persist it.
                 _ = shared
                     .area()
                     .update(cx, |_, cx| cx.emit(DockEvent::LayoutChanged));

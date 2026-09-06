@@ -151,14 +151,14 @@ mod tests {
                 assert_eq!(theme.border, parse("#27272A")); // neutral-800
                 assert_eq!(theme.green, parse("#22C55E")); // green-500
             } else {
-                // Light theme chrome is neutral; lime is a brand accent only.
+                // Light theme chrome is neutral, lime is a brand accent only.
                 assert_eq!(theme.background, parse("#FFFFFF"));
                 assert_eq!(theme.foreground, parse("#18181B"));
                 assert_eq!(theme.border, parse("#E4E4E7"));
                 assert_eq!(theme.green, parse("#16A34A"));
             }
-            // Active tab: a paler lime on light, a dim moss on dark — each
-            // paired with readable, contrasting text.
+            // Active tab, a paler lime on light and a dim moss on dark.
+            // Each is paired with readable contrasting text.
             if config.mode.is_dark() {
                 assert_eq!(theme.tab_active, parse("#19200A")); // dim lime
                 assert_eq!(theme.tab_active_foreground, parse("#C6FF4D")); // nostr-lime
