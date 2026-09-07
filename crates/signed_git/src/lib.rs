@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -452,6 +452,47 @@ fn push_refspecs(
         );
     }
     Ok(())
+}
+
+/// Whether `url` advertises every ref in `expected` at the given commit.
+///
+/// Extra advertised refs are ignored: the question is whether the data this
+/// push wanted to land is already there, not whether the remote is an exact mirror.
+/// This is the convergence probe for a push that lost the compare-and-swap race
+/// to the grasp server's own background ref alignment.
+pub fn remote_has_refs(repo_path: &Path, url: &str, expected: &[(String, String)]) -> Result<bool> {
+    if expected.is_empty() {
+        return Ok(true);
+    }
+
+    let output = git_output(repo_path, &["ls-remote", url], "git ls-remote")?;
+
+    if !output.status.success() {
+        bail!(
+            "git ls-remote {url} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let advertised = parse_ls_remote(&output.stdout);
+    Ok(expected
+        .iter()
+        .all(|(name, oid)| advertised.get(name.as_str()) == Some(oid)))
+}
+
+/// Parse `git ls-remote` output into (refname, oid) pairs.
+///
+/// Skips the peeled `^{}` lines that follow annotated tag objects.
+fn parse_ls_remote(output: &[u8]) -> HashMap<String, String> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let oid = fields.next()?;
+            let name = fields.next()?;
+            (!name.ends_with("^{}")).then(|| (name.to_owned(), oid.to_owned()))
+        })
+        .collect()
 }
 
 /// The earliest unique commit of the repository at `repo_path`.
@@ -2046,6 +2087,76 @@ mod tests {
         let refs = git_in(&server_repo, &["show-ref"]).expect("server refs");
         assert!(refs.contains("refs/tags/v1.0"));
         assert!(!refs.contains("refs/heads/"));
+    }
+
+    #[test]
+    fn remote_has_refs_reports_whether_pushed_refs_landed() {
+        let server = tempfile::tempdir().unwrap();
+        let server_repo = server.path().join("npub1test").join("my-repo.git");
+        std::fs::create_dir_all(server_repo.parent().unwrap()).unwrap();
+        let init_status = Command::new("git")
+            .args(["init", "--bare", "-q"])
+            .arg(&server_repo)
+            .status()
+            .expect("spawn git init --bare");
+        assert!(init_status.success());
+
+        let (dir, repo) = fixture(&[("a.txt", b"one")]);
+        commit_all(&repo, "initial");
+        let dir = dir.path();
+        let main = git_in(dir, &["rev-parse", "refs/heads/main"]).expect("main oid");
+        let url = format!("file://{}/npub1test/my-repo.git", server.path().display());
+        let expected = vec![("refs/heads/main".to_owned(), main.clone())];
+
+        // Nothing pushed yet: the ref is absent.
+        assert!(!remote_has_refs(dir, &url, &expected).expect("probe"));
+
+        push_all(
+            dir,
+            &format!("file://{}", server.path().display()),
+            "npub1test",
+            "my-repo",
+        )
+        .expect("push");
+
+        // The pushed ref is advertised at the expected commit.
+        assert!(remote_has_refs(dir, &url, &expected).expect("probe"));
+
+        // A stale expectation - the exact race a retry resolves - is false.
+        let stale = vec![("refs/heads/main".to_owned(), "0".repeat(40))];
+        assert!(!remote_has_refs(dir, &url, &stale).expect("probe"));
+
+        // Extra remote refs (e.g. a tag pushed later) do not invalidate the
+        // refs this push wanted to land.
+        git_run(dir, &["tag", "v1.0"]);
+        push_all(
+            dir,
+            &format!("file://{}", server.path().display()),
+            "npub1test",
+            "my-repo",
+        )
+        .expect("push");
+        assert!(remote_has_refs(dir, &url, &expected).expect("probe"));
+    }
+
+    #[test]
+    fn parse_ls_remote_reads_oids_and_skips_peeled_lines() {
+        let oid_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let oid_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let output = format!(
+            "{oid_a}\trefs/heads/main\n{oid_b}\trefs/tags/v1.0\n{oid_b}\trefs/tags/v1.0^{{}}\n"
+        );
+
+        let advertised = parse_ls_remote(output.as_bytes());
+        assert_eq!(advertised.len(), 2);
+        assert_eq!(
+            advertised.get("refs/heads/main").map(String::as_str),
+            Some(oid_a)
+        );
+        assert_eq!(
+            advertised.get("refs/tags/v1.0").map(String::as_str),
+            Some(oid_b)
+        );
     }
 
     #[test]

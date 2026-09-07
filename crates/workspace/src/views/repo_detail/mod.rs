@@ -1992,10 +1992,75 @@ impl RepoDetailView {
         )
     }
 
+    /// Warning after a push that only some grasp servers accepted.
+    fn render_push_warning_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let store = self.store.as_ref()?;
+        let store = store.read(cx);
+        let warning = store.last_push_warning.clone()?;
+        let pushing = store.pushing;
+
+        Some(
+            h_flex()
+                .p_4()
+                .gap_2()
+                .w_full()
+                .items_start()
+                .justify_between()
+                .bg(cx.theme().warning.mix_oklab(transparent_white(), 0.08))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .min_w_0()
+                        .flex_1()
+                        .items_start()
+                        .child(Icon::new(IconName::TriangleAlert).small().flex_shrink_0())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .text_color(cx.theme().warning)
+                                .child(SharedString::from(warning)),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .flex_shrink_0()
+                        .child(
+                            Button::new("republish-after-partial-push")
+                                .icon(CustomIconName::Init)
+                                .label("Republish")
+                                .small()
+                                .info()
+                                .loading(pushing)
+                                .disabled(pushing)
+                                .on_click(cx.listener(|this, _event, window, cx| {
+                                    this.push_repository(window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("dismiss-push-warning")
+                                .icon(IconName::Close)
+                                .tooltip("Dismiss")
+                                .small()
+                                .ghost()
+                                .disabled(pushing)
+                                .on_click(cx.listener(|this, _ev, _window, cx| {
+                                    if let Some(store) = this.store.clone() {
+                                        store.update(cx, |store, _| {
+                                            store.last_push_warning = None;
+                                        });
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The ready-to-contribute banner of the repository panel.
-    ///
-    /// A checkout has commits ahead of its base branch, with a Create action
-    /// opening the prefilled New PR panel, and a dismiss control.
     fn render_ready_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let status = self.ready_suggestion(cx)?;
         let key = (status.path.clone(), status.branch.clone());
@@ -2324,6 +2389,9 @@ impl Render for RepoDetailView {
             .id("repo")
             .size_full()
             .when_some(banner, |this, banner| this.child(banner))
+            .when_some(self.render_push_warning_banner(cx), |this, banner| {
+                this.child(banner)
+            })
             .child(self.render_header(cx))
             .when_some(error, |this, error| {
                 this.child(

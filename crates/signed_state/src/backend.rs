@@ -528,51 +528,64 @@ impl Backend {
                 })?
                 .await?;
 
-            let state_event = match this
-                .update(cx, |this, cx| {
-                    let builder = build_state(
-                        &repo_id,
-                        &[("refs/heads/main".to_owned(), commit)],
-                        Some("main"),
-                    );
-                    this.send(builder, cx)
-                })?
-                .await
-            {
-                Ok(state_event) => state_event,
-                Err(e) => {
-                    this.update(cx, |this, cx| {
-                        this.retract_events(std::slice::from_ref(&event), cx);
-                    })
-                    .ok();
+            // The state event is the push authorization. Stage it on each
+            // grasp server's relay, then push the initial commit.
+            // Creation fails only when no server accepted the push, the announcement
+            // is then retracted so the repository is not left announced without content.
+            let (client, signer) =
+                this.update(cx, |this, _cx| (this.client.clone(), this.signer.clone()))?;
+            let refs = vec![("refs/heads/main".to_owned(), commit)];
 
-                    return Err(e.context(
-                        "The repository was announced, but its state could not be published. \
-                         The announcement has been retracted",
-                    ));
-                }
-            };
-
-            // Push to every grasp server. Creation fails only when no server accepted it.
             let push = cx.background_spawn({
+                let client = client.clone();
+                let signer = signer.clone();
                 let path = path.clone();
                 let owner = owner.clone();
                 let repo_id = repo_id.clone();
                 let servers = servers.clone();
-                push_to_grasp_servers(path, owner, repo_id, servers, signed_git::push_main)
+                let refs = refs.clone();
+                async move {
+                    push_staged_to_grasps(
+                        &client,
+                        &signer,
+                        &repo_id,
+                        &refs,
+                        Some("main"),
+                        &path,
+                        &owner,
+                        &servers,
+                        signed_git::push_main,
+                    )
+                    .await
+                }
             });
 
-            if let Err(e) = push.await {
-                // The events are already published. Retract them so the repository is not left announced without content.
+            let outcome = push.await;
+
+            if outcome.accepted() == 0 {
+                // The announcement is already published.
+                // Retract it so the repository is not left announced without content.
                 this.update(cx, |this, cx| {
-                    this.retract_events(&[event.clone(), state_event.clone()], cx);
+                    this.retract_events(std::slice::from_ref(&event), cx);
                 })
                 .ok();
 
-                return Err(e.context(
-                    "The repository was announced, but the push to every grasp server failed. \
+                return Err(anyhow!(
+                    "The repository was announced, but the push to every grasp server failed: {}. \
                      The announcement has been retracted",
+                    outcome.failure_summary()
                 ));
+            }
+
+            // Fan the state out to the relays once a git server holds the objects.
+            // Staging already stored the event locally, publishing makes it
+            // visible to the other relays and clients.
+            if let Some(state_event) = &outcome.state_event {
+                broadcast_event(&client, state_event).await.ok();
+                this.update(cx, |_this, cx| {
+                    cx.emit(BackendEvent::Published(Box::new(state_event.clone())));
+                })
+                .ok();
             }
 
             let announcement = Announcement::from_event(&event)
@@ -664,48 +677,65 @@ impl Backend {
 
             let refs = state.refs.clone();
             let head = state.head.clone();
-            let state_event = match this
-                .update(cx, |this, cx| {
-                    let builder = build_state(&repo_id, &refs, head.as_deref());
-                    this.send(builder, cx)
-                })?
-                .await
-            {
-                Ok(state_event) => state_event,
-                Err(e) => {
+
+            // The state event is the push authorization. Stage it on each
+            // grasp server's relay, then push every branch and tag. The push
+            // fails only when no server accepted it. The announcement is then
+            // retracted so the repository is not left announced without content.
+            // An empty repository has no state to stage and nothing to push.
+            let (client, signer) =
+                this.update(cx, |this, _cx| (this.client.clone(), this.signer.clone()))?;
+
+            if !refs.is_empty() {
+                let push = cx.background_spawn({
+                    let client = client.clone();
+                    let signer = signer.clone();
+                    let path = path.clone();
+                    let owner = owner.clone();
+                    let repo_id = repo_id.clone();
+                    let servers = servers.clone();
+                    let refs = refs.clone();
+                    let head = head.clone();
+                    async move {
+                        push_staged_to_grasps(
+                            &client,
+                            &signer,
+                            &repo_id,
+                            &refs,
+                            head.as_deref(),
+                            &path,
+                            &owner,
+                            &servers,
+                            signed_git::push_all,
+                        )
+                        .await
+                    }
+                });
+                let outcome = push.await;
+
+                if outcome.accepted() == 0 {
+                    // The announcement is already published. Retract it so
+                    // the repository is not left announced without content.
                     this.update(cx, |this, cx| {
                         this.retract_events(std::slice::from_ref(&event), cx);
                     })
                     .ok();
 
-                    return Err(e.context(
-                        "The repository was announced, but its state could not be published. \
+                    return Err(anyhow!(
+                        "The repository was announced, but the push to every grasp server failed: {}. \
                          The announcement has been retracted",
+                        outcome.failure_summary()
                     ));
                 }
-            };
 
-            // Push every branch and tag to each grasp server. The push fails only when no server accepted it.
-            //
-            // An empty repository has nothing to push.
-            if !refs.is_empty() {
-                let push = cx.background_spawn({
-                    let path = path.clone();
-                    let owner = owner.clone();
-                    let repo_id = repo_id.clone();
-                    let servers = servers.clone();
-                    push_to_grasp_servers(path, owner, repo_id, servers, signed_git::push_all)
-                });
-                if let Err(e) = push.await {
-                    this.update(cx, |this, cx| {
-                        this.retract_events(&[event.clone(), state_event.clone()], cx);
+                // Fan the state out to the relays once a git server holds the objects.
+                // Staging already stored the event locally, publishing makes it visible to the other relays and clients.
+                if let Some(state_event) = &outcome.state_event {
+                    broadcast_event(&client, state_event).await.ok();
+                    this.update(cx, |_this, cx| {
+                        cx.emit(BackendEvent::Published(Box::new(state_event.clone())));
                     })
                     .ok();
-
-                    return Err(e.context(
-                        "The repository was announced, but the push to every grasp server failed. \
-                         The announcement has been retracted",
-                    ));
                 }
             }
 
@@ -724,11 +754,14 @@ impl Backend {
     }
 
     /// Re-push the repository's current refs to the grasp servers in its `relays` tag.
+    ///
+    /// Errors when no grasp server accepted the push, the outcome reports
+    /// which servers did when only some accepted it.
     pub fn push_repository(
         &mut self,
         announcement: Announcement,
         cx: &mut Context<Self>,
-    ) -> Task<Result<(), Error>> {
+    ) -> Task<Result<PushOutcome, Error>> {
         let cache = GitStore::global(cx).cache().clone();
         let path = cache.repo_path(&announcement.addr());
         self.push_repo_from(announcement, path, None, cx)
@@ -744,7 +777,7 @@ impl Backend {
         checkout: PathBuf,
         announced_head: Option<String>,
         cx: &mut Context<Self>,
-    ) -> Task<Result<(), Error>> {
+    ) -> Task<Result<PushOutcome, Error>> {
         self.push_repo_from(announcement, checkout, announced_head, cx)
     }
 
@@ -755,18 +788,20 @@ impl Backend {
         path: PathBuf,
         announced_head: Option<String>,
         cx: &mut Context<Self>,
-    ) -> Task<Result<(), Error>> {
+    ) -> Task<Result<PushOutcome, Error>> {
         let addr = announcement.addr();
         let guard = {
             let mut pushing = self
                 .pushing_repos
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+
             if !pushing.insert(addr.clone()) {
                 return Task::ready(Err(anyhow!(
                     "A push to this repository is already in progress"
                 )));
             }
+
             PushGuard {
                 repos: self.pushing_repos.clone(),
                 addr: addr.clone(),
@@ -805,31 +840,64 @@ impl Backend {
                 state.head = Some(head);
             }
 
-            // Grasp servers authorize a push by the state they have seen.
+            // Grasp servers authorize a push by the state event they hold in purgatory.
+            // Stage the state event on each server's own relay, then push the git data,
+            // retrying transient purgatory denials.
             let refs = state.refs.clone();
             let head = state.head.clone();
 
-            this.update(cx, |this, cx| {
-                let builder = build_state(&repo_id, &refs, head.as_deref());
-                this.send(builder, cx)
-            })?
-            .await?;
+            let (client, signer) =
+                this.update(cx, |this, _cx| (this.client.clone(), this.signer.clone()))?;
 
-            if !refs.is_empty() {
+            let outcome = if refs.is_empty() {
+                PushOutcome::default()
+            } else {
                 let push = cx.background_spawn({
+                    let client = client.clone();
+                    let signer = signer.clone();
                     let path = path.clone();
                     let owner = owner.clone();
                     let repo_id = repo_id.clone();
                     let relays = relays.clone();
+                    let refs = refs.clone();
+                    let head = head.clone();
                     async move {
-                        push_to_grasp_servers(path, owner, repo_id, relays, signed_git::push_all)
-                            .await
+                        push_staged_to_grasps(
+                            &client,
+                            &signer,
+                            &repo_id,
+                            &refs,
+                            head.as_deref(),
+                            &path,
+                            &owner,
+                            &relays,
+                            signed_git::push_all,
+                        )
+                        .await
                     }
                 });
-                push.await?;
+                push.await
+            };
+
+            if !refs.is_empty() && outcome.accepted() == 0 {
+                bail!(
+                    "could not push the repository to any grasp server: {}",
+                    outcome.failure_summary()
+                );
             }
 
-            Ok(())
+            // Fan the state out to the relays once a git server holds the objects.
+            // Staging already stored the event locally, publishing notifies
+            // the repository views and other relays and clients.
+            if let Some(state_event) = &outcome.state_event {
+                broadcast_event(&client, state_event).await.ok();
+                this.update(cx, |_this, cx| {
+                    cx.emit(BackendEvent::Published(Box::new(state_event.clone())));
+                })
+                .ok();
+            }
+
+            Ok(outcome)
         })
     }
 
@@ -1533,40 +1601,341 @@ pub async fn user_grasp_list_servers(
     Ok(latest_grasp_list_servers(events))
 }
 
-/// Push the repository at `path` to every grasp server.
-async fn push_to_grasp_servers(
-    path: PathBuf,
-    owner: String,
-    repo_id: String,
-    servers: Vec<RelayUrl>,
-    push: fn(&Path, &str, &str, &str) -> Result<(), Error>,
-) -> Result<(), Error> {
-    let mut failures = Vec::new();
-    let mut pushed = 0;
+/// Attempts per grasp server when a git push is denied transiently.
+const GRASP_PUSH_ATTEMPTS: usize = 3;
 
-    for relay in &servers {
-        let Some(base_url) = grasp_base_url(relay) else {
-            failures.push(format!("{relay}: no domain"));
-            continue;
-        };
-        match push(&path, &base_url, &owner, &repo_id) {
-            Ok(()) => pushed += 1,
-            Err(e) => failures.push(format!("{relay}: {e}")),
+/// Pause before re-staging a state event after a transient denial.
+const GRASP_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+/// The outcome of pushing to one grasp server.
+#[derive(Debug, Clone)]
+pub struct GraspServerResult {
+    /// The grasp server's relay URL, e.g. `wss://relay.ngit.dev`.
+    pub relay: RelayUrl,
+    /// The git URL the data was pushed to.
+    pub git_url: String,
+    /// `None` when the server accepted the data, the reason otherwise.
+    pub reason: Option<String>,
+}
+
+impl GraspServerResult {
+    fn ok(relay: RelayUrl, git_url: String) -> Self {
+        Self {
+            relay,
+            git_url,
+            reason: None,
         }
     }
 
-    if pushed == 0 {
-        bail!(
-            "could not push the repository to any grasp server: {}",
-            failures.join("; ")
-        );
+    fn failed(relay: RelayUrl, git_url: String, reason: impl Into<String>) -> Self {
+        Self {
+            relay,
+            git_url,
+            reason: Some(reason.into()),
+        }
+    }
+}
+
+/// The outcome of a staged push across every grasp server of a repository.
+#[derive(Debug, Clone, Default)]
+pub struct PushOutcome {
+    /// Per-server results, in the order the servers were listed.
+    pub servers: Vec<GraspServerResult>,
+    /// The newest state event a grasp relay accepted for this push, if any.
+    ///
+    /// Broadcast to the other relays once a git server holds the data.
+    pub state_event: Option<Event>,
+}
+
+impl PushOutcome {
+    /// The number of grasp servers that accepted the git data.
+    pub fn accepted(&self) -> usize {
+        self.servers
+            .iter()
+            .filter(|server| server.reason.is_none())
+            .count()
     }
 
-    for failure in failures {
-        log::warn!("grasp push failed: {failure}");
+    /// Servers that did not accept the push.
+    fn failing(&self) -> impl Iterator<Item = &GraspServerResult> {
+        self.servers.iter().filter(|server| server.reason.is_some())
     }
 
-    Ok(())
+    /// One-line summary of every server failure, for error messages.
+    pub fn failure_summary(&self) -> String {
+        self.failing()
+            .map(|server| {
+                let reason =
+                    flatten_whitespace(server.reason.as_deref().unwrap_or("unknown error"));
+                format!("{}: {reason}", server.relay)
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    /// A warning for a push only some grasp servers accepted.
+    ///
+    /// `None` when every server accepted the push or nothing was pushed.
+    pub fn partial_warning(&self) -> Option<String> {
+        let accepted = self.accepted();
+        if self.servers.is_empty() || accepted == self.servers.len() {
+            return None;
+        }
+        Some(format!(
+            "Pushed to {accepted} of {} grasp servers: {}. Republish to sync.",
+            self.servers.len(),
+            self.failure_summary()
+        ))
+    }
+}
+
+/// Collapse a multi-line relay or git error into one display line.
+fn flatten_whitespace(text: &str) -> String {
+    const MAX_CHARS: usize = 200;
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= MAX_CHARS {
+        flat
+    } else {
+        let mut clipped: String = flat.chars().take(MAX_CHARS).collect();
+        clipped.push('…');
+        clipped
+    }
+}
+
+/// Reasons a push attempt should be retried with a freshly staged state
+/// event and a fresh git advertisement.
+///
+/// Two families are retried:
+///
+/// - **Purgatory denials**: the grasp server sends these when the state
+///   event for the push has not reached its purgatory yet. Re-staging a
+///   fresh event resolves them.
+/// - **Stale advertisement races**: `git receive-pack` compares each ref
+///   update against the value it advertised when the push started. The grasp
+///   server's own background sync can move a ref in between - typically by
+///   aligning the repository to a parked state event once the objects of an
+///   earlier attempt land - so the compare-and-swap fails with `cannot lock
+///   ref` / `incorrect old value provided`. A retry against the fresh
+///   advertisement converges, and when the race is lost the pushed data is
+///   usually already on the server (see `is_stale_advertisement_race` and
+///   the convergence probe in `push_staged_to_grasps`).
+///
+/// Other rejections are not retried.
+fn is_transient_grasp_denial(stderr: &str) -> bool {
+    let error = stderr.to_lowercase();
+    [
+        "no state events in purgatory",
+        "no matching state event",
+        "doesn't match push",
+        "none from authorized publishers",
+        "no repository announcement found",
+        "cannot lock ref",
+        "incorrect old value provided",
+    ]
+    .iter()
+    .any(|marker| error.contains(marker))
+}
+
+/// A push rejected because `git receive-pack`'s compare-and-swap lost to the
+/// grasp server's own background ref alignment: the ref moved between this
+/// push's advertisement and its ref transaction (`cannot lock ref ... is at
+/// ... but expected ...` / `incorrect old value provided`). The pushed data
+/// is usually already on the server by then.
+fn is_stale_advertisement_race(stderr: &str) -> bool {
+    let error = stderr.to_lowercase();
+    error.contains("cannot lock ref") || error.contains("incorrect old value provided")
+}
+
+/// Keep `event` as the push's fan-out state event when it is newer than the
+/// current one. All staged events carry the same refs; the newest timestamp
+/// wins on the relays.
+fn keep_newest(state_event: &mut Option<Event>, event: Event) {
+    if state_event
+        .as_ref()
+        .is_none_or(|current| event.created_at > current.created_at)
+    {
+        *state_event = Some(event);
+    }
+}
+
+/// Sign a fresh kind `30618` state event for the push.
+///
+/// `last_created_at` is the timestamp of the previous event signed for this push.
+/// Retries within the same second get the next second: a grasp relay
+/// treats a same-id resend as a duplicate and does not re-run its ingest,
+/// so an identical resend cannot re-park a state event lost from its purgatory.
+async fn sign_state_event(
+    signer: &UniversalSigner,
+    repo_id: &str,
+    refs: &[(String, String)],
+    head: Option<&str>,
+    last_created_at: u64,
+) -> Result<(Event, u64), String> {
+    let now = Timestamp::now().as_secs();
+    let created_at = if now > last_created_at {
+        now
+    } else {
+        last_created_at + 1
+    };
+
+    let event = build_state(repo_id, refs, head)
+        .custom_created_at(Timestamp::from_secs(created_at))
+        .finalize_async(signer)
+        .await
+        .map_err(|e| format!("could not sign the state event: {e}"))?;
+
+    Ok((event, created_at))
+}
+
+/// Ensure the relay is known and connected, then publish `event` to it.
+///
+/// `Ok` only when the relay confirmed the event.
+/// On a grasp relay the accept parks the event in purgatory,
+/// which authorizes the paired git push.
+async fn stage_event_on_relay(
+    client: &Client,
+    relay: &RelayUrl,
+    event: &Event,
+) -> Result<(), String> {
+    client
+        .add_relay(relay)
+        .await
+        .map_err(|e| format!("could not add relay {relay}: {e}"))?;
+    client.connect().await;
+
+    let output = client
+        .send_event(event)
+        .to([relay.clone()])
+        .await
+        .map_err(|e| format!("could not send the state event to {relay}: {e}"))?;
+
+    if output.success.contains_key(relay) {
+        Ok(())
+    } else {
+        let reason = output
+            .failed
+            .get(relay)
+            .cloned()
+            .unwrap_or_else(|| "relay did not confirm the event".to_owned());
+        Err(reason)
+    }
+}
+
+/// Push the repository at `path` to every grasp server in `servers`.
+#[allow(clippy::too_many_arguments)]
+async fn push_staged_to_grasps(
+    client: &Client,
+    signer: &UniversalSigner,
+    repo_id: &str,
+    refs: &[(String, String)],
+    head: Option<&str>,
+    path: &Path,
+    owner: &str,
+    servers: &[RelayUrl],
+    push: fn(&Path, &str, &str, &str) -> Result<(), Error>,
+) -> PushOutcome {
+    let mut outcome = PushOutcome::default();
+
+    if refs.is_empty() {
+        return outcome;
+    }
+
+    for relay in servers {
+        let Some(base) = grasp_base_url(relay) else {
+            outcome.servers.push(GraspServerResult::failed(
+                relay.clone(),
+                relay.to_string(),
+                "no domain",
+            ));
+            continue;
+        };
+        let git_url = format!("{base}/{owner}/{repo_id}.git");
+
+        let mut reason = None;
+        let mut last_created_at = 0;
+        // The last state event staged on this server, for the convergence
+        // probe below when every push attempt lost the stale-ref race.
+        let mut staged_event = None;
+
+        'server: for attempt in 1..=GRASP_PUSH_ATTEMPTS {
+            if attempt > 1 {
+                // Give the server's ingest a moment before re-staging.
+                std::thread::sleep(GRASP_RETRY_DELAY);
+            }
+
+            let (event, created_at) =
+                match sign_state_event(signer, repo_id, refs, head, last_created_at).await {
+                    Ok(signed) => signed,
+                    Err(e) => {
+                        reason = Some(e);
+                        break 'server;
+                    }
+                };
+
+            last_created_at = created_at;
+
+            // Stage the state event on this server's own relay.
+            // A failed stage means the grasp never parked the state,
+            // so the git push would be denied anyway: skip it (the eligibility gate).
+            if let Err(e) = stage_event_on_relay(client, relay, &event).await {
+                // One retry absorbs a relay connect blip, on the first
+                // attempt only.
+                if attempt == 1 && stage_event_on_relay(client, relay, &event).await.is_ok() {
+                    // staged on the retry
+                } else {
+                    reason = Some(e);
+                    break 'server;
+                }
+            }
+            staged_event = Some(event.clone());
+
+            match push(path, &base, owner, repo_id) {
+                Ok(()) => {
+                    keep_newest(&mut outcome.state_event, event);
+                    break 'server;
+                }
+                Err(e) => {
+                    let text = e.to_string();
+                    if attempt < GRASP_PUSH_ATTEMPTS && is_transient_grasp_denial(&text) {
+                        reason = Some(text);
+                        continue 'server;
+                    }
+                    reason = Some(text);
+                    break 'server;
+                }
+            }
+        }
+
+        // The grasp's own background sync aligns refs to staged state
+        // events as soon as the objects land, which can beat every push
+        // attempt's compare-and-swap (`cannot lock ref ... but expected`).
+        // When the last denial was that race the sync has usually finished
+        // by now: verify the advertised refs and accept the server when the
+        // pushed data is already there.
+        if let Some(last_reason) = &reason
+            && is_stale_advertisement_race(last_reason)
+            && signed_git::remote_has_refs(path, &git_url, refs).unwrap_or(false)
+        {
+            if let Some(event) = staged_event {
+                keep_newest(&mut outcome.state_event, event);
+            }
+            reason = None;
+        }
+
+        match reason {
+            Some(reason) => {
+                log::warn!("grasp push failed: {relay}: {reason}");
+                outcome
+                    .servers
+                    .push(GraspServerResult::failed(relay.clone(), git_url, reason));
+            }
+            None => outcome
+                .servers
+                .push(GraspServerResult::ok(relay.clone(), git_url)),
+        }
+    }
+
+    outcome
 }
 
 /// Split a stored bunker credential into the plain URI and the session key.
@@ -1695,5 +2064,146 @@ mod tests {
 
         // No list at all, empty, so the caller falls back to the defaults.
         assert!(latest_grasp_list_servers(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn transient_grasp_denials_are_classified() {
+        // The exact server rejection that started this work: the state event
+        // had not reached the grasp's purgatory before the git push.
+        let reported = "remote: ERR authorisation failed: No state events in purgatory\n\
+            fatal: the remote end hung up unexpectedly\n\
+            error: failed to push some refs to 'https://relay.ngit.dev/...git'";
+        assert!(is_transient_grasp_denial(reported));
+
+        // The other purgatory states a fresh event resolves.
+        assert!(is_transient_grasp_denial(
+            "remote: ERR authorisation failed: No matching state event found in purgatory"
+        ));
+        assert!(is_transient_grasp_denial(
+            "remote: ERR authorisation failed: 1 state event in purgatory from authorized \
+             publisher but doesn't match push"
+        ));
+        assert!(is_transient_grasp_denial(
+            "remote: ERR authorisation failed: 2 state events in purgatory but none from \
+             authorized publishers"
+        ));
+        assert!(is_transient_grasp_denial(
+            "remote: ERR authorisation failed: No repository announcement found"
+        ));
+
+        // Rejections a fresh state event cannot fix are not retried.
+        assert!(!is_transient_grasp_denial(
+            "remote: ERR authorisation failed: not a maintainer of this repository"
+        ));
+        assert!(!is_transient_grasp_denial(
+            "fatal: unable to access 'https://relay.ngit.dev/...': The requested URL returned \
+             error: 403"
+        ));
+        assert!(!is_transient_grasp_denial(
+            "fatal: unable to access 'https://relay.ngit.dev/...': Could not resolve host"
+        ));
+    }
+
+    #[test]
+    fn stale_ref_races_are_retried() {
+        // The grasp's background sync aligned the ref to a parked state event
+        // between this push's advertisement and its ref transaction. The ref
+        // is usually already where the push wants it, so a retry converges.
+        let reported = "remote: error: cannot lock ref 'refs/heads/main': is at \
+            cac2ac91b6f5fb8dfcb6962785babc6e65350cb3 but expected \
+            bc5e892aa84dc6240a5fbcd59367a4857d26f49b\n\
+            To https://relay.ngit.dev/npub1owner/signed-test.git\n\
+             ! [remote rejected] main -> main (incorrect old value provided)\n\
+            error: failed to push some refs to 'https://relay.ngit.dev/npub1owner/signed-test.git'";
+        assert!(is_transient_grasp_denial(reported));
+        assert!(is_stale_advertisement_race(reported));
+
+        // Markers match independently of the surrounding git output.
+        assert!(is_stale_advertisement_race(
+            "cannot lock ref 'refs/heads/main'"
+        ));
+        assert!(is_stale_advertisement_race(
+            "! [remote rejected] main -> main (incorrect old value provided)"
+        ));
+
+        // A purgatory denial is not a stale-advertisement race.
+        assert!(!is_stale_advertisement_race("No state events in purgatory"));
+
+        // A real divergence is a different error and stays permanent.
+        assert!(!is_transient_grasp_denial(
+            " ! [rejected]        main -> main (non-fast-forward)"
+        ));
+    }
+
+    #[test]
+    fn transient_denial_markers_match_case_insensitively() {
+        assert!(is_transient_grasp_denial(
+            "ERR NO STATE EVENTS IN PURGATORY"
+        ));
+    }
+
+    #[test]
+    fn push_outcome_reports_partial_failures() {
+        let outcome = PushOutcome {
+            servers: vec![
+                GraspServerResult::ok(
+                    RelayUrl::parse("wss://gitnostr.com").expect("url"),
+                    "https://gitnostr.com/npub1owner/repo.git".to_owned(),
+                ),
+                GraspServerResult::failed(
+                    RelayUrl::parse("wss://relay.ngit.dev").expect("url"),
+                    "https://relay.ngit.dev/npub1owner/repo.git".to_owned(),
+                    "remote: ERR authorisation failed: No state events in purgatory\nfatal: ...",
+                ),
+            ],
+            state_event: None,
+        };
+
+        assert_eq!(outcome.accepted(), 1);
+        assert_eq!(
+            outcome.failure_summary(),
+            "wss://relay.ngit.dev: remote: ERR authorisation failed: No state events in \
+             purgatory fatal: ..."
+        );
+        let warning = outcome.partial_warning().expect("partial push warning");
+        assert!(warning.starts_with("Pushed to 1 of 2 grasp servers"));
+        assert!(warning.contains("Republish to sync"));
+        // The multi-line server reason is a single display line.
+        assert_eq!(warning.lines().count(), 1);
+    }
+
+    #[test]
+    fn push_outcome_with_every_server_ok_has_no_warning() {
+        let outcome = PushOutcome {
+            servers: vec![
+                GraspServerResult::ok(
+                    RelayUrl::parse("wss://gitnostr.com").expect("url"),
+                    "https://gitnostr.com/npub1owner/repo.git".to_owned(),
+                ),
+                GraspServerResult::ok(
+                    RelayUrl::parse("wss://relay.ngit.dev").expect("url"),
+                    "https://relay.ngit.dev/npub1owner/repo.git".to_owned(),
+                ),
+            ],
+            state_event: None,
+        };
+
+        assert_eq!(outcome.accepted(), 2);
+        assert!(outcome.partial_warning().is_none());
+        assert_eq!(outcome.failure_summary(), "");
+    }
+
+    #[test]
+    fn push_outcome_without_servers_or_pushes_has_no_warning() {
+        assert!(PushOutcome::default().partial_warning().is_none());
+    }
+
+    #[test]
+    fn flatten_whitespace_collapses_and_clips_long_errors() {
+        assert_eq!(flatten_whitespace("a\n\n  b \t c"), "a b c");
+        let long = "word ".repeat(100);
+        let flat = flatten_whitespace(&long);
+        assert!(flat.ends_with('…'));
+        assert_eq!(flat.chars().count(), 201);
     }
 }

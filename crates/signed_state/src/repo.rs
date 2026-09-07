@@ -59,6 +59,10 @@ pub struct RepoStore {
     ///
     /// Example, a PR published without its commit reaching a grasp server.
     pub last_warning: Option<String>,
+    /// Warning of the last push that only some grasp servers accepted.
+    ///
+    /// The repository is out of sync on the rejected servers until it is republished.
+    pub last_push_warning: Option<String>,
     /// A republish or a checkout push is in flight.
     ///
     /// Views show a spinner and disable their push triggers while it is set.
@@ -137,6 +141,7 @@ impl RepoStore {
             version: 0,
             last_error: None,
             last_warning: None,
+            last_push_warning: None,
             pushing: false,
             cloning: false,
             repo_relays: HashSet::new(),
@@ -1086,6 +1091,7 @@ impl RepoStore {
 
         self.pushing = true;
         self.last_error = None;
+        self.last_push_warning = None;
         cx.notify();
 
         let backend = Backend::global(cx);
@@ -1097,14 +1103,23 @@ impl RepoStore {
             this.update(cx, |this, cx| {
                 this.pushing = false;
 
-                if let Err(e) = &result {
-                    this.last_error = Some(format!("Push failed: {e}"));
+                match &result {
+                    Ok(outcome) => {
+                        this.last_error = None;
+                        // A push only some grasp servers accepted is a warning:
+                        // the repo is out of sync on the rest until it is republished.
+                        this.last_push_warning = outcome.partial_warning();
+                    }
+                    Err(e) => {
+                        this.last_error = Some(format!("Push failed: {e}"));
+                        this.last_push_warning = None;
+                    }
                 }
 
                 cx.notify();
             })?;
 
-            result
+            result.map(|_| ())
         })
     }
 
@@ -1131,6 +1146,7 @@ impl RepoStore {
 
         self.pushing = true;
         self.last_error = None;
+        self.last_push_warning = None;
         cx.notify();
 
         let checkouts = CheckoutsStore::global(cx);
@@ -1146,7 +1162,11 @@ impl RepoStore {
                 this.pushing = false;
 
                 match &result {
-                    Ok(()) => {
+                    Ok(outcome) => {
+                        this.last_error = None;
+                        // A push only some grasp servers accepted is a warning:
+                        // the repo is out of sync on the rest until it is republished.
+                        this.last_push_warning = outcome.partial_warning();
                         // The remote moved, so recompute the ready-to-push statuses.
                         checkouts.update(cx, |store, cx| {
                             store.checkout_pushed(&addr, &path, cx);
@@ -1154,13 +1174,14 @@ impl RepoStore {
                     }
                     Err(e) => {
                         this.last_error = Some(format!("Push failed: {e}"));
+                        this.last_push_warning = None;
                     }
                 }
 
                 cx.notify();
             })?;
 
-            result
+            result.map(|_| ())
         })
     }
 
