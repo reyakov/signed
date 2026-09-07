@@ -4,7 +4,7 @@ members = ["crates/*", "desktop"]
 default-members = ["desktop"]
 
 [workspace.package]
-version = "1.0.0"
+version = "0.1.0-alpha"
 edition = "2024"
 publish = false
 
@@ -15,11 +15,10 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["fo
 gpui_tokio = { git = "https://github.com/zed-industries/zed" }
 reqwest_client = { git = "https://github.com/zed-industries/zed" }
 
-# `tree-sitter-languages` enables syntax highlighting for the TextView
-# code preview (fenced code blocks are highlighted with tree-sitter).
-gpui-component = { git = "https://github.com/longbridge/gpui-component", features = ["tree-sitter-languages"] }
-gpui-base = { git = "https://github.com/longbridge/gpui-component" }
-gpui-fps = { git = "https://github.com/longbridge/gpui-component" }
+# GPUI Kit
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "39c2c86dbee7ad445591462f8675f74082e10828", features = ["tree-sitter-languages"], }
+gpui-base = { git = "https://github.com/longbridge/gpui-component", rev = "39c2c86dbee7ad445591462f8675f74082e10828" }
+gpui-fps = { git = "https://github.com/longbridge/gpui-component", rev = "39c2c86dbee7ad445591462f8675f74082e10828" }
 
 dock = { path = "crates/dock" }
 settings = { path = "crates/settings" }
