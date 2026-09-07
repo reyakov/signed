@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+#
+# Prepare Flathub submission for Signed
+# This script:
+# 1. Vendors all Rust dependencies (crates.io + git)
+# 2. Generates release info for metainfo.xml
+# 3. Creates the Flathub manifest (su.reya.signed.yml)
+#
+# Usage: ./script/prepare-flathub [--release-date YYYY-MM-DD]
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# Configuration
+APP_ID="su.reya.signed"
+APP_NAME="Signed"
+REPO_URL="https://git.reya.su/reya/signed"
+BRANDING_LIGHT="#C6FF4D"
+BRANDING_DARK="#C6FF4D"
+
+# Parse arguments
+RELEASE_DATE=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --release-date)
+            RELEASE_DATE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: ${0##*/} [options]"
+            echo ""
+            echo "Options:"
+            echo "  --release-date DATE    Release date in YYYY-MM-DD format (default: today)"
+            echo "  -h, --help            Display this help and exit"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Get version from workspace
+VERSION=$(script/get-crate-version signed)
+if [[ -z "$RELEASE_DATE" ]]; then
+    RELEASE_DATE=$(date +%Y-%m-%d)
+fi
+
+echo "=== Preparing Flathub submission for $APP_NAME v$VERSION ==="
+echo ""
+
+# Create flathub directory
+mkdir -p flathub
+echo "[1/5] Created flathub/ directory"
+
+# Step 2: Vendor all dependencies
+echo "[2/5] Vendoring Rust dependencies..."
+if [[ -d vendor ]]; then
+    echo "      Removing old vendor directory..."
+    rm -rf vendor
+fi
+
+# Create cargo config for vendoring
+mkdir -p .cargo
+cat > .cargo/config.toml << 'EOF'
+[source.crates-io]
+replace-with = "vendored"
+
+[source.vendored]
+directory = "vendor"
+EOF
+
+# Vendor all dependencies (crates.io + git)
+cargo vendor --locked vendor/
+echo "      Vendored dependencies to vendor/"
+
+# Create tarball of vendored deps
+tar -czf flathub/vendor.tar.gz vendor/
+echo "      Created flathub/vendor.tar.gz"
+
+# Step 3: Generate release info for metainfo
+echo "[3/5] Generating release info..."
+cat > flathub/release-info.xml << EOF
+<release version="${VERSION}" date="${RELEASE_DATE}">
+  <description>
+    <p>Release version ${VERSION}</p>
+  </description>
+</release>
+EOF
+echo "      Created flathub/release-info.xml"
+
+# Step 4: Generate the metainfo file with release info
+echo "[4/5] Generating metainfo.xml..."
+export APP_ID APP_NAME BRANDING_LIGHT BRANDING_DARK
+cat desktop/resources/flatpak/signed.metainfo.xml.in | \
+    sed -e "/@release_info@/r flathub/release-info.xml" -e '/@release_info@/d' \
+    > flathub/${APP_ID}.metainfo.xml
+echo "      Created flathub/${APP_ID}.metainfo.xml"
+
+# Step 5: Generate the Flatpak manifest
+echo "[5/5] Generating Flatpak manifest..."
+
+# Get current commit hash
+COMMIT=$(git rev-parse HEAD)
+
+# Generate the YAML manifest
+cat > flathub/${APP_ID}.yml << 'MANIFEST_EOF'
+id: su.reya.signed
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm18
+command: signed
+finish-args:
+  - --talk-name=org.freedesktop.Flatpak
+  - --device=dri
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --filesystem=host
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm18/bin
+  env:
+    CC: clang
+    CXX: clang++
+
+modules:
+  - name: signed
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/signed/cargo
+        CARGO_NET_OFFLINE: "true"
+        RELEASE_VERSION: "@VERSION@"
+    build-commands:
+      # Setup vendored dependencies
+      - mkdir -p .cargo
+      - cp cargo-config.toml .cargo/config.toml
+
+      # Extract vendored deps
+      - tar -xzf vendor.tar.gz
+
+      # Build the project (entire workspace, then install signed binary)
+      - cargo build --release --offline --package signed
+
+      # Install binary
+      - install -Dm755 target/release/signed /app/bin/signed
+
+      # Install icons
+      - install -Dm644 desktop/resources/icon.png /app/share/icons/hicolor/512x512/apps/su.reya.signed.png
+      - install -Dm644 desktop/resources/icon@2x.png /app/share/icons/hicolor/1024x1024/apps/su.reya.signed.png
+
+      # Install desktop file
+      - |
+        export APP_ID="su.reya.signed"
+        export APP_ICON="su.reya.signed"
+        export APP_NAME="Signed"
+        export APP_CLI="signed"
+        export APP_ARGS="%U"
+        export DO_STARTUP_NOTIFY="true"
+        envsubst < desktop/resources/signed.desktop.in > signed.desktop
+        install -Dm644 signed.desktop /app/share/applications/su.reya.signed.desktop
+
+      # Install metainfo (use pre-generated one with release info)
+      - install -Dm644 su.reya.signed.metainfo.xml /app/share/metainfo/su.reya.signed.metainfo.xml
+
+    sources:
+      # Main source code - specific commit
+      - type: git
+        url: https://git.reya.su/reya/signed.git
+        commit: "@COMMIT@"
+        tag: "v@VERSION@"
+
+      # Vendored dependencies tarball (generated by this script)
+      - type: file
+        path: vendor.tar.gz
+        sha256: "@VENDOR_SHA256@"
+
+      # Pre-generated metainfo with release info
+      - type: file
+        path: su.reya.signed.metainfo.xml
+        sha256: "@METAINFO_SHA256@"
+
+      # Cargo config for vendoring
+      - type: file
+        path: cargo-config.toml
+        sha256: "@CARGO_CONFIG_SHA256@"
+MANIFEST_EOF
+
+# Calculate SHA256 hashes
+VENDOR_SHA256=$(sha256sum flathub/vendor.tar.gz | cut -d' ' -f1)
+METAINFO_SHA256=$(sha256sum flathub/${APP_ID}.metainfo.xml | cut -d' ' -f1)
+
+# Create cargo-config.toml
+mkdir -p flathub
+cat > flathub/cargo-config.toml << 'EOF'
+[source.crates-io]
+replace-with = "vendored"
+
+[source.vendored]
+directory = "vendor"
+EOF
+CARGO_CONFIG_SHA256=$(sha256sum flathub/cargo-config.toml | cut -d' ' -f1)
+
+# Substitute values into the manifest
+sed -i.bak \
+    -e "s/@VERSION@/${VERSION}/g" \
+    -e "s/@COMMIT@/${COMMIT}/g" \
+    -e "s/@VENDOR_SHA256@/${VENDOR_SHA256}/g" \
+    -e "s/@METAINFO_SHA256@/${METAINFO_SHA256}/g" \
+    -e "s/@CARGO_CONFIG_SHA256@/${CARGO_CONFIG_SHA256}/g" \
+    flathub/${APP_ID}.yml
+rm -f flathub/${APP_ID}.yml.bak
+
+echo "      Created flathub/${APP_ID}.yml"
+
+echo ""
+echo "=== Flathub preparation complete! ==="
+echo ""
+echo "Files generated in flathub/:"
+echo "  - ${APP_ID}.yml           # Main Flatpak manifest (submit this to Flathub)"
+echo "  - ${APP_ID}.metainfo.xml  # AppStream metadata with release info"
+echo "  - vendor.tar.gz           # Vendored Rust dependencies"
+echo "  - cargo-config.toml       # Cargo configuration for vendoring"
+echo "  - release-info.xml        # Release info snippet"
+echo ""
+echo "Next steps:"
+echo "  1. Test the build locally:"
+echo "       cd flathub && flatpak-builder --user --install --force-clean build ${APP_ID}.yml"
+echo ""
+echo "  2. If build succeeds, submit to Flathub:"
+echo "     - Fork https://github.com/flathub/flathub"
+echo "     - Clone: git clone --branch=new-pr git@github.com:YOUR_USERNAME/flathub.git"
+echo "     - Copy ONLY ${APP_ID}.yml to the repo"
+echo "     - Submit PR against flathub/flathub:new-pr"
+echo ""
+echo "Note: Make sure you have:"
+echo "  - Committed all changes (commit: ${COMMIT})"
+echo "  - Tagged the release (tag: v${VERSION})"
+echo "  - Pushed the tag"

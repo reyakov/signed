@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+cd "$(dirname "$0")/../.."
+shopt -s extglob
+
+# Get system architecture
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64) ARCH_SUFFIX="x86_64" ;;
+  aarch64) ARCH_SUFFIX="aarch64" ;;
+  *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+esac
+
+archive_match="signed(-[a-zA-Z0-9]+)?-linux-${ARCH_SUFFIX}\.tar\.gz"
+archive=$(ls "target/release" | grep -E ${archive_match})
+
+export ARCHIVE="$archive"
+export APP_ID="su.reya.signed"
+export APP_NAME="Signed"
+export BRANDING_LIGHT="#C6FF4D"
+export BRANDING_DARK="#C6FF4D"
+export ICON_FILE="icon"
+export CHANNEL="stable"
+
+# Generate manifest
+envsubst < "desktop/resources/flatpak/manifest-template.json" > "$APP_ID.json"
+
+# Build Flatpak
+flatpak-builder --user --install --force-clean build "$APP_ID.json"
+
+# Create bundle with architecture suffix
+OUTPUT_FILE="target/release/${APP_ID}_${ARCH_SUFFIX}.flatpak"
+flatpak build-bundle ~/.local/share/flatpak/repo "$OUTPUT_FILE" "$APP_ID"
+echo "Created '$OUTPUT_FILE'"

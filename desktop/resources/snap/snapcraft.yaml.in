@@ -1,0 +1,57 @@
+name: signed
+title: Signed
+base: core24
+version: "$RELEASE_VERSION"
+summary: GPUI desktop Git client for browsing repositories and collaborating
+description: |
+  Browse repositories and their history, review commits and diffs, and
+  collaborate through issues, pull requests, and patches.
+grade: stable
+confinement: classic
+compression: lzo
+website: https://git.reya.su/reya/signed
+source-code: https://git.reya.su/reya/signed
+issues: https://git.reya.su/reya/signed/issues
+contact: https://reya.su
+
+parts:
+  signed:
+    plugin: dump
+    source: target/release/signed-linux-$ARCH_SUFFIX.tar.gz
+
+    organize:
+      # These renames seem to not be necessary, but it's tidier.
+      bin: usr/bin
+      libexec: usr/libexec
+
+    stage-packages:
+      - libasound2t64
+      # snapcraft has a lint that this is unused, but without it Signed exits with
+      # "Missing Vulkan entry points: LibraryLoadFailure" in blade_graphics.
+      - libvulkan1
+      # snapcraft has a lint that this is unused, but without it Signed exits with
+      # "NoWaylandLib" when run with Wayland.
+      - libwayland-client0
+      - libxcb1
+      - libxkbcommon-x11-0
+      - libxkbcommon0
+
+    build-attributes:
+      - enable-patchelf
+
+    prime:
+      # Omit unneeded files from the tarball
+      - -lib
+      - -licenses.md
+      - -share
+
+      # Omit unneeded files from stage-packages
+      - -etc
+      - -usr/share/doc
+      - -usr/share/lintian
+      - -usr/share/man
+
+apps:
+  signed:
+    command: usr/bin/signed
+    common-id: su.reya.signed

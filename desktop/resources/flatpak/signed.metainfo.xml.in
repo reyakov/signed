@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+    <id>$APP_ID</id>
+    <metadata_license>MIT</metadata_license>
+    <project_license>GPL-3.0-or-later</project_license>
+
+    <name>$APP_NAME</name>
+    <summary>GPUI desktop Git client</summary>
+
+    <developer id="su.reya">
+        <name translate="no">Ren Amamiya</name>
+    </developer>
+
+    <description>
+        <p>
+            Signed is a desktop Git client built with GPUI.
+        </p>
+        <p>
+            Browse repositories and their history, review commits and diffs, and
+            collaborate through issues, pull requests, and patches.
+        </p>
+    </description>
+
+    <launchable type="desktop-id">$APP_ID.desktop</launchable>
+
+    <branding>
+        <color type="primary" scheme_preference="light">$BRANDING_LIGHT</color>
+        <color type="primary" scheme_preference="dark">$BRANDING_DARK</color>
+    </branding>
+
+    <content_rating type="oars-1.1"/>
+
+    <url type="homepage">https://git.reya.su/reya/signed</url>
+    <url type="bugtracker">https://git.reya.su/reya/signed/issues</url>
+    <url type="faq">https://git.reya.su/reya/signed</url>
+    <url type="help">https://git.reya.su/reya/signed/issues</url>
+    <url type="contact">https://reya.su/</url>
+    <url type="vcs-browser">https://git.reya.su/reya/signed</url>
+
+    <recommends>
+        <control>pointing</control>
+        <control>keyboard</control>
+        <display_length compare="ge">768</display_length>
+    </recommends>
+
+    <releases>
+		@release_info@
+		<release version="0.0.0" date="1970-01-01">
+			<description>
+				<p>Dummy release to keep flatpak-builder AppStream metadata validation from complaining</p>
+			</description>
+		</release>
+    </releases>
+</component>

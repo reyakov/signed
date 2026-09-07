@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+
+set -euxo pipefail
+
+# Function for displaying help info
+help_info() {
+  echo "
+Usage: ${0##*/}
+Build a release .tar.gz for Linux.
+"
+}
+
+# Parse all arguments manually
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            help_info
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            help_info
+            exit 1
+            ;;
+        *)
+            echo "Error: Unexpected argument: $1" >&2
+            help_info
+            exit 1
+            ;;
+    esac
+done
+
+target_dir="${CARGO_TARGET_DIR:-target}"
+
+version="$(script/get-crate-version signed)"
+# Set RELEASE_VERSION so it's compiled into the app and it knows about the version.
+export RELEASE_VERSION="${version}"
+
+commit=$(git rev-parse HEAD | cut -c 1-7)
+
+version_info=$(rustc --version --verbose)
+host_line=$(echo "$version_info" | grep host)
+target_triple=${host_line#*: }
+
+export CC=$(which clang)
+
+# Build binary in release mode
+export RUSTFLAGS="${RUSTFLAGS:-} -C link-args=-Wl,--disable-new-dtags,-rpath,\$ORIGIN/../lib"
+cargo build --release --target "${target_triple}" --package signed
+
+# Strip debug symbols and save them
+objcopy --only-keep-debug "${target_dir}/${target_triple}/release/signed" "${target_dir}/${target_triple}/release/signed.dbg"
+objcopy --strip-debug "${target_dir}/${target_triple}/release/signed"
+
+gzip -f "${target_dir}/${target_triple}/release/signed.dbg"
+
+# Move everything that should end up in the final package
+# into a temp directory.
+temp_dir=$(mktemp -d)
+signed_dir="${temp_dir}/signed.app"
+
+# Binary
+mkdir -p "${signed_dir}/bin" "${signed_dir}/libexec"
+cp "${target_dir}/${target_triple}/release/signed" "${signed_dir}/libexec/signed"
+cp "${target_dir}/${target_triple}/release/signed" "${signed_dir}/bin/signed"
+
+# Libs
+find_libs() {
+    ldd ${target_dir}/${target_triple}/release/signed |\
+        cut -d' ' -f3 |\
+        grep -v '\<\(libstdc++.so\|libc.so\|libgcc_s.so\|libm.so\|libpthread.so\|libdl.so\|libasound.so\)'
+}
+
+mkdir -p "${signed_dir}/lib"
+rm -rf "${signed_dir}/lib/*"
+cp $(find_libs) "${signed_dir}/lib"
+
+# Icons
+mkdir -p "${signed_dir}/share/icons/hicolor/512x512/apps"
+cp "desktop/resources/icon.png" "${signed_dir}/share/icons/hicolor/512x512/apps/signed.png"
+mkdir -p "${signed_dir}/share/icons/hicolor/1024x1024/apps"
+cp "desktop/resources/icon@2x.png" "${signed_dir}/share/icons/hicolor/1024x1024/apps/signed.png"
+
+# .desktop
+export DO_STARTUP_NOTIFY="true"
+export APP_CLI="signed"
+export APP_ICON="signed"
+export APP_ARGS="%U"
+export APP_NAME="Signed"
+
+mkdir -p "${signed_dir}/share/applications"
+envsubst < "desktop/resources/signed.desktop.in" > "${signed_dir}/share/applications/signed.desktop"
+
+# Create archive out of everything that's in the temp directory
+arch=$(uname -m)
+target="linux-${arch}"
+archive="signed-${target}.tar.gz"
+
+rm -rf "${archive}"
+remove_match="signed(-[a-zA-Z0-9]+)?-linux-$(uname -m)\.tar\.gz"
+ls "${target_dir}/release" | grep -E ${remove_match} | xargs -d "\n" -I {} rm -f "${target_dir}/release/{}" || true
+tar -czvf "${target_dir}/release/$archive" -C ${temp_dir} "signed.app"

@@ -1,0 +1,173 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - platform: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - platform: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+          - platform: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - platform: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Windows and macOS builds using cargo-packager
+      - name: Build with cargo-packager (Windows/macOS)
+        if: runner.os != 'Linux'
+        working-directory: desktop
+        run: |
+          cargo install cargo-packager --locked
+          cargo packager --release
+
+      - name: Upload Windows/macOS artifacts
+        if: runner.os != 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}-artifacts
+          path: |
+            dist/*.dmg
+            dist/*.msi
+            dist/*.exe
+          if-no-files-found: error
+
+      # Linux builds using custom scripts
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder snapd squashfs-tools jq gettext-base
+
+      - name: Install Snapcraft
+        if: runner.os == 'Linux'
+        run: sudo snap install snapcraft --classic
+
+      - name: Make scripts executable
+        if: runner.os == 'Linux'
+        run: |
+          chmod +x script/get-crate-version
+          chmod +x script/linux
+          chmod +x script/bundle-snap
+          chmod +x script/bundle-linux
+          chmod +x script/flatpak/deps
+          chmod +x script/flatpak/bundle-flatpak
+
+      - name: Install required dependencies
+        if: runner.os == 'Linux'
+        run: ./script/linux
+
+      # Build the release tarball on every Linux architecture
+      - name: Build release tarball
+        if: runner.os == 'Linux'
+        run: ./script/bundle-linux
+
+      # Only build Flatpak and Snap for x86_64 (most common use case)
+      - name: Build Flatpak
+        if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          ./script/flatpak/deps
+          ./script/flatpak/bundle-flatpak
+
+      - name: Build Snap
+        if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          VERSION=$(script/get-crate-version signed)
+          ./script/bundle-snap $VERSION
+
+      - name: Collect Linux artifacts
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: |
+          mkdir -p linux-artifacts
+          # Copy the tarball created by bundle-linux
+          find target/release -name "*.tar.gz" -exec cp {} linux-artifacts/ \;
+          # Find and copy flatpak files (if they exist)
+          find . -name "*.flatpak" -exec cp {} linux-artifacts/ \; || true
+          # Find and copy snap files (if they exist)
+          find . -name "*.snap" -exec cp {} linux-artifacts/ \; || true
+          ls -la linux-artifacts/
+
+      - name: Upload Linux artifacts
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}-artifacts
+          path: linux-artifacts/**/*
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Make get-crate-version executable
+        run: chmod +x script/get-crate-version
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(script/get-crate-version signed)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display artifacts structure
+        run: |
+          echo "Artifacts structure:"
+          find artifacts -type f -exec ls -la {} \;
+
+      - name: Create draft release
+        id: create_release
+        uses: akkuman/gitea-release-action@v1
+        with:
+          server_url: "https://git.reya.su/"
+          repository: "reya/signed"
+          token: ${{ secrets.GITEA_TOKEN }}
+          draft: true
+          prerelease: false
+          files: |
+            artifacts/**/*
+
+      - name: Output release info
+        run: |
+          echo "Created draft release: ${{ steps.create_release.outputs.url }}"
+          echo "Release ID: ${{ steps.create_release.outputs.id }}"

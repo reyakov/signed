@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+# Build the macOS .app/.dmg bundle with cargo-packager.
+# Requires macOS. Linux/macOS users building on Windows are unsupported here.
+
+set -euxo pipefail
+cd "$(dirname "$0")/../desktop"
+
+if ! command -v cargo-packager >/dev/null 2>&1; then
+  cargo install cargo-packager --locked
+fi
+
+cargo packager --release

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+
+set -euxo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "Usage: $0 <release_version>"
+  exit 1
+fi
+
+ARCH=$(uname -m)
+# Snap uses its own architecture names, which must match the file name and
+# the architecture asserted inside the .snap. `x86_64`/`aarch64` here would
+# produce a file like signed_1.0.0_x86_64.snap that snapd cannot match.
+case "$ARCH" in
+  x86_64|amd64) ARCH_SUFFIX="amd64" ;;
+  aarch64|arm64) ARCH_SUFFIX="arm64" ;;
+  *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+esac
+
+# Setup GUI files
+mkdir -p snap/gui
+export DO_STARTUP_NOTIFY="true"
+export APP_NAME="Signed"
+export APP_ICON="\${SNAP}/meta/gui/signed.png"
+export APP_ARGS="%U"
+envsubst < "desktop/resources/signed.desktop.in" > "snap/gui/signed.desktop"
+cp "desktop/resources/icon.png" "snap/gui/signed.png"
+
+# Generate snapcraft.yaml with version and architecture
+RELEASE_VERSION="$1" ARCH_SUFFIX="$ARCH_SUFFIX" envsubst < desktop/resources/snap/snapcraft.yaml.in > snap/snapcraft.yaml
+
+# Clean previous builds
+snapcraft clean
+
+# Build snap with architecture in filename
+SNAP_NAME="signed_${1}_${ARCH_SUFFIX}.snap"
+snapcraft --destructive-mode --output "$SNAP_NAME"
+
+echo "Created snap package: $SNAP_NAME"
+cat <<'EOF'
+
+Install locally (local builds are unsigned, so snapd requires --dangerous; a
+plain `snap install ./file.snap` fails with "cannot find signatures with
+metadata for snap/component ..."):
+
+  sudo snap install --dangerous ./signed_<version>_amd64.snap
+
+Distribute publicly via the Snap Store (signs the snap, users can then run
+plain `snap install signed`):
+
+  snapcraft login
+  snapcraft upload ./signed_<version>_amd64.snap
+  snapcraft release signed <uploaded-revision> stable
+EOF

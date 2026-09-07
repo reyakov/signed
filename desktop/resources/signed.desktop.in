@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=$APP_NAME
+GenericName=Nostr Git Client
+Comment=Nostr Git client for browsing repositories and collaborating
+TryExec=$APP_CLI
+StartupNotify=$DO_STARTUP_NOTIFY
+Exec=$APP_CLI $APP_ARGS
+Icon=$APP_ICON
+Categories=Development;RevisionControl;
+Keywords=git;repository;diff;commit;pull-request;patch;
