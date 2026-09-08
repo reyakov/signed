@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Error;
@@ -617,67 +616,27 @@ fn resolve_associations<'a>(
     out
 }
 
-/// Whether the worktree of `path` has uncommitted changes.
-fn worktree_dirty(path: &Path) -> bool {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["status", "--porcelain"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output();
-    match output {
-        Ok(output) => !String::from_utf8_lossy(&output.stdout).trim().is_empty(),
-        Err(_) => false,
-    }
-}
-
-/// Commits in `base..branch` of the checkout at `path`.
-fn commits_ahead(path: &Path, base: &str, branch: &str) -> u32 {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-list", "--count", &format!("{base}..{branch}")])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output();
-    match output {
-        Ok(output) => String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .parse()
-            .unwrap_or(0),
-        Err(_) => 0,
-    }
-}
-
-/// The branch checked out at `path`, read via `git branch --show-current`.
-fn current_branch_of(path: &Path) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["branch", "--show-current"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .ok()?;
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    (!branch.is_empty()).then_some(branch)
-}
-
 /// The ready-to-contribute status of one checkout.
 fn checkout_status(path: &Path, announced_head: Option<&str>) -> Option<CheckoutStatus> {
     let branches = signed_git::worktree_branches(path).ok()?;
-    if branches.is_empty() || worktree_dirty(path) {
+
+    if branches.is_empty() || signed_git::worktree_dirty(path) {
         return None;
     }
-    let branch = current_branch_of(path)?;
+
+    let branch = signed_git::worktree_current_branch(path)?;
     let head = signed_git::head_commit_id(path).ok().flatten()?;
     let base = announced_head
         .filter(|name| branches.iter().any(|b| b == name))
         .map(str::to_owned)
         .or_else(|| branches.iter().find(|b| *b == "main").cloned())
         .or_else(|| branches.first().cloned())?;
+
     if base == branch {
         return None;
     }
-    let ahead = commits_ahead(path, &base, &branch);
+
+    let ahead = signed_git::worktree_commits_ahead(path, &base, &branch);
     (ahead > 0).then_some(CheckoutStatus {
         path: path.to_path_buf(),
         branch,
@@ -687,30 +646,17 @@ fn checkout_status(path: &Path, announced_head: Option<&str>) -> Option<Checkout
     })
 }
 
-/// Whether the reference `name` exists in the checkout at `path`.
-///
-/// Example, `refs/remotes/origin/main`.
-fn ref_exists(path: &Path, name: &str) -> bool {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(["rev-parse", "--verify", "--quiet", name])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output();
-    matches!(output, Ok(output) if output.status.success())
-}
-
 /// The `ready to push` status of one checkout of the user's own repository.
 ///
 /// `fetch` refreshes the remote heads first, so a full pass sees pushes made
 /// elsewhere; the fast local pass skips it and compares against the tracking
 /// refs left by the last full pass, which is enough to detect local commits.
 fn checkout_push_status(path: &Path, fetch: bool) -> Option<CheckoutStatus> {
-    if worktree_dirty(path) {
+    if signed_git::worktree_dirty(path) {
         return None;
     }
 
-    let branch = current_branch_of(path)?;
+    let branch = signed_git::worktree_current_branch(path)?;
     let head = signed_git::head_commit_id(path).ok().flatten()?;
     let origin = signed_git::origin_url(path).ok().flatten()?;
 
@@ -724,15 +670,15 @@ fn checkout_push_status(path: &Path, fetch: bool) -> Option<CheckoutStatus> {
 
     // A branch never fetched or pushed yet compares against the remote HEAD.
     // The remote HEAD is the fork point in practice.
-    let base = if ref_exists(path, &remote) {
+    let base = if signed_git::worktree_ref_exists(path, &remote) {
         remote
-    } else if ref_exists(path, "refs/remotes/origin/HEAD") {
+    } else if signed_git::worktree_ref_exists(path, "refs/remotes/origin/HEAD") {
         "refs/remotes/origin/HEAD".to_owned()
     } else {
         return None;
     };
 
-    let ahead = commits_ahead(path, &base, &branch);
+    let ahead = signed_git::worktree_commits_ahead(path, &base, &branch);
 
     (ahead > 0).then_some(CheckoutStatus {
         path: path.to_path_buf(),
@@ -822,6 +768,8 @@ pub fn pr_proposes_checkout(
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use signed_core::{RepoAddr, repo_addr};
 
     use super::*;

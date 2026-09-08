@@ -492,16 +492,8 @@ impl RepoDetailView {
                 if refresh_generation != this.ref_generation {
                     return;
                 }
-                if let Ok(Some((moved, branches, tags, current_branch, head_commit))) = refresh {
-                    if moved {
-                        // The mirror caught up with the remote.
-                        // E.g. the push of an owned checkout just landed.
-                        // Rebuild the explorer, previews and commit list from the worktree.
-                        this.reload_worktree(cx);
-                        cx.notify();
-                        return;
-                    }
 
+                if let Ok(Some((moved, branches, tags, current_branch, head_commit))) = refresh {
                     let branches: Vec<SharedString> = branches.iter().map(Into::into).collect();
                     let tags: Vec<SharedString> = tags.iter().map(Into::into).collect();
 
@@ -526,6 +518,10 @@ impl RepoDetailView {
                         this.all_commits = None;
                         this.loading_all_commits = false;
                         this.load_all_commits(cx);
+                    }
+
+                    if moved {
+                        this.catch_up_worktree(cx);
                     }
 
                     cx.notify();
@@ -1223,6 +1219,119 @@ impl RepoDetailView {
         });
 
         self.tasks.push(task);
+    }
+
+    /// Refresh the file explorer, previews and commit list after the mirror
+    /// caught up with the remote.
+    ///
+    /// The checked-out branch fast-forwarded in place, so unlike
+    /// [`Self::reload_worktree`] this keeps the panel's selection and previews:
+    /// it rebuilds the tree, drops previews of files the refresh removed and
+    /// re-renders the README when it is on screen.
+    fn catch_up_worktree(&mut self, cx: &mut Context<Self>) {
+        let Some(worktree) = self.worktree.clone() else {
+            return;
+        };
+
+        let task = cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let snapshot = signed_git::worktree_snapshot(&worktree)?;
+                    let tree = build_tree_items(&snapshot.entries);
+                    Ok::<_, Error>((snapshot, tree))
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok((snapshot, tree)) => {
+                        let head_changed = snapshot.head_commit.as_ref().map(|c| &c.id)
+                            != this.head_commit.as_ref().map(|c| &c.id);
+
+                        this.head_commit = snapshot.head_commit;
+                        this.tree_state.update(cx, |state, cx| {
+                            state.set_items(tree_items(tree, false), cx);
+                        });
+
+                        // Drop previews of files the refresh removed from the  worktree,
+                        // everything else stays put.
+                        let present: HashSet<String> = snapshot
+                            .entries
+                            .iter()
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .collect();
+
+                        let mut previewed: Vec<String> = Vec::new();
+                        previewed.extend(this.files.keys().cloned());
+                        previewed.extend(this.selected_file.clone().map(|p| p.to_string()));
+
+                        if let Some(path) = this.md.as_ref().and_then(|md| md.path.clone()) {
+                            previewed.push(path.to_string());
+                        }
+
+                        if let Some(path) = this.code.as_ref().map(|code| code.path.clone()) {
+                            previewed.push(path.to_string());
+                        }
+
+                        previewed.sort();
+                        previewed.dedup();
+
+                        for path in previewed {
+                            if !present.contains(&path) {
+                                this.drop_preview_of(&path);
+                            }
+                        }
+
+                        // Re-render the README when it is on screen, i.e. when no file preview is open.
+                        if this.selected_file.is_none() {
+                            match snapshot.readme_path.zip(snapshot.readme) {
+                                Some((path, bytes)) => {
+                                    this.readme_name = Some(path.to_string_lossy().into());
+                                    if let Ok(text) = String::from_utf8(bytes) {
+                                        this.set_markdown(None, &text, cx);
+                                    }
+                                }
+                                None => {
+                                    this.md = None;
+                                    this.readme_name = None;
+                                }
+                            }
+                        }
+
+                        if head_changed {
+                            this.all_commits = None;
+                            this.loading_all_commits = false;
+                            this.load_all_commits(cx);
+                        }
+                    }
+                    Err(error) => {
+                        this.error = Some(error.to_string().into());
+                    }
+                }
+                cx.notify();
+            })?;
+
+            Ok(())
+        });
+
+        self.tasks.push(task);
+    }
+
+    /// Drop the cached preview, editor and commit state of `path`.
+    fn drop_preview_of(&mut self, path: &str) {
+        if let Some(FileContent::Text(text)) = self.files.remove(path) {
+            self.preview_bytes -= text.len();
+        }
+        self.commits.remove(path);
+        if self.selected_file.as_deref() == Some(path) {
+            self.selected_file = None;
+        }
+        if self.md.as_ref().and_then(|md| md.path.as_deref()) == Some(path) {
+            self.md = None;
+        }
+        if self.code.as_ref().map(|code| code.path.as_ref()) == Some(path) {
+            self.code = None;
+        }
     }
 
     /// Drop the oldest previews beyond the cache caps.

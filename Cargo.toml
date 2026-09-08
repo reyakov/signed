@@ -31,7 +31,7 @@ nostr-gossip-memory = { git = "https://github.com/rust-nostr/nostr" }
 nostr-connect = { git = "https://github.com/rust-nostr/nostr" }
 nostr-sdk = { git = "https://github.com/rust-nostr/nostr" }
 
-gix = { version = "0.87.1", default-features = false, features = ["sha1", "blocking-network-client", "blocking-http-transport-reqwest-rust-tls", "worktree-mutation"] }
+gix = { version = "0.87.1", default-features = false, features = ["sha1", "blocking-network-client", "blocking-http-transport-reqwest-rust-tls", "worktree-mutation", "status"] }
 
 smol = "2"
 futures = "0.3"

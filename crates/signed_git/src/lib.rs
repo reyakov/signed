@@ -281,14 +281,14 @@ pub fn split_patch_series(patch: &str) -> Vec<&str> {
 ///
 /// `None` when the repository has no commits yet, an unborn HEAD.
 pub fn head_commit_id(repo_path: &Path) -> Result<Option<String>> {
-    let output = git_output(repo_path, &["rev-parse", "HEAD"], "git rev-parse")?;
-
-    if !output.status.success() {
+    let Ok(repo) = gix::open(repo_path) else {
         return Ok(None);
+    };
+
+    match repo.head_id() {
+        Ok(id) => Ok(Some(id.to_string())),
+        Err(_) => Ok(None),
     }
-    Ok(Some(
-        String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-    ))
 }
 
 /// The commits in `base..HEAD` of the repository at `repo_path`, oldest first.
@@ -296,22 +296,41 @@ pub fn head_commit_id(repo_path: &Path) -> Result<Option<String>> {
 ///
 /// `HEAD` alone when `base` is `None`.
 pub fn commits_since(repo_path: &Path, base: Option<&str>) -> Result<Vec<String>> {
-    let output = match base {
-        Some(base) => git_in(
-            repo_path,
-            &["rev-list", "--reverse", &format!("{base}..HEAD")],
-        )?,
-        // Without `base`, an unborn HEAD means there is nothing to walk.
-        None => match git_in(repo_path, &["rev-parse", "HEAD"]) {
-            Ok(head) => head,
-            Err(_) => return Ok(Vec::new()),
-        },
+    let repo = match gix::open(repo_path) {
+        Ok(repo) => repo,
+        Err(_) if base.is_none() => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
     };
-    Ok(output
-        .lines()
-        .map(str::to_owned)
-        .filter(|line| !line.is_empty())
-        .collect())
+
+    let head = match repo.head_id() {
+        Ok(head) => head,
+        Err(_) if base.is_none() => return Ok(Vec::new()),
+        Err(e) => return Err(e).context("repository has no commits"),
+    };
+
+    let Some(base) = base else {
+        // `HEAD` alone when no base is given.
+        return Ok(vec![head.to_string()]);
+    };
+
+    let base = repo.rev_parse_single(base.as_bytes())?;
+    let mut commits = Vec::new();
+
+    for info in repo
+        .rev_walk([head])
+        .sorting(gix::revision::walk::Sorting::ByCommitTime(
+            gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+        ))
+        .with_hidden([base])
+        .all()?
+    {
+        commits.push(info?.id().to_string());
+    }
+
+    // Oldest first, like `git rev-list --reverse`, the order `git am` creates them.
+    commits.reverse();
+
+    Ok(commits)
 }
 
 /// Rewrite a grasp server URL to the https URL the git transport actually uses.
@@ -358,45 +377,98 @@ fn clone(url: &str, path: &Path) -> Result<gix::Repository> {
     Ok(repo)
 }
 
+/// The identity written to reflogs and commits created by this crate itself.
+///
+/// Like `git -c user.name=… -c user.email=…` per invocation: the repository works
+/// without a global git identity, and `gix` runs no hooks and never signs.
+fn repository_signature() -> (gix::actor::Signature, gix::date::parse::TimeBuf) {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default();
+    let signature = gix::actor::Signature {
+        name: gix::bstr::BString::from("Signed"),
+        email: gix::bstr::BString::from("signed@localhost"),
+        time: gix::date::Time { seconds, offset: 0 },
+    };
+    (signature, gix::date::parse::TimeBuf::default())
+}
+
 /// Create a repository at `path` with an initial `main` branch.
 /// Write a `README.md` from `name` and `description`, then create the initial commit.
 ///
 /// Returns the initial commit id.
-///
-/// Uses the git CLI, like [`apply_patch`].
 pub fn init_repository(path: &Path, name: &str, description: &str) -> Result<String> {
+    use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create {}", path.display()))?;
 
-    git_in(path, &["init", "-b", "main"])?;
+    let repo = gix::init(path)?;
+
+    let (signature, mut time_buf) = repository_signature();
+    let signature = signature.to_ref(&mut time_buf);
+
+    // The initial branch is `main`, regardless of `init.defaultBranch` in
+    // the user's git configuration: point the unborn HEAD there.
+    let head = gix::refs::FullName::try_from("HEAD")
+        .map_err(|e| anyhow::anyhow!("invalid ref name: {e}"))?;
+
+    repo.edit_references_as(
+        [RefEdit {
+            change: Change::Update {
+                log: LogChange {
+                    mode: RefLog::AndReference,
+                    force_create_reflog: false,
+                    message: "checkout: moving to main".into(),
+                },
+                expected: PreviousValue::Any,
+                new: gix::refs::Target::Symbolic(
+                    gix::refs::FullName::try_from("refs/heads/main")
+                        .map_err(|e| anyhow::anyhow!("invalid ref name: {e}"))?,
+                ),
+            },
+            name: head,
+            deref: false,
+        }],
+        Some(signature),
+    )?;
 
     let readme = if description.trim().is_empty() {
         format!("# {name}\n")
     } else {
         format!("# {name}\n\n{description}\n")
     };
-    std::fs::write(path.join("README.md"), readme).context("failed to write README.md")?;
 
-    git_in(path, &["add", "README.md"])?;
-    // Identity and signing are passed per invocation.
-    // The repository then commits without a global git identity or signing setup.
-    git_in(
-        path,
-        &[
-            "-c",
-            "user.name=Signed",
-            "-c",
-            "user.email=signed@localhost",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-m",
-            "Initial commit",
-        ],
+    std::fs::write(path.join("README.md"), &readme).context("failed to write README.md")?;
+
+    let blob = repo.write_object(gix::objs::Blob {
+        data: readme.into_bytes(),
+    })?;
+
+    let tree = repo.write_object(gix::objs::Tree {
+        entries: vec![gix::objs::tree::Entry {
+            mode: gix::objs::tree::EntryKind::Blob.into(),
+            filename: gix::bstr::BString::from("README.md"),
+            oid: blob.into(),
+        }],
+    })?;
+
+    let commit = repo.commit_as(
+        signature,
+        signature,
+        "HEAD",
+        "Initial commit",
+        tree,
+        Vec::<gix::ObjectId>::new(),
     )?;
 
-    let commit = git_in(path, &["rev-parse", "HEAD"])?;
+    // Populate the index so the fresh repository is clean,
+    // as `git add` and`git commit` would leave it.
+    let mut index = repo.index_from_tree(&tree)?;
+    index.write(gix::index::write::Options::default())?;
 
+    let commit = commit.to_string();
     if commit.len() != 40 {
         bail!("unexpected initial commit id: {commit}");
     }
@@ -465,34 +537,52 @@ pub fn remote_has_refs(repo_path: &Path, url: &str, expected: &[(String, String)
         return Ok(true);
     }
 
-    let output = git_output(repo_path, &["ls-remote", url], "git ls-remote")?;
+    let repo = gix::open(repo_path)?;
+    let url = transport_url(url);
 
-    if !output.status.success() {
-        bail!(
-            "git ls-remote {url} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+    // A URL-created remote has no configured fetch refspecs, and `ref_map` only
+    // keeps refs that match one. Match each expected ref by its exact name, like
+    // `git ls-remote <url> <name>` would; ref maps never write to the repository.
+    let refspecs = expected
+        .iter()
+        .map(|(name, _)| {
+            gix::refspec::parse(
+                gix::bstr::BStr::new(format!("+{name}:{name}").as_bytes()),
+                gix::refspec::parse::Operation::Fetch,
+            )
+            .map(|spec| spec.to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .context("invalid refspec")?;
 
-    let advertised = parse_ls_remote(&output.stdout);
+    let options = gix::remote::ref_map::Options {
+        extra_refspecs: refspecs,
+        ..Default::default()
+    };
+
+    let (refs, _) = repo
+        .remote_at(url.as_str())
+        .with_context(|| format!("cannot use remote {url}"))?
+        .connect(gix::remote::Direction::Fetch)
+        .with_context(|| format!("cannot connect to {url}"))?
+        .ref_map(Discard, options)
+        .with_context(|| format!("listing refs of {url} failed"))?;
+
+    // Peeled tag entries carry the tag object in their direct oid, so mapping
+    // each advertised ref to its direct oid matches `git ls-remote` while
+    // skipping the duplicated `^{}` lines.
+    let advertised: HashMap<String, String> = refs
+        .remote_refs
+        .iter()
+        .filter_map(|reference| {
+            let (name, object, _peeled) = reference.unpack();
+            object.map(|oid| (String::from_utf8_lossy(name).into_owned(), oid.to_string()))
+        })
+        .collect();
+
     Ok(expected
         .iter()
         .all(|(name, oid)| advertised.get(name.as_str()) == Some(oid)))
-}
-
-/// Parse `git ls-remote` output into (refname, oid) pairs.
-///
-/// Skips the peeled `^{}` lines that follow annotated tag objects.
-fn parse_ls_remote(output: &[u8]) -> HashMap<String, String> {
-    String::from_utf8_lossy(output)
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let oid = fields.next()?;
-            let name = fields.next()?;
-            (!name.ends_with("^{}")).then(|| (name.to_owned(), oid.to_owned()))
-        })
-        .collect()
 }
 
 /// The earliest unique commit of the repository at `repo_path`.
@@ -500,36 +590,47 @@ fn parse_ls_remote(output: &[u8]) -> HashMap<String, String> {
 ///
 /// `None` for a repository without commits.
 pub fn root_commit(repo_path: &Path) -> Result<Option<String>> {
-    let output = git_output(
-        repo_path,
-        &["rev-list", "--max-parents=0", "HEAD"],
-        "git rev-list",
-    )?;
-
-    // An unborn HEAD with no commits yet makes `rev-list` fail.
-    // There is no unique commit to report then.
-    if !output.status.success() {
+    let Ok(repo) = gix::open(repo_path) else {
         return Ok(None);
+    };
+
+    let Ok(head) = repo.head_id() else {
+        // An unborn HEAD with no commits yet has no root commit.
+        return Ok(None);
+    };
+
+    for info in repo
+        .rev_walk([head])
+        .sorting(gix::revision::walk::Sorting::ByCommitTime(
+            gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
+        ))
+        .all()?
+    {
+        let info = info?;
+        if info.parent_ids().next().is_none() {
+            let id = info.id().to_string();
+            return Ok((id.len() == 40).then_some(id));
+        }
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .next()
-        .map(str::to_owned)
-        .filter(|id| id.len() == 40))
+    Ok(None)
 }
 
 /// Add `origin` pointing at `url` when the repository has no remote yet.
 ///
 /// No-op if `origin` already exists.
 pub fn ensure_origin(repo_path: &Path, url: &str) -> Result<()> {
-    // `git remote get-url origin` exits non-zero when the remote is absent.
-    if git_in(repo_path, &["remote", "get-url", "origin"]).is_ok() {
+    let repo = gix::open(repo_path)?;
+    if repo.find_remote("origin").is_ok() {
         return Ok(());
     }
-    // `git remote add` already configures the default fetch refspec.
-    git_in(repo_path, &["remote", "add", "origin", url])?;
-    Ok(())
+
+    // `git remote add` also configures the default fetch refspec.
+    edit_local_config(&repo, |config| {
+        config.set_raw_value("remote.origin.url", url)?;
+        config.set_raw_value("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")?;
+        Ok(())
+    })
 }
 
 /// Point `origin` at `url`, replacing an existing remote,
@@ -537,12 +638,59 @@ pub fn ensure_origin(repo_path: &Path, url: &str) -> Result<()> {
 ///
 /// A working copy cloned from a local mirror is re-targeted at the grasp server.
 pub fn set_origin(repo_path: &Path, url: &str) -> Result<()> {
-    // `git remote get-url origin` exits non-zero when the remote is absent.
-    if git_in(repo_path, &["remote", "get-url", "origin"]).is_ok() {
-        git_in(repo_path, &["remote", "set-url", "origin", url])?;
-    } else {
-        git_in(repo_path, &["remote", "add", "origin", url])?;
-    }
+    let repo = gix::open(repo_path)?;
+    let had_origin = repo.find_remote("origin").is_ok();
+
+    edit_local_config(&repo, |config| {
+        // Replaces the existing url, like `git remote set-url origin <url>`.
+        // A pre-existing fetch refspec is left untouched.
+        config.set_raw_value("remote.origin.url", url)?;
+
+        if !had_origin {
+            config.set_raw_value("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")?;
+        }
+
+        Ok(())
+    })
+}
+
+/// Apply `edit` to the repository-local configuration and persist it.
+///
+/// The config file is locked while it is read, edited and written back,
+/// like git would when running `git config` or `git remote`.
+fn edit_local_config(
+    repo: &gix::Repository,
+    edit: impl FnOnce(&mut gix::config::File) -> Result<()>,
+) -> Result<()> {
+    let config_path = repo.common_dir().join("config");
+
+    let mut lock = gix::lock::File::acquire_to_update_resource(
+        &config_path,
+        gix::lock::acquire::Fail::Immediately,
+        None,
+    )
+    .context("failed to lock repository config")?;
+
+    let mut config =
+        match gix::config::File::from_path_no_includes(config_path, gix::config::Source::Local) {
+            Ok(config) => config,
+            // A repository without a config file yet starts from scratch.
+            Err(gix::config::file::init::from_paths::Error::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                gix::config::File::default()
+            }
+            Err(error) => return Err(error).context("failed to read repository config"),
+        };
+
+    edit(&mut config)?;
+
+    config
+        .write_to(&mut lock)
+        .context("failed to write repository config")?;
+
+    lock.commit().context("failed to save repository config")?;
+
     Ok(())
 }
 
@@ -551,18 +699,29 @@ pub fn set_origin(repo_path: &Path, url: &str) -> Result<()> {
 ///
 /// Never touches the checked-out refs or the worktree.
 pub fn fetch_repo_refs(repo_path: &Path, urls: &[String], refspec: &str) -> Result<()> {
+    let repo = gix::open(repo_path)?;
+    let refspec = gix::refspec::parse(
+        gix::bstr::BStr::new(refspec),
+        gix::refspec::parse::Operation::Fetch,
+    )
+    .context("invalid fetch refspec")?
+    .to_owned();
+
     try_each_url(urls, "fetch", |url| {
         let url = transport_url(url);
-
-        let output = git_output(repo_path, &["fetch", &url, refspec], "git fetch")?;
-
-        if output.status.success() {
-            return Ok(());
-        }
-        bail!(
-            "git fetch from {url} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
+        let options = gix::remote::ref_map::Options {
+            extra_refspecs: vec![refspec.clone()],
+            ..Default::default()
+        };
+        repo.remote_at(url.as_str())
+            .with_context(|| format!("fetch from {url} failed"))?
+            .connect(gix::remote::Direction::Fetch)
+            .with_context(|| format!("fetch from {url} failed"))?
+            .prepare_fetch(Discard, options)
+            .with_context(|| format!("fetch from {url} failed"))?
+            .receive(Discard, &IS_INTERRUPTED)
+            .with_context(|| format!("fetch from {url} failed"))?;
+        Ok(())
     })
 }
 
@@ -571,66 +730,60 @@ pub fn fetch_repo_refs(repo_path: &Path, urls: &[String], refspec: &str) -> Resu
 ///
 /// Returns an empty list when nothing matches.
 pub fn refs_with_prefix(repo_path: &Path, prefix: &str) -> Result<Vec<String>> {
-    // `for-each-ref` patterns match whole path components.
-    // A trailing slash would silently change what is matched.
     let pattern = prefix.trim_end_matches('/');
-    let output = git_output(
-        repo_path,
-        &["for-each-ref", "--format=%(refname)", pattern],
-        "git for-each-ref",
-    )?;
+    let repo = gix::open(repo_path)?;
+    let mut names = Vec::new();
 
-    if !output.status.success() {
-        bail!(
-            "git for-each-ref failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    for reference in repo.references()?.all()? {
+        let reference = reference.map_err(|error| anyhow::anyhow!("{error}"))?;
+        let name = String::from_utf8_lossy(reference.name().as_bstr()).into_owned();
+
+        // Match the pattern itself and everything beneath it, like `git for-each-ref`.
+        let under_pattern = name
+            .strip_prefix(pattern)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+
+        if under_pattern {
+            names.push(name);
+        }
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::to_owned)
-        .filter(|name| !name.is_empty())
-        .collect())
+    // Sort lexicographically, like `git for-each-ref`.
+    names.sort();
+
+    Ok(names)
 }
 
 /// Delete every ref under `prefix` of the repository at `repo_path`.
 /// `prefix` is a ref namespace like `refs/fork/<owner>/<id>`.
-///
-/// Lets a stale import be pruned before a re-import.
-///
-/// No-op when nothing matches.
 pub fn delete_refs_with_prefix(repo_path: &Path, prefix: &str) -> Result<()> {
+    use gix::refs::transaction::{Change, PreviousValue, RefEdit, RefLog};
+
     let refs = refs_with_prefix(repo_path, prefix)?;
     if refs.is_empty() {
         return Ok(());
     }
 
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(repo_path)
-        .args(["update-ref", "--stdin"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to spawn `git update-ref --stdin`")?;
+    let repo = gix::open(repo_path)?;
+    let edits: Vec<RefEdit> = refs
+        .iter()
+        .map(|name| {
+            let full = gix::refs::FullName::try_from(name.as_str())
+                .map_err(|e| anyhow::anyhow!("invalid ref name {name}: {e}"))?;
+            Ok(RefEdit {
+                change: Change::Delete {
+                    expected: PreviousValue::Any,
+                    log: RefLog::AndReference,
+                },
+                name: full,
+                deref: false,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-    for name in refs {
-        child
-            .stdin
-            .as_mut()
-            .expect("stdin piped")
-            .write_all(format!("delete {name}\n").as_bytes())?;
-    }
+    // Delete all refs with the given prefix.
+    repo.edit_references(edits)?;
 
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        bail!(
-            "git update-ref failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
     Ok(())
 }
 
@@ -638,54 +791,210 @@ pub fn delete_refs_with_prefix(repo_path: &Path, prefix: &str) -> Result<()> {
 ///
 /// `None` when it has no `origin` yet.
 pub fn origin_url(workdir: &Path) -> Result<Option<String>> {
-    let output = git_output(
-        workdir,
-        &["remote", "get-url", "origin"],
-        "git remote get-url",
-    )?;
-
-    if !output.status.success() {
+    let Ok(repo) = gix::open(workdir) else {
         return Ok(None);
+    };
+
+    let Ok(remote) = repo.find_remote("origin") else {
+        return Ok(None);
+    };
+
+    Ok(remote
+        .url(gix::remote::Direction::Fetch)
+        .map(|url| url.to_string()))
+}
+
+/// Whether the worktree of `workdir` has uncommitted changes.
+///
+/// Best-effort: any read failure is reported as clean.
+pub fn worktree_dirty(workdir: &Path) -> bool {
+    let Ok(repo) = gix::open(workdir) else {
+        return false;
+    };
+
+    // Changes to tracked files, staged or not; untracked files are excluded.
+    match repo.is_dirty() {
+        Ok(true) => return true,
+        Ok(false) => {}
+        Err(_) => return false,
     }
-    let url = String::from_utf8_lossy(&output.stdout);
-    Ok((!url.trim().is_empty()).then(|| url.trim().to_owned()))
+
+    // Untracked files surface as `DirectoryContents` items of the index-vs-worktree walk,
+    // tracked files only appear there when modified.
+    let Ok(platform) = repo.status(Discard) else {
+        return false;
+    };
+
+    let Ok(mut changes) = platform.into_index_worktree_iter(Vec::<gix::bstr::BString>::new())
+    else {
+        return false;
+    };
+
+    for change in changes.by_ref() {
+        match change {
+            Ok(gix::status::index_worktree::Item::DirectoryContents { .. }) => return true,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+
+    false
+}
+
+/// Commits in `base..branch` of the checkout at `workdir`.
+///
+/// Best-effort: 0 when the range cannot be computed.
+pub fn worktree_commits_ahead(workdir: &Path, base: &str, branch: &str) -> u32 {
+    let Ok(repo) = gix::open(workdir) else {
+        return 0;
+    };
+
+    let (Some(base), Some(branch)) = (resolve_commit(&repo, base), resolve_commit(&repo, branch))
+    else {
+        return 0;
+    };
+
+    let Ok(walk) = repo.rev_walk([branch]).with_hidden([base]).all() else {
+        return 0;
+    };
+
+    walk.filter_map(Result::ok).count().min(u32::MAX as usize) as u32
+}
+
+/// Resolve `rev` to a commit id, accepting full refs,
+/// symbolic refs and the bare branch names callers pass, like git's DWIM.
+fn resolve_commit<'a>(repo: &'a gix::Repository, rev: &str) -> Option<gix::Id<'a>> {
+    if let Ok(id) = repo.rev_parse_single(rev.as_bytes()) {
+        return Some(id);
+    }
+
+    // Branch names arrive bare, like git resolving `main`.
+    if rev.contains('/') {
+        return None;
+    }
+
+    repo.rev_parse_single(format!("refs/heads/{rev}").as_bytes())
+        .ok()
+}
+
+/// Short name of the branch HEAD points to at `workdir`,
+/// `None` when detached or unreadable, like `git branch --show-current`.
+pub fn worktree_current_branch(workdir: &Path) -> Option<String> {
+    let repo = gix::open(workdir).ok()?;
+    let head = repo.head().ok()?;
+    let name = head.referent_name()?;
+    Some(String::from_utf8_lossy(name.shorten()).into_owned())
+}
+
+/// Whether the reference `name` exists in the repository at `workdir`.
+pub fn worktree_ref_exists(workdir: &Path, name: &str) -> bool {
+    let Ok(repo) = gix::open(workdir) else {
+        return false;
+    };
+    repo.find_reference(name).is_ok()
 }
 
 /// Fast-forward local branches that trail their remote-tracking counterpart.
 ///
 /// Returns whether any branch moved.
 pub fn fast_forward_branches(workdir: &Path) -> Result<bool> {
-    let current = git_in(workdir, &["branch", "--show-current"]).unwrap_or_default();
+    let repo = gix::open(workdir)?;
+    let current = worktree_current_branch(workdir);
     let heads = refs_with_prefix(workdir, "refs/heads")?;
+
+    let (signature, mut time_buf) = repository_signature();
+    let signature = signature.to_ref(&mut time_buf);
+
     let mut moved = false;
 
     for head in heads {
         let Some(branch) = head.strip_prefix("refs/heads/") else {
             continue;
         };
+
         let remote = format!("refs/remotes/origin/{branch}");
         // No remote-tracking counterpart means the remote lacks this branch.
-        let Ok(remote_oid) = git_in(workdir, &["rev-parse", "--verify", "--quiet", &remote]) else {
+        let Ok(mut remote_reference) = repo.find_reference(&remote) else {
             continue;
         };
-        let Ok(local_oid) = git_in(workdir, &["rev-parse", "--verify", "--quiet", &head]) else {
+
+        let Ok(mut local_reference) = repo.find_reference(&head) else {
             continue;
         };
+
+        let Ok(remote_oid) = remote_reference.peel_to_id() else {
+            continue;
+        };
+
+        let Ok(local_oid) = local_reference.peel_to_id() else {
+            continue;
+        };
+
+        let remote_oid = remote_oid.detach();
+        let local_oid = local_oid.detach();
+
         if local_oid == remote_oid {
             continue;
         }
+
         // Only fast-forward.
         // Local-only commits or diverged history must never be rewritten by a refresh.
-        if git_in(workdir, &["merge-base", "--is-ancestor", &head, &remote]).is_err() {
+        let Ok(base) = repo.merge_base(local_oid, remote_oid) else {
+            continue;
+        };
+
+        if base != local_oid {
             continue;
         }
-        if current == branch {
-            // Merge so the checked-out worktree follows the branch.
-            if git_in(workdir, &["merge", "--ff-only", &remote]).is_ok() {
-                moved = true;
+
+        let full = gix::refs::FullName::try_from(head.as_str())
+            .map_err(|e| anyhow::anyhow!("invalid ref name: {e}"))?;
+
+        let edit = |new: gix::refs::Target| {
+            use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+            RefEdit {
+                change: Change::Update {
+                    log: LogChange {
+                        mode: RefLog::AndReference,
+                        force_create_reflog: false,
+                        message: format!("merge {remote}: Fast-forward").into(),
+                    },
+                    expected: PreviousValue::ExistingMustMatch(gix::refs::Target::Object(
+                        local_oid,
+                    )),
+                    new,
+                },
+                name: full.clone(),
+                deref: false,
             }
+        };
+
+        if current.as_deref() == Some(branch) {
+            // Merge so the checked-out worktree follows the branch.
+            // Only proceed on a clean worktree, like `git merge --ff-only`.
+            if worktree_dirty(workdir) {
+                continue;
+            }
+
+            let tree = repo.find_object(remote_oid)?.peel_to_tree()?.id;
+
+            // Check out the remote tree, discarding local changes.
+            force_checkout(&repo, &tree)?;
+
+            // Update the branch reference to point to the remote tree.
+            repo.edit_references_as(
+                [edit(gix::refs::Target::Object(remote_oid))],
+                Some(signature),
+            )?;
+
+            moved = true;
         } else {
-            git_in(workdir, &["update-ref", &head, &remote_oid])?;
+            // Update the branch reference to point to the remote tree.
+            repo.edit_references_as(
+                [edit(gix::refs::Target::Object(remote_oid))],
+                Some(signature),
+            )?;
+
             moved = true;
         }
     }
@@ -710,6 +1019,7 @@ fn git_output(dir: &Path, args: &[&str], what: &str) -> Result<std::process::Out
 /// Run a git command in `dir`, returning trimmed stdout.
 ///
 /// The terminal prompt is disabled so a credential request fails instead of hanging.
+#[cfg(test)]
 fn git_in(dir: &Path, args: &[&str]) -> Result<String> {
     let output = git_output(dir, args, "git")?;
 
@@ -1709,6 +2019,7 @@ impl ConsumeHunk for HunkCollector<'_> {
             new_lines: header.after_hunk_len,
             lines: out,
         });
+
         Ok(())
     }
 
@@ -1862,39 +2173,155 @@ pub fn worktree_snapshot(workdir: &Path) -> Result<WorktreeSnapshot> {
     })
 }
 
-/// Switch the checked-out ref and update the worktree, like `git checkout --force`.
-///
-/// Local modifications are discarded, these clones are read-only browser copies.
-fn checkout(workdir: &Path, args: &[&str]) -> Result<()> {
-    let output = Command::new("git")
-        .arg("checkout")
-        .arg("--force")
-        .args(args)
-        .current_dir(workdir)
-        .output()
-        .context("failed to spawn `git checkout`")?;
-    if !output.status.success() {
-        bail!(
-            "git checkout {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        );
+/// Check out `tree` into the worktree of `repo`
+fn force_checkout(repo: &gix::Repository, tree: &gix::hash::oid) -> Result<()> {
+    let workdir = repo
+        .workdir()
+        .context("repository has no worktree")?
+        .to_path_buf();
+
+    let mut index = repo.index_from_tree(tree)?;
+
+    // Files the previous index tracked but `tree` no longer contains are removed,
+    // like git deleting files that vanish between branches.
+    if let Ok(previous) = repo.index_or_empty() {
+        let keep: HashSet<PathBuf> = index
+            .entries()
+            .iter()
+            .map(|entry| PathBuf::from(String::from_utf8_lossy(entry.path(&index)).into_owned()))
+            .collect();
+        for entry in previous.entries() {
+            let rel = entry.path(&previous);
+            let rel = PathBuf::from(String::from_utf8_lossy(rel).into_owned());
+
+            if keep.contains(&rel) {
+                continue;
+            }
+
+            let path = workdir.join(&rel);
+
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to remove {}", path.display()));
+                }
+            }
+        }
     }
+
+    let mut options =
+        repo.checkout_options(gix_worktree::stack::state::attributes::Source::IdMapping)?;
+    options.overwrite_existing = true;
+
+    let objects = repo.objects.clone().into_arc()?;
+    let files = gix::progress::Discard;
+    let bytes = gix::progress::Discard;
+
+    // Check out the index into the worktree.
+    gix_worktree_state::checkout(
+        &mut index,
+        workdir,
+        objects,
+        &files,
+        &bytes,
+        &gix::interrupt::IS_INTERRUPTED,
+        options,
+    )?;
+
+    // Write the index to disk.
+    index.write(gix::index::write::Options::default())?;
+
+    Ok(())
+}
+
+/// Point `HEAD` at `target` and record the switch in the reflog.
+fn move_head(
+    repo: &gix::Repository,
+    signature: gix::actor::SignatureRef<'_>,
+    target: gix::refs::Target,
+    message: &str,
+) -> Result<()> {
+    use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
+
+    let head = gix::refs::FullName::try_from("HEAD")
+        .map_err(|e| anyhow::anyhow!("invalid ref name: {e}"))?;
+
+    // Update the reference, creating a reflog entry.
+    repo.edit_references_as(
+        [RefEdit {
+            change: Change::Update {
+                log: LogChange {
+                    mode: RefLog::AndReference,
+                    force_create_reflog: false,
+                    message: message.into(),
+                },
+                expected: PreviousValue::Any,
+                new: target,
+            },
+            name: head,
+            deref: false,
+        }],
+        Some(signature),
+    )?;
+
     Ok(())
 }
 
 /// Check out the local branch `name`, HEAD stays attached to it.
 pub fn worktree_checkout_branch(workdir: &Path, name: &str) -> Result<()> {
-    // The short name, not `refs/heads/<name>`, keeps HEAD attached.
-    // The full ref name would be treated as a commit-ish and detach it.
-    checkout(workdir, &[name])
+    let repo = gix::open(workdir)?;
+    let full = format!("refs/heads/{name}");
+
+    let branch = gix::refs::FullName::try_from(full.as_str())
+        .map_err(|e| anyhow::anyhow!("invalid ref name: {e}"))?;
+
+    let mut reference = repo.find_reference(&full)?;
+    let tree = reference.peel_to_tree()?.id;
+
+    let (signature, mut time_buf) = repository_signature();
+    let signature = signature.to_ref(&mut time_buf);
+
+    // Move HEAD to the branch, creating a reflog entry.
+    move_head(
+        &repo,
+        signature,
+        gix::refs::Target::Symbolic(branch),
+        &format!("checkout: moving to {name}"),
+    )?;
+
+    // Check out the branch's tree, replacing index + worktree.
+    force_checkout(&repo, &tree)?;
+
+    Ok(())
 }
 
 /// Check out the tag `name`, HEAD becomes detached at the tagged commit.
-/// [`current_branch`] reports this as `None`.
 pub fn worktree_checkout_tag(workdir: &Path, name: &str) -> Result<()> {
-    // `--detach` pins the full tag ref so HEAD always ends up detached.
-    checkout(workdir, &["--detach", &format!("refs/tags/{name}")])
+    let repo = gix::open(workdir)?;
+    let full = format!("refs/tags/{name}");
+
+    let mut reference = repo.find_reference(&full)?;
+
+    let commit = reference.peel_to_id()?;
+    let tree = reference.peel_to_tree()?.id;
+
+    let (signature, mut time_buf) = repository_signature();
+    let signature = signature.to_ref(&mut time_buf);
+
+    // Move HEAD to the tag, creating a reflog entry.
+    move_head(
+        &repo,
+        signature,
+        gix::refs::Target::Object(commit.detach()),
+        &format!("checkout: moving to {name}"),
+    )?;
+
+    // Check out the tag's tree, replacing index + worktree.
+    force_checkout(&repo, &tree)?;
+
+    Ok(())
 }
 
 fn collect_entries(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, bool)>) -> Result<()> {
@@ -2137,26 +2564,6 @@ mod tests {
         )
         .expect("push");
         assert!(remote_has_refs(dir, &url, &expected).expect("probe"));
-    }
-
-    #[test]
-    fn parse_ls_remote_reads_oids_and_skips_peeled_lines() {
-        let oid_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let oid_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-        let output = format!(
-            "{oid_a}\trefs/heads/main\n{oid_b}\trefs/tags/v1.0\n{oid_b}\trefs/tags/v1.0^{{}}\n"
-        );
-
-        let advertised = parse_ls_remote(output.as_bytes());
-        assert_eq!(advertised.len(), 2);
-        assert_eq!(
-            advertised.get("refs/heads/main").map(String::as_str),
-            Some(oid_a)
-        );
-        assert_eq!(
-            advertised.get("refs/tags/v1.0").map(String::as_str),
-            Some(oid_b)
-        );
     }
 
     #[test]
@@ -2456,6 +2863,9 @@ mod tests {
         let state = repo_ref_state(&repo).expect("refs");
         assert_eq!(state.head.as_deref(), Some("main"));
         assert_eq!(state.refs, vec![("refs/heads/main".to_owned(), commit)]);
+
+        // The index matches the committed tree, so the fresh repo is clean.
+        assert!(!worktree_dirty(workdir));
     }
 
     #[test]
@@ -3640,5 +4050,69 @@ index 123..456 100644
         assert_eq!(file.status, DiffStatus::Deleted);
         assert!(file.binary);
         assert!(file.hunks.is_empty());
+    }
+
+    #[test]
+    fn worktree_dirty_tracks_changes_and_untracked_files() {
+        let (dir, repo) = fixture(&[("tracked.txt", b"one")]);
+        commit_all(&repo, "initial");
+        let workdir = dir.path();
+
+        assert!(!worktree_dirty(workdir));
+
+        // A modified tracked file is dirty.
+        std::fs::write(workdir.join("tracked.txt"), b"two").expect("write");
+        assert!(worktree_dirty(workdir));
+
+        // After restoring, an untracked file alone is dirty as well.
+        git_run(workdir, &["checkout", "--", "tracked.txt"]);
+        assert!(!worktree_dirty(workdir));
+        std::fs::write(workdir.join("untracked.txt"), b"new").expect("write");
+        assert!(worktree_dirty(workdir));
+
+        // A staged change counts too.
+        git_run(workdir, &["rm", "--cached", "tracked.txt"]);
+        assert!(worktree_dirty(workdir));
+
+        // A missing directory is clean, not an error.
+        assert!(!worktree_dirty(&dir.path().join("missing")));
+    }
+
+    #[test]
+    fn worktree_dirty_reports_unborn_worktrees_with_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("repo");
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .arg(&path)
+            .status()
+            .expect("spawn git init");
+        assert!(status.success());
+
+        // No commits and no files: porcelain is empty.
+        assert!(!worktree_dirty(&path));
+        // An unborn repository holding files is dirty.
+        std::fs::write(path.join("README.md"), "# hello\n").expect("write");
+        assert!(worktree_dirty(&path));
+    }
+
+    #[test]
+    fn worktree_commits_ahead_counts_branch_only_commits() {
+        let (dir, repo) = fixture(&[("a.txt", b"one")]);
+        commit_all(&repo, "initial");
+        let path = dir.path();
+
+        git_run(path, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(path.join("f.txt"), b"f\n").expect("write");
+        commit_all(&gix::open(path).expect("open"), "feature work");
+
+        assert_eq!(worktree_commits_ahead(path, "main", "feature"), 1);
+        assert_eq!(worktree_commits_ahead(path, "feature", "main"), 0);
+
+        git_run(path, &["checkout", "-q", "main"]);
+        assert_eq!(worktree_current_branch(path).as_deref(), Some("main"));
+        assert!(worktree_ref_exists(path, "refs/heads/feature"));
+        assert!(!worktree_ref_exists(path, "refs/heads/nope"));
+        assert_eq!(worktree_commits_ahead(path, "main", "feature"), 1);
     }
 }
