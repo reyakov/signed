@@ -325,8 +325,6 @@ pub struct CommitDiffView {
     error: Option<SharedString>,
     /// Changed-files explorer and per-file diff, also used by the new PR panel's compare view.
     pane: Entity<DiffPane>,
-    /// In-flight tasks, pruned on every push.
-    tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
 }
 
 impl CommitDiffView {
@@ -358,7 +356,6 @@ impl CommitDiffView {
             loading: true,
             error: None,
             pane,
-            tasks: Vec::new(),
         }
     }
 
@@ -371,42 +368,43 @@ impl CommitDiffView {
         let worktree = self.worktree.clone();
         let id = self.commit.id.clone();
 
-        let task = cx.spawn_in(window, async move |this, cx| {
-            let commit = cx
-                .background_spawn({
-                    let worktree = worktree.clone();
-                    let id = id.clone();
-                    async move { signed_git::worktree_commit(&worktree, &id) }
-                })
-                .await;
-            let diff = cx
-                .background_spawn({
-                    let worktree = worktree.clone();
-                    let id = id.clone();
-                    async move { signed_git::worktree_commit_diff(&worktree, &id) }
-                })
-                .await;
+        let task: gpui::Task<Result<(), anyhow::Error>> =
+            cx.spawn_in(window, async move |this, cx| {
+                let commit = cx
+                    .background_spawn({
+                        let worktree = worktree.clone();
+                        let id = id.clone();
+                        async move { signed_git::worktree_commit(&worktree, &id) }
+                    })
+                    .await;
+                let diff = cx
+                    .background_spawn({
+                        let worktree = worktree.clone();
+                        let id = id.clone();
+                        async move { signed_git::worktree_commit_diff(&worktree, &id) }
+                    })
+                    .await;
 
-            this.update_in(cx, |this, _window, cx| {
-                this.loading = false;
-                if let Ok(Some(commit)) = commit {
-                    this.commit = commit;
-                }
-                match diff {
-                    Ok(diff) => {
-                        this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx));
+                this.update_in(cx, |this, _window, cx| {
+                    this.loading = false;
+                    if let Ok(Some(commit)) = commit {
+                        this.commit = commit;
                     }
-                    Err(error) => {
-                        this.error = Some(error.to_string().into());
+                    match diff {
+                        Ok(diff) => {
+                            this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx));
+                        }
+                        Err(error) => {
+                            this.error = Some(error.to_string().into());
+                        }
                     }
-                }
-                cx.notify();
-            })?;
+                    cx.notify();
+                })?;
 
-            Ok(())
-        });
+                Ok(())
+            });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Header with the commit id, summary, author/time and overall change stats.

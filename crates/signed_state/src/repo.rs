@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::Error;
+use anyhow::{Error, bail};
 use bitcoin_hashes::sha1::Hash as Sha1Hash;
 use gpui::{App, AppContext, AsyncApp, Context, SharedString, Subscription, Task, WeakEntity};
 use nostr::event::IntoEventBuilder;
@@ -14,12 +14,13 @@ use signed_core::{
 };
 
 use crate::backend::{
-    Backend, BackendEvent, grasp_base_url, grasp06_prs_url, pr_clone_urls, user_grasp_list_servers,
+    Backend, BackendEvent, grasp_base_url, grasp06_prs_url, pr_clone_urls, require_relay_accepted,
+    user_grasp_list_servers,
 };
 use crate::checkouts::CheckoutsStore;
 use crate::git_store::GitStore;
 use crate::refresh::{RefreshGate, RefreshRequest};
-use crate::repo_list::RepoListStore;
+use crate::repos::RepoListStore;
 
 /// Delay between a refresh request and the actual re-query.
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
@@ -81,7 +82,6 @@ pub struct RepoStore {
     root_fetches: HashSet<EventId>,
     /// Refresh coalescing, see [`RefreshGate`].
     refresh: RefreshGate,
-    tasks: Vec<Task<Result<(), Error>>>,
     _subscription: Subscription,
 }
 
@@ -91,7 +91,7 @@ impl RepoStore {
 
         let subscription = cx.subscribe(&backend, |this, _backend, event, cx| {
             let relevant = match event {
-                BackendEvent::NostrUpdate(update) => {
+                BackendEvent::NostrUpdate(updates) => updates.iter().any(|update| {
                     // Deletions may target any event of this repository.
                     let deletion =
                         update.kind == Kind::EventDeletion || update.kind == Kind::RequestToVanish;
@@ -107,7 +107,7 @@ impl RepoStore {
                     let status = RepoStatus::from_kind(update.kind).is_some();
 
                     deletion || coordinate || (author && kind) || comment || status
-                }
+                }),
                 BackendEvent::Published(event) => {
                     let kind = event.kind == Kind::GitRepoAnnouncement;
                     let author = event.pubkey == this.addr.public_key;
@@ -127,7 +127,20 @@ impl RepoStore {
             }
         });
 
-        let mut store = Self {
+        let weak = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let result = weak.update(cx, |this, cx| {
+                this.subscribe_remote(cx);
+                this.connect_announced_relays(&announced_relays, cx);
+                this.refresh(cx);
+            });
+
+            if let Err(error) = result {
+                log::warn!("repo store dropped before bootstrap could run: {error}");
+            }
+        });
+
+        Self {
             addr,
             announcement: None,
             head: None,
@@ -148,16 +161,7 @@ impl RepoStore {
             root_fetches: HashSet::new(),
             refresh: RefreshGate::default(),
             _subscription: subscription,
-            tasks: Vec::new(),
-        };
-
-        store.subscribe_remote(cx);
-        // The announcement we opened the repo from may already list its relays.
-        // Connect to them right away.
-        // Do not wait for the bootstrap fetch to return the same event.
-        store.connect_announced_relays(&announced_relays, cx);
-        store.refresh(cx);
-        store
+        }
     }
 
     /// Returns the repository's address.
@@ -229,14 +233,12 @@ impl RepoStore {
             return;
         }
 
-        let task = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REFRESH_DEBOUNCE).await;
 
             this.update(cx, |this, cx| this.run_refresh(cx))
-        });
-
-        self.tasks.retain(|task| !task.is_ready());
-        self.tasks.push(task);
+        })
+        .detach();
     }
 
     fn run_refresh(&mut self, cx: &mut Context<Self>) {
@@ -372,9 +374,7 @@ impl RepoStore {
             ))
         });
 
-        self.tasks.retain(|task| !task.is_ready());
-
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let (
                 announcement,
                 state,
@@ -466,7 +466,8 @@ impl RepoStore {
             }
 
             Ok(())
-        }));
+        })
+        .detach();
     }
 
     /// Resolve the status of a root event, an issue, patch or PR, per NIP-34.
@@ -514,7 +515,7 @@ impl RepoStore {
         }
         .into_event_builder();
 
-        self.send(builder, cx);
+        self.publish(builder, cx);
     }
 
     /// Comments on a root event, an issue or PR, oldest first.
@@ -545,7 +546,7 @@ impl RepoStore {
             .and_then(|a| a.relays.first())
             .cloned();
 
-        self.send(
+        self.publish(
             comment_builder(root, parent, relay_hint.as_ref(), &self.addr, content),
             cx,
         );
@@ -638,7 +639,7 @@ impl RepoStore {
                 .collect()
         };
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             // The PR references the root patch event.
             // Viewers can then find the patch without carrying it inline.
             let root_patch = match publish_patch_series(
@@ -798,12 +799,15 @@ impl RepoStore {
                 }
             }
 
-            let publish_task = this.update(cx, |_this, cx| {
-                let backend = Backend::global(cx);
-                backend.update(cx, |backend, cx| backend.publish_event(event, cx))
-            })?;
+            let client = this.update(cx, |_this, cx| Backend::global(cx).read(cx).client())?;
 
-            let pr_event = match publish_task.await {
+            let publish_result: Result<Event, Error> = async {
+                let output = client.send_event(&event).broadcast().await?;
+                require_relay_accepted(output, event)
+            }
+            .await;
+
+            let pr_event = match publish_result {
                 Ok(event) => event,
                 Err(e) => {
                     return this.update(cx, |this, cx| {
@@ -812,6 +816,11 @@ impl RepoStore {
                     });
                 }
             };
+
+            this.update(cx, |_this, cx| {
+                Backend::global(cx)
+                    .update(cx, |backend, cx| backend.announce_published(pr_event.clone(), cx))
+            })?;
 
             // A draft PR carries a kind-1633 status event, NIP-34.
             // Publish it right after the PR event so viewers never show it open.
@@ -822,7 +831,61 @@ impl RepoStore {
             }
 
             Ok(())
-        }));
+        })
+        .detach();
+    }
+
+    /// Generate the patch between `merge_base` and `compare_ref` in `repo_path`,
+    /// then open a pull request from it.
+    ///
+    /// Fails descriptively when there are no commits to propose or the patch
+    /// could not be generated; otherwise publishes exactly like
+    /// [`Self::open_pull_request`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_pull_request_from_refs(
+        &mut self,
+        repo_path: PathBuf,
+        merge_base: String,
+        compare_ref: String,
+        subject: Option<String>,
+        description: String,
+        branch_name: Option<String>,
+        draft: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), Error>> {
+        cx.spawn(async move |this, cx| {
+            // Regenerate the series at submit time.
+            // The published patch covers the current tip of the compare branch.
+            let patch = cx
+                .background_spawn({
+                    let repo_path = repo_path.clone();
+                    let merge_base = merge_base.clone();
+                    let compare_ref = compare_ref.clone();
+                    async move {
+                        signed_git::format_patch_between(&repo_path, &merge_base, &compare_ref)
+                    }
+                })
+                .await;
+
+            let patch = match patch {
+                Ok(patch) if !patch.is_empty() => patch,
+                Ok(_) => bail!("No commits between the branches to propose"),
+                Err(error) => bail!("Failed to generate the patch: {error}"),
+            };
+
+            this.update(cx, |this, cx| {
+                this.open_pull_request(
+                    subject,
+                    description,
+                    branch_name,
+                    patch,
+                    draft,
+                    Some(merge_base),
+                    Some(repo_path),
+                    cx,
+                );
+            })
+        })
     }
 
     /// Update a pull request.
@@ -894,7 +957,7 @@ impl RepoStore {
             .map(|a| a.clone.clone())
             .unwrap_or_default();
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             if let Err(e) = publish_patch_series(
                 &this,
                 cx,
@@ -913,7 +976,7 @@ impl RepoStore {
                 });
             }
 
-            let update_task = this.update(cx, |this, cx| {
+            let builder = this.update(cx, |this, _cx| {
                 let builder = GitPullRequestUpdate {
                     repository: this.addr.clone(),
                     pull_request_event: root.id,
@@ -926,24 +989,44 @@ impl RepoStore {
 
                 // The `r` EUC tag lets clients subscribe to all PR updates.
                 // The SDK builder omits it.
-                let builder = match euc.as_deref() {
+                match euc.as_deref() {
                     Some(euc) => builder.tag(Tag::parse(["r", euc]).expect("valid r tag")),
                     None => builder,
-                };
-
-                let backend = Backend::global(cx);
-                backend.update(cx, |backend, cx| backend.send(builder, cx))
+                }
             })?;
 
-            if let Err(e) = update_task.await {
-                return this.update(cx, |this, cx| {
-                    this.last_error = Some(e.to_string());
-                    cx.notify();
-                });
+            let (client, signer) = this.update(cx, |_this, cx| {
+                let backend = Backend::global(cx);
+                let backend = backend.read(cx);
+                (backend.client(), backend.signer())
+            })?;
+
+            let publish_result: Result<Event, Error> = async {
+                let event = builder.finalize_async(&signer).await?;
+                let output = client.send_event(&event).broadcast().await?;
+                require_relay_accepted(output, event)
+            }
+            .await;
+
+            match publish_result {
+                Ok(event) => {
+                    this.update(cx, |_this, cx| {
+                        Backend::global(cx).update(cx, |backend, cx| {
+                            backend.announce_published(event.clone(), cx)
+                        })
+                    })?;
+                }
+                Err(e) => {
+                    return this.update(cx, |this, cx| {
+                        this.last_error = Some(e.to_string());
+                        cx.notify();
+                    });
+                }
             }
 
             Ok(())
-        }));
+        })
+        .detach();
     }
 
     /// Set the status of a root event.
@@ -982,7 +1065,7 @@ impl RepoStore {
             Tag::coordinate(self.addr.clone(), None),
         ]);
 
-        self.send(builder, cx);
+        self.publish(builder, cx);
     }
 
     /// Merge a pull request.
@@ -1002,10 +1085,10 @@ impl RepoStore {
         let cache = GitStore::global(cx).cache().clone();
         let addr = self.addr.clone();
 
-        let clone_urls: Vec<String> = self
+        let clone_urls: Vec<Url> = self
             .announcement
             .as_ref()
-            .map(|a| a.clone.iter().map(ToString::to_string).collect())
+            .map(|a| a.clone.clone())
             .unwrap_or_default();
 
         let patch = pull_request_patch(root, self.patches.iter());
@@ -1040,7 +1123,7 @@ impl RepoStore {
             Ok::<_, Error>(applied)
         });
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             match apply.await {
                 Ok(applied) => {
                     this.update(cx, |this, cx| {
@@ -1062,7 +1145,8 @@ impl RepoStore {
                 }
             }
             Ok(())
-        }));
+        });
+        task.detach();
     }
 
     /// The latest announcement of this repository,
@@ -1224,7 +1308,7 @@ impl RepoStore {
             return self.action_error("Repository announcement is not loaded yet", cx);
         };
 
-        let clone_urls: Vec<String> = announcement.clone.iter().map(ToString::to_string).collect();
+        let clone_urls = announcement.clone.clone();
         let addr = self.addr.clone();
 
         self.cloning = true;
@@ -1328,24 +1412,50 @@ impl RepoStore {
             }
         }
 
-        self.send(EventBuilder::new(Kind::GitStatusApplied, "").tags(tags), cx);
+        self.publish(EventBuilder::new(Kind::GitStatusApplied, "").tags(tags), cx);
     }
 
-    fn send(&mut self, builder: EventBuilder, cx: &mut Context<Self>) {
+    /// Sign `builder`, broadcast it and track the outcome in [`Self::last_error`].
+    ///
+    /// Every one-shot repository event (issue, comment, status) goes through
+    /// this. Multi-step flows (opening or updating a pull request, a patch
+    /// series) call the SDK directly instead, since their error handling and
+    /// post-conditions differ per step.
+    fn publish(&mut self, builder: EventBuilder, cx: &mut Context<Self>) {
         self.last_error = None;
 
         let backend = Backend::global(cx);
-        let task = backend.update(cx, |backend, cx| backend.send(builder, cx));
+        let (client, signer) = {
+            let backend = backend.read(cx);
+            (backend.client(), backend.signer())
+        };
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
-            if let Err(e) = task.await {
-                this.update(cx, |this, cx| {
-                    this.last_error = Some(e.to_string());
-                    cx.notify();
-                })?;
+        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
+            let publish_result: Result<Event, Error> = async {
+                let event = builder.finalize_async(&signer).await?;
+                let output = client.send_event(&event).broadcast().await?;
+                require_relay_accepted(output, event)
             }
+            .await;
+
+            match publish_result {
+                Ok(event) => {
+                    this.update(cx, |_this, cx| {
+                        Backend::global(cx)
+                            .update(cx, |backend, cx| backend.announce_published(event, cx))
+                    })?;
+                }
+                Err(e) => {
+                    this.update(cx, |this, cx| {
+                        this.last_error = Some(e.to_string());
+                        cx.notify();
+                    })?;
+                }
+            }
+
             Ok(())
-        }));
+        });
+        task.detach();
     }
 }
 
@@ -1426,6 +1536,12 @@ async fn publish_patch_series(
     first_marker: &str,
     reply_to: Option<EventId>,
 ) -> Result<Event, Error> {
+    let (client, signer) = this.update(cx, |_this, cx| {
+        let backend = Backend::global(cx);
+        let backend = backend.read(cx);
+        (backend.client(), backend.signer())
+    })?;
+
     let mut root: Option<Event> = None;
     let mut previous = reply_to;
 
@@ -1466,11 +1582,14 @@ async fn publish_patch_series(
 
         let builder = EventBuilder::new(Kind::GitPatch, part.clone()).tags(tags);
 
-        let task = this.update(cx, |_this, cx| {
-            let backend = Backend::global(cx);
-            backend.update(cx, |backend, cx| backend.send(builder, cx))
+        let event = builder.finalize_async(&signer).await?;
+        let output = client.send_event(&event).broadcast().await?;
+        let event = require_relay_accepted(output, event)?;
+        this.update(cx, |_this, cx| {
+            Backend::global(cx).update(cx, |backend, cx| {
+                backend.announce_published(event.clone(), cx)
+            })
         })?;
-        let event = task.await?;
 
         if root.is_none() {
             root = Some(event.clone());

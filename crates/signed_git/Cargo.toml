@@ -12,6 +12,8 @@ gix = { workspace = true, features = ["revision", "blob-diff"] }
 gix-worktree = "0.56"
 gix-worktree-state = "0.34"
 anyhow.workspace = true
+diffy = "0.5"
+ignore = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

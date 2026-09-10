@@ -10,8 +10,8 @@ use gix::Repository;
 use gpui::prelude::*;
 use gpui::{
     Action, Anchor, AnyElement, App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, PathPromptOptions, Pixels, Render, SharedString, Size, Subscription, Task,
-    WeakEntity, Window, div, px, relative, size, transparent_white,
+    Focusable, PathPromptOptions, Pixels, Render, SharedString, Size, Subscription, WeakEntity,
+    Window, div, px, relative, size, transparent_white,
 };
 use gpui_base::{Button as BaseButton, Disableable, Popover};
 use gpui_component::alert::Alert;
@@ -24,7 +24,7 @@ use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, ThemeStyled,
     VirtualListScrollHandle, h_flex, v_flex,
 };
-use nostr::prelude::{RelayUrl, ToBech32};
+use nostr::prelude::{RelayUrl, ToBech32, Url};
 use signed_core::{Announcement, RepoAddr, RepoStatus, filters};
 use signed_git::{CommitList, FileCommit};
 use signed_state::{
@@ -175,9 +175,6 @@ pub struct RepoDetailView {
     /// Bumped on every branch/tag switch.
     /// In-flight loads with an older generation are discarded when they complete.
     ref_generation: u64,
-    /// In-flight tasks, finished tasks are pruned on every push.
-    /// The vec stays bounded by the number of concurrent loads.
-    tasks: Vec<Task<Result<(), Error>>>,
     /// Subscriptions keeping the selectors' confirm events alive.
     _subscriptions: Vec<Subscription>,
     /// `(path, branch)` ready-suggestions dismissed by the user, per panel.
@@ -346,7 +343,6 @@ impl RepoDetailView {
             push_statuses: Vec::new(),
             pending_upstream: None,
             focus_handle: cx.focus_handle(),
-            tasks: Vec::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -363,7 +359,7 @@ impl RepoDetailView {
         // Local repositories live on disk at their scan path.
         // No clone step or network refresh applies here.
         if let Some(local_path) = self.local_path.clone() {
-            let task = cx.spawn_in(window, async move |this, cx| {
+            let task: gpui::Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
                 let data = cx
                     .background_spawn(async move {
                         let repo = gix::open(&local_path)?;
@@ -383,7 +379,7 @@ impl RepoDetailView {
                 Ok(())
             });
 
-            self.tasks.push(task);
+            task.detach();
 
             return;
         }
@@ -394,7 +390,7 @@ impl RepoDetailView {
 
         let cache = GitStore::global(cx).cache().clone();
         let addr = initial.addr();
-        let clone_urls: Vec<String> = initial.clone.iter().map(ToString::to_string).collect();
+        let clone_urls: Vec<Url> = initial.clone.clone();
 
         // Captured before the loads start.
         // A branch/tag switch bumps the generation, discarding the refresh below.
@@ -411,7 +407,7 @@ impl RepoDetailView {
             })
         };
 
-        let task = cx.spawn_in(window, async move |this, cx| {
+        let task: gpui::Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
             let disk = disk.await;
             let had_clone = matches!(&disk, Ok(Some(_)));
 
@@ -531,7 +527,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Apply the loaded repository data.
@@ -619,7 +615,7 @@ impl RepoDetailView {
             prompt: Some("Clone".into()),
         });
 
-        let task = cx.spawn_in(window, async move |this, cx| {
+        let task: gpui::Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
             // `Ok(Ok(Some(paths)))` means the user picked a folder.
             // A cancel or picker failure resolves to anything else.
             let picked = match prompt.await {
@@ -649,7 +645,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Preview the file at `path`, relative to the worktree root.
@@ -703,7 +699,7 @@ impl RepoDetailView {
         self.load_commit(&path, cx);
         let generation = self.ref_generation;
 
-        let task = cx.spawn_in(window, async move |this, cx| {
+        let task: gpui::Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
             let path_for_read = path.clone();
             let content = cx
                 .background_spawn(async move {
@@ -772,7 +768,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Queue `path` for the per-file commit query.
@@ -804,7 +800,7 @@ impl RepoDetailView {
         let paths = std::mem::take(&mut self.pending_commits);
         let generation = self.ref_generation;
 
-        let task = cx.spawn(async move |this, cx| {
+        let task: gpui::Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let rels: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
             let result = cx
                 .background_spawn(
@@ -834,7 +830,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Walk all commits reachable from HEAD on a background task.
@@ -852,7 +848,7 @@ impl RepoDetailView {
         self.loading_all_commits = true;
         let generation = self.ref_generation;
 
-        let task = cx.spawn(async move |this, cx| {
+        let task: gpui::Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move { signed_git::worktree_all_commits(&worktree) })
                 .await;
@@ -876,7 +872,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Open a new panel showing the diff of `commit_id`.
@@ -909,8 +905,9 @@ impl RepoDetailView {
         self.error = None;
         cx.notify();
 
-        self.tasks
-            .push(store.update(cx, |store, cx| store.push_repository(cx)));
+        store
+            .update(cx, |store, cx| store.push_repository(cx))
+            .detach();
     }
 
     /// Push the unpushed commits of the local checkout at `path`.
@@ -931,7 +928,7 @@ impl RepoDetailView {
         self.error = None;
         cx.notify();
 
-        let task = cx.spawn_in(window, async move |this, cx| {
+        let task: gpui::Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
             // The store owns the push, its busy flag and error reporting.
             let push = this.update_in(cx, |_this, _window, cx| {
                 store.update(cx, |store, cx| store.push_checkout(path.clone(), cx))
@@ -948,7 +945,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Delete the repository from nostr, announcement, state and activity.
@@ -956,8 +953,9 @@ impl RepoDetailView {
         let Some(store) = self.store.clone() else {
             return;
         };
-        self.tasks
-            .push(store.update(cx, |store, cx| store.delete_repository(cx)));
+        store
+            .update(cx, |store, cx| store.delete_repository(cx))
+            .detach();
     }
 
     /// Open the issues list panel in the dock area.
@@ -1025,7 +1023,7 @@ impl RepoDetailView {
         });
         self.pending_upstream = Some(addr);
 
-        let task = cx.spawn_in(window, async move |this, cx| {
+        let task: gpui::Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
             for _ in 0..60 {
                 cx.background_executor()
                     .timer(Duration::from_millis(250))
@@ -1060,7 +1058,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Check out `name`, a branch or tag picked in the header.
@@ -1101,7 +1099,7 @@ impl RepoDetailView {
         cx.notify();
 
         let checkout_name = name.clone();
-        let task = cx.spawn_in(window, async move |this, cx| {
+        let task: gpui::Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
                     match kind {
@@ -1131,7 +1129,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Restore a selector to `previous`, or clear it after a failed switch.
@@ -1157,7 +1155,7 @@ impl RepoDetailView {
             return;
         };
 
-        let task = cx.spawn(async move |this, cx| {
+        let task: gpui::Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
                     let snapshot = signed_git::worktree_snapshot(&worktree)?;
@@ -1218,7 +1216,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Refresh the file explorer, previews and commit list after the mirror
@@ -1233,7 +1231,7 @@ impl RepoDetailView {
             return;
         };
 
-        let task = cx.spawn(async move |this, cx| {
+        let task: gpui::Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
                     let snapshot = signed_git::worktree_snapshot(&worktree)?;
@@ -1314,7 +1312,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Drop the cached preview, editor and commit state of `path`.

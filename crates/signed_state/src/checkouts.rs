@@ -3,16 +3,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Error;
-use gpui::{App, AppContext, Context, Entity, Global, Subscription, Task};
+use gpui::{App, AppContext, Context, Entity, Global, Subscription};
 use nostr::prelude::*;
 use settings::{CheckoutRecord, SettingsStore};
 use signed_core::{Announcement, RepoAddr};
 
 use crate::backend::{Backend, BackendEvent};
 use crate::git_store::GitStore;
-use crate::local_repos::LocalReposStore;
 use crate::refresh::{RefreshGate, RefreshRequest};
-use crate::repo_list::RepoListStore;
+use crate::repos::{LocalReposStore, RepoListStore};
 
 /// Delay between a refresh request and the actual re-computation.
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
@@ -105,7 +104,6 @@ pub struct CheckoutsStore {
     /// The local pass runs a full pass again once this is older than the
     /// reconciliation cadence, so remote moves still land.
     last_full_sync: Option<Instant>,
-    tasks: Vec<Task<Result<(), Error>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -155,7 +153,16 @@ impl CheckoutsStore {
             }));
         }
 
-        let mut store = Self {
+        if !cfg!(target_arch = "wasm32") {
+            let weak = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                if let Err(error) = weak.update(cx, |this, cx| this.refresh(cx)) {
+                    log::warn!("checkouts store dropped before initial refresh could run: {error}");
+                }
+            });
+        }
+
+        Self {
             by_repo: HashMap::new(),
             statuses: HashMap::new(),
             status_requested: HashSet::new(),
@@ -165,23 +172,8 @@ impl CheckoutsStore {
             refresh: RefreshGate::default(),
             local_pending: false,
             last_full_sync: None,
-            tasks: Vec::new(),
             _subscriptions: subscriptions,
-        };
-
-        if !cfg!(target_arch = "wasm32") {
-            store.refresh(cx);
         }
-
-        store
-    }
-
-    /// Track a spawned task, pruning finished tasks first.
-    ///
-    /// Keeps the store's task list bounded by the number of in-flight tasks.
-    fn push_task(&mut self, task: Task<Result<(), Error>>) {
-        self.tasks.retain(|task| !task.is_ready());
-        self.tasks.push(task);
     }
 
     /// Remember a successful local-checkout use.
@@ -302,12 +294,11 @@ impl CheckoutsStore {
             return;
         }
 
-        let task = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REFRESH_DEBOUNCE).await;
             this.update(cx, |this, cx| this.run_refresh(cx))
-        });
-
-        self.push_task(task);
+        })
+        .detach();
     }
 
     /// One full resolve and apply cycle, the debounced entry point.
@@ -388,7 +379,7 @@ impl CheckoutsStore {
             Ok::<_, Error>((associations, statuses, push_statuses))
         });
 
-        self.push_task(cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let (associations, statuses, push_statuses) = match work.await {
                 Ok(results) => results,
                 Err(_) => {
@@ -435,7 +426,8 @@ impl CheckoutsStore {
             })?;
 
             Ok(())
-        }));
+        })
+        .detach();
     }
 
     /// Schedule the fast local status pass, unless one is already pending.
@@ -449,15 +441,14 @@ impl CheckoutsStore {
         }
         self.local_pending = true;
 
-        let task = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             cx.background_executor().timer(LOCAL_POLL).await;
             this.update(cx, |this, cx| {
                 this.local_pending = false;
                 this.local_tick(cx);
             })
-        });
-
-        self.push_task(task);
+        })
+        .detach();
     }
 
     /// The fast local status pass.
@@ -525,7 +516,7 @@ impl CheckoutsStore {
             Ok::<_, Error>((statuses, push_statuses))
         });
 
-        self.push_task(cx.spawn(async move |this, cx| {
+        let task: gpui::Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let Ok((statuses, push_statuses)) = work.await else {
                 // Git reads are best-effort, keep the last results.
                 return Ok(());
@@ -550,7 +541,8 @@ impl CheckoutsStore {
             })?;
 
             Ok(())
-        }));
+        });
+        task.detach();
     }
 }
 

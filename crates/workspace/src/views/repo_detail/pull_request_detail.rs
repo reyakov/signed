@@ -6,7 +6,7 @@ use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
-    SharedString, Size, Task, WeakEntity, Window, div, px, relative, size,
+    SharedString, Size, WeakEntity, Window, div, px, relative, size,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::clipboard::Clipboard;
@@ -20,8 +20,11 @@ use gpui_component::{
     ActiveTheme, Sizable, StyledExt, VirtualListScrollHandle, WindowExt, h_flex, v_flex,
     v_virtual_list,
 };
-use nostr::prelude::{Event, EventId, Kind, Nip34Tag};
-use signed_core::{activity_subject, pull_request_patch};
+use nostr::prelude::{Event, EventId, Kind};
+use signed_core::{
+    activity_subject, branch_name_of, clone_urls_of, current_commit_of, latest_update,
+    merge_base_of, pull_request_patch,
+};
 use signed_git::{FileCommit, patch_commits, patch_diffs};
 use signed_state::{Backend, GitStore, ProfileStore, RepoStore};
 use signed_ui::{CountBadge, UserAvatar, placeholder, status_badge};
@@ -66,8 +69,6 @@ pub struct PullRequestDetailView {
     commit_item_sizes: Rc<Vec<Size<Pixels>>>,
     /// Virtual list state of the commits tab.
     commit_scroll_handle: VirtualListScrollHandle,
-    /// In-flight tasks, finished tasks are pruned on every push.
-    tasks: Vec<Task<Result<(), anyhow::Error>>>,
 }
 
 impl PullRequestDetailView {
@@ -106,7 +107,6 @@ impl PullRequestDetailView {
             pane,
             commit_item_sizes: Rc::new(Vec::new()),
             commit_scroll_handle: VirtualListScrollHandle::new(),
-            tasks: Vec::new(),
         }
     }
 
@@ -142,12 +142,8 @@ impl PullRequestDetailView {
                 .and_then(merge_base_of)
                 .or_else(|| merge_base_of(root));
 
-            let clone_urls = clone_urls_of(root).or_else(|| {
-                store
-                    .announcement
-                    .as_ref()
-                    .map(|a| a.clone.iter().map(ToString::to_string).collect())
-            });
+            let clone_urls = clone_urls_of(root)
+                .or_else(|| store.announcement.as_ref().map(|a| a.clone.clone()));
 
             (
                 root.content.clone(),
@@ -162,101 +158,103 @@ impl PullRequestDetailView {
 
         self.description = description.into();
 
-        let task = cx.spawn_in(window, async move |this, cx| {
-            let nostr_diff = cx
-                .background_spawn({
-                    let patch = patch.clone();
-                    async move { patch_diffs(&patch) }
-                })
-                .await;
-
-            let nostr_commits = cx
-                .background_spawn({
-                    let patch = patch.clone();
-                    async move { patch_commits(&patch) }
-                })
-                .await;
-
-            // PRs without patch events, e.g. published by ngit, carry their changes in git.
-            // Fetch the clone and diff the `merge-base..tip` range.
-            let use_nostr = match &nostr_diff {
-                Ok(diff) => has_patch_link || !diff.files.is_empty(),
-                Err(_) => true,
-            };
-
-            let git = if use_nostr {
-                None
-            } else {
-                let cache = cache.clone();
-                let addr = addr.clone();
-                let clone_urls = clone_urls.clone();
-                let base = merge_base.clone();
-                let tip = current_commit.clone();
-
-                Some(
-                    cx.background_spawn(async move {
-                        let repo = cache.ensure_clone(&addr, &clone_urls)?;
-
-                        let workdir = repo
-                            .workdir()
-                            .ok_or_else(|| anyhow::anyhow!("repository has no worktree"))?
-                            .to_path_buf();
-
-                        let tip =
-                            tip.ok_or_else(|| anyhow::anyhow!("pull request has no tip commit"))?;
-
-                        let base = match base {
-                            Some(base) => base,
-                            // No `merge-base` tag. Use the merge base of the tip and the default branch.
-                            None => {
-                                let head = repo
-                                    .head_id()
-                                    .map_err(|_| anyhow::anyhow!("repository has no HEAD"))?;
-                                let tip_id = repo.rev_parse_single(tip.as_bytes())?;
-                                repo.merge_base(tip_id, head)?.to_string()
-                            }
-                        };
-
-                        let diff = signed_git::worktree_commit_range_diff(&workdir, &base, &tip)?;
-                        let commits =
-                            signed_git::worktree_commit_range_commits(&workdir, &base, &tip)?;
-
-                        Ok::<_, anyhow::Error>((diff, commits, workdir))
+        let task: gpui::Task<Result<(), anyhow::Error>> =
+            cx.spawn_in(window, async move |this, cx| {
+                let nostr_diff = cx
+                    .background_spawn({
+                        let patch = patch.clone();
+                        async move { patch_diffs(&patch) }
                     })
-                    .await,
-                )
-            };
+                    .await;
 
-            let (diff, commits, worktree) = match git {
-                Some(Ok((diff, commits, worktree))) => (Ok(diff), commits, Some(worktree)),
-                Some(Err(error)) => (Err(error), Vec::new(), None),
-                None => (nostr_diff, nostr_commits, None),
-            };
+                let nostr_commits = cx
+                    .background_spawn({
+                        let patch = patch.clone();
+                        async move { patch_commits(&patch) }
+                    })
+                    .await;
 
-            this.update_in(cx, |this, _window, cx| {
-                this.loading = false;
-                this.worktree = worktree;
-                this.current_commit = current_commit.map(SharedString::from);
-                this.commit_item_sizes = Rc::new(vec![size(px(0.), px(ROW_HEIGHT)); commits.len()]);
-                this.commits = commits;
+                // PRs without patch events, e.g. published by ngit, carry their changes in git.
+                // Fetch the clone and diff the `merge-base..tip` range.
+                let use_nostr = match &nostr_diff {
+                    Ok(diff) => has_patch_link || !diff.files.is_empty(),
+                    Err(_) => true,
+                };
 
-                match diff {
-                    Ok(diff) => {
-                        this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx));
+                let git = if use_nostr {
+                    None
+                } else {
+                    let cache = cache.clone();
+                    let addr = addr.clone();
+                    let clone_urls = clone_urls.clone();
+                    let base = merge_base.clone();
+                    let tip = current_commit.clone();
+
+                    Some(
+                        cx.background_spawn(async move {
+                            let repo = cache.ensure_clone(&addr, &clone_urls)?;
+
+                            let workdir = repo
+                                .workdir()
+                                .ok_or_else(|| anyhow::anyhow!("repository has no worktree"))?
+                                .to_path_buf();
+
+                            let tip = tip
+                                .ok_or_else(|| anyhow::anyhow!("pull request has no tip commit"))?;
+
+                            let base = match base {
+                                Some(base) => base,
+                                // No `merge-base` tag. Use the merge base of the tip and the default branch.
+                                None => {
+                                    let head = repo
+                                        .head_id()
+                                        .map_err(|_| anyhow::anyhow!("repository has no HEAD"))?;
+                                    let tip_id = repo.rev_parse_single(tip.as_bytes())?;
+                                    repo.merge_base(tip_id, head)?.to_string()
+                                }
+                            };
+
+                            let diff =
+                                signed_git::worktree_commit_range_diff(&workdir, &base, &tip)?;
+                            let commits =
+                                signed_git::worktree_commit_range_commits(&workdir, &base, &tip)?;
+
+                            Ok::<_, anyhow::Error>((diff, commits, workdir))
+                        })
+                        .await,
+                    )
+                };
+
+                let (diff, commits, worktree) = match git {
+                    Some(Ok((diff, commits, worktree))) => (Ok(diff), commits, Some(worktree)),
+                    Some(Err(error)) => (Err(error), Vec::new(), None),
+                    None => (nostr_diff, nostr_commits, None),
+                };
+
+                this.update_in(cx, |this, _window, cx| {
+                    this.loading = false;
+                    this.worktree = worktree;
+                    this.current_commit = current_commit.map(SharedString::from);
+                    this.commit_item_sizes =
+                        Rc::new(vec![size(px(0.), px(ROW_HEIGHT)); commits.len()]);
+                    this.commits = commits;
+
+                    match diff {
+                        Ok(diff) => {
+                            this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx));
+                        }
+                        Err(error) => {
+                            this.error = Some(error.to_string().into());
+                        }
                     }
-                    Err(error) => {
-                        this.error = Some(error.to_string().into());
-                    }
-                }
 
-                cx.notify();
-            })?;
+                    cx.notify();
+                })?;
 
-            Ok(())
-        });
+                Ok(())
+            });
 
-        self.tasks.retain(|task| !task.is_ready());
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Open the diff of `commit_id` in the bottom dock of the area.
@@ -706,66 +704,6 @@ fn open_update_pull_request_dialog(
 }
 
 /// The `c` tag of a PR event, the commit the proposal points at.
-fn current_commit_of(root: &Event) -> Option<String> {
-    root.tags
-        .iter()
-        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
-            Ok(Nip34Tag::CurrentCommit(commit)) => Some(commit.to_string()),
-            _ => None,
-        })
-}
-
-/// The `merge-base` tag of a PR event, as hex.
-///
-/// The most recent common ancestor with the target branch.
-fn merge_base_of(event: &Event) -> Option<String> {
-    event
-        .tags
-        .iter()
-        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
-            Ok(Nip34Tag::MergeBase(commit)) => Some(commit.to_string()),
-            _ => None,
-        })
-}
-
-/// The `clone` tag of a PR event.
-///
-/// URLs where the proposed branch can be fetched, or `None` if the PR has none.
-fn clone_urls_of(event: &Event) -> Option<Vec<String>> {
-    event
-        .tags
-        .iter()
-        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
-            Ok(Nip34Tag::Clone(urls)) => Some(urls.iter().map(ToString::to_string).collect()),
-            _ => None,
-        })
-}
-
-/// The `branch-name` tag of a PR event, if any.
-fn branch_name_of(event: &Event) -> Option<String> {
-    event
-        .tags
-        .iter()
-        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
-            Ok(Nip34Tag::BranchName(name)) => Some(name),
-            _ => None,
-        })
-}
-
-/// The latest PR update, kind 1619, revising `root`.
-fn latest_update<'a>(events: impl Iterator<Item = &'a Event>, root: &Event) -> Option<&'a Event> {
-    let root_hex = root.id.to_hex();
-    events
-        .filter(|e| e.kind == Kind::GitPullRequestUpdate)
-        .filter(|e| e.pubkey == root.pubkey)
-        .filter(|e| {
-            e.tags
-                .iter()
-                .any(|t| t.kind() == "E" && t.content() == Some(root_hex.as_str()))
-        })
-        .max_by_key(|e| e.created_at)
-}
-
 /// One-line commit metadata for the commits list.
 ///
 /// Author and relative time, whichever is available.
@@ -826,104 +764,9 @@ impl Render for PullRequestDetailView {
 
 #[cfg(test)]
 mod tests {
-    use nostr::prelude::{Tag, *};
-
     use super::*;
 
     const COMMIT_HEX: &str = "1111111111111111111111111111111111111111";
-    const OTHER_ROOT_HEX: &str = "2222222222222222222222222222222222222222";
-
-    fn keys() -> Keys {
-        Keys::new(
-            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-                .expect("valid secret key"),
-        )
-    }
-
-    /// Build a signed event with a controlled `created_at`.
-    fn signed(kind: Kind, tags: Vec<Tag>, created_at: u64) -> Event {
-        EventBuilder::new(kind, "")
-            .tags(tags)
-            .custom_created_at(Timestamp::from(created_at))
-            .finalize(&keys())
-            .expect("signed event")
-    }
-
-    fn pr_root() -> Event {
-        signed(
-            Kind::GitPullRequest,
-            vec![
-                Tag::parse(["c", COMMIT_HEX]).expect("valid tag"),
-                Tag::parse(["branch-name", "feature/x"]).expect("valid tag"),
-            ],
-            100,
-        )
-    }
-
-    #[test]
-    fn reads_current_commit_and_branch_name() {
-        let pr = pr_root();
-        assert_eq!(current_commit_of(&pr).as_deref(), Some(COMMIT_HEX));
-        assert_eq!(branch_name_of(&pr).as_deref(), Some("feature/x"));
-    }
-
-    #[test]
-    fn returns_none_without_pr_tags() {
-        let pr = signed(Kind::GitPullRequest, vec![], 100);
-        assert_eq!(current_commit_of(&pr), None);
-        assert_eq!(branch_name_of(&pr), None);
-    }
-
-    #[test]
-    fn latest_update_picks_newest_revision_of_the_root() {
-        let root = pr_root();
-        let root_hex = root.id.to_hex();
-
-        let revision = |created_at: u64| {
-            signed(
-                Kind::GitPullRequestUpdate,
-                vec![Tag::parse(["E", &root_hex]).expect("valid tag")],
-                created_at,
-            )
-        };
-        // An update revising a different PR must be ignored even though it is newer.
-        let unrelated = signed(
-            Kind::GitPullRequestUpdate,
-            vec![Tag::parse(["E", OTHER_ROOT_HEX]).expect("valid tag")],
-            999,
-        );
-
-        let events = [unrelated, revision(200), root.clone(), revision(300)];
-        let latest = latest_update(events.iter(), &root).expect("an update");
-
-        assert_eq!(latest.created_at.as_secs(), 300);
-        assert_eq!(latest.kind, Kind::GitPullRequestUpdate);
-    }
-
-    #[test]
-    fn latest_update_ignores_other_authors() {
-        let root = pr_root();
-        let root_hex = root.id.to_hex();
-        let other = Keys::new(
-            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
-                .expect("valid secret key"),
-        );
-        let stranger = EventBuilder::new(Kind::GitPullRequestUpdate, "")
-            .tags([Tag::parse(["E", &root_hex]).expect("valid tag")])
-            .custom_created_at(Timestamp::from(999))
-            .finalize(&other)
-            .expect("signed event");
-
-        // The tip of a PR is only mutable by its author.
-        // A newer update from anyone else must not win.
-        assert!(latest_update([&stranger, &root].into_iter(), &root).is_none());
-    }
-
-    #[test]
-    fn latest_update_ignores_roots_without_revisions() {
-        let root = pr_root();
-        assert!(latest_update([&root].into_iter(), &root).is_none());
-    }
 
     #[test]
     fn commit_meta_combines_author_and_time() {

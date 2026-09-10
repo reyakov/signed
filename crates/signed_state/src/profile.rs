@@ -75,7 +75,6 @@ pub struct ProfileStore {
     seen: RefCell<HashSet<PublicKey>>,
     /// Sender for queuing fetch requests, batched by a background task.
     sender: Sender<PublicKey>,
-    tasks: Vec<Task<Result<(), Error>>>,
     _subscription: Subscription,
 }
 
@@ -97,8 +96,13 @@ impl ProfileStore {
         let backend = Backend::global(cx);
 
         let subscription = cx.subscribe(&backend, |this, _backend, event, cx| match event {
-            BackendEvent::NostrUpdate(update) if update.kind == Kind::Metadata => {
-                this.apply_author(update.author, cx);
+            BackendEvent::NostrUpdate(updates) => {
+                for update in updates
+                    .iter()
+                    .filter(|update| update.kind == Kind::Metadata)
+                {
+                    this.apply_author(update.author, cx);
+                }
             }
             BackendEvent::Published(event) if event.kind == Kind::Metadata => {
                 let metadata = Metadata::from_json(&event.content).unwrap_or_default();
@@ -114,30 +118,24 @@ impl ProfileStore {
         let (sender, receiver) = flume::unbounded::<PublicKey>();
         let entity = cx.entity().downgrade();
 
-        let mut tasks = Vec::new();
-
-        tasks.push(cx.spawn(async move |_this, cx| {
+        cx.spawn(async move |_this, cx| {
             Self::handle_requests(entity, &client, &receiver, cx).await
-        }));
+        })
+        .detach();
 
-        let mut store = Self {
+        let weak = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            if let Err(error) = weak.update(cx, |this, cx| this.load(cx)) {
+                log::warn!("profile store dropped before initial load could run: {error}");
+            }
+        });
+
+        Self {
             profiles: HashMap::new(),
             seen: RefCell::new(HashSet::new()),
             sender,
-            tasks,
             _subscription: subscription,
-        };
-
-        store.load(cx);
-        store
-    }
-
-    /// Track a spawned task, pruning finished tasks first.
-    ///
-    /// Keeps the store's task list bounded by the number of in-flight tasks.
-    fn push_task(&mut self, task: Task<Result<(), Error>>) {
-        self.tasks.retain(|task| !task.is_ready());
-        self.tasks.push(task);
+        }
     }
 
     /// Get a profile.
@@ -181,7 +179,7 @@ impl ProfileStore {
             Ok::<_, Error>(profiles)
         });
 
-        self.push_task(cx.spawn(async move |this, cx| {
+        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let profiles = work.await?;
 
             this.update(cx, |this, cx| {
@@ -192,7 +190,8 @@ impl ProfileStore {
             })?;
 
             Ok(())
-        }));
+        });
+        task.detach();
     }
 
     /// Re-read the latest metadata of an author from the local database.
@@ -217,7 +216,7 @@ impl ProfileStore {
             Ok::<_, Error>(profile)
         });
 
-        self.push_task(cx.spawn(async move |this, cx| {
+        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let profile = work.await?;
 
             this.update(cx, |this, cx| {
@@ -228,7 +227,8 @@ impl ProfileStore {
             })?;
 
             Ok(())
-        }));
+        });
+        task.detach();
     }
 
     /// Re-read the latest metadata of every requested author from the local database.
@@ -273,7 +273,7 @@ impl ProfileStore {
             Ok::<_, Error>(profiles)
         });
 
-        self.push_task(cx.spawn(async move |this, cx| {
+        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let profiles = work.await?;
 
             this.update(cx, |this, cx| {
@@ -284,7 +284,8 @@ impl ProfileStore {
             })?;
 
             Ok(())
-        }));
+        });
+        task.detach();
     }
 
     /// Sync metadata for requested authors in batches, debounced to collect requests.
@@ -337,7 +338,7 @@ impl ProfileStore {
             // Re-apply from the database afterwards.
             match sync_bootstrap_only(client, filter, SyncOptions::default()).await {
                 Ok(_) => {
-                    let _ = this.update(cx, |this, cx| this.apply_seen(cx));
+                    this.update(cx, |this, cx| this.apply_seen(cx)).ok();
                 }
                 Err(e) => log::warn!("profile sync failed: {e}"),
             }

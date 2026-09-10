@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,9 +7,115 @@ use anyhow::Error;
 use gpui::{App, AppContext, Context, Entity, Global, Subscription, Task};
 use nostr_sdk::prelude::*;
 use signed_core::{Announcement, Deletions, RepoAddr, filters, repo_addr};
+use signed_git::find_git_repos;
 
 use crate::backend::{Backend, BackendEvent};
 use crate::refresh::{RefreshGate, RefreshRequest};
+
+struct GlobalLocalReposStore(Entity<LocalReposStore>);
+
+impl Global for GlobalLocalReposStore {}
+
+/// Store of the git repositories discovered under a set of scan paths.
+pub struct LocalReposStore {
+    /// The directories being scanned.
+    pub roots: Arc<Vec<PathBuf>>,
+    /// Git repositories discovered under [`Self::roots`], sorted by path.
+    pub repos: Arc<Vec<PathBuf>>,
+    /// A scan is currently running.
+    pub scanning: bool,
+    /// A scan was requested while one was already running.
+    scan_dirty: bool,
+}
+
+impl LocalReposStore {
+    /// Retrieve the global local-repositories store.
+    pub fn global(cx: &App) -> Entity<Self> {
+        cx.global::<GlobalLocalReposStore>().0.clone()
+    }
+
+    pub(crate) fn set_global(entity: Entity<Self>, cx: &mut App) {
+        cx.set_global(GlobalLocalReposStore(entity));
+    }
+
+    /// Create a store scanning `roots` right away.
+    pub fn new(roots: Vec<PathBuf>, cx: &mut Context<Self>) -> Self {
+        let weak = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            if let Err(error) = weak.update(cx, |this, cx| this.rescan(cx)) {
+                log::warn!("local repos store dropped before initial scan could run: {error}");
+            }
+        });
+
+        Self {
+            roots: Arc::new(roots),
+            repos: Arc::new(Vec::new()),
+            scanning: false,
+            scan_dirty: false,
+        }
+    }
+
+    /// Forget a repository that has just been published to NIP-34.
+    pub fn remove(&mut self, path: &Path, cx: &mut Context<Self>) {
+        self.repos = Arc::new(
+            self.repos
+                .iter()
+                .filter(|repo| repo.as_path() != path)
+                .cloned()
+                .collect(),
+        );
+        cx.notify();
+    }
+
+    /// Re-run the scan.
+    pub fn rescan(&mut self, cx: &mut Context<Self>) {
+        if self.scanning {
+            self.scan_dirty = true;
+            return;
+        }
+
+        if self.roots.is_empty() {
+            return;
+        }
+
+        self.scanning = true;
+        cx.notify();
+
+        let roots = self.roots.clone();
+
+        let work = cx.background_spawn(async move {
+            let mut repos = Vec::new();
+            for root in roots.iter() {
+                repos.extend(find_git_repos(root));
+            }
+            repos.sort();
+            repos.dedup();
+            repos
+        });
+
+        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
+            let repos = work.await;
+            let again = this.update(cx, |this, cx| {
+                this.repos = Arc::new(repos);
+                this.scanning = false;
+                cx.notify();
+
+                let dirty = this.scan_dirty;
+                this.scan_dirty = false;
+                dirty
+            })?;
+
+            // Scans requested while this one ran are coalesced into one follow-up scan.
+            if again {
+                this.update(cx, |this, cx| this.rescan(cx))?;
+            }
+
+            Ok(())
+        });
+
+        task.detach();
+    }
+}
 
 /// Delay between a refresh request and the actual re-query.
 ///
@@ -55,7 +162,6 @@ pub struct RepoListStore {
     pub counts: Arc<HashMap<RepoAddr, RepoActivityCounts>>,
     /// Refresh coalescing, see [`RefreshGate`].
     refresh: RefreshGate,
-    tasks: Vec<Task<Result<(), Error>>>,
     _subscription: Subscription,
 }
 
@@ -75,7 +181,7 @@ impl RepoListStore {
 
         let subscription = cx.subscribe(&backend, |this, _backend, event, cx| {
             let relevant = match event {
-                BackendEvent::NostrUpdate(update) => {
+                BackendEvent::NostrUpdate(updates) => updates.iter().any(|update| {
                     // Deletions may target anything we list, always refresh.
                     if update.kind == Kind::EventDeletion || update.kind == Kind::RequestToVanish {
                         true
@@ -88,7 +194,7 @@ impl RepoListStore {
                         let is_repo_state = update.kind == Kind::RepoState;
                         is_announcement || is_repo_state
                     }
-                }
+                }),
                 BackendEvent::Published(event) => {
                     let announcement = event.kind == Kind::GitRepoAnnouncement;
 
@@ -99,7 +205,10 @@ impl RepoListStore {
 
                     announcement || deletion
                 }
-                BackendEvent::Synced | BackendEvent::SyncProgress { .. } => true,
+                // Only a completed sync refreshes the list.
+                // Progress ticks would re-scan the whole database several times
+                // per sync to reveal entries incrementally.
+                BackendEvent::Synced => true,
                 _ => false,
             };
 
@@ -108,20 +217,26 @@ impl RepoListStore {
             }
         });
 
-        let mut store = Self {
+        let weak = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let result = weak.update(cx, |this, cx| {
+                this.subscribe_remote(cx);
+                // Query the local database right away.
+                // The list never waits for the relay syncs started above to finish.
+                this.refresh_initial(cx);
+            });
+            if let Err(error) = result {
+                log::warn!("repo list store dropped before bootstrap could run: {error}");
+            }
+        });
+
+        Self {
             announcements: Arc::new(Vec::new()),
             last_activity: Arc::new(HashMap::new()),
             counts: Arc::new(HashMap::new()),
             refresh: RefreshGate::default(),
             _subscription: subscription,
-            tasks: Vec::new(),
-        };
-
-        store.subscribe_remote(cx);
-        // Query the local database right away.
-        // The list never waits for the relay syncs started above to finish.
-        store.refresh_initial(cx);
-        store
+        }
     }
 
     /// The announcements of `user`, newest first.
@@ -131,14 +246,6 @@ impl RepoListStore {
             .filter(|a| a.owner == *user)
             .cloned()
             .collect()
-    }
-
-    /// Track a spawned task, pruning finished tasks first.
-    ///
-    /// Keeps the store's task list bounded by the number of in-flight tasks.
-    fn push_task(&mut self, task: Task<Result<(), Error>>) {
-        self.tasks.retain(|task| !task.is_ready());
-        self.tasks.push(task);
     }
 
     /// Negentropy-sync announcements with the bootstrap relays.
@@ -171,13 +278,11 @@ impl RepoListStore {
             return;
         }
 
-        let task = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REFRESH_DEBOUNCE).await;
-
             this.update(cx, |this, cx| this.run_refresh(cx))
-        });
-
-        self.push_task(task);
+        })
+        .detach();
     }
 
     /// One query and apply cycle, the debounced entry point.
@@ -294,7 +399,7 @@ impl RepoListStore {
             Ok::<_, Error>((announcements, last_activity, counts))
         });
 
-        self.push_task(cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let (announcements, last_activity, counts) = match work.await {
                 Ok(results) => results,
                 // Database errors are transient, keep the last list.
@@ -321,6 +426,7 @@ impl RepoListStore {
             }
 
             Ok(())
-        }));
+        })
+        .detach();
     }
 }

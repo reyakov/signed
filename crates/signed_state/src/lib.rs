@@ -1,11 +1,10 @@
 mod backend;
 mod checkouts;
 mod git_store;
-mod local_repos;
 mod profile;
 mod refresh;
 mod repo;
-mod repo_list;
+mod repos;
 
 use std::path::{Path, PathBuf};
 
@@ -13,11 +12,10 @@ pub use backend::{Backend, BackendEvent, user_grasp_list_servers};
 pub use checkouts::{CheckoutStatus, CheckoutsStore, pr_proposes_checkout};
 pub use git_store::GitStore;
 use gpui::{App, AppContext, Entity};
-pub use local_repos::LocalReposStore;
 pub use nostr_sdk::prelude::Timestamp;
 pub use profile::{Profile, ProfileStore};
 pub use repo::RepoStore;
-pub use repo_list::{RepoActivityCounts, RepoListStore};
+pub use repos::{LocalReposStore, RepoActivityCounts, RepoListStore};
 use signed_nostr::new_backend;
 
 /// Initialize the backend and stores, and install them as globals.

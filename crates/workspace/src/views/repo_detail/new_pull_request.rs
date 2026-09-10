@@ -6,8 +6,7 @@ use dock::{BasePanel, DockArea, Panel, PanelEvent, add_center_panel, panel_handl
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, PathPromptOptions,
-    Pixels, Render, SharedString, Size, Subscription, Task, WeakEntity, Window, div, px, relative,
-    size,
+    Pixels, Render, SharedString, Size, Subscription, WeakEntity, Window, div, px, relative, size,
 };
 use gpui_base::{Button as BaseButton, StyledExt};
 use gpui_component::button::{Button, ButtonVariants};
@@ -22,10 +21,10 @@ use gpui_component::{
     v_virtual_list,
 };
 use nostr::prelude::*;
-use signed_core::{Announcement, RepoAddr};
+use signed_core::{Announcement, RepoAddr, fork_candidates};
 use signed_git::{
-    delete_refs_with_prefix, fetch_repo_refs, format_patch_between, merge_base, refs_with_prefix,
-    sanitize_path_component, worktree_commit_range_commits, worktree_commit_range_diff,
+    delete_refs_with_prefix, fetch_repo_refs, fork_namespace, merge_base, refs_with_prefix,
+    worktree_commit_range_commits, worktree_commit_range_diff,
 };
 use signed_state::{Backend, CheckoutsStore, GitStore, RepoListStore, RepoStore};
 use signed_ui::{CountBadge, placeholder};
@@ -79,7 +78,6 @@ pub struct NewPullRequestView {
     scroll_handle: VirtualListScrollHandle,
     item_sizes: Rc<Vec<Size<Pixels>>>,
     _subscriptions: Vec<Subscription>,
-    tasks: Vec<Task<Result<(), anyhow::Error>>>,
 }
 
 /// A fork-backed compare.
@@ -102,36 +100,6 @@ impl ForkCompare {
     fn compare_ref(&self, name: &str) -> String {
         format!("refs/fork/{}/{}", self.namespace, name)
     }
-}
-
-/// The refs namespace of a fork's import in the target mirror.
-fn fork_namespace(announcement: &Announcement) -> String {
-    format!(
-        "{}/{}",
-        announcement.owner.to_hex(),
-        sanitize_path_component(&announcement.id)
-    )
-}
-
-/// The announced forks of `base` a New PR compare can be built from.
-fn fork_candidates<'a>(
-    announcements: &'a [Announcement],
-    base: &RepoAddr,
-    base_euc: Option<&str>,
-    user: Option<PublicKey>,
-) -> Vec<&'a Announcement> {
-    let (mut own, mut others) = (Vec::new(), Vec::new());
-    for announcement in announcements {
-        if announcement.clone.is_empty() || !announcement.is_fork_of(base, base_euc) {
-            continue;
-        }
-        if Some(announcement.owner) == user {
-            own.push(announcement);
-        } else {
-            others.push(announcement);
-        }
-    }
-    own.into_iter().chain(others).collect()
 }
 
 /// The display name of an announcement.
@@ -363,7 +331,6 @@ impl NewPullRequestView {
             scroll_handle: VirtualListScrollHandle::new(),
             item_sizes: Rc::new(Vec::new()),
             _subscriptions: subscriptions,
-            tasks: Vec::new(),
         };
 
         // Prefill with the store's freshest associated checkout, no folder dialog.
@@ -426,25 +393,26 @@ impl NewPullRequestView {
             prompt: Some("Choose local checkout".into()),
         });
 
-        let task = cx.spawn_in(window, async move |this, cx| {
-            // `Ok(Ok(Some(paths)))` means the user picked a folder.
-            // A cancel or picker failure resolves to anything else.
-            let picked = match prompt.await {
-                Ok(Ok(Some(mut paths))) => paths.pop(),
-                _ => None,
-            };
+        let task: gpui::Task<Result<(), anyhow::Error>> =
+            cx.spawn_in(window, async move |this, cx| {
+                // `Ok(Ok(Some(paths)))` means the user picked a folder.
+                // A cancel or picker failure resolves to anything else.
+                let picked = match prompt.await {
+                    Ok(Ok(Some(mut paths))) => paths.pop(),
+                    _ => None,
+                };
 
-            let Some(path) = picked else {
-                return Ok(());
-            };
+                let Some(path) = picked else {
+                    return Ok(());
+                };
 
-            this.update_in(cx, |this, window, cx| {
-                this.apply_folder_path(path, window, cx);
-            })?;
+                this.update_in(cx, |this, window, cx| {
+                    this.apply_folder_path(path, window, cx);
+                })?;
 
-            Ok(())
-        });
-        self.tasks.push(task);
+                Ok(())
+            });
+        task.detach();
     }
 
     /// Apply `path` as the local checkout, no picker.
@@ -453,28 +421,29 @@ impl NewPullRequestView {
     fn apply_folder_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let path = path.to_string_lossy().to_string();
 
-        let task = cx.spawn_in(window, async move |this, cx| {
-            // Branches and the current branch are read off the UI thread.
-            let info = cx
-                .background_spawn({
-                    let path = path.clone();
-                    async move {
-                        let repo = gix::open(Path::new(&path)).ok()?;
-                        let branches =
-                            signed_git::worktree_branches(Path::new(&path)).unwrap_or_default();
-                        let current = signed_git::current_branch(&repo).ok().flatten();
-                        Some((branches, current))
-                    }
-                })
-                .await;
+        let task: gpui::Task<Result<(), anyhow::Error>> =
+            cx.spawn_in(window, async move |this, cx| {
+                // Branches and the current branch are read off the UI thread.
+                let info = cx
+                    .background_spawn({
+                        let path = path.clone();
+                        async move {
+                            let repo = gix::open(Path::new(&path)).ok()?;
+                            let branches =
+                                signed_git::worktree_branches(Path::new(&path)).unwrap_or_default();
+                            let current = signed_git::current_branch(&repo).ok().flatten();
+                            Some((branches, current))
+                        }
+                    })
+                    .await;
 
-            this.update_in(cx, |this, window, cx| {
-                this.apply_checkout(path, info, window, cx);
-            })?;
+                this.update_in(cx, |this, window, cx| {
+                    this.apply_checkout(path, info, window, cx);
+                })?;
 
-            Ok(())
-        });
-        self.tasks.push(task);
+                Ok(())
+            });
+        task.detach();
     }
 
     /// Apply a picked checkout, filling the selectors and loading the compare.
@@ -592,14 +561,14 @@ impl NewPullRequestView {
         let cache = GitStore::global(cx).cache().clone();
         let mirror_path = cache.repo_path(&base);
         let namespace = fork_namespace(&announcement);
-        let clone_urls: Vec<String> = announcement.clone.iter().map(ToString::to_string).collect();
+        let clone_urls = announcement.clone.clone();
 
-        let base_clone_urls: Vec<String> = self
+        let base_clone_urls: Vec<Url> = self
             .store
             .read(cx)
             .announcement
             .as_ref()
-            .map(|a| a.clone.iter().map(ToString::to_string).collect())
+            .map(|a| a.clone.clone())
             .unwrap_or_default();
 
         // Keep the current compare and base when the fork is already applied.
@@ -615,88 +584,89 @@ impl NewPullRequestView {
         self.error = None;
         cx.notify();
 
-        let task = cx.spawn_in(window, async move |this, cx| {
-            // The fork and base must share history for a merge-base to exist.
-            // The target's mirror is the object store both sides land in.
-            // `ensure_clone` fetches `origin` when the mirror already exists.
-            let result = cx
-                .background_spawn({
-                    let cache = cache.clone();
-                    let base = base.clone();
-                    let base_clone_urls = base_clone_urls.clone();
-                    let namespace = namespace.clone();
-                    let clone_urls = clone_urls.clone();
-                    let mirror_path = mirror_path.clone();
-                    async move {
-                        // The fork and base must share history for a merge-base to exist.
-                        // The target's mirror is the object store both sides land in.
-                        // `ensure_clone` fetches `origin` when the mirror already exists.
-                        cache.ensure_clone(&base, &base_clone_urls)?;
+        let task: gpui::Task<Result<(), anyhow::Error>> =
+            cx.spawn_in(window, async move |this, cx| {
+                // The fork and base must share history for a merge-base to exist.
+                // The target's mirror is the object store both sides land in.
+                // `ensure_clone` fetches `origin` when the mirror already exists.
+                let result = cx
+                    .background_spawn({
+                        let cache = cache.clone();
+                        let base = base.clone();
+                        let base_clone_urls = base_clone_urls.clone();
+                        let namespace = namespace.clone();
+                        let clone_urls = clone_urls.clone();
+                        let mirror_path = mirror_path.clone();
+                        async move {
+                            // The fork and base must share history for a merge-base to exist.
+                            // The target's mirror is the object store both sides land in.
+                            // `ensure_clone` fetches `origin` when the mirror already exists.
+                            cache.ensure_clone(&base, &base_clone_urls)?;
 
-                        // Prune stale imports of any fork.
-                        // Then import this fork's heads under its namespace.
-                        delete_refs_with_prefix(&mirror_path, "refs/fork")?;
+                            // Prune stale imports of any fork.
+                            // Then import this fork's heads under its namespace.
+                            delete_refs_with_prefix(&mirror_path, "refs/fork")?;
 
-                        fetch_repo_refs(
-                            &mirror_path,
-                            &clone_urls,
-                            &format!("+refs/heads/*:refs/fork/{namespace}/*"),
-                        )?;
+                            fetch_repo_refs(
+                                &mirror_path,
+                                &clone_urls,
+                                &format!("+refs/heads/*:refs/fork/{namespace}/*"),
+                            )?;
 
-                        // Both branch lists are short names, sorted like the checkout's.
-                        let strip = |refs: Vec<String>, prefix: &str| {
-                            let mut names: Vec<String> = refs
-                                .into_iter()
-                                .filter_map(|name| {
-                                    name.strip_prefix(prefix)
-                                        .map(|rest| rest.trim_start_matches('/').to_owned())
-                                })
-                                .filter(|name| !name.is_empty())
-                                .collect();
-                            names.sort();
-                            names
-                        };
+                            // Both branch lists are short names, sorted like the checkout's.
+                            let strip = |refs: Vec<String>, prefix: &str| {
+                                let mut names: Vec<String> = refs
+                                    .into_iter()
+                                    .filter_map(|name| {
+                                        name.strip_prefix(prefix)
+                                            .map(|rest| rest.trim_start_matches('/').to_owned())
+                                    })
+                                    .filter(|name| !name.is_empty())
+                                    .collect();
+                                names.sort();
+                                names
+                            };
 
-                        let base_branches = strip(
-                            refs_with_prefix(&mirror_path, "refs/remotes/origin")?,
-                            "refs/remotes/origin",
-                        );
+                            let base_branches = strip(
+                                refs_with_prefix(&mirror_path, "refs/remotes/origin")?,
+                                "refs/remotes/origin",
+                            );
 
-                        let compare_branches = strip(
-                            refs_with_prefix(&mirror_path, &format!("refs/fork/{namespace}"))?,
-                            &format!("refs/fork/{namespace}"),
-                        );
+                            let compare_branches = strip(
+                                refs_with_prefix(&mirror_path, &format!("refs/fork/{namespace}"))?,
+                                &format!("refs/fork/{namespace}"),
+                            );
 
-                        Ok::<_, anyhow::Error>((base_branches, compare_branches))
+                            Ok::<_, anyhow::Error>((base_branches, compare_branches))
+                        }
+                    })
+                    .await;
+
+                this.update_in(cx, |this, window, cx| {
+                    // A source switch mid-flight discards the stale result.
+                    // E.g. the user picked a folder while the fork was fetching.
+                    let applied = this.fork.as_ref().map(|fork| fork.announcement.addr());
+                    if applied != expected_fork {
+                        this.loading = false;
+                        cx.notify();
+                        return;
                     }
-                })
-                .await;
 
-            this.update_in(cx, |this, window, cx| {
-                // A source switch mid-flight discards the stale result.
-                // E.g. the user picked a folder while the fork was fetching.
-                let applied = this.fork.as_ref().map(|fork| fork.announcement.addr());
-                if applied != expected_fork {
-                    this.loading = false;
-                    cx.notify();
-                    return;
-                }
+                    this.apply_fork(
+                        announcement,
+                        mirror_path,
+                        namespace,
+                        result,
+                        keep_base,
+                        keep_compare,
+                        window,
+                        cx,
+                    );
+                })?;
 
-                this.apply_fork(
-                    announcement,
-                    mirror_path,
-                    namespace,
-                    result,
-                    keep_base,
-                    keep_compare,
-                    window,
-                    cx,
-                );
-            })?;
-
-            Ok(())
-        });
-        self.tasks.push(task);
+                Ok(())
+            });
+        task.detach();
     }
 
     /// Apply an imported fork, filling the selectors and loading the compare.
@@ -834,66 +804,68 @@ impl NewPullRequestView {
             return;
         }
 
-        let task = cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_spawn({
-                    let repo_path = repo_path.clone();
-                    let base = base.clone();
-                    let compare = compare.clone();
-                    let base_name = base_name.clone();
-                    let compare_name = compare_name.clone();
-                    async move {
-                        let merge_base = merge_base(Path::new(&repo_path), &base, &compare)?
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "{base_name} and {compare_name} share no common ancestor"
-                                )
-                            })?;
-                        let commits = worktree_commit_range_commits(
-                            Path::new(&repo_path),
-                            &merge_base,
-                            &compare,
-                        )?;
-                        let diff = worktree_commit_range_diff(
-                            Path::new(&repo_path),
-                            &merge_base,
-                            &compare,
-                        )?;
-                        Ok::<_, anyhow::Error>((merge_base, commits, diff))
+        let task: gpui::Task<Result<(), anyhow::Error>> =
+            cx.spawn_in(window, async move |this, cx| {
+                let result = cx
+                    .background_spawn({
+                        let repo_path = repo_path.clone();
+                        let base = base.clone();
+                        let compare = compare.clone();
+                        let base_name = base_name.clone();
+                        let compare_name = compare_name.clone();
+                        async move {
+                            let merge_base = merge_base(Path::new(&repo_path), &base, &compare)?
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "{base_name} and {compare_name} share no common ancestor"
+                                    )
+                                })?;
+                            let commits = worktree_commit_range_commits(
+                                Path::new(&repo_path),
+                                &merge_base,
+                                &compare,
+                            )?;
+                            let diff = worktree_commit_range_diff(
+                                Path::new(&repo_path),
+                                &merge_base,
+                                &compare,
+                            )?;
+                            Ok::<_, anyhow::Error>((merge_base, commits, diff))
+                        }
+                    })
+                    .await;
+
+                this.update_in(cx, |this, _window, cx| {
+                    // A stale result, branches changed mid-flight, must not clobber a newer compare.
+                    if generation != this.compare_generation {
+                        return;
                     }
-                })
-                .await;
+                    this.loading = false;
 
-            this.update_in(cx, |this, _window, cx| {
-                // A stale result, branches changed mid-flight, must not clobber a newer compare.
-                if generation != this.compare_generation {
-                    return;
-                }
-                this.loading = false;
-
-                match result {
-                    Ok((merge_base, commits, diff)) => {
-                        this.merge_base = Some(merge_base);
-                        let count = commits.len();
-                        this.item_sizes = Rc::new(vec![size(px(0.), px(COMMIT_ROW_HEIGHT)); count]);
-                        this.commits = Some(commits);
-                        this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx));
+                    match result {
+                        Ok((merge_base, commits, diff)) => {
+                            this.merge_base = Some(merge_base);
+                            let count = commits.len();
+                            this.item_sizes =
+                                Rc::new(vec![size(px(0.), px(COMMIT_ROW_HEIGHT)); count]);
+                            this.commits = Some(commits);
+                            this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx));
+                        }
+                        Err(error) => {
+                            this.merge_base = None;
+                            this.commits = None;
+                            this.pane.update(cx, |pane, cx| pane.clear(cx));
+                            this.error = Some(error.to_string().into());
+                        }
                     }
-                    Err(error) => {
-                        this.merge_base = None;
-                        this.commits = None;
-                        this.pane.update(cx, |pane, cx| pane.clear(cx));
-                        this.error = Some(error.to_string().into());
-                    }
-                }
 
-                cx.notify();
-            })?;
+                    cx.notify();
+                })?;
 
-            Ok(())
-        });
+                Ok(())
+            });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Publish the pull request.
@@ -927,76 +899,55 @@ impl NewPullRequestView {
         self.error = None;
         cx.notify();
 
-        let task = cx.spawn_in(window, async move |this, cx| {
-            // Regenerate the series at submit time.
-            // The published patch covers the current tip of the compare branch.
-            let patch = cx
-                .background_spawn({
-                    let repo_path = repo_path.clone();
-                    let merge_base = merge_base.clone();
-                    let compare_ref = compare_ref.clone();
-                    async move {
-                        format_patch_between(Path::new(&repo_path), &merge_base, &compare_ref)
-                    }
-                })
-                .await;
-
-            let patch = match patch {
-                Ok(patch) if !patch.is_empty() => patch,
-                Ok(_) => {
-                    this.update_in(cx, |this, _window, cx| {
-                        this.submitting = false;
-                        this.error = Some("No commits between the branches to propose".into());
-                        cx.notify();
-                    })?;
-                    return Ok(());
-                }
-                Err(error) => {
-                    this.update_in(cx, |this, _window, cx| {
-                        this.submitting = false;
-                        this.error = Some(format!("Failed to generate the patch: {error}").into());
-                        cx.notify();
-                    })?;
-                    return Ok(());
-                }
-            };
-
-            this.update_in(cx, |this, window, cx| {
-                this.submitting = false;
-
-                store.update(cx, |store, cx| {
-                    store.open_pull_request(
+        let task: gpui::Task<Result<(), anyhow::Error>> =
+            cx.spawn_in(window, async move |this, cx| {
+                // Regenerate the series at submit time.
+                // The published patch covers the current tip of the compare branch.
+                let publish = store.update(cx, |store, cx| {
+                    store.open_pull_request_from_refs(
+                        repo_path,
+                        merge_base,
+                        compare_ref,
                         (!subject.is_empty()).then_some(subject),
                         description,
                         Some(branch_name),
-                        patch,
                         false,
-                        Some(merge_base),
-                        Some(repo_path),
                         cx,
-                    );
+                    )
                 });
 
-                // Close the panel once the publish is underway.
-                cx.defer_in(window, {
-                    let dock_area = dock_area.clone();
-                    let entity = entity.clone();
-                    move |_, window, cx| {
-                        if let Some(dock_area) = dock_area.upgrade() {
-                            dock_area.update(cx, |dock, cx| {
-                                dock.remove_panel(entity, window, cx);
-                            });
+                if let Err(error) = publish.await {
+                    this.update_in(cx, |this, _window, cx| {
+                        this.submitting = false;
+                        this.error = Some(error.to_string().into());
+                        cx.notify();
+                    })?;
+                    return Ok(());
+                }
+
+                this.update_in(cx, |this, window, cx| {
+                    this.submitting = false;
+
+                    // Close the panel once the publish is underway.
+                    cx.defer_in(window, {
+                        let dock_area = dock_area.clone();
+                        let entity = entity.clone();
+                        move |_, window, cx| {
+                            if let Some(dock_area) = dock_area.upgrade() {
+                                dock_area.update(cx, |dock, cx| {
+                                    dock.remove_panel(entity, window, cx);
+                                });
+                            }
                         }
-                    }
-                });
+                    });
 
-                cx.notify();
-            })?;
+                    cx.notify();
+                })?;
 
-            Ok(())
-        });
+                Ok(())
+            });
 
-        self.tasks.push(task);
+        task.detach();
     }
 
     /// Open the diff of `commit_id`, from the Commits tab, in a new panel.
@@ -1457,142 +1408,5 @@ impl Render for NewPullRequestView {
                     .w_full()
                     .child(self.render_content(cx)),
             )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use nostr::prelude::*;
-    use signed_core::repo_addr;
-
-    use super::*;
-
-    const OWNER_KEYS: [&str; 3] = [
-        "0000000000000000000000000000000000000000000000000000000000000001",
-        "0000000000000000000000000000000000000000000000000000000000000002",
-        "0000000000000000000000000000000000000000000000000000000000000003",
-    ];
-
-    /// Build a signed kind-30617 event for `owner` with the given tags.
-    fn announcement_event(owner: &str, tags: &[&[&str]]) -> Event {
-        let keys = Keys::new(SecretKey::from_hex(owner).expect("valid secret key"));
-        let tags: Vec<Tag> = tags
-            .iter()
-            .map(|t| Tag::parse(t.to_vec()).expect("valid tag"))
-            .collect();
-        EventBuilder::new(Kind::GitRepoAnnouncement, "")
-            .tags(tags)
-            .finalize(&keys)
-            .expect("signed event")
-    }
-
-    fn announcements(owner_ix: usize, tags: &[&[&str]]) -> Vec<Announcement> {
-        vec![
-            Announcement::from_event(&announcement_event(OWNER_KEYS[owner_ix], tags))
-                .expect("parses"),
-        ]
-    }
-
-    #[test]
-    fn fork_candidates_orders_own_forks_first() {
-        let euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
-        let clone = "https://grasp.example/npub1x/my-fork.git";
-
-        let base_addr = repo_addr(
-            PublicKey::from_hex(OWNER_KEYS[0]).expect("pubkey"),
-            "upstream",
-        );
-        // Newest first, as RepoListStore keeps them.
-        // Unrelated repo, the user's fork with the shared EUC, another fork with a `u` tag.
-        let all = vec![
-            announcements(
-                2,
-                &[
-                    &["d", "other-project"],
-                    &["r", "bb231c4c6a5777dc89b42207b499891a344add5c", "euc"],
-                ],
-            )
-            .pop()
-            .unwrap(),
-            announcements(
-                1,
-                &[&["d", "my-fork"], &["r", euc, "euc"], &["clone", clone]],
-            )
-            .pop()
-            .unwrap(),
-            announcements(
-                2,
-                &[
-                    &["d", "their-fork"],
-                    &["u", &base_addr.to_string()],
-                    &["clone", clone],
-                ],
-            )
-            .pop()
-            .unwrap(),
-        ];
-
-        let user = PublicKey::from_hex(OWNER_KEYS[1]).expect("pubkey");
-        let forks = fork_candidates(&all, &base_addr, Some(euc), Some(user));
-
-        // The user's fork comes first, then the other author's.
-        let ids: Vec<&str> = forks.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, vec!["my-fork", "their-fork"]);
-    }
-
-    #[test]
-    fn fork_candidates_excludes_base_unrelated_and_unfetchable() {
-        let euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
-        let base_owner = PublicKey::from_hex(OWNER_KEYS[0]).expect("pubkey");
-        let base_addr = repo_addr(base_owner, "upstream");
-
-        let mut all = vec![
-            announcements(0, &[&["d", "upstream"], &["r", euc, "euc"]])
-                .pop()
-                .unwrap(),
-            announcements(1, &[&["d", "no-clone-fork"], &["r", euc, "euc"]])
-                .pop()
-                .unwrap(),
-            announcements(
-                2,
-                &[
-                    &["d", "other"],
-                    &["r", "cc231c4c6a5777dc89b42207b499891a344add5c", "euc"],
-                ],
-            )
-            .pop()
-            .unwrap(),
-            announcements(
-                2,
-                &[
-                    &["d", "mirror"],
-                    &["r", euc, "euc"],
-                    &["clone", "https://grasp.example/x/mirror.git"],
-                ],
-            )
-            .pop()
-            .unwrap(),
-        ];
-
-        let forks = fork_candidates(&all, &base_addr, Some(euc), Some(base_owner));
-        assert_eq!(forks.len(), 1);
-        assert_eq!(forks[0].id, "mirror");
-
-        // Without a base EUC only `u`-tag forks match.
-        all.push(
-            announcements(
-                2,
-                &[
-                    &["d", "u-fork"],
-                    &["u", &base_addr.to_string()],
-                    &["clone", "https://grasp.example/x/u-fork.git"],
-                ],
-            )
-            .pop()
-            .unwrap(),
-        );
-        let forks = fork_candidates(&all, &base_addr, None, Some(base_owner));
-        let ids: Vec<&str> = forks.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, vec!["u-fork"]);
     }
 }

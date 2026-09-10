@@ -180,7 +180,7 @@ fn forward_series<'a>(root: &'a Event, patches: &[&'a Event]) -> Vec<&'a Event> 
 }
 
 /// The `c` tag of an event, the tip of the proposed branch, as hex.
-fn current_commit_of(event: &Event) -> Option<String> {
+pub fn current_commit_of(event: &Event) -> Option<String> {
     event
         .tags
         .iter()
@@ -188,6 +188,82 @@ fn current_commit_of(event: &Event) -> Option<String> {
             Ok(Nip34Tag::CurrentCommit(commit)) => Some(commit.to_string()),
             _ => None,
         })
+}
+
+/// The `merge-base` tag of an event, the base commit a pull request diffs against.
+pub fn merge_base_of(event: &Event) -> Option<String> {
+    event
+        .tags
+        .iter()
+        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
+            Ok(Nip34Tag::MergeBase(commit)) => Some(commit.to_string()),
+            _ => None,
+        })
+}
+
+/// The `clone` tag of an event, URLs the tip commit can be fetched from.
+pub fn clone_urls_of(event: &Event) -> Option<Vec<Url>> {
+    event
+        .tags
+        .iter()
+        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
+            Ok(Nip34Tag::Clone(urls)) => Some(urls),
+            _ => None,
+        })
+}
+
+/// The `branch-name` tag of an event, the proposed branch's name.
+pub fn branch_name_of(event: &Event) -> Option<String> {
+    event
+        .tags
+        .iter()
+        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
+            Ok(Nip34Tag::BranchName(name)) => Some(name),
+            _ => None,
+        })
+}
+
+/// The newest `GitPullRequestUpdate` revising `root`, from the root's own author.
+///
+/// A pull request's tip is only mutable by its author, per NIP-34; updates
+/// from anyone else are ignored even if they are newer.
+pub fn latest_update<'a>(
+    events: impl Iterator<Item = &'a Event>,
+    root: &Event,
+) -> Option<&'a Event> {
+    let root_hex = root.id.to_hex();
+    events
+        .filter(|e| e.kind == Kind::GitPullRequestUpdate)
+        .filter(|e| e.pubkey == root.pubkey)
+        .filter(|e| {
+            e.tags
+                .iter()
+                .any(|t| t.kind() == "E" && t.content() == Some(root_hex.as_str()))
+        })
+        .max_by_key(|e| e.created_at)
+}
+
+/// The announced forks of `base` a new pull request compare can be built from.
+///
+/// The user's own forks are listed first.
+pub fn fork_candidates<'a>(
+    announcements: &'a [Announcement],
+    base: &RepoAddr,
+    base_euc: Option<&str>,
+    user: Option<PublicKey>,
+) -> Vec<&'a Announcement> {
+    let (mut own, mut others) = (Vec::new(), Vec::new());
+    for announcement in announcements {
+        if announcement.clone.is_empty() || !announcement.is_fork_of(base, base_euc) {
+            continue;
+        }
+        if Some(announcement.owner) == user {
+            own.push(announcement);
+        } else {
+            others.push(announcement);
+        }
+    }
+    own.into_iter().chain(others).collect()
 }
 
 /// Whether `patch` produces `commit`, found via its `commit` or `r` tag.
@@ -726,5 +802,222 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["patch-one", "patch-two"]
         );
+    }
+
+    const COMMIT_HEX: &str = "1111111111111111111111111111111111111111";
+    const OTHER_ROOT_HEX: &str = "2222222222222222222222222222222222222222";
+
+    /// Build a signed event of `kind` with the given tags and `created_at`.
+    fn signed_at(kind: Kind, tags: Vec<Tag>, created_at: u64) -> Event {
+        EventBuilder::new(kind, "")
+            .tags(tags)
+            .custom_created_at(Timestamp::from(created_at))
+            .finalize(&keys())
+            .expect("signed event")
+    }
+
+    fn pr_root() -> Event {
+        signed_at(
+            Kind::GitPullRequest,
+            vec![
+                Tag::parse(["c", COMMIT_HEX]).expect("valid tag"),
+                Tag::parse(["branch-name", "feature/x"]).expect("valid tag"),
+            ],
+            100,
+        )
+    }
+
+    #[test]
+    fn reads_current_commit_and_branch_name() {
+        let pr = pr_root();
+        assert_eq!(current_commit_of(&pr).as_deref(), Some(COMMIT_HEX));
+        assert_eq!(branch_name_of(&pr).as_deref(), Some("feature/x"));
+    }
+
+    #[test]
+    fn returns_none_without_pr_tags() {
+        let pr = signed_at(Kind::GitPullRequest, vec![], 100);
+        assert_eq!(current_commit_of(&pr), None);
+        assert_eq!(branch_name_of(&pr), None);
+    }
+
+    #[test]
+    fn latest_update_picks_newest_revision_of_the_root() {
+        let root = pr_root();
+        let root_hex = root.id.to_hex();
+
+        let revision = |created_at: u64| {
+            signed_at(
+                Kind::GitPullRequestUpdate,
+                vec![Tag::parse(["E", &root_hex]).expect("valid tag")],
+                created_at,
+            )
+        };
+        // An update revising a different PR must be ignored even though it is newer.
+        let unrelated = signed_at(
+            Kind::GitPullRequestUpdate,
+            vec![Tag::parse(["E", OTHER_ROOT_HEX]).expect("valid tag")],
+            999,
+        );
+
+        let events = [unrelated, revision(200), root.clone(), revision(300)];
+        let latest = latest_update(events.iter(), &root).expect("an update");
+
+        assert_eq!(latest.created_at.as_secs(), 300);
+        assert_eq!(latest.kind, Kind::GitPullRequestUpdate);
+    }
+
+    #[test]
+    fn latest_update_ignores_other_authors() {
+        let root = pr_root();
+        let root_hex = root.id.to_hex();
+        let other = Keys::new(
+            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
+                .expect("valid secret key"),
+        );
+        let stranger = EventBuilder::new(Kind::GitPullRequestUpdate, "")
+            .tags([Tag::parse(["E", &root_hex]).expect("valid tag")])
+            .custom_created_at(Timestamp::from(999))
+            .finalize(&other)
+            .expect("signed event");
+
+        // The tip of a PR is only mutable by its author.
+        // A newer update from anyone else must not win.
+        assert!(latest_update([&stranger, &root].into_iter(), &root).is_none());
+    }
+
+    #[test]
+    fn latest_update_ignores_roots_without_revisions() {
+        let root = pr_root();
+        assert!(latest_update([&root].into_iter(), &root).is_none());
+    }
+
+    const OWNER_KEYS: [&str; 3] = [
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "0000000000000000000000000000000000000000000000000000000000000002",
+        "0000000000000000000000000000000000000000000000000000000000000003",
+    ];
+
+    /// Build a signed kind-30617 event for `owner` with the given tags.
+    fn owned_announcement_event(owner: &str, tags: &[&[&str]]) -> Event {
+        let keys = Keys::new(SecretKey::from_hex(owner).expect("valid secret key"));
+        let tags: Vec<Tag> = tags
+            .iter()
+            .map(|t| Tag::parse(t.to_vec()).expect("valid tag"))
+            .collect();
+        EventBuilder::new(Kind::GitRepoAnnouncement, "")
+            .tags(tags)
+            .finalize(&keys)
+            .expect("signed event")
+    }
+
+    fn owned_announcements(owner_ix: usize, tags: &[&[&str]]) -> Vec<Announcement> {
+        vec![
+            Announcement::from_event(&owned_announcement_event(OWNER_KEYS[owner_ix], tags))
+                .expect("parses"),
+        ]
+    }
+
+    #[test]
+    fn fork_candidates_orders_own_forks_first() {
+        let euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
+        let clone = "https://grasp.example/npub1x/my-fork.git";
+
+        let base_addr = crate::repo_addr(
+            PublicKey::from_hex(OWNER_KEYS[0]).expect("pubkey"),
+            "upstream",
+        );
+        // Newest first, as RepoListStore keeps them.
+        // Unrelated repo, the user's fork with the shared EUC, another fork with a `u` tag.
+        let all = vec![
+            owned_announcements(
+                2,
+                &[
+                    &["d", "other-project"],
+                    &["r", "bb231c4c6a5777dc89b42207b499891a344add5c", "euc"],
+                ],
+            )
+            .pop()
+            .unwrap(),
+            owned_announcements(
+                1,
+                &[&["d", "my-fork"], &["r", euc, "euc"], &["clone", clone]],
+            )
+            .pop()
+            .unwrap(),
+            owned_announcements(
+                2,
+                &[
+                    &["d", "their-fork"],
+                    &["u", &base_addr.to_string()],
+                    &["clone", clone],
+                ],
+            )
+            .pop()
+            .unwrap(),
+        ];
+
+        let user = PublicKey::from_hex(OWNER_KEYS[1]).expect("pubkey");
+        let forks = fork_candidates(&all, &base_addr, Some(euc), Some(user));
+
+        // The user's fork comes first, then the other author's.
+        let ids: Vec<&str> = forks.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["my-fork", "their-fork"]);
+    }
+
+    #[test]
+    fn fork_candidates_excludes_base_unrelated_and_unfetchable() {
+        let euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
+        let base_owner = PublicKey::from_hex(OWNER_KEYS[0]).expect("pubkey");
+        let base_addr = crate::repo_addr(base_owner, "upstream");
+
+        let mut all = vec![
+            owned_announcements(0, &[&["d", "upstream"], &["r", euc, "euc"]])
+                .pop()
+                .unwrap(),
+            owned_announcements(1, &[&["d", "no-clone-fork"], &["r", euc, "euc"]])
+                .pop()
+                .unwrap(),
+            owned_announcements(
+                2,
+                &[
+                    &["d", "other"],
+                    &["r", "cc231c4c6a5777dc89b42207b499891a344add5c", "euc"],
+                ],
+            )
+            .pop()
+            .unwrap(),
+            owned_announcements(
+                2,
+                &[
+                    &["d", "mirror"],
+                    &["r", euc, "euc"],
+                    &["clone", "https://grasp.example/x/mirror.git"],
+                ],
+            )
+            .pop()
+            .unwrap(),
+        ];
+
+        let forks = fork_candidates(&all, &base_addr, Some(euc), Some(base_owner));
+        assert_eq!(forks.len(), 1);
+        assert_eq!(forks[0].id, "mirror");
+
+        // Without a base EUC only `u`-tag forks match.
+        all.push(
+            owned_announcements(
+                2,
+                &[
+                    &["d", "u-fork"],
+                    &["u", &base_addr.to_string()],
+                    &["clone", "https://grasp.example/x/u-fork.git"],
+                ],
+            )
+            .pop()
+            .unwrap(),
+        );
+        let forks = fork_candidates(&all, &base_addr, None, Some(base_owner));
+        let ids: Vec<&str> = forks.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["u-fork"]);
     }
 }
