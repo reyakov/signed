@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Error;
@@ -13,6 +14,7 @@ use gpui::{
     Focusable, PathPromptOptions, Pixels, Render, SharedString, Size, Subscription, WeakEntity,
     Window, div, px, relative, size, transparent_white,
 };
+use gpui_base::dock::PanelView;
 use gpui_base::{Button as BaseButton, Disableable, Popover};
 use gpui_component::alert::Alert;
 use gpui_component::button::{Button, ButtonVariants};
@@ -24,7 +26,7 @@ use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, ThemeStyled,
     VirtualListScrollHandle, h_flex, v_flex,
 };
-use nostr::prelude::{RelayUrl, ToBech32, Url};
+use nostr::prelude::{EventId, RelayUrl, ToBech32, Url};
 use signed_core::{Announcement, RepoAddr, RepoStatus, filters};
 use signed_git::{CommitList, FileCommit};
 use signed_state::{
@@ -57,7 +59,9 @@ use helpers::{
     ShareTargets, TreeItemSeed, build_tree_items, is_markdown_path, ref_selector_trigger,
     tree_items,
 };
+use issue_detail::IssueDetailView;
 use issues::{IssuesView, open_new_issue_dialog};
+use pull_request_detail::PullRequestDetailView;
 use pull_requests::PullRequestsView;
 use send_patch::open_send_patch_panel;
 
@@ -2648,4 +2652,55 @@ pub(crate) fn open_repo_panel(
     }
 
     detail
+}
+
+/// The nostr store of `announcement`'s repository, without opening a repository panel.
+fn repo_store(announcement: &Announcement, cx: &mut App) -> Entity<RepoStore> {
+    cx.new(|cx| RepoStore::new(announcement.addr(), announcement.relays.clone(), cx))
+}
+
+/// An item of a repository to open from outside its detail panel.
+/// A patch has no detail view in Signed, so it opens nothing.
+pub(crate) enum RepoItem {
+    Issue(EventId),
+    PullRequest(EventId),
+    Patch,
+}
+
+/// Open the detail panel of `item` in `announcement`'s repository, in the dock's center.
+///
+/// The repository store is built here, not taken from a `RepoDetailView`, so the
+/// item panel is the only panel docked.
+///
+/// A patch opens nothing: patches are only consumed inside a pull request's
+/// detail panel, and have no panel of their own.
+pub(crate) fn open_repo_item(
+    dock_area: &WeakEntity<DockArea>,
+    announcement: &Announcement,
+    item: RepoItem,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let panel: Arc<dyn PanelView> =
+        match item {
+            RepoItem::Issue(issue_id) => {
+                let store = repo_store(announcement, cx);
+                panel_handle(cx.new(|cx| IssueDetailView::new(store, issue_id, window, cx)))
+            }
+            RepoItem::PullRequest(pr_id) => {
+                let store = repo_store(announcement, cx);
+                panel_handle(cx.new(|cx| {
+                    PullRequestDetailView::new(dock_area.clone(), store, pr_id, window, cx)
+                }))
+            }
+            RepoItem::Patch => return,
+        };
+
+    let Some(dock_area) = dock_area.upgrade() else {
+        return;
+    };
+
+    dock_area.update(cx, |dock_area, cx| {
+        add_center_panel(dock_area, panel, window, cx);
+    });
 }

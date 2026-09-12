@@ -1,9 +1,4 @@
 /// Refresh coalescing shared by the event stores.
-///
-/// [`crate::RepoStore`], [`crate::RepoListStore`] and [`crate::CheckoutsStore`]
-/// re-query their inputs on a debounce timer with the same policy:
-/// a request arriving while a run is in flight is folded into a follow-up run,
-/// a request arriving while the debounce timer is pending is dropped by it.
 #[derive(Debug, Default)]
 pub struct RefreshGate {
     /// A run is in flight.

@@ -23,7 +23,7 @@ use signed_state::{
 };
 use signed_ui::{NavItem, PixelAvatar, UserAvatar, title_bar_drag_handlers};
 
-use super::{RepoDetailView, RepoListView, open_repo_panel};
+use super::{InboxView, RepoDetailView, RepoListView, open_repo_panel};
 
 mod create_repo_dialog;
 pub(crate) mod grasp_servers;
@@ -37,6 +37,7 @@ use self::onboarding_dialog::OnboardingState;
 pub struct SidebarPanel {
     focus_handle: FocusHandle,
     dock_area: WeakEntity<DockArea>,
+    inbox: Option<WeakEntity<InboxView>>,
     explore: Option<WeakEntity<RepoListView>>,
     /// Artwork for the sign-in screen.
     banner: SharedString,
@@ -71,6 +72,7 @@ impl SidebarPanel {
 
             if signer_required {
                 this.banner = pick_banner();
+                cx.notify();
             }
 
             if this.refresh(cx) || signer_required {
@@ -99,9 +101,10 @@ impl SidebarPanel {
             }
         }));
 
-        let mut this = Self {
+        Self {
             focus_handle: cx.focus_handle(),
             dock_area,
+            inbox: None,
             explore: None,
             banner: pick_banner(),
             announcements: Arc::new(Vec::new()),
@@ -109,22 +112,9 @@ impl SidebarPanel {
             scanning: false,
             unpushed: HashMap::new(),
             _subscriptions: subscriptions,
-        };
-
-        // Seed the snapshot right away.
-        // The stores may already hold data from before the panel opened.
-        // The first render must not depend on a later store update.
-        this.refresh(cx);
-
-        this
+        }
     }
 
-    /// The sidebar renders only its own derived fields, never the stores
-    /// directly. Because the panel is a cached view, a store update alone does
-    /// not re-render it: the observers notify this panel, which re-runs
-    /// `render` over the fresh snapshot.
-    ///
-    /// Returns `true` when a rendered field changed.
     fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
         let backend = Backend::global(cx);
         let user = backend.read(cx).current_user();
@@ -200,6 +190,20 @@ impl SidebarPanel {
             for announcement in self.announcements.iter() {
                 checkouts.request_push_statuses(&announcement.addr(), cx);
             }
+        });
+    }
+
+    /// Open the inbox home panel in the dock area's center.
+    pub fn open_inbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.inbox.as_ref().and_then(WeakEntity::upgrade).is_some() {
+            return;
+        }
+
+        let panel = cx.new(|cx| InboxView::new(self.dock_area.clone(), cx));
+        self.inbox = Some(panel.downgrade());
+
+        let _ = self.dock_area.update(cx, |dock_area, cx| {
+            add_center_panel(dock_area, panel_handle(panel), window, cx);
         });
     }
 
@@ -616,7 +620,7 @@ impl Render for SidebarPanel {
                             .child(
                                 NavItem::new("inbox", "Inbox", Icon::new(IconName::Inbox).small())
                                     .on_click(cx.listener(|this, _ev, window, cx| {
-                                        this.open_explore(window, cx)
+                                        this.open_inbox(window, cx)
                                     })),
                             )
                             .child(

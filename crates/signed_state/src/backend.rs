@@ -14,6 +14,8 @@ use signed_core::{Announcement, RepoAddr, build_state, filters, identifier_from_
 use signed_nostr::{SignedAuthUrlHandler, UniversalSigner, Update};
 
 use crate::git_store::GitStore;
+use crate::inbox::Inbox;
+use crate::repos::RepoListStore;
 
 /// Keyring entry for the user credential.
 pub const USER_KEYRING: &str = "Signed Safe Storage";
@@ -32,10 +34,6 @@ pub const BOOTSTRAP_RELAYS: [&str; 4] = [
 pub const INDEXER_RELAYS: [&str; 2] = ["wss://indexer.coracle.social", "wss://user.kindpag.es"];
 
 /// Delay the notification pump waits for more events before emitting a batch.
-///
-/// A negentropy sync can deliver hundreds of events in a burst; batching
-/// them here means every subscriber debounces the burst once, not once per
-/// subscriber.
 const PUMP_DEBOUNCE: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone)]
@@ -77,21 +75,17 @@ impl BackendEvent {
     }
 }
 
-/// The global backend entity.
-///
-/// Owns the nostr client, the signer and the notification pump.
 pub struct Backend {
     client: Client,
     signer: UniversalSigner,
     current_user: Option<PublicKey>,
+    /// User's inbox, including notifications and recent activity.
+    inbox: Entity<Inbox>,
+    /// The progress of the current sync operation, if any.
     sync_progress: Option<(u64, u64)>,
     /// True when the stored credential is NIP-49 encrypted.
     passphrase_required: bool,
     /// Repositories with a push in flight, mirror or checkout based.
-    ///
-    /// A child entity: views that only care whether one repository is
-    /// pushing can `cx.observe` it without being invoked on unrelated
-    /// `Backend` changes (a `sync_progress` tick, a new relay connecting).
     pushing_repos: Entity<HashSet<RepoAddr>>,
 }
 
@@ -112,6 +106,7 @@ impl Backend {
     }
 
     pub(crate) fn new(client: Client, signer: UniversalSigner, cx: &mut Context<Self>) -> Self {
+        let weak = cx.entity().downgrade();
         let pump_client = client.clone();
 
         let pump: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
@@ -133,13 +128,17 @@ impl Backend {
 
                 loop {
                     let now = Instant::now();
+
                     if now >= deadline {
                         break;
                     }
+
                     let timer = cx.background_executor().timer(deadline - now);
                     futures::pin_mut!(timer);
+
                     let next = notifications.next();
                     futures::pin_mut!(next);
+
                     match futures::future::select(next, timer).await {
                         futures::future::Either::Left((
                             Some(ClientNotification::Event { event, .. }),
@@ -156,7 +155,9 @@ impl Backend {
                 // Collect and emit the collected events.
                 let batch = std::mem::take(&mut pending);
 
-                if let Err(e) = this.update(cx, |_, cx| cx.emit(BackendEvent::NostrUpdate(batch))) {
+                if let Err(e) =
+                    this.update(cx, |_this, cx| cx.emit(BackendEvent::NostrUpdate(batch)))
+                {
                     log::warn!("failed to emit nostr update: {e}");
                 }
             }
@@ -167,7 +168,6 @@ impl Backend {
         pump.detach();
 
         // Bootstrap the client.
-        let weak = cx.entity().downgrade();
         cx.defer(move |cx| {
             if let Err(error) = weak.update(cx, |this, cx| this.bootstrap(cx)) {
                 log::warn!("backend dropped before bootstrap could run: {error}");
@@ -178,53 +178,54 @@ impl Backend {
             client,
             signer,
             current_user: None,
+            inbox: cx.new(|_| Inbox::default()),
             sync_progress: None,
             passphrase_required: false,
             pushing_repos: cx.new(|_| HashSet::new()),
         }
     }
 
-    /// Bootstrap the client.
-    ///
-    /// Restore the saved session, if any.
+    /// Bootstrap the client and restore the saved session, if any.
     fn bootstrap(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
 
         let task = cx.background_spawn(async move {
             for url in BOOTSTRAP_RELAYS {
-                client.add_relay(url).and_connect().await?;
+                client.add_relay(url).await?;
             }
+
             for url in INDEXER_RELAYS {
                 client
                     .add_relay(url)
                     .capabilities(RelayCapabilities::DISCOVERY)
-                    .and_connect()
                     .await?;
             }
+
+            client.connect().await;
+
             Ok::<(), Error>(())
         });
 
         let notify_task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             match task.await {
                 Ok(()) => {
-                    this.update(cx, |_this, cx| cx.notify())?;
+                    this.update(cx, |this, cx| {
+                        this.restore_session(cx);
+                    })?;
                 }
                 Err(e) => {
                     this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
                 }
             }
-            Ok(())
+            Ok::<(), Error>(())
         });
         notify_task.detach();
-
-        self.restore_session(cx);
     }
 
-    /// Restore the saved session from the keyring.
+    /// Restore the saved session from the Keyring.
     ///
-    /// Emits [`BackendEvent::SignerRequired`] when no credential is stored.
-    ///
-    /// Emits [`BackendEvent::PassphraseRequired`] for a NIP-49 encrypted identity.
+    /// - Emits [`BackendEvent::SignerRequired`] when no credential is stored.
+    /// - Emits [`BackendEvent::PassphraseRequired`] for a NIP-49 encrypted identity.
     pub fn restore_session(&mut self, cx: &mut Context<Self>) {
         if cfg!(target_arch = "wasm32") {
             cx.emit(BackendEvent::SignerRequired);
@@ -237,7 +238,7 @@ impl Backend {
             let content = match user.await {
                 Ok(Some((_username, secret))) => String::from_utf8(secret)?,
                 _ => {
-                    this.update(cx, |_, cx| cx.emit(BackendEvent::SignerRequired))?;
+                    this.update(cx, |_this, cx| cx.emit(BackendEvent::SignerRequired))?;
                     return Ok(());
                 }
             };
@@ -258,15 +259,13 @@ impl Backend {
                     signer.auth_url_handler(SignedAuthUrlHandler);
                     this.update(cx, |this, cx| this.set_signer(signer, cx))?;
                 } else if content.starts_with("ncryptsec1") {
-                    // Encrypted identity.
                     // A passphrase is required to decrypt it before the session can resume.
-                    log::warn!("stored identity is ncryptsec-encrypted; waiting for passphrase");
                     this.update(cx, |this, cx| {
                         this.passphrase_required = true;
                         cx.emit(BackendEvent::PassphraseRequired);
                     })?;
                 } else {
-                    this.update(cx, |_, cx| cx.emit(BackendEvent::SignerRequired))?;
+                    this.update(cx, |_this, cx| cx.emit(BackendEvent::SignerRequired))?;
                 }
 
                 Ok::<_, Error>(())
@@ -274,7 +273,7 @@ impl Backend {
             .await;
 
             if let Err(e) = result {
-                this.update(cx, |_, cx| {
+                this.update(cx, |_this, cx| {
                     cx.emit(BackendEvent::error(e.to_string()));
                     cx.emit(BackendEvent::SignerRequired);
                 })?;
@@ -360,7 +359,10 @@ impl Backend {
                 this.signer.swap_inner(keys);
                 this.current_user = Some(public_key);
                 this.bootstrap_user(public_key, cx);
+
                 cx.emit(BackendEvent::SignerChanged);
+                this.sync_inbox(cx);
+
                 cx.notify();
 
                 let relays: Vec<(RelayUrl, Option<RelayMetadata>)> = [
@@ -968,9 +970,7 @@ impl Backend {
         } else if credential.starts_with("bunker://") {
             self.login_with_bunker(credential, cx);
         } else {
-            cx.emit(BackendEvent::error(
-                "Unsupported credential, expected nsec1... or bunker://...",
-            ));
+            cx.emit(BackendEvent::error("Unsupported credential."));
         }
     }
 
@@ -999,7 +999,7 @@ impl Backend {
 
         let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             if let Err(e) = write.await {
-                this.update(cx, |_, cx| cx.emit(BackendEvent::error(e.to_string())))?;
+                this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
                 return Ok(());
             }
             this.update(cx, |this, cx| this.set_signer(keys, cx))?;
@@ -1045,7 +1045,7 @@ impl Backend {
             .await;
 
             if let Err(e) = result {
-                this.update(cx, |_, cx| cx.emit(BackendEvent::error(e.to_string())))?;
+                this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
             }
 
             Ok(())
@@ -1066,6 +1066,7 @@ impl Backend {
                 this.passphrase_required = false;
                 cx.emit(BackendEvent::SignerChanged);
                 cx.emit(BackendEvent::SignerRequired);
+                this.sync_inbox(cx);
                 cx.notify();
             })?;
 
@@ -1096,7 +1097,7 @@ impl Backend {
             .await;
 
             if let Err(e) = result {
-                this.update(cx, |_, cx| cx.emit(BackendEvent::error(e.to_string())))?;
+                this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
             }
 
             Ok(())
@@ -1121,6 +1122,13 @@ impl Backend {
         self.pushing_repos.clone()
     }
 
+    /// The inbox child entity backing the home screen.
+    ///
+    /// A child entity: `cx.observe` it to react only to inbox changes.
+    pub fn inbox(&self) -> Entity<Inbox> {
+        self.inbox.clone()
+    }
+
     /// Get the current user's public key.
     pub fn current_user(&self) -> Option<PublicKey> {
         self.current_user
@@ -1136,6 +1144,35 @@ impl Backend {
         cx.emit(BackendEvent::error(message));
     }
 
+    /// Attach the inbox to the current signer and activate or clear it.
+    fn sync_inbox(&mut self, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        let me = self.current_user;
+
+        if let Some(me) = me {
+            self.subscribe_bootstrap(filters::notifications(me), cx);
+            self.subscribe_bootstrap(vec![filters::authored_activity(me)], cx);
+
+            let relays: HashSet<RelayUrl> = RepoListStore::global(cx)
+                .read(cx)
+                .announcements_of(&me)
+                .into_iter()
+                .flat_map(|announcement| announcement.relays)
+                .collect();
+
+            if !relays.is_empty() {
+                let relays: Vec<RelayUrl> = relays.into_iter().collect();
+                self.connect_repo_relays(relays.clone(), filters::notifications(me), cx);
+                self.connect_repo_relays(relays, vec![filters::authored_activity(me)], cx);
+            }
+        }
+
+        self.inbox.update(cx, |inbox, cx| match me {
+            Some(me) => inbox.activate(me, client, cx),
+            None => inbox.reset(cx),
+        });
+    }
+
     /// Progress of the in-flight negentropy sync, if any.
     pub fn sync_progress(&self) -> Option<(u64, u64)> {
         self.sync_progress
@@ -1149,7 +1186,7 @@ impl Backend {
         <T as AsyncSignEvent>::Error: std::error::Error + Send + Sync + 'static,
         <T as AsyncNip44>::Error: std::error::Error + Send + Sync + 'static,
     {
-        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             match new_signer.get_public_key_async().await {
                 Ok(public_key) => {
                     this.update(cx, |this, cx| {
@@ -1158,6 +1195,7 @@ impl Backend {
                         this.passphrase_required = false;
                         this.bootstrap_user(public_key, cx);
                         cx.emit(BackendEvent::SignerChanged);
+                        this.sync_inbox(cx);
                         cx.notify();
                     })?;
                 }
@@ -1168,15 +1206,12 @@ impl Backend {
                 }
             }
 
-            Ok(())
-        });
-        task.detach();
+            Ok::<(), Error>(())
+        })
+        .detach();
     }
 
     /// Connect to a repository's announced relays, its NIP-34 `relays` tag.
-    ///
-    /// Callers are responsible for not repeating this for relays they already
-    /// connected, e.g. `RepoStore::repo_relays`.
     pub fn connect_repo_relays(
         &mut self,
         relays: Vec<RelayUrl>,
@@ -1185,13 +1220,13 @@ impl Backend {
     ) {
         let client = self.client.clone();
 
-        let task: Task<Result<(), Error>> = cx.spawn(async move |_this, _cx| {
+        cx.spawn(async move |_this, _cx| {
             if let Err(e) = connect_repo_relays(&client, relays, filters).await {
                 log::warn!("repo relay fetch failed: {e}");
             }
-            Ok(())
-        });
-        task.detach();
+            Ok::<(), Error>(())
+        })
+        .detach();
     }
 
     /// One-shot subscription on the bootstrap relays only.
@@ -1201,23 +1236,24 @@ impl Backend {
         let fetch =
             cx.background_spawn(async move { subscribe_bootstrap_only(&client, filters).await });
 
-        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             if let Err(e) = fetch.await {
-                this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
+                this.update(cx, |_this, cx| {
+                    cx.emit(BackendEvent::error(e.to_string()));
+                })?;
             }
-            Ok(())
-        });
-        task.detach();
+            Ok::<(), Error>(())
+        })
+        .detach();
     }
 
     /// Negentropy-sync the given filter against the bootstrap relays.
     pub fn sync_bootstrap(&mut self, filter: Filter, cx: &mut Context<Self>) {
         let client = self.client.clone();
+        let (tx, mut rx) = SyncProgress::channel();
 
         self.sync_progress = Some((0, 0));
         cx.notify();
-
-        let (tx, mut rx) = SyncProgress::channel();
 
         let progress_task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let mut last_percent: u64 = 0;

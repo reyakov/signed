@@ -26,6 +26,19 @@ pub fn add_center_panel(
     area.add_panel_view(panel, DockPlacement::Center, None, window, cx);
 }
 
+/// Add an already-wrapped panel handle to the bottom dock of `area`.
+///
+/// Used for sub-views that hang under the center, such as the inbox's Unread
+/// and Archived lists.
+pub fn add_bottom_panel(
+    area: &mut DockArea,
+    panel: Arc<dyn PanelView>,
+    window: &mut Window,
+    cx: &mut Context<DockArea>,
+) {
+    area.add_panel_view(panel, DockPlacement::Bottom, None, window, cx);
+}
+
 /// The fixed height of the tab bar, which doubles as the window title bar.
 pub const TAB_BAR_HEIGHT: Pixels = px(44.);
 
