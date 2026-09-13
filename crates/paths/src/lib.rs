@@ -23,7 +23,6 @@ static CURRENT_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// On Windows, this is `%APPDATA%\Signed`.
 static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-/// Returns the current user's home directory.
 pub fn home_dir() -> PathBuf {
     dirs::home_dir().expect("failed to determine home directory")
 }
@@ -42,7 +41,6 @@ pub fn documents_dir() -> PathBuf {
     dirs::document_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default())
 }
 
-/// Returns the path to the configuration directory.
 pub fn config_dir() -> &'static PathBuf {
     CONFIG_DIR.get_or_init(|| {
         if cfg!(target_os = "windows") {
@@ -62,7 +60,6 @@ pub fn config_dir() -> &'static PathBuf {
     })
 }
 
-/// Returns the path to the data directory.
 pub fn data_dir() -> &'static PathBuf {
     CURRENT_DATA_DIR.get_or_init(|| {
         if cfg!(target_os = "macos") {
@@ -98,7 +95,6 @@ pub fn repos_dir() -> &'static PathBuf {
     REPOS_DIR.get_or_init(|| data_dir().join("repos"))
 }
 
-/// Returns the path to the `settings.json` file.
 pub fn settings_file() -> &'static PathBuf {
     static SETTINGS_FILE: OnceLock<PathBuf> = OnceLock::new();
     SETTINGS_FILE.get_or_init(|| config_dir().join("settings.json"))

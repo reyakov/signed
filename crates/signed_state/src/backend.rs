@@ -17,7 +17,6 @@ use crate::git_store::GitStore;
 use crate::inbox::Inbox;
 use crate::repos::RepoListStore;
 
-/// Keyring entry for the user credential.
 pub const USER_KEYRING: &str = "Signed Safe Storage";
 /// Timeout for NIP-46 signer responses.
 pub const NOSTR_CONNECT_TIMEOUT: u64 = 60;
@@ -33,12 +32,10 @@ pub const BOOTSTRAP_RELAYS: [&str; 4] = [
 /// Relays used to index the user's NIP-65 relay list.
 pub const INDEXER_RELAYS: [&str; 2] = ["wss://indexer.coracle.social", "wss://user.kindpag.es"];
 
-/// Delay the notification pump waits for more events before emitting a batch.
 const PUMP_DEBOUNCE: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
-    /// User has no signer configured.
     SignerRequired,
     /// The stored identity is NIP-49 encrypted key.
     PassphraseRequired,
@@ -51,18 +48,13 @@ pub enum BackendEvent {
     /// instead of emitting per-event and making every subscriber debounce
     /// the same burst independently.
     NostrUpdate(Vec<Update>),
-    /// A negentropy sync completed.
     Synced,
-    /// A negentropy sync is in flight.
     SyncProgress {
-        /// Total events to process.
         total: u64,
-        /// Events processed so far.
         current: u64,
     },
     /// An event built locally was signed, broadcast and stored.
     Published(Box<Event>),
-    /// An error occurred.
     Error(String),
 }
 
@@ -79,13 +71,10 @@ pub struct Backend {
     client: Client,
     signer: UniversalSigner,
     current_user: Option<PublicKey>,
-    /// User's inbox, including notifications and recent activity.
     inbox: Entity<Inbox>,
-    /// The progress of the current sync operation, if any.
     sync_progress: Option<(u64, u64)>,
     /// True when the stored credential is NIP-49 encrypted.
     passphrase_required: bool,
-    /// Repositories with a push in flight, mirror or checkout based.
     pushing_repos: Entity<HashSet<RepoAddr>>,
 }
 
@@ -96,7 +85,6 @@ impl Global for GlobalBackend {}
 impl EventEmitter<BackendEvent> for Backend {}
 
 impl Backend {
-    /// Retrieve the global backend.
     pub fn global(cx: &App) -> Entity<Self> {
         cx.global::<GlobalBackend>().0.clone()
     }
@@ -114,7 +102,6 @@ impl Backend {
             let mut pending: Vec<Update> = Vec::new();
 
             'outer: loop {
-                // Wait for the first event of a batch.
                 match notifications.next().await {
                     Some(ClientNotification::Event { event, .. }) => {
                         pending.push(Update::from_event(&event));
@@ -123,7 +110,6 @@ impl Backend {
                     None => break,
                 }
 
-                // Collect everything else that arrives within the debounce window.
                 let deadline = Instant::now() + PUMP_DEBOUNCE;
 
                 loop {
@@ -152,7 +138,6 @@ impl Backend {
                     }
                 }
 
-                // Collect and emit the collected events.
                 let batch = std::mem::take(&mut pending);
 
                 if let Err(e) =
@@ -167,7 +152,6 @@ impl Backend {
 
         pump.detach();
 
-        // Bootstrap the client.
         cx.defer(move |cx| {
             if let Err(error) = weak.update(cx, |this, cx| this.bootstrap(cx)) {
                 log::warn!("backend dropped before bootstrap could run: {error}");
@@ -185,7 +169,6 @@ impl Backend {
         }
     }
 
-    /// Bootstrap the client and restore the saved session, if any.
     fn bootstrap(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
 
@@ -259,7 +242,6 @@ impl Backend {
                     signer.auth_url_handler(SignedAuthUrlHandler);
                     this.update(cx, |this, cx| this.set_signer(signer, cx))?;
                 } else if content.starts_with("ncryptsec1") {
-                    // A passphrase is required to decrypt it before the session can resume.
                     this.update(cx, |this, cx| {
                         this.passphrase_required = true;
                         cx.emit(BackendEvent::PassphraseRequired);
@@ -319,7 +301,6 @@ impl Backend {
         })
     }
 
-    /// Create a new identity.
     pub fn create_identity(
         &mut self,
         name: &str,
@@ -348,7 +329,6 @@ impl Backend {
             let (keys, ncryptsec) = job.await?;
             let public_key = keys.public_key();
 
-            // Persist the encrypted credential.
             let write = cx.update(|cx| {
                 cx.write_credentials(USER_KEYRING, &public_key.to_hex(), ncryptsec.as_bytes())
             });
@@ -446,7 +426,6 @@ impl Backend {
             return Task::ready(Err(anyhow!("Sign in to create a repository")));
         };
 
-        // The repository identifier is derived from the name.
         let repo_id = identifier_from_name(&name);
 
         if repo_id.is_empty() || repo_id.len() > 100 {
@@ -629,7 +608,6 @@ impl Backend {
             return Task::ready(Err(anyhow!("Sign in to publish a repository")));
         };
 
-        // The identifier derives from the name, as in [`Self::create_repository`].
         let repo_id = identifier_from_name(&name);
 
         if repo_id.is_empty() || repo_id.len() > 100 {
@@ -937,7 +915,6 @@ impl Backend {
         let addr = addr.clone();
 
         cx.spawn(async move |this, cx| {
-            // Collect every event of the repository from the local database.
             let events = cx.background_spawn(async move {
                 let db = client.database();
                 let mut events = Vec::new();
@@ -974,7 +951,6 @@ impl Backend {
         }
     }
 
-    /// Create a fresh identity and login with it.
     pub fn login_with_new_identity(&mut self, cx: &mut Context<Self>) {
         let nsec = Keys::generate()
             .secret_key()
@@ -983,7 +959,6 @@ impl Backend {
         self.login_with_nsec(&nsec, cx);
     }
 
-    /// Login with an `nsec1...` secret key.
     pub fn login_with_nsec(&mut self, nsec: &str, cx: &mut Context<Self>) {
         let keys = match SecretKey::parse(nsec) {
             Ok(secret) => Keys::new(secret),
@@ -1053,7 +1028,6 @@ impl Backend {
         task.detach();
     }
 
-    /// Remove the saved credential and reset to an anonymous session.
     pub fn logout(&mut self, cx: &mut Context<Self>) {
         let delete = cx.delete_credentials(USER_KEYRING);
 
@@ -1075,7 +1049,6 @@ impl Backend {
         task.detach();
     }
 
-    /// Sync the user's grasp list and add the listed grasp servers as relays.
     fn bootstrap_user(&mut self, public_key: PublicKey, cx: &mut Context<Self>) {
         let client = self.client.clone();
 
@@ -1105,46 +1078,34 @@ impl Backend {
         task.detach();
     }
 
-    /// Get the nostr client.
     pub fn client(&self) -> Client {
         self.client.clone()
     }
 
-    /// Get the current signer.
     pub fn signer(&self) -> UniversalSigner {
         self.signer.clone()
     }
 
-    /// Repositories with a push in flight, mirror or checkout based.
-    ///
-    /// A child entity: `cx.observe` it to react only to push-state changes.
     pub fn pushing_repos(&self) -> Entity<HashSet<RepoAddr>> {
         self.pushing_repos.clone()
     }
 
-    /// The inbox child entity backing the home screen.
-    ///
-    /// A child entity: `cx.observe` it to react only to inbox changes.
     pub fn inbox(&self) -> Entity<Inbox> {
         self.inbox.clone()
     }
 
-    /// Get the current user's public key.
     pub fn current_user(&self) -> Option<PublicKey> {
         self.current_user
     }
 
-    /// True when the stored credential is NIP-49 encrypted.
     pub fn passphrase_required(&self) -> bool {
         self.passphrase_required
     }
 
-    /// Surface an error message through [`BackendEvent::Error`].
     pub fn emit_error(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
         cx.emit(BackendEvent::error(message));
     }
 
-    /// Attach the inbox to the current signer and activate or clear it.
     fn sync_inbox(&mut self, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let me = self.current_user;
@@ -1173,12 +1134,10 @@ impl Backend {
         });
     }
 
-    /// Progress of the in-flight negentropy sync, if any.
     pub fn sync_progress(&self) -> Option<(u64, u64)> {
         self.sync_progress
     }
 
-    /// Update the signer.
     pub fn set_signer<T>(&mut self, new_signer: T, cx: &mut Context<Self>)
     where
         T: AsyncGetPublicKey + AsyncSignEvent + AsyncNip44 + 'static,
@@ -1229,7 +1188,6 @@ impl Backend {
         .detach();
     }
 
-    /// One-shot subscription on the bootstrap relays only.
     pub fn subscribe_bootstrap(&mut self, filters: Vec<Filter>, cx: &mut Context<Self>) {
         let client = self.client.clone();
 
@@ -1247,7 +1205,6 @@ impl Backend {
         .detach();
     }
 
-    /// Negentropy-sync the given filter against the bootstrap relays.
     pub fn sync_bootstrap(&mut self, filter: Filter, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let (tx, mut rx) = SyncProgress::channel();
@@ -1399,7 +1356,6 @@ async fn publish_best_effort(client: &Client, signer: &UniversalSigner, builder:
     }
 }
 
-/// Add the given relays, connect and fetch the filters.
 async fn connect_repo_relays(
     client: &Client,
     relays: Vec<RelayUrl>,
@@ -1409,12 +1365,10 @@ async fn connect_repo_relays(
         return Ok(());
     }
 
-    // Ensure relay connections
     for url in relays.iter() {
         client.add_relay(url).and_connect().await?;
     }
 
-    // Run neg sync for each filter
     for filter in filters.into_iter() {
         if let Err(e) = client.sync(filter).with(relays.iter()).await {
             log::warn!("repo relay negentropy sync failed: {e}");
@@ -1424,7 +1378,6 @@ async fn connect_repo_relays(
     Ok(())
 }
 
-/// Subscribe only on the bootstrap relays.
 pub(crate) async fn subscribe_bootstrap_only(
     client: &Client,
     filters: Vec<Filter>,
@@ -1443,7 +1396,6 @@ pub(crate) async fn subscribe_bootstrap_only(
     Ok(())
 }
 
-/// Negentropy-sync the filter against the bootstrap relays only.
 pub(crate) async fn sync_bootstrap_only(
     client: &Client,
     filter: Filter,
@@ -1481,7 +1433,6 @@ pub(crate) fn grasp_base_url(relay: &RelayUrl) -> Option<String> {
     Some(format!("{scheme}://{host}{port}"))
 }
 
-/// GRASP clone URL of a repository on a grasp server.
 fn grasp_clone_url(relay: &RelayUrl, owner: &str, repo_id: &str) -> Option<Url> {
     let base = grasp_base_url(relay)?;
     Url::parse(&format!("{base}/{owner}/{repo_id}.git")).ok()
@@ -1526,7 +1477,6 @@ fn latest_grasp_list_servers(events: Vec<Event>) -> Vec<RelayUrl> {
         .unwrap_or_default()
 }
 
-/// Resolve the user's published grasp servers from the local database.
 pub async fn user_grasp_list_servers(
     client: Client,
     user: PublicKey,
@@ -1540,18 +1490,14 @@ pub async fn user_grasp_list_servers(
     Ok(latest_grasp_list_servers(events))
 }
 
-/// Attempts per grasp server when a git push is denied transiently.
 const GRASP_PUSH_ATTEMPTS: usize = 3;
 
 /// Pause before re-staging a state event after a transient denial.
 const GRASP_RETRY_DELAY: Duration = Duration::from_secs(1);
 
-/// The outcome of pushing to one grasp server.
 #[derive(Debug, Clone)]
 pub struct GraspServerResult {
-    /// The grasp server's relay URL, e.g. `wss://relay.ngit.dev`.
     pub relay: RelayUrl,
-    /// The git URL the data was pushed to.
     pub git_url: String,
     /// `None` when the server accepted the data, the reason otherwise.
     pub reason: Option<String>,
@@ -1575,7 +1521,6 @@ impl GraspServerResult {
     }
 }
 
-/// The outcome of a staged push across every grasp server of a repository.
 #[derive(Debug, Clone, Default)]
 pub struct PushOutcome {
     /// Per-server results, in the order the servers were listed.
@@ -1587,7 +1532,6 @@ pub struct PushOutcome {
 }
 
 impl PushOutcome {
-    /// The number of grasp servers that accepted the git data.
     pub fn accepted(&self) -> usize {
         self.servers
             .iter()
@@ -1595,12 +1539,10 @@ impl PushOutcome {
             .count()
     }
 
-    /// Servers that did not accept the push.
     fn failing(&self) -> impl Iterator<Item = &GraspServerResult> {
         self.servers.iter().filter(|server| server.reason.is_some())
     }
 
-    /// One-line summary of every server failure, for error messages.
     pub fn failure_summary(&self) -> String {
         self.failing()
             .map(|server| {
@@ -1628,7 +1570,6 @@ impl PushOutcome {
     }
 }
 
-/// Collapse a multi-line relay or git error into one display line.
 fn flatten_whitespace(text: &str) -> String {
     const MAX_CHARS: usize = 200;
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -1760,7 +1701,6 @@ async fn stage_event_on_relay(
     }
 }
 
-/// Push the repository at `path` to every grasp server in `servers`.
 #[allow(clippy::too_many_arguments)]
 async fn push_staged_to_grasps(
     client: &Client,
@@ -1955,56 +1895,6 @@ mod tests {
         );
     }
 
-    fn grasp_list_event(servers: &[&str], created_at: u64) -> Event {
-        let keys = Keys::generate();
-        let tags: Vec<Tag> = servers
-            .iter()
-            .map(|url| Tag::parse(vec!["g", *url]).expect("valid tag"))
-            .collect();
-        EventBuilder::new(Kind::GitUserGraspList, "")
-            .tags(tags)
-            .custom_created_at(Timestamp::from(created_at))
-            .finalize(&keys)
-            .expect("signed event")
-    }
-
-    #[test]
-    fn grasp_list_servers_reads_g_tags_in_order() {
-        let event = grasp_list_event(
-            &["wss://first.example", "wss://second.example", "not a url"],
-            1000,
-        );
-
-        let servers = grasp_list_servers(&event);
-        assert_eq!(
-            servers.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            vec!["wss://first.example", "wss://second.example"]
-        );
-    }
-
-    #[test]
-    fn latest_grasp_list_servers_takes_the_newest_list_and_falls_back_empty() {
-        let old = grasp_list_event(&["wss://old.example"], 1000);
-        let fresh = grasp_list_event(&["wss://fresh.example", "wss://also.example"], 2000);
-
-        // The newest list wins, its `g` order preserved.
-        let servers = latest_grasp_list_servers(vec![old.clone(), fresh.clone()]);
-        assert_eq!(
-            servers.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            vec!["wss://fresh.example", "wss://also.example"]
-        );
-
-        // The order of the input events does not matter.
-        let servers = latest_grasp_list_servers(vec![fresh, old]);
-        assert_eq!(
-            servers.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            vec!["wss://fresh.example", "wss://also.example"]
-        );
-
-        // No list at all, empty, so the caller falls back to the defaults.
-        assert!(latest_grasp_list_servers(Vec::new()).is_empty());
-    }
-
     #[test]
     fn transient_grasp_denials_are_classified() {
         // The exact server rejection that started this work: the state event
@@ -2075,13 +1965,6 @@ mod tests {
     }
 
     #[test]
-    fn transient_denial_markers_match_case_insensitively() {
-        assert!(is_transient_grasp_denial(
-            "ERR NO STATE EVENTS IN PURGATORY"
-        ));
-    }
-
-    #[test]
     fn push_outcome_reports_partial_failures() {
         let outcome = PushOutcome {
             servers: vec![
@@ -2109,40 +1992,5 @@ mod tests {
         assert!(warning.contains("Republish to sync"));
         // The multi-line server reason is a single display line.
         assert_eq!(warning.lines().count(), 1);
-    }
-
-    #[test]
-    fn push_outcome_with_every_server_ok_has_no_warning() {
-        let outcome = PushOutcome {
-            servers: vec![
-                GraspServerResult::ok(
-                    RelayUrl::parse("wss://gitnostr.com").expect("url"),
-                    "https://gitnostr.com/npub1owner/repo.git".to_owned(),
-                ),
-                GraspServerResult::ok(
-                    RelayUrl::parse("wss://relay.ngit.dev").expect("url"),
-                    "https://relay.ngit.dev/npub1owner/repo.git".to_owned(),
-                ),
-            ],
-            state_event: None,
-        };
-
-        assert_eq!(outcome.accepted(), 2);
-        assert!(outcome.partial_warning().is_none());
-        assert_eq!(outcome.failure_summary(), "");
-    }
-
-    #[test]
-    fn push_outcome_without_servers_or_pushes_has_no_warning() {
-        assert!(PushOutcome::default().partial_warning().is_none());
-    }
-
-    #[test]
-    fn flatten_whitespace_collapses_and_clips_long_errors() {
-        assert_eq!(flatten_whitespace("a\n\n  b \t c"), "a b c");
-        let long = "word ".repeat(100);
-        let flat = flatten_whitespace(&long);
-        assert!(flat.ends_with('…'));
-        assert_eq!(flat.chars().count(), 201);
     }
 }

@@ -3561,7 +3561,6 @@ dependencies = [
  "gpui_macros",
  "gpui_shared_string",
  "gpui_util",
- "hdrhistogram",
  "heapless 0.9.3",
  "http_client",
  "image",
@@ -3743,20 +3742,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "gpui-fps"
-version = "0.1.0"
-source = "git+https://github.com/longbridge/gpui-component?rev=39c2c86dbee7ad445591462f8675f74082e10828#39c2c86dbee7ad445591462f8675f74082e10828"
-dependencies = [
- "gpui",
- "instant",
- "libc",
- "objc2-core-foundation",
- "objc2-io-kit",
- "sysinfo 0.37.2",
- "windows 0.58.0",
 ]
 
 [[package]]
@@ -4094,16 +4079,6 @@ dependencies = [
  "allocator-api2",
  "equivalent",
  "foldhash 0.2.0",
-]
-
-[[package]]
-name = "hdrhistogram"
-version = "7.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f49d1053f4708f0af3cf9fc5bffc7e68a914a3c45becb231c80068c9c3f78bea"
-dependencies = [
- "byteorder",
- "num-traits",
 ]
 
 [[package]]
@@ -6032,16 +6007,6 @@ dependencies = [
  "block2 0.6.2",
  "libc",
  "objc2 0.6.4",
- "objc2-core-foundation",
-]
-
-[[package]]
-name = "objc2-io-kit"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
-dependencies = [
- "libc",
  "objc2-core-foundation",
 ]
 
@@ -8003,7 +7968,6 @@ version = "0.1.0-alpha"
 dependencies = [
  "nostr",
  "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -8524,20 +8488,6 @@ dependencies = [
  "ntapi",
  "rayon",
  "windows 0.57.0",
-]
-
-[[package]]
-name = "sysinfo"
-version = "0.37.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16607d5caffd1c07ce073528f9ed972d88db15dd44023fa57142963be3feb11f"
-dependencies = [
- "libc",
- "memchr",
- "ntapi",
- "objc2-core-foundation",
- "objc2-io-kit",
- "windows 0.61.3",
 ]
 
 [[package]]
@@ -10907,7 +10857,6 @@ dependencies = [
  "gpui",
  "gpui-base",
  "gpui-component",
- "gpui-fps",
  "log",
  "nostr",
  "paths",
@@ -11333,7 +11282,7 @@ dependencies = [
  "rand 0.8.8",
  "screencapturekit",
  "screencapturekit-sys",
- "sysinfo 0.31.4",
+ "sysinfo",
  "tao-core-video-sys",
  "windows 0.61.3",
  "windows-capture",

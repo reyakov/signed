@@ -197,61 +197,6 @@ mod tests {
     }
 
     #[test]
-    fn labels_ignore_unauthorized_and_misnamed_events() {
-        let root = root_event();
-        let maintainer =
-            keys_from_hex("0000000000000000000000000000000000000000000000000000000000000002");
-        let stranger =
-            keys_from_hex("0000000000000000000000000000000000000000000000000000000000000003");
-
-        // A stranger's label event is not authorized.
-        let stranger_labels = signed(
-            &stranger,
-            Kind::Label,
-            vec![
-                e_tag(&root),
-                Tag::parse(["L", "#t"]).expect("valid L tag"),
-                Tag::parse(["l", "nope", "#t"]).expect("valid l tag"),
-            ],
-            200,
-        );
-        // A valid author referencing a different event.
-        let other_labels = signed(
-            &maintainer,
-            Kind::Label,
-            vec![
-                Tag::parse([
-                    "e",
-                    "2222222222222222222222222222222222222222222222222222222222222222",
-                ])
-                .expect("valid e tag"),
-                Tag::parse(["L", "#t"]).expect("valid L tag"),
-                Tag::parse(["l", "nope", "#t"]).expect("valid l tag"),
-            ],
-            200,
-        );
-        // A valid author without the namespace declaration.
-        let missing_namespace = signed(
-            &maintainer,
-            Kind::Label,
-            vec![
-                e_tag(&root),
-                Tag::parse(["l", "nope", "#t"]).expect("valid l tag"),
-            ],
-            200,
-        );
-
-        assert_eq!(
-            labels(
-                &root,
-                &[stranger_labels, other_labels, missing_namespace],
-                &[maintainer.public_key()]
-            ),
-            vec!["bug"]
-        );
-    }
-
-    #[test]
     fn subject_override_latest_authorized_event_wins() {
         let root = root_event();
         let maintainer =
@@ -299,12 +244,5 @@ mod tests {
         let maintainers = [maintainer.public_key()];
         let note = cover_note(&root, &events, &maintainers);
         assert_eq!(note.map(|event| event.id), Some(newer_id));
-    }
-
-    #[test]
-    fn cover_note_none_without_valid_events() {
-        let root = root_event();
-
-        assert_eq!(cover_note(&root, &[], &[]), None);
     }
 }

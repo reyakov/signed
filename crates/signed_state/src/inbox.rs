@@ -11,7 +11,6 @@ use crate::backend::Backend;
 #[derive(Default)]
 pub struct Inbox {
     state: InboxReadState,
-    /// Set once the stored state has been read for the current user.
     loaded: bool,
 }
 
@@ -21,12 +20,10 @@ impl Inbox {
         &self.state
     }
 
-    /// Whether the stored state has been read for the current user.
     pub fn is_loaded(&self) -> bool {
         self.loaded
     }
 
-    /// Mark the events of one notification group read, then bound the id sets.
     pub fn mark_read(
         &mut self,
         group: &[Event],
@@ -42,7 +39,7 @@ impl Inbox {
         cx.notify();
     }
 
-    /// Archive one notification group. Archived events are always read too.
+    /// Archived events are always read too.
     pub fn mark_archived(
         &mut self,
         group: &[Event],
@@ -62,14 +59,12 @@ impl Inbox {
         cx.notify();
     }
 
-    /// Mark every known notification read.
     pub fn mark_all_read(&mut self, all: &[Event], me: PublicKey, cx: &mut Context<Self>) {
         self.state.mark_all_read(all, me, Timestamp::now());
         self.persist(cx);
         cx.notify();
     }
 
-    /// Load the stored state for current user.
     pub(crate) fn activate(&mut self, me: PublicKey, client: Client, cx: &mut Context<Self>) {
         self.state = InboxReadState::default();
         self.loaded = false;
@@ -101,7 +96,6 @@ impl Inbox {
         .detach();
     }
 
-    /// Clear the state of the signed-out user.
     pub(crate) fn reset(&mut self, cx: &mut Context<Self>) {
         self.state = InboxReadState::default();
         self.loaded = false;
@@ -128,7 +122,6 @@ impl Inbox {
     }
 }
 
-/// Derive the inbox home screen's threads for `me` from the local database.
 pub async fn query_inbox(
     client: &Client,
     me: PublicKey,
@@ -166,7 +159,6 @@ fn inbox_state_d_tag(me: PublicKey) -> String {
     format!("signed-inbox-state:{}", me.to_hex())
 }
 
-/// Newest stored state for `me`.
 async fn load_state(client: &Client, me: PublicKey) -> Result<Option<InboxReadState>, Error> {
     let filter = Filter::new()
         .kind(Kind::ApplicationSpecificData)
@@ -223,7 +215,6 @@ async fn fetch_notifications(
     let mut seen: HashSet<EventId> = by_id.keys().copied().collect();
 
     loop {
-        // Keep only ids not walked yet, and remember them.
         pending.retain(|id| seen.insert(*id));
 
         if pending.is_empty() {

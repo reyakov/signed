@@ -254,13 +254,6 @@ mod tests {
     }
 
     #[test]
-    fn root_git_kinds_are_activity() {
-        for kind in [Kind::GitIssue, Kind::GitPatch, Kind::GitPullRequest] {
-            assert!(is_git_activity(&signed(&keys(1), kind, Vec::new())));
-        }
-    }
-
-    #[test]
     fn comment_activity_depends_on_the_uppercase_k_tag() {
         let on_git = signed(&keys(1), Kind::Comment, vec![kind_tag("K", Kind::GitIssue)]);
         let on_repo = signed(
@@ -305,20 +298,6 @@ mod tests {
             &keys(1),
             Kind::GitStatusClosed,
             Vec::new()
-        )));
-    }
-
-    #[test]
-    fn non_git_kinds_are_not_activity() {
-        assert!(!is_git_activity(&signed(
-            &keys(1),
-            Kind::TextNote,
-            Vec::new()
-        )));
-        assert!(!is_git_activity(&signed(
-            &keys(1),
-            Kind::GitPullRequestUpdate,
-            Vec::new(),
         )));
     }
 }

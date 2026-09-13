@@ -39,10 +39,6 @@ mod tests {
         assert_eq!(relative_time(now - 3 * 86_400), "3d ago");
         assert_eq!(relative_time(now - 60 * 86_400), "2mo ago");
         assert_eq!(relative_time(now - 800 * 86_400), "2y ago");
-    }
-
-    #[test]
-    fn clamps_future_timestamps() {
-        assert_eq!(relative_time(Timestamp::now() + 600), "just now");
+        assert_eq!(relative_time(now + 600), "just now");
     }
 }

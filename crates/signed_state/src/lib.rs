@@ -21,7 +21,6 @@ pub use repo::RepoStore;
 pub use repos::{LocalReposStore, RepoActivityCounts, RepoListStore};
 use signed_nostr::new_backend;
 
-/// Initialize the backend and stores, and install them as globals.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn init(
     db_path: impl AsRef<Path>,

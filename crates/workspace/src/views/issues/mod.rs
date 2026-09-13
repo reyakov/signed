@@ -4,8 +4,8 @@ use assets::CustomIconName;
 use dock::{BasePanel, DockArea, Panel, PanelEvent, add_center_panel, panel_handle};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
-    SharedString, Size, WeakEntity, Window, div, px, size,
+    AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels,
+    Render, SharedString, Size, Subscription, WeakEntity, Window, div, px, size,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::dialog::{DialogDescription, DialogFooter, DialogHeader, DialogTitle};
@@ -21,24 +21,20 @@ use signed_state::{ProfileStore, RepoStore};
 use signed_ui::{SegmentButton, UserAvatar, placeholder, status_badge};
 use utils::relative_time;
 
-use super::issue_detail::IssueDetailView;
+pub(super) mod detail;
 
-/// Height of one issue row in the virtual list.
+use self::detail::IssueDetailView;
+
 const ISSUE_ROW_HEIGHT: f32 = 73.;
 
-/// Status filter of the issues list, chosen via the header's filter buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IssueFilter {
-    /// Every issue, regardless of status.
     All,
-    /// Issues whose resolved status is [`RepoStatus::Open`].
     Open,
-    /// Issues whose resolved status is [`RepoStatus::Closed`].
     Closed,
 }
 
 impl IssueFilter {
-    /// Whether an issue with `status` is included by this filter.
     fn matches(self, status: RepoStatus) -> bool {
         match self {
             Self::All => true,
@@ -50,36 +46,36 @@ impl IssueFilter {
 
 pub struct IssuesView {
     focus_handle: FocusHandle,
-    /// Dock area the issue detail panel is opened in.
     dock_area: WeakEntity<DockArea>,
-    /// Repo store holding the issues and their statuses.
     store: Entity<RepoStore>,
-    /// Display name of the repository, for the panel title.
     repo_name: SharedString,
-    /// Filter selected in the header filter buttons.
     filter: IssueFilter,
-    /// Per-row heights of the virtual list.
     item_sizes: Rc<Vec<Size<Pixels>>>,
-    /// The filtered issue count [`Self::item_sizes`] was built for.
-    issue_len: usize,
-    /// Indices into the store's `issues` matching [`Self::filter`].
     visible_issues: Vec<usize>,
-    /// Header counts `(total, open, closed)`, rebuilt with [`Self::visible_issues`].
     counts: (usize, usize, usize),
-    /// Store version and filter the cached rows/counts were built from.
-    cache_key: Option<(u64, IssueFilter)>,
-    /// Virtual list state of the issues list.
+    // A filter change notifies even when the visible rows are unchanged,
+    // e.g. switching between two empty filters.
+    synced_filter: IssueFilter,
     scroll_handle: VirtualListScrollHandle,
+    _subscription: Subscription,
 }
 
 impl IssuesView {
     pub fn new(
         dock_area: WeakEntity<DockArea>,
         store: Entity<RepoStore>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let repo_name = store.read(cx).name();
+
+        let subscription = cx.observe(&store, |this, _store, cx| {
+            this.rebuild(cx);
+        });
+
+        cx.defer_in(window, |this, _window, cx| {
+            this.rebuild(cx);
+        });
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -88,12 +84,58 @@ impl IssuesView {
             repo_name,
             filter: IssueFilter::Open,
             item_sizes: Rc::new(Vec::new()),
-            issue_len: 0,
             visible_issues: Vec::new(),
             counts: (0, 0, 0),
-            cache_key: None,
+            synced_filter: IssueFilter::Open,
             scroll_handle: VirtualListScrollHandle::new(),
+            _subscription: subscription,
         }
+    }
+
+    fn rebuild(&mut self, cx: &mut Context<Self>) {
+        let filter = self.filter;
+
+        let (visible_issues, counts) = {
+            let store = self.store.read(cx);
+            let mut counts = (0usize, 0usize, 0usize);
+
+            let visible_issues: Vec<usize> = store
+                .issues
+                .iter()
+                .enumerate()
+                .filter_map(|(ix, issue)| {
+                    let status = store.status_of(issue);
+                    counts.0 += 1;
+                    match status {
+                        RepoStatus::Open => counts.1 += 1,
+                        RepoStatus::Closed => counts.2 += 1,
+                        RepoStatus::Draft | RepoStatus::Applied => {}
+                    }
+                    filter.matches(status).then_some(ix)
+                })
+                .collect();
+
+            (visible_issues, counts)
+        };
+
+        let filter_changed = self.synced_filter != filter;
+        let visible_issues_changed = self.visible_issues != visible_issues;
+        let counts_changed = self.counts != counts;
+
+        if !filter_changed && !visible_issues_changed && !counts_changed {
+            return;
+        }
+
+        self.item_sizes = Rc::new(vec![
+            size(px(0.), px(ISSUE_ROW_HEIGHT));
+            visible_issues.len()
+        ]);
+
+        self.synced_filter = filter;
+        self.visible_issues = visible_issues;
+        self.counts = counts;
+
+        cx.notify();
     }
 
     /// Open the detail panel of `issue_id` in the dock area.
@@ -176,7 +218,6 @@ impl IssuesView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        // Counts of the last list rebuild.
         let (total, open, closed) = self.counts;
 
         h_flex()
@@ -197,7 +238,7 @@ impl IssuesView {
                             .selected(self.filter == IssueFilter::All)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = IssueFilter::All;
-                                cx.notify();
+                                this.rebuild(cx);
                             })),
                     )
                     .child(
@@ -207,7 +248,7 @@ impl IssuesView {
                             .selected(self.filter == IssueFilter::Open)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = IssueFilter::Open;
-                                cx.notify();
+                                this.rebuild(cx);
                             })),
                     )
                     .child(
@@ -217,7 +258,7 @@ impl IssuesView {
                             .selected(self.filter == IssueFilter::Closed)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = IssueFilter::Closed;
-                                cx.notify();
+                                this.rebuild(cx);
                             })),
                     ),
             )
@@ -234,7 +275,6 @@ impl IssuesView {
     }
 }
 
-/// Open the new issue dialog, a title and a content input.
 pub(super) fn open_new_issue_dialog(store: Entity<RepoStore>, window: &mut Window, cx: &mut App) {
     let subject = cx.new(|cx| InputState::new(window, cx).placeholder("Issue title"));
     let content = cx.new(|cx| TextareaState::new(window, cx).placeholder("Describe the issue..."));
@@ -322,41 +362,7 @@ impl Focusable for IssuesView {
 impl Render for IssuesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filter = self.filter;
-
-        // Rows and counts are rebuilt only when the store refreshed or filter changed.
-        let version = self.store.read(cx).version();
-
-        if self.cache_key != Some((version, filter)) {
-            let store = self.store.read(cx);
-            let mut counts = (0usize, 0usize, 0usize);
-            self.visible_issues = store
-                .issues
-                .iter()
-                .enumerate()
-                .filter_map(|(ix, issue)| {
-                    let status = store.status_of(issue);
-                    counts.0 += 1;
-                    match status {
-                        RepoStatus::Open => counts.1 += 1,
-                        RepoStatus::Closed => counts.2 += 1,
-                        RepoStatus::Draft | RepoStatus::Applied => {}
-                    }
-                    filter.matches(status).then_some(ix)
-                })
-                .collect();
-            self.counts = counts;
-            self.cache_key = Some((version, filter));
-        }
-
         let count = self.visible_issues.len();
-
-        // The virtual list's item count comes from `item_sizes`.
-        // Rebuild it whenever the filtered issue count changes.
-        if count != self.issue_len {
-            self.issue_len = count;
-            self.item_sizes = Rc::new(vec![size(px(0.), px(ISSUE_ROW_HEIGHT)); count]);
-        }
-
         let sizes = self.item_sizes.clone();
         let scroll_handle = self.scroll_handle.clone();
 

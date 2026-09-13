@@ -35,7 +35,6 @@ where
                 .child(div().text_sm().text_ellipsis().child(item.label.clone())),
         )
         .on_click(move |_event, window, cx| {
-            // Folders expand/collapse via the tree itself.
             if is_folder {
                 return;
             }

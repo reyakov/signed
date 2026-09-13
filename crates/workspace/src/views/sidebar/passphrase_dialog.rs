@@ -10,16 +10,14 @@ use signed_state::Backend;
 
 use crate::views::dialog_state::{DialogProgress, error_row};
 
-/// Shared state for the passphrase dialog, so async results can be rendered.
+/// State of the passphrase dialog, so async results can be rendered.
 #[derive(Default)]
 pub struct PassphraseState {
-    /// Progress of the unlock flow.
     pub progress: DialogProgress,
     /// Keeps the Enter-to-submit subscription alive while the dialog is open.
     _enter_subscription: Option<Subscription>,
 }
 
-/// Open the dialog asking for the passphrase that protects the stored identity.
 pub fn open(window: &mut Window, cx: &mut App) {
     let pass_input = cx.new(|cx| {
         InputState::new(window, cx)
@@ -30,7 +28,7 @@ pub fn open(window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
     let state = cx.new(|_| PassphraseState::default());
 
-    // Enter in the passphrase field submits, same as the Unlock button.
+    // Enter in the passphrase field submits, like the Unlock button.
     let enter_pass_input = pass_input.clone();
     let enter_state = state.clone();
     let enter_subscription = cx.subscribe(&pass_input, move |_input, event, cx| {
@@ -95,7 +93,6 @@ pub fn open(window: &mut Window, cx: &mut App) {
     });
 }
 
-/// Submit the passphrase to the backend.
 fn unlock(
     pass_input: &Entity<InputState>,
     state: &Entity<PassphraseState>,

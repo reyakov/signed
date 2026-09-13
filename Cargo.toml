@@ -18,7 +18,6 @@ reqwest_client = { git = "https://github.com/zed-industries/zed" }
 # GPUI Kit
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "39c2c86dbee7ad445591462f8675f74082e10828", features = ["tree-sitter-languages"], }
 gpui-base = { git = "https://github.com/longbridge/gpui-component", rev = "39c2c86dbee7ad445591462f8675f74082e10828" }
-gpui-fps = { git = "https://github.com/longbridge/gpui-component", rev = "39c2c86dbee7ad445591462f8675f74082e10828" }
 
 dock = { path = "crates/dock" }
 settings = { path = "crates/settings" }

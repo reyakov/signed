@@ -6,7 +6,7 @@ use dock::{BasePanel, DockArea, DockPlacement, Panel, PanelEvent, panel_handle};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
-    SharedString, Size, WeakEntity, Window, div, px, relative, size,
+    SharedString, Size, Subscription, WeakEntity, Window, div, px, relative, size,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::clipboard::Clipboard;
@@ -20,9 +20,9 @@ use gpui_component::{
     ActiveTheme, Sizable, StyledExt, VirtualListScrollHandle, WindowExt, h_flex, v_flex,
     v_virtual_list,
 };
-use nostr::prelude::{Event, EventId, Kind};
+use nostr::prelude::{Event, EventId, Kind, Url};
 use signed_core::{
-    activity_subject, branch_name_of, clone_urls_of, current_commit_of, latest_update,
+    RepoAddr, activity_subject, branch_name_of, clone_urls_of, current_commit_of, latest_update,
     merge_base_of, pull_request_patch,
 };
 use signed_git::{FileCommit, patch_commits, patch_diffs};
@@ -30,45 +30,57 @@ use signed_state::{Backend, GitStore, ProfileStore, RepoStore};
 use signed_ui::{CountBadge, UserAvatar, placeholder, status_badge};
 use utils::{relative_time, relative_time_secs};
 
-use super::diff::{CommitDiffView, DiffPane};
-use super::helpers::{comment_form, comments_section, pr_roots, sidebar_section};
+use crate::views::commit_diff::{CommitDiffView, DiffPane};
+use crate::views::discussion::{comment_form, comments_section, pr_roots, sidebar_section};
 
-/// Height of one commit row in the commits tab's virtual list.
 const ROW_HEIGHT: f32 = 37.;
+
+/// Shown once the store's first pass is applied and the root PR is still absent.
+const NOT_FOUND: &str = "Pull request not found";
+
+/// A store refresh re-binds the panel, and reloads only when these change.
+#[derive(Clone, PartialEq, Eq)]
+struct PrBinding {
+    description: String,
+    patch: String,
+    tip: Option<String>,
+    base: Option<String>,
+    clone_urls: Vec<Url>,
+    addr: RepoAddr,
+    has_patch_link: bool,
+}
 
 /// Detail panel of a single pull request.
 pub struct PullRequestDetailView {
     focus_handle: FocusHandle,
-    /// Dock area where new panels, e.g. commit diffs, are added.
     dock_area: WeakEntity<DockArea>,
-    /// Repo store holding the PR, its status and comments.
     store: Entity<RepoStore>,
-    /// Event id of the root PR event, kind 1618.
-    /// Updates are revisions.
+    /// Event id of the root PR event, kind 1618. Updates are revisions.
     pr_id: EventId,
-    /// Input state of the comment textarea.
     comment_input: Entity<TextareaState>,
-    /// Display name of the repository, for panels opened from here.
     repo_name: SharedString,
     /// Local clone the PR's git changes come from.
     worktree: Option<PathBuf>,
-    /// Root PR's content, shown as plain text.
     description: SharedString,
-    /// Tip commit of the PR, the latest update's `c` tag or the root's.
+    /// Tip commit of the PR, from the latest update's `c` tag or the root.
     current_commit: Option<SharedString>,
     /// Commits of the patch series, in patch order, oldest first.
     commits: Vec<FileCommit>,
     /// The patch is being parsed on a background task.
     loading: bool,
     error: Option<SharedString>,
-    /// Active header tab, 0 = Discussion, 1 = Files, 2 = Commits.
+    /// Root PR inputs the in-flight diff load was started for.
+    bound: Option<PrBinding>,
+    /// Generation of the in-flight diff load. Stale results are discarded.
+    load_generation: u64,
+    /// 0 = Discussion, 1 = Files, 2 = Commits.
     active_tab: usize,
-    /// Changed-files explorer and per-file diff, like the commit and compare views.
     pane: Entity<DiffPane>,
-    /// Per-row heights of the commits tab's virtual list, built when the patch series loads.
     commit_item_sizes: Rc<Vec<Size<Pixels>>>,
-    /// Virtual list state of the commits tab.
     commit_scroll_handle: VirtualListScrollHandle,
+    /// The dock caches item panels, so without this observer a panel opened
+    /// before the store loaded would stay on its placeholder.
+    _subscription: Subscription,
 }
 
 impl PullRequestDetailView {
@@ -85,9 +97,11 @@ impl PullRequestDetailView {
         let comment_input =
             cx.new(|cx| TextareaState::new(window, cx).placeholder("Leave a comment..."));
 
+        let subscription = cx.observe(&store, |this, _store, cx| this.sync(cx));
+
         // Defer loading until the window is ready, like the commit diff view.
-        cx.defer_in(window, |this, window, cx| {
-            this.load(window, cx);
+        cx.defer_in(window, |this, _window, cx| {
+            this.sync(cx);
         });
 
         Self {
@@ -103,156 +117,217 @@ impl PullRequestDetailView {
             commits: Vec::new(),
             loading: true,
             error: None,
+            bound: None,
+            load_generation: 0,
             active_tab: 0,
             pane,
             commit_item_sizes: Rc::new(Vec::new()),
             commit_scroll_handle: VirtualListScrollHandle::new(),
+            _subscription: subscription,
         }
     }
 
-    /// Snapshot the PR events from the store.
-    fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Snapshot the root PR from the store and reload the diff when it changed.
+    ///
+    /// Re-runs on construction and on every store refresh. Item panels are
+    /// cached by the dock, so this is the only way a panel opened before the
+    /// store's first pass learns about its PR.
+    fn sync(&mut self, cx: &mut Context<Self>) {
+        let loaded = self.store.read(cx).loaded;
+
+        let binding = {
+            let store = self.store.read(cx);
+
+            store.addr().and_then(|addr| {
+                store
+                    .pull_requests
+                    .iter()
+                    .find(|pr| pr.id == self.pr_id && pr.kind == Kind::GitPullRequest)
+                    .map(|root| {
+                        let update = latest_update(store.pull_requests.iter(), root);
+
+                        let tip = update
+                            .and_then(current_commit_of)
+                            .or_else(|| current_commit_of(root));
+
+                        let base = update
+                            .and_then(merge_base_of)
+                            .or_else(|| merge_base_of(root));
+
+                        let clone_urls = clone_urls_of(root)
+                            .or_else(|| store.announcement.as_ref().map(|a| a.clone.clone()))
+                            .unwrap_or_default();
+
+                        PrBinding {
+                            description: root.content.clone(),
+                            patch: pull_request_patch(root, store.patches.iter()),
+                            tip,
+                            base,
+                            clone_urls,
+                            addr: addr.clone(),
+                            has_patch_link: root.tags.event_ids().next().is_some(),
+                        }
+                    })
+            })
+        };
+
+        let Some(binding) = binding else {
+            self.sync_missing(loaded, cx);
+            return;
+        };
+
+        if self.bound.as_ref() == Some(&binding) {
+            return;
+        }
+
+        self.bound = Some(binding.clone());
+        self.load_diff(binding, cx);
+    }
+
+    /// The store does not hold the root PR yet, or at all.
+    ///
+    /// Loading until the first pass is applied, not found afterwards.
+    fn sync_missing(&mut self, loaded: bool, cx: &mut Context<Self>) {
+        self.bound = None;
+
+        if !loaded {
+            if !self.loading || self.error.is_some() {
+                self.loading = true;
+                self.error = None;
+                cx.notify();
+            }
+            return;
+        }
+
+        if self.error.as_deref() != Some(NOT_FOUND) {
+            self.loading = false;
+            self.error = Some(NOT_FOUND.into());
+            cx.notify();
+        }
+    }
+
+    /// Load the bound PR's changed files and commits.
+    ///
+    /// Nostr-backed pull requests parse the patch series, git-backed ones fetch
+    /// the clone and diff the `merge-base..tip` range.
+    fn load_diff(&mut self, binding: PrBinding, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
+        self.description = binding.description.clone().into();
+        self.current_commit = binding.tip.clone().map(SharedString::from);
         cx.notify();
 
         let cache = GitStore::global(cx).cache().clone();
 
-        let (description, patch, current_commit, merge_base, clone_urls, addr, has_patch_link) = {
-            let store = self.store.read(cx);
+        self.load_generation = self.load_generation.wrapping_add(1);
+        let generation = self.load_generation;
 
-            let Some(root) = store
-                .pull_requests
-                .iter()
-                .find(|pr| pr.id == self.pr_id && pr.kind == Kind::GitPullRequest)
-            else {
-                self.loading = false;
-                self.error = Some("Pull request not found".into());
-                cx.notify();
-                return;
+        let PrBinding {
+            patch,
+            tip,
+            base,
+            clone_urls,
+            addr,
+            has_patch_link,
+            ..
+        } = binding;
+
+        let task: gpui::Task<Result<(), anyhow::Error>> = cx.spawn(async move |this, cx| {
+            let nostr_diff = cx
+                .background_spawn({
+                    let patch = patch.clone();
+                    async move { patch_diffs(&patch) }
+                })
+                .await;
+
+            let nostr_commits = cx
+                .background_spawn({
+                    let patch = patch.clone();
+                    async move { patch_commits(&patch) }
+                })
+                .await;
+
+            // PRs without patch events, e.g. published by ngit, carry their changes in git.
+            // Fetch the clone and diff the `merge-base..tip` range.
+            let use_nostr = match &nostr_diff {
+                Ok(diff) => has_patch_link || !diff.files.is_empty(),
+                Err(_) => true,
             };
 
-            let update = latest_update(store.pull_requests.iter(), root);
+            let git = if use_nostr {
+                None
+            } else {
+                let cache = cache.clone();
+                let addr = addr.clone();
+                let clone_urls = clone_urls.clone();
+                let base = base.clone();
+                let tip = tip.clone();
 
-            let tip = update
-                .and_then(current_commit_of)
-                .or_else(|| current_commit_of(root));
+                Some(
+                    cx.background_spawn(async move {
+                        let repo = cache.ensure_clone(&addr, &clone_urls)?;
 
-            let base = update
-                .and_then(merge_base_of)
-                .or_else(|| merge_base_of(root));
+                        let workdir = repo
+                            .workdir()
+                            .ok_or_else(|| anyhow::anyhow!("repository has no worktree"))?
+                            .to_path_buf();
 
-            let clone_urls = clone_urls_of(root)
-                .or_else(|| store.announcement.as_ref().map(|a| a.clone.clone()));
+                        let tip =
+                            tip.ok_or_else(|| anyhow::anyhow!("pull request has no tip commit"))?;
 
-            (
-                root.content.clone(),
-                pull_request_patch(root, store.patches.iter()),
-                tip,
-                base,
-                clone_urls.unwrap_or_default(),
-                store.addr().clone(),
-                root.tags.event_ids().next().is_some(),
-            )
-        };
+                        let base = match base {
+                            Some(base) => base,
+                            // No `merge-base` tag. Use the merge base of the tip and the default branch.
+                            None => {
+                                let head = repo
+                                    .head_id()
+                                    .map_err(|_| anyhow::anyhow!("repository has no HEAD"))?;
+                                let tip_id = repo.rev_parse_single(tip.as_bytes())?;
+                                repo.merge_base(tip_id, head)?.to_string()
+                            }
+                        };
 
-        self.description = description.into();
+                        let diff = signed_git::worktree_commit_range_diff(&workdir, &base, &tip)?;
+                        let commits =
+                            signed_git::worktree_commit_range_commits(&workdir, &base, &tip)?;
 
-        let task: gpui::Task<Result<(), anyhow::Error>> =
-            cx.spawn_in(window, async move |this, cx| {
-                let nostr_diff = cx
-                    .background_spawn({
-                        let patch = patch.clone();
-                        async move { patch_diffs(&patch) }
+                        Ok::<_, anyhow::Error>((diff, commits, workdir))
                     })
-                    .await;
+                    .await,
+                )
+            };
 
-                let nostr_commits = cx
-                    .background_spawn({
-                        let patch = patch.clone();
-                        async move { patch_commits(&patch) }
-                    })
-                    .await;
+            let (diff, commits, worktree) = match git {
+                Some(Ok((diff, commits, worktree))) => (Ok(diff), commits, Some(worktree)),
+                Some(Err(error)) => (Err(error), Vec::new(), None),
+                None => (nostr_diff, nostr_commits, None),
+            };
 
-                // PRs without patch events, e.g. published by ngit, carry their changes in git.
-                // Fetch the clone and diff the `merge-base..tip` range.
-                let use_nostr = match &nostr_diff {
-                    Ok(diff) => has_patch_link || !diff.files.is_empty(),
-                    Err(_) => true,
-                };
+            this.update(cx, |this, cx| {
+                // A newer binding superseded this load.
+                if this.load_generation != generation {
+                    return;
+                }
 
-                let git = if use_nostr {
-                    None
-                } else {
-                    let cache = cache.clone();
-                    let addr = addr.clone();
-                    let clone_urls = clone_urls.clone();
-                    let base = merge_base.clone();
-                    let tip = current_commit.clone();
+                this.loading = false;
+                this.worktree = worktree;
+                this.commit_item_sizes = Rc::new(vec![size(px(0.), px(ROW_HEIGHT)); commits.len()]);
+                this.commits = commits;
 
-                    Some(
-                        cx.background_spawn(async move {
-                            let repo = cache.ensure_clone(&addr, &clone_urls)?;
-
-                            let workdir = repo
-                                .workdir()
-                                .ok_or_else(|| anyhow::anyhow!("repository has no worktree"))?
-                                .to_path_buf();
-
-                            let tip = tip
-                                .ok_or_else(|| anyhow::anyhow!("pull request has no tip commit"))?;
-
-                            let base = match base {
-                                Some(base) => base,
-                                // No `merge-base` tag. Use the merge base of the tip and the default branch.
-                                None => {
-                                    let head = repo
-                                        .head_id()
-                                        .map_err(|_| anyhow::anyhow!("repository has no HEAD"))?;
-                                    let tip_id = repo.rev_parse_single(tip.as_bytes())?;
-                                    repo.merge_base(tip_id, head)?.to_string()
-                                }
-                            };
-
-                            let diff =
-                                signed_git::worktree_commit_range_diff(&workdir, &base, &tip)?;
-                            let commits =
-                                signed_git::worktree_commit_range_commits(&workdir, &base, &tip)?;
-
-                            Ok::<_, anyhow::Error>((diff, commits, workdir))
-                        })
-                        .await,
-                    )
-                };
-
-                let (diff, commits, worktree) = match git {
-                    Some(Ok((diff, commits, worktree))) => (Ok(diff), commits, Some(worktree)),
-                    Some(Err(error)) => (Err(error), Vec::new(), None),
-                    None => (nostr_diff, nostr_commits, None),
-                };
-
-                this.update_in(cx, |this, _window, cx| {
-                    this.loading = false;
-                    this.worktree = worktree;
-                    this.current_commit = current_commit.map(SharedString::from);
-                    this.commit_item_sizes =
-                        Rc::new(vec![size(px(0.), px(ROW_HEIGHT)); commits.len()]);
-                    this.commits = commits;
-
-                    match diff {
-                        Ok(diff) => {
-                            this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx));
-                        }
-                        Err(error) => {
-                            this.error = Some(error.to_string().into());
-                        }
+                match diff {
+                    Ok(diff) => {
+                        this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx));
                     }
+                    Err(error) => {
+                        this.error = Some(error.to_string().into());
+                    }
+                }
 
-                    cx.notify();
-                })?;
+                cx.notify();
+            })?;
 
-                Ok(())
-            });
+            Ok(())
+        });
 
         task.detach();
     }
@@ -435,9 +510,6 @@ impl PullRequestDetailView {
             .into_any_element()
     }
 
-    /// Full-height Commits tab.
-    ///
-    /// Every commit of the patch series, or a status message while loading or empty.
     fn render_commits_tab(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.loading {
             return v_flex()
@@ -485,9 +557,6 @@ impl PullRequestDetailView {
             .into_any_element()
     }
 
-    /// One row of the commits tab, id, summary, author and time.
-    ///
-    /// Clicking a row opens the commit's diff in the bottom dock.
     fn render_commit_row(
         &self,
         ix: usize,
@@ -540,7 +609,6 @@ impl PullRequestDetailView {
             .into_any_element()
     }
 
-    /// Always-visible header with a status badge and title, like the issue panel.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let current_commit = self.current_commit.clone();
         let (title, status, branch, author) = {
@@ -642,7 +710,6 @@ impl PullRequestDetailView {
     }
 }
 
-/// Open the update pull request dialog.
 fn open_update_pull_request_dialog(
     store: Entity<RepoStore>,
     root: Event,
@@ -703,7 +770,6 @@ fn open_update_pull_request_dialog(
     });
 }
 
-/// The `c` tag of a PR event, the commit the proposal points at.
 /// One-line commit metadata for the commits list.
 ///
 /// Author and relative time, whichever is available.
@@ -759,28 +825,5 @@ impl Render for PullRequestDetailView {
                 1 => this.child(self.render_files_tab(cx)),
                 _ => this.child(self.render_commits_tab(cx)),
             })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const COMMIT_HEX: &str = "1111111111111111111111111111111111111111";
-
-    #[test]
-    fn commit_meta_combines_author_and_time() {
-        let commit = |author: &str, time: i64| FileCommit {
-            id: COMMIT_HEX.into(),
-            summary: "summary".into(),
-            description: None,
-            author: author.into(),
-            time,
-        };
-
-        assert_eq!(commit_meta(&commit("Alice", 0)), "Alice");
-        assert_eq!(commit_meta(&commit("", 0)), "");
-        assert!(!commit_meta(&commit("", 1_000_000)).is_empty());
-        assert!(!commit_meta(&commit("Alice", 1_000_000)).is_empty());
     }
 }

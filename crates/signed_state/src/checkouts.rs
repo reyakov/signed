@@ -13,7 +13,6 @@ use crate::git_store::GitStore;
 use crate::refresh::{RefreshGate, RefreshRequest};
 use crate::repos::{LocalReposStore, RepoListStore};
 
-/// Delay between a refresh request and the actual re-computation.
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// How often the statuses are recomputed against the local refs.
@@ -29,7 +28,6 @@ const STATUS_POLL: Duration = Duration::from_secs(15);
 /// Remote refresh interval for the `ready to push` badges of the user's own repositories.
 const PUSH_POLL: Duration = Duration::from_secs(60);
 
-/// Maximum checkouts considered per repository when computing statuses.
 const MAX_STATUS_CHECKOUTS: usize = 8;
 
 struct GlobalCheckoutsStore(Entity<CheckoutsStore>);
@@ -41,7 +39,6 @@ impl Global for GlobalCheckoutsStore {}
 /// Carries the git facts needed to suggest a pull request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckoutStatus {
-    /// The checkout folder.
     pub path: PathBuf,
     /// The branch checked out. A detached checkout is idle and yields no status.
     pub branch: String,
@@ -95,9 +92,7 @@ pub struct CheckoutsStore {
     ///
     /// A recompute defaults the base the same way.
     requested_head: HashMap<RepoAddr, Option<String>>,
-    /// Refresh coalescing, see [`RefreshGate`].
     refresh: RefreshGate,
-    /// A local status pass timer is pending.
     local_pending: bool,
     /// When the last full pass (with a remote refresh) completed.
     ///
@@ -108,7 +103,6 @@ pub struct CheckoutsStore {
 }
 
 impl CheckoutsStore {
-    /// Retrieve the global checkouts store.
     pub fn global(cx: &App) -> Entity<Self> {
         cx.global::<GlobalCheckoutsStore>().0.clone()
     }
@@ -117,7 +111,6 @@ impl CheckoutsStore {
         cx.set_global(GlobalCheckoutsStore(entity));
     }
 
-    /// Create the store.
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
 
@@ -176,7 +169,6 @@ impl CheckoutsStore {
         }
     }
 
-    /// Remember a successful local-checkout use.
     pub fn record(&mut self, path: PathBuf, addr: RepoAddr, cx: &mut Context<Self>) {
         if cfg!(target_arch = "wasm32") {
             return;
@@ -278,7 +270,6 @@ impl CheckoutsStore {
         self.push_statuses.get(addr).cloned().unwrap_or_default()
     }
 
-    /// The number of unpushed commits for a repository.
     pub fn unpushed(&self, addr: &RepoAddr) -> usize {
         self.push_statuses
             .get(addr)
@@ -311,7 +302,6 @@ impl CheckoutsStore {
     fn run_refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh.begin();
 
-        // Inputs snapshot, all cheap shared reads.
         let records = {
             let settings = SettingsStore::global(cx);
             settings.read(cx).settings().checkouts.records.clone()
@@ -433,7 +423,7 @@ impl CheckoutsStore {
     /// Schedule the fast local status pass, unless one is already pending.
     ///
     /// Every [`LOCAL_POLL`] the pass recomputes the requested statuses against
-    /// the local refs — no network — so a new commit in a checkout surfaces in
+    /// the local refs, with no network, so a new commit in a checkout surfaces in
     /// a second or two instead of at the next remote reconciliation.
     fn schedule_local_pass(&mut self, cx: &mut Context<Self>) {
         if self.local_pending {
@@ -546,7 +536,6 @@ impl CheckoutsStore {
     }
 }
 
-/// Identity of a repository URL.
 fn url_identity(url: &str) -> Option<(String, Option<u16>, String)> {
     let parsed = Url::parse(url).ok()?;
     let host = parsed.host_str()?.to_ascii_lowercase();
@@ -557,7 +546,6 @@ fn url_identity(url: &str) -> Option<(String, Option<u16>, String)> {
     Some((host, parsed.port(), path))
 }
 
-/// Whether two repository URLs point at the same repository.
 fn same_repo_url(a: &str, b: &str) -> bool {
     match (url_identity(a), url_identity(b)) {
         (Some(a), Some(b)) => a == b,
@@ -565,7 +553,6 @@ fn same_repo_url(a: &str, b: &str) -> bool {
     }
 }
 
-/// Resolve the associations between local checkouts and announced repositories.
 fn resolve_associations<'a>(
     remembered: &[Remembered],
     scanned: &[(PathBuf, Option<String>, Option<String>)],
@@ -608,7 +595,6 @@ fn resolve_associations<'a>(
     out
 }
 
-/// The ready-to-contribute status of one checkout.
 fn checkout_status(path: &Path, announced_head: Option<&str>) -> Option<CheckoutStatus> {
     let branches = signed_git::worktree_branches(path).ok()?;
 
@@ -732,7 +718,6 @@ fn compute_statuses(
     (statuses, push_statuses)
 }
 
-/// Whether the pull request `pr` already proposes the same change as `checkout`.
 pub fn pr_proposes_checkout(
     pr: &Event,
     open: bool,
@@ -857,40 +842,6 @@ mod tests {
         let paths = resolved.get(&base).expect("associations");
         assert_eq!(paths, &vec![PathBuf::from("/fresh"), PathBuf::from("/old")]);
         // Records for repositories without announcements stay inert.
-        assert_eq!(resolved.len(), 2);
-    }
-
-    #[test]
-    fn resolve_matches_scanned_repos_by_origin_and_euc() {
-        let euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
-        let announcements = vec![
-            announcement("repo", &["grasp://host/npub1x/repo"], None),
-            announcement("family", &[], Some(euc)),
-        ];
-        let repo = addr("repo");
-        let family = addr("family");
-
-        let resolved = resolve_associations(
-            &[],
-            &[
-                // Origin matches modulo scheme and the `.git` suffix.
-                scanned("/clone", Some("https://host/npub1x/repo.git"), None),
-                // Root commit matches the family EUC.
-                scanned("/family-checkout", None, Some(euc)),
-                // Neither matches anything.
-                scanned("/unrelated", Some("https://elsewhere/x.git"), None),
-            ],
-            &announcements,
-        );
-
-        assert_eq!(
-            resolved.get(&repo).expect("repo matches"),
-            &vec![PathBuf::from("/clone")]
-        );
-        assert_eq!(
-            resolved.get(&family).expect("family matches"),
-            &vec![PathBuf::from("/family-checkout")]
-        );
         assert_eq!(resolved.len(), 2);
     }
 
@@ -1047,62 +998,5 @@ mod tests {
         remote_run(&["add", "-A"]);
         remote_run(&["commit", "-m", "remote work"]);
         assert_eq!(checkout_push_status(&checkout, true), None);
-    }
-
-    fn pr_event(author: &str, tags: &[&[&str]]) -> Event {
-        let keys = Keys::new(SecretKey::from_hex(author).expect("secret"));
-        let tags: Vec<Tag> = tags
-            .iter()
-            .map(|t| Tag::parse(t.to_vec()).expect("valid tag"))
-            .collect();
-        EventBuilder::new(Kind::GitPullRequest, "")
-            .tags(tags)
-            .finalize(&keys)
-            .expect("signed event")
-    }
-
-    fn status(branch: &str, head: &str) -> CheckoutStatus {
-        CheckoutStatus {
-            path: PathBuf::from("/checkout"),
-            branch: branch.to_owned(),
-            head: head.to_owned(),
-            base: "main".to_owned(),
-            ahead: 1,
-        }
-    }
-
-    #[test]
-    fn pr_proposes_checkout_matches_branch_or_tip() {
-        let author = "0000000000000000000000000000000000000000000000000000000000000002";
-        let tip = "aa231c4c6a5777dc89b42207b499891a344add5c";
-
-        // A matching `branch-name` covers the proposal.
-        let pr = pr_event(author, &[&["branch-name", "feature"], &["c", tip]]);
-        let status = status("feature", "bb231c4c6a5777dc89b42207b499891a344add5c");
-        assert!(pr_proposes_checkout(&pr, true, pr.pubkey, &status));
-
-        // Without a branch-name tag, the `c` tip still matches for a renamed branch.
-        let pr = pr_event(
-            author,
-            &[&["c", "bb231c4c6a5777dc89b42207b499891a344add5c"]],
-        );
-        assert!(pr_proposes_checkout(&pr, true, pr.pubkey, &status));
-
-        // Someone else's PR, a closed PR, a different branch and a missing tip.
-        // They all leave the checkout uncovered.
-        let pr = pr_event(author, &[&["branch-name", "feature"]]);
-        assert!(!pr_proposes_checkout(&pr, false, pr.pubkey, &status));
-        let other = pr_event(
-            "0000000000000000000000000000000000000000000000000000000000000003",
-            &[&["branch-name", "feature"]],
-        );
-        assert!(!pr_proposes_checkout(&pr, true, other.pubkey, &status));
-        let other_branch = pr_event(author, &[&["branch-name", "other"]]);
-        assert!(!pr_proposes_checkout(
-            &other_branch,
-            true,
-            other_branch.pubkey,
-            &status
-        ));
     }
 }

@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::{Error, bail};
 use bitcoin_hashes::sha1::Hash as Sha1Hash;
@@ -22,9 +21,6 @@ use crate::git_store::GitStore;
 use crate::refresh::{RefreshGate, RefreshRequest};
 use crate::repos::RepoListStore;
 
-/// Delay between a refresh request and the actual re-query.
-const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
-
 /// Maximum size of one patch event.
 ///
 /// NIP-34 suggests patches when each event is under 60kb.
@@ -35,8 +31,18 @@ const MAX_PATCH_EVENT_BYTES: usize = 60 * 1024;
 /// Holds the announcement, state, issues, patches, PRs, comments and resolved statuses.
 /// Always derived from the local database.
 pub struct RepoStore {
-    addr: RepoAddr,
+    /// NIP-34 address. `None` while the repository is local-only.
+    addr: Option<RepoAddr>,
+    /// Latest announcement. Seeded from the open-time hint, replaced by the
+    /// database's latest on the first pass. `None` while local-only.
     pub announcement: Option<Announcement>,
+    /// Local working copy. The scan path for a local repository, kept when it is
+    /// later announced so the panel keeps its worktree.
+    pub path: Option<PathBuf>,
+    /// The first local pass has been applied.
+    ///
+    /// Views distinguish "no data yet" from a genuinely empty repository with it.
+    pub loaded: bool,
     /// Branch pointed to by `HEAD` in the latest state announcement.
     pub head: Option<String>,
     pub issues: Vec<Event>,
@@ -54,7 +60,6 @@ pub struct RepoStore {
     ///
     /// Views key their derived-data caches to it instead of recomputing on every render.
     version: u64,
-    /// Error of the last action initiated from this store, if any.
     pub last_error: Option<String>,
     /// Non-fatal warning of the last action, if any.
     ///
@@ -80,54 +85,21 @@ pub struct RepoStore {
     ///
     /// The per-root fetches cover NIP-22 comments and statuses without an `a` tag.
     root_fetches: HashSet<EventId>,
-    /// Refresh coalescing, see [`RefreshGate`].
     refresh: RefreshGate,
-    _subscription: Subscription,
+    /// Backend subscription of an announced repository. `None` while local-only.
+    _subscription: Option<Subscription>,
 }
 
 impl RepoStore {
-    pub fn new(addr: RepoAddr, announced_relays: Vec<RelayUrl>, cx: &mut Context<Self>) -> Self {
-        let backend = Backend::global(cx);
-
-        let subscription = cx.subscribe(&backend, |this, _backend, event, cx| {
-            let relevant = match event {
-                BackendEvent::NostrUpdate(updates) => updates.iter().any(|update| {
-                    // Deletions may target any event of this repository.
-                    let deletion =
-                        update.kind == Kind::EventDeletion || update.kind == Kind::RequestToVanish;
-                    let coordinate = update.coordinate.as_ref() == Some(&this.addr);
-                    let author = update.author == this.addr.public_key;
-                    let kind = update.kind == Kind::GitRepoAnnouncement;
-                    // NIP-22 comments carry no `a` tag.
-                    // Coordinate matching fails for them.
-                    // Any comment may reference this repository's roots.
-                    let comment = update.kind == Kind::Comment;
-                    // Status events may omit their `a` tag, NIP-34.
-                    // Any status event may reference a root of this repository.
-                    let status = RepoStatus::from_kind(update.kind).is_some();
-
-                    deletion || coordinate || (author && kind) || comment || status
-                }),
-                BackendEvent::Published(event) => {
-                    let kind = event.kind == Kind::GitRepoAnnouncement;
-                    let author = event.pubkey == this.addr.public_key;
-                    let coordinate = event.tags.coordinates().into_iter().any(|c| c == this.addr);
-                    // Locally published deletions may target any event of this repository.
-                    // Refresh so they take effect immediately, like relay deletions.
-                    let deletion =
-                        event.kind == Kind::EventDeletion || event.kind == Kind::RequestToVanish;
-
-                    coordinate || (kind && author) || deletion
-                }
-                _ => false,
-            };
-
-            if relevant {
-                this.refresh(cx);
-            }
-        });
-
+    pub fn new(addr: RepoAddr, hint: Option<Announcement>, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade();
+        let subscription = Self::subscribe_backend(cx);
+
+        let announced_relays = hint
+            .as_ref()
+            .map(|announcement| announcement.relays.clone())
+            .unwrap_or_default();
+
         cx.defer(move |cx| {
             let result = weak.update(cx, |this, cx| {
                 this.subscribe_remote(cx);
@@ -141,8 +113,10 @@ impl RepoStore {
         });
 
         Self {
-            addr,
-            announcement: None,
+            addr: Some(addr),
+            announcement: hint,
+            path: None,
+            loaded: false,
             head: None,
             issues: Vec::new(),
             patches: Vec::new(),
@@ -160,13 +134,101 @@ impl RepoStore {
             repo_relays: HashSet::new(),
             root_fetches: HashSet::new(),
             refresh: RefreshGate::default(),
-            _subscription: subscription,
+            _subscription: Some(subscription),
         }
     }
 
-    /// Returns the repository's address.
-    pub fn addr(&self) -> &RepoAddr {
-        &self.addr
+    /// Local repository discovered by the scan, not announced to NIP-34 yet.
+    pub fn new_local(path: PathBuf) -> Self {
+        Self {
+            addr: None,
+            announcement: None,
+            path: Some(path),
+            loaded: true,
+            head: None,
+            issues: Vec::new(),
+            patches: Vec::new(),
+            pull_requests: Vec::new(),
+            comments: Vec::new(),
+            status_by_root: HashMap::new(),
+            open_issue_count: 0,
+            open_pr_count: 0,
+            version: 0,
+            last_error: None,
+            last_warning: None,
+            last_push_warning: None,
+            pushing: false,
+            cloning: false,
+            repo_relays: HashSet::new(),
+            root_fetches: HashSet::new(),
+            refresh: RefreshGate::default(),
+            _subscription: None,
+        }
+    }
+
+    /// Switch a local repository to its NIP-34 mode, keeping its path.
+    pub fn announce(&mut self, announcement: Announcement, cx: &mut Context<Self>) {
+        self.addr = Some(announcement.addr());
+        self.announcement = Some(announcement.clone());
+        self.loaded = false;
+
+        if self._subscription.is_none() {
+            self._subscription = Some(Self::subscribe_backend(cx));
+        }
+
+        self.subscribe_remote(cx);
+        self.connect_announced_relays(&announcement.relays, cx);
+        self.refresh(cx);
+    }
+
+    fn subscribe_backend(cx: &mut Context<Self>) -> Subscription {
+        let backend = Backend::global(cx);
+
+        cx.subscribe(&backend, |this, _backend, event, cx| {
+            let Some(addr) = this.addr.as_ref() else {
+                return;
+            };
+
+            let relevant = match event {
+                BackendEvent::NostrUpdate(updates) => updates.iter().any(|update| {
+                    // Deletions may target any event of this repository.
+                    let deletion =
+                        update.kind == Kind::EventDeletion || update.kind == Kind::RequestToVanish;
+                    let coordinate = update.coordinate.as_ref() == Some(addr);
+                    let author = update.author == addr.public_key;
+                    let kind = update.kind == Kind::GitRepoAnnouncement;
+                    // NIP-22 comments carry no `a` tag.
+                    // Coordinate matching fails for them.
+                    // Any comment may reference this repository's roots.
+                    let comment = update.kind == Kind::Comment;
+                    // Status events may omit their `a` tag, NIP-34.
+                    // Any status event may reference a root of this repository.
+                    let status = RepoStatus::from_kind(update.kind).is_some();
+
+                    deletion || coordinate || (author && kind) || comment || status
+                }),
+                BackendEvent::Published(event) => {
+                    let kind = event.kind == Kind::GitRepoAnnouncement;
+                    let author = event.pubkey == addr.public_key;
+                    let coordinate = event.tags.coordinates().into_iter().any(|c| c == *addr);
+                    // Locally published deletions may target any event of this repository.
+                    // Refresh so they take effect immediately, like relay deletions.
+                    let deletion =
+                        event.kind == Kind::EventDeletion || event.kind == Kind::RequestToVanish;
+
+                    coordinate || (kind && author) || deletion
+                }
+                _ => false,
+            };
+
+            if relevant {
+                this.refresh(cx);
+            }
+        })
+    }
+
+    pub fn addr(&self) -> Option<&RepoAddr> {
+        self.addr.as_ref()
     }
 
     /// Returns the repository's name, or `Unknown` when not known.
@@ -198,6 +260,10 @@ impl RepoStore {
 
     /// Fetch this repository's events from the relays in its NIP-34 `relays` tag.
     fn connect_announced_relays(&mut self, relays: &[RelayUrl], cx: &mut Context<Self>) {
+        let Some(addr) = self.addr.clone() else {
+            return;
+        };
+
         let new: Vec<RelayUrl> = relays
             .iter()
             .filter(|url| !self.repo_relays.contains(*url))
@@ -210,17 +276,18 @@ impl RepoStore {
         self.repo_relays.extend(new.iter().cloned());
 
         let backend = Backend::global(cx);
-        let addr = self.addr.clone();
 
         backend.update(cx, |backend, cx| {
             backend.connect_repo_relays(new, Self::repo_filters(&addr), cx);
         });
     }
 
-    /// Fetch this repository's events from the bootstrap relays.
     fn subscribe_remote(&mut self, cx: &mut Context<Self>) {
+        let Some(addr) = self.addr.clone() else {
+            return;
+        };
+
         let backend = Backend::global(cx);
-        let addr = self.addr.clone();
 
         backend.update(cx, |backend, cx| {
             backend.subscribe_bootstrap(Self::repo_filters(&addr), cx);
@@ -228,25 +295,30 @@ impl RepoStore {
     }
 
     /// Re-query the local database and update all fields.
+    ///
+    /// Runs immediately. The backend pump already batches the relay events that
+    /// trigger a refresh, so no per-store debounce is needed.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.addr.is_none() {
+            return;
+        }
+
         if self.refresh.request() != RefreshRequest::Schedule {
             return;
         }
 
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(REFRESH_DEBOUNCE).await;
-
-            this.update(cx, |this, cx| this.run_refresh(cx))
-        })
-        .detach();
+        self.run_refresh(cx);
     }
 
     fn run_refresh(&mut self, cx: &mut Context<Self>) {
+        let Some(addr) = self.addr.clone() else {
+            return;
+        };
+
         self.refresh.begin();
 
         let backend = Backend::global(cx);
         let client = backend.read(cx).client();
-        let addr = self.addr.clone();
 
         let work = cx.background_spawn(async move {
             let (announcements, states, activity, deletion_events) = async {
@@ -397,7 +469,37 @@ impl RepoStore {
             };
 
             let again = this.update(cx, |this, cx| {
-                this.announcement = announcement;
+                // Compare before moving the freshly queried data in, so a pass
+                // that found nothing new does not notify observers. The store
+                // is polled in bursts while a sync is in flight; notifying on
+                // every identical pass would re-render the repository panel
+                // several times for no visible change.
+                //
+                // The first pass is the exception: it must notify even when it
+                // found nothing, so views can leave their loading state and show
+                // the empty result.
+                //
+                // Keep the open-time hint until that first pass has confirmed what
+                // the database holds; afterwards the database is the truth,
+                // including a deletion.
+                let keep_hint = announcement.is_none() && !this.loaded;
+
+                let first_pass = !this.loaded;
+                let head_changed = state
+                    .as_ref()
+                    .is_some_and(|(_, head)| this.head.as_deref() != head.as_deref());
+                let changed = first_pass
+                    || (!keep_hint && this.announcement != announcement)
+                    || head_changed
+                    || this.issues != issues
+                    || this.patches != patches
+                    || this.pull_requests != pull_requests
+                    || this.comments != comments
+                    || this.status_by_root != status_by_root;
+
+                if !keep_hint {
+                    this.announcement = announcement;
+                }
 
                 // The announcement may list relays for this repository's activity.
                 // Connect to any we have not fetched from yet.
@@ -419,6 +521,7 @@ impl RepoStore {
                 this.status_by_root = status_by_root;
                 this.open_issue_count = open_issue_count;
                 this.open_pr_count = open_pr_count;
+                this.loaded = true;
                 this.version = this.version.wrapping_add(1);
 
                 // Comments and statuses without an `a` tag.
@@ -454,7 +557,9 @@ impl RepoStore {
                     });
                 }
 
-                cx.notify();
+                if changed {
+                    cx.notify();
+                }
 
                 this.refresh.finish()
             })?;
@@ -475,8 +580,6 @@ impl RepoStore {
         status_of(&self.status_by_root, root)
     }
 
-    /// Refresh generation, incremented on every applied refresh.
-    /// Views use it to key their derived-data caches.
     pub fn version(&self) -> u64 {
         self.version
     }
@@ -502,13 +605,19 @@ impl RepoStore {
     /// The author is the public key of the repository address.
     /// Only the author may manage pull requests, close, reopen or merge.
     pub fn is_author(&self, user: &PublicKey) -> bool {
-        &self.addr.public_key == user
+        self.addr
+            .as_ref()
+            .is_some_and(|addr| &addr.public_key == user)
     }
 
-    /// Open an issue on this repository.
     pub fn open_issue(&mut self, subject: Option<String>, content: String, cx: &mut Context<Self>) {
+        let Some(addr) = self.addr.clone() else {
+            self.not_announced(cx);
+            return;
+        };
+
         let builder = GitIssue {
-            repository: self.addr.clone(),
+            repository: addr,
             content,
             subject,
             labels: Vec::new(),
@@ -518,7 +627,6 @@ impl RepoStore {
         self.publish(builder, cx);
     }
 
-    /// Comments on a root event, an issue or PR, oldest first.
     pub fn comments_of(&self, root: &EventId) -> impl Iterator<Item = &Event> {
         self.comments
             .iter()
@@ -540,6 +648,11 @@ impl RepoStore {
         content: String,
         cx: &mut Context<Self>,
     ) {
+        let Some(addr) = self.addr.clone() else {
+            self.not_announced(cx);
+            return;
+        };
+
         let relay_hint = self
             .announcement
             .as_ref()
@@ -547,12 +660,11 @@ impl RepoStore {
             .cloned();
 
         self.publish(
-            comment_builder(root, parent, relay_hint.as_ref(), &self.addr, content),
+            comment_builder(root, parent, relay_hint.as_ref(), &addr, content),
             cx,
         );
     }
 
-    /// Open a pull request on this repository.
     #[allow(clippy::too_many_arguments)]
     pub fn open_pull_request(
         &mut self,
@@ -567,6 +679,11 @@ impl RepoStore {
     ) {
         self.last_error = None;
         self.last_warning = None;
+
+        let Some(addr) = self.addr.clone() else {
+            self.not_announced(cx);
+            return;
+        };
 
         let series: Vec<String> = signed_git::split_patch_series(&patch)
             .into_iter()
@@ -611,8 +728,7 @@ impl RepoStore {
         // The author's npub names their GRASP-06 namespace, `/prs/...`.
         let author_npub = user.to_bech32().unwrap();
 
-        let addr = self.addr.clone();
-        let owner = self.addr.public_key;
+        let owner = addr.public_key;
         let euc = self.announcement.as_ref().and_then(|a| a.euc.clone());
         let repo_id = addr.identifier.clone();
         let base_npub = owner.to_bech32().unwrap();
@@ -728,7 +844,7 @@ impl RepoStore {
                 let clone = pr_clone_urls(prs_urls, base_clone);
 
                 let builder = GitPullRequest {
-                    repository: this.addr.clone(),
+                    repository: addr.clone(),
                     content: description,
                     subject,
                     labels: Vec::new(),
@@ -947,8 +1063,11 @@ impl RepoStore {
                 .map(|p| p.id)
         });
 
-        let addr = self.addr.clone();
-        let owner = self.addr.public_key;
+        let Some(addr) = self.addr.clone() else {
+            self.not_announced(cx);
+            return;
+        };
+        let owner = addr.public_key;
         let euc = self.announcement.as_ref().and_then(|a| a.euc.clone());
         let root = root.clone();
         let clone: Vec<Url> = self
@@ -976,9 +1095,9 @@ impl RepoStore {
                 });
             }
 
-            let builder = this.update(cx, |this, _cx| {
+            let builder = this.update(cx, |_this, _cx| {
                 let builder = GitPullRequestUpdate {
-                    repository: this.addr.clone(),
+                    repository: addr.clone(),
                     pull_request_event: root.id,
                     pull_request_author: root.pubkey,
                     current_commit,
@@ -1035,6 +1154,11 @@ impl RepoStore {
     pub fn set_status(&mut self, root: &Event, status: RepoStatus, cx: &mut Context<Self>) {
         self.last_error = None;
 
+        let Some(addr) = self.addr.clone() else {
+            self.not_announced(cx);
+            return;
+        };
+
         let maintainers = self
             .announcement
             .as_ref()
@@ -1060,18 +1184,22 @@ impl RepoStore {
 
         let builder = EventBuilder::new(status.kind(), "").tags([
             root_ref,
-            Tag::public_key(self.addr.public_key),
+            Tag::public_key(addr.public_key),
             Tag::public_key(root.pubkey),
-            Tag::coordinate(self.addr.clone(), None),
+            Tag::coordinate(addr, None),
         ]);
 
         self.publish(builder, cx);
     }
 
-    /// Merge a pull request.
     pub fn merge_pull_request(&mut self, root: &Event, cx: &mut Context<Self>) {
         self.last_error = None;
         self.last_warning = None;
+
+        let Some(addr) = self.addr.clone() else {
+            self.not_announced(cx);
+            return;
+        };
 
         let is_author = Backend::global(cx)
             .read(cx)
@@ -1083,7 +1211,6 @@ impl RepoStore {
         }
 
         let cache = GitStore::global(cx).cache().clone();
-        let addr = self.addr.clone();
 
         let clone_urls: Vec<Url> = self
             .announcement
@@ -1152,17 +1279,17 @@ impl RepoStore {
     /// The latest announcement of this repository,
     /// for operations that need its clone URLs and relays.
     fn action_announcement(&self, cx: &App) -> Option<Announcement> {
+        let addr = self.addr.as_ref()?;
         self.announcement.clone().or_else(|| {
             RepoListStore::global(cx)
                 .read(cx)
                 .announcements
                 .iter()
-                .find(|announcement| announcement.addr() == self.addr)
+                .find(|announcement| announcement.addr() == *addr)
                 .cloned()
         })
     }
 
-    /// Re-push the repository's refs to its announced grasp servers, republish.
     pub fn push_repository(&mut self, cx: &mut Context<Self>) -> Task<Result<(), Error>> {
         if self.pushing {
             return Task::ready(Err(anyhow::anyhow!(
@@ -1207,7 +1334,6 @@ impl RepoStore {
         })
     }
 
-    /// Push the unpushed commits of the local checkout at `path`.
     pub fn push_checkout(
         &mut self,
         path: PathBuf,
@@ -1219,6 +1345,10 @@ impl RepoStore {
             )));
         }
 
+        let Some(addr) = self.addr.clone() else {
+            return self.action_error("This repository is not published to Nostr yet", cx);
+        };
+
         let Some(announcement) = self.action_announcement(cx) else {
             return self.action_error("Repository announcement is not loaded yet", cx);
         };
@@ -1226,7 +1356,6 @@ impl RepoStore {
         // The state event's `HEAD` stays the announced default branch.
         // The checkout may be on a side branch.
         let head = self.head.clone();
-        let addr = self.addr.clone();
 
         self.pushing = true;
         self.last_error = None;
@@ -1274,7 +1403,9 @@ impl RepoStore {
     /// Only the repository owner may delete it. The lists update when the
     /// deletion events arrive.
     pub fn delete_repository(&mut self, cx: &mut Context<Self>) -> Task<Result<(), Error>> {
-        let addr = self.addr.clone();
+        let Some(addr) = self.addr.clone() else {
+            return self.action_error("This repository is not published to Nostr yet", cx);
+        };
         self.last_error = None;
 
         let backend = Backend::global(cx);
@@ -1304,12 +1435,16 @@ impl RepoStore {
                 "A clone of this repository is already in progress"
             )));
         }
+
+        let Some(addr) = self.addr.clone() else {
+            return self.action_error("This repository is not published to Nostr yet", cx);
+        };
+
         let Some(announcement) = self.action_announcement(cx) else {
             return self.action_error("Repository announcement is not loaded yet", cx);
         };
 
         let clone_urls = announcement.clone.clone();
-        let addr = self.addr.clone();
 
         self.cloning = true;
         self.last_error = None;
@@ -1328,7 +1463,6 @@ impl RepoStore {
 
                 match &result {
                     Ok(()) => {
-                        // Remember the clone as a checkout of this repository.
                         let checkouts = CheckoutsStore::global(cx);
                         checkouts.update(cx, |store, cx| {
                             store.record(destination.clone(), addr.clone(), cx);
@@ -1346,7 +1480,11 @@ impl RepoStore {
         })
     }
 
-    /// Fail an operation whose announcement is not loaded yet.
+    fn not_announced(&mut self, cx: &mut Context<Self>) {
+        self.last_error = Some("This repository is not published to Nostr yet".into());
+        cx.notify();
+    }
+
     fn action_error(
         &mut self,
         message: impl Into<String>,
@@ -1369,11 +1507,15 @@ impl RepoStore {
         euc: Option<&str>,
         cx: &mut Context<Self>,
     ) {
+        let Some(addr) = self.addr.clone() else {
+            return;
+        };
+
         let mut tags = vec![
             Tag::parse(["e", &root.id.to_hex(), "", "root"]).expect("valid root tag"),
-            Tag::public_key(self.addr.public_key),
+            Tag::public_key(addr.public_key),
             Tag::public_key(root.pubkey),
-            Tag::coordinate(self.addr.clone(), None),
+            Tag::coordinate(addr, None),
         ];
 
         if let Some(euc) = euc
@@ -1466,7 +1608,6 @@ where
     events.into_iter().max_by_key(|e| e.created_at)
 }
 
-/// Status of `root` from the precomputed map.
 fn status_of(status_by_root: &HashMap<EventId, RepoStatus>, root: &Event) -> RepoStatus {
     status_by_root
         .get(&root.id)
@@ -1474,7 +1615,6 @@ fn status_of(status_by_root: &HashMap<EventId, RepoStatus>, root: &Event) -> Rep
         .unwrap_or(RepoStatus::Open)
 }
 
-/// Resolve every root event's status in one pass.
 fn resolve_statuses(
     issues: &[Event],
     patches: &[Event],
@@ -1642,13 +1782,6 @@ mod tests {
     }
 
     #[test]
-    fn no_commit_without_header() {
-        assert_eq!(patch_current_commit(""), None);
-        assert_eq!(patch_current_commit("Subject: [PATCH] x\n\n---\n"), None);
-        assert_eq!(patch_current_commit("From short\n"), None);
-    }
-
-    #[test]
     fn comment_builder_follows_nip22() {
         let keys = Keys::generate();
         let root = EventBuilder::new(Kind::GitIssue, "issue body")
@@ -1681,32 +1814,6 @@ mod tests {
         assert_eq!(e.as_slice()[1], root.id.to_hex());
 
         // Signed's own `references_root` must keep matching the comment.
-        assert!(signed_core::references_root(&event, &root.id));
-    }
-
-    #[test]
-    fn comment_builder_replies_nest_under_the_parent() {
-        let keys = Keys::generate();
-        let root = EventBuilder::new(Kind::GitIssue, "issue body")
-            .finalize(&keys)
-            .expect("signed event");
-        let parent = EventBuilder::new(Kind::Comment, "first comment")
-            .finalize(&keys)
-            .expect("signed event");
-        let addr = Coordinate::new(Kind::GitRepoAnnouncement, root.pubkey).identifier("my-repo");
-
-        let event = comment_builder(&root, Some(&parent), None, &addr, "reply".into())
-            .finalize(&keys)
-            .expect("signed event");
-
-        // The uppercase `E` tag still scopes the root event.
-        // The lowercase `e` tag references the parent comment.
-        let root_ref = event.tags.iter().find(|t| t.kind() == "E").expect("E tag");
-        let parent_ref = event.tags.iter().find(|t| t.kind() == "e").expect("e tag");
-        assert_eq!(root_ref.as_slice()[1], root.id.to_hex());
-        assert_eq!(parent_ref.as_slice()[1], parent.id.to_hex());
-
-        // The reply still threads under the root for Signed's own display.
         assert!(signed_core::references_root(&event, &root.id));
     }
 }

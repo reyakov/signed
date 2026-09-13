@@ -13,19 +13,12 @@ use signed_state::RepoStore;
 
 pub struct SendPatchView {
     focus_handle: FocusHandle,
-    /// Dock area the panel lives in.
     dock_area: WeakEntity<DockArea>,
-    /// Store of the target repository.
     store: Entity<RepoStore>,
-    /// Display name of the repository, for the panel title.
     repo_name: SharedString,
-    /// Title input, required.
     subject: Entity<InputState>,
-    /// Description input, optional.
     description: Entity<TextareaState>,
-    /// The pasted `git format-patch` output, required.
     patch: Entity<TextareaState>,
-    /// A submit is in flight.
     submitting: bool,
     /// Error of the last submit attempt, it keeps the panel open.
     error: Option<SharedString>,
@@ -61,7 +54,6 @@ impl SendPatchView {
         }
     }
 
-    /// Publish the pull request from the pasted patch.
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.submitting {
             return;

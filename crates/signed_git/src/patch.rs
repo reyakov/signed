@@ -9,10 +9,11 @@ use diffy::{Hunk, Line};
 use crate::diff::{CommitDiff, DiffHunk, DiffLine, DiffLineKind, DiffStatus, FileDiff};
 use crate::history::FileCommit;
 
-/// Apply a `git format-patch` patch or series with `git am`,
-/// uses the git CLI because it handles the mbox format natively.
+/// Apply a `git format-patch` patch or series with `git am`.
 ///
-/// TODO: Replaced with a pure-Rust implementation later without changing callers.
+/// Uses the git CLI because it handles the mbox format natively.
+///
+/// TODO: replace with a pure-Rust implementation later without changing callers.
 pub fn apply_patch(repo_path: &Path, patch: &str) -> Result<()> {
     let mut child = Command::new("git")
         .arg("am")
@@ -116,7 +117,6 @@ pub fn patch_diffs(patch: &str) -> Result<CommitDiff> {
     Ok(CommitDiff { files })
 }
 
-/// The [`FileDiff`] of one parsed file patch.
 fn file_diff(file: FilePatch<'_, str>) -> Result<FileDiff> {
     // The `---`/`+++` paths carry the `a/`/`b/` prefix, so the first path
     // component is dropped, the same way `git apply -p1` does.
@@ -296,7 +296,6 @@ pub fn patch_commits(patch: &str) -> Vec<FileCommit> {
     commits
 }
 
-/// The name part of a `From: Name <email>` header value.
 fn name_from_address(from: &str) -> String {
     match from.trim().find('<') {
         Some(ix) => from[..ix].trim().to_string(),

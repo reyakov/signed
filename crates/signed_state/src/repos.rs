@@ -18,18 +18,14 @@ impl Global for GlobalLocalReposStore {}
 
 /// Store of the git repositories discovered under a set of scan paths.
 pub struct LocalReposStore {
-    /// The directories being scanned.
     pub roots: Arc<Vec<PathBuf>>,
     /// Git repositories discovered under [`Self::roots`], sorted by path.
     pub repos: Arc<Vec<PathBuf>>,
-    /// A scan is currently running.
     pub scanning: bool,
-    /// A scan was requested while one was already running.
     scan_dirty: bool,
 }
 
 impl LocalReposStore {
-    /// Retrieve the global local-repositories store.
     pub fn global(cx: &App) -> Entity<Self> {
         cx.global::<GlobalLocalReposStore>().0.clone()
     }
@@ -38,7 +34,6 @@ impl LocalReposStore {
         cx.set_global(GlobalLocalReposStore(entity));
     }
 
-    /// Create a store scanning `roots` right away.
     pub fn new(roots: Vec<PathBuf>, cx: &mut Context<Self>) -> Self {
         let weak = cx.entity().downgrade();
         cx.defer(move |cx| {
@@ -67,7 +62,6 @@ impl LocalReposStore {
         cx.notify();
     }
 
-    /// Re-run the scan.
     pub fn rescan(&mut self, cx: &mut Context<Self>) {
         if self.scanning {
             self.scan_dirty = true;
@@ -117,11 +111,6 @@ impl LocalReposStore {
     }
 }
 
-/// Delay between a refresh request and the actual re-query.
-///
-/// Bursts of events, e.g. sync progress ticks, collapse into one query.
-const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
-
 /// How far back activity events count toward a repository's last activity.
 const ACTIVITY_WINDOW: Duration = Duration::from_secs(90 * 86_400);
 
@@ -154,19 +143,16 @@ pub struct RepoListStore {
     /// Shared so views can clone the list per frame without a deep copy.
     pub announcements: Arc<Vec<Announcement>>,
     /// Latest known activity timestamp per repository.
-    /// Covers announcements, state updates, patches, PRs, issues and statuses.
     pub last_activity: Arc<HashMap<RepoAddr, Timestamp>>,
     /// Issues, pull requests and commits per repository.
     ///
     /// Used for the Popular ranking of the explore list.
     pub counts: Arc<HashMap<RepoAddr, RepoActivityCounts>>,
-    /// Refresh coalescing, see [`RefreshGate`].
     refresh: RefreshGate,
     _subscription: Subscription,
 }
 
 impl RepoListStore {
-    /// Retrieve the global repository list store.
     pub fn global(cx: &App) -> Entity<Self> {
         cx.global::<GlobalRepoListStore>().0.clone()
     }
@@ -175,9 +161,9 @@ impl RepoListStore {
         cx.set_global(GlobalRepoListStore(entity));
     }
 
-    /// Create the store listing all announcements.
     pub fn new(cx: &mut Context<Self>) -> Self {
         let backend = Backend::global(cx);
+        let weak = cx.entity().downgrade();
 
         let subscription = cx.subscribe(&backend, |this, _backend, event, cx| {
             let relevant = match event {
@@ -217,17 +203,12 @@ impl RepoListStore {
             }
         });
 
-        let weak = cx.entity().downgrade();
         cx.defer(move |cx| {
-            let result = weak.update(cx, |this, cx| {
+            weak.update(cx, |this, cx| {
                 this.subscribe_remote(cx);
-                // Query the local database right away.
-                // The list never waits for the relay syncs started above to finish.
-                this.refresh_initial(cx);
-            });
-            if let Err(error) = result {
-                log::warn!("repo list store dropped before bootstrap could run: {error}");
-            }
+                this.refresh(cx);
+            })
+            .ok();
         });
 
         Self {
@@ -248,7 +229,6 @@ impl RepoListStore {
             .collect()
     }
 
-    /// Negentropy-sync announcements with the bootstrap relays.
     fn subscribe_remote(&mut self, cx: &mut Context<Self>) {
         let backend = Backend::global(cx);
 
@@ -259,33 +239,18 @@ impl RepoListStore {
         });
     }
 
-    /// One-shot initial load.
-    ///
-    /// Query the local database immediately, no debounce.
-    /// Stored announcements appear as soon as the app opens.
-    fn refresh_initial(&mut self, cx: &mut Context<Self>) {
-        debug_assert!(!self.refresh.debouncing());
-        if self.refresh.running() {
-            self.refresh.request();
-            return;
-        }
-        self.run_refresh(cx);
-    }
-
     /// Re-query the local database.
+    ///
+    /// Runs immediately. The backend pump already batches the relay events that
+    /// trigger a refresh, so no per-store debounce is needed.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.refresh.request() != RefreshRequest::Schedule {
             return;
         }
 
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(REFRESH_DEBOUNCE).await;
-            this.update(cx, |this, cx| this.run_refresh(cx))
-        })
-        .detach();
+        self.run_refresh(cx);
     }
 
-    /// One query and apply cycle, the debounced entry point.
     fn run_refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh.begin();
 

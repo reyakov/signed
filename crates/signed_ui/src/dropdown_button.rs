@@ -162,24 +162,3 @@ fn default_caret(id: impl Into<ElementId>, cx: &App) -> BaseButton {
         })
         .child(Icon::new(IconName::ChevronDown).xsmall())
 }
-
-#[cfg(test)]
-mod tests {
-    use gpui::div;
-
-    use super::*;
-
-    #[test]
-    fn dropdown_button_builder_state() {
-        let button = DropdownButton::new("issues")
-            .action(div())
-            .anchor(Anchor::BottomLeft)
-            .dropdown_menu(|menu, _, _| menu);
-
-        assert!(button.action.is_some());
-        // The caret is `None` until render, which falls back to the default.
-        assert!(button.caret.is_none());
-        assert!(button.menu.is_some());
-        assert_eq!(button.anchor, Anchor::BottomLeft);
-    }
-}

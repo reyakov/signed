@@ -13,34 +13,25 @@ use gpui_component::resizable::{resizable_panel, v_resizable};
 use gpui_component::scroll::{ScrollableElement, Scrollbar};
 use gpui_component::spinner::Spinner;
 use gpui_component::tag::Tag;
-use gpui_component::tree::{TreeEntry, TreeState, tree};
+use gpui_component::tree::{TreeEntry, TreeItem, TreeState, tree};
 use gpui_component::{
     ActiveTheme, Sizable, StyledExt, VirtualListScrollHandle, h_flex, v_flex, v_virtual_list,
 };
-use signed_git::{CommitDiff, DiffStatus, FileCommit, FileDiff};
+use signed_git::{CommitDiff, DiffHunk, DiffLine, DiffLineKind, DiffStatus, FileCommit, FileDiff};
 use signed_ui::{placeholder, tree_row};
 use utils::relative_time_secs;
 
-use super::helpers::{
-    DIFF_ROW_HEIGHT, DiffRow, build_tree_items, diff_rows, find_item, render_diff_row, tree_items,
-};
+use crate::views::tree::{build_tree_items, tree_items};
 
-/// Width of the changed-files column.
 const TREE_WIDTH: f32 = 260.;
 
-/// Tree and per-file diff body, shared by the commit diff and compare views.
 pub struct DiffPane {
-    /// Loaded diff, `None` until [`Self::set_diff`] is called.
     diff: Option<CommitDiff>,
-    /// Changed-files explorer state.
     tree_state: Entity<TreeState>,
-    /// Path of the file whose diff is shown in the detail column.
     selected_file: Option<SharedString>,
     /// Rows of the selected file's diff, hunk headers and lines.
     rows: Vec<DiffRow>,
-    /// Per-row heights of [`Self::rows`].
     item_sizes: Rc<Vec<Size<Pixels>>>,
-    /// Virtual list state of the diff rows.
     scroll_handle: VirtualListScrollHandle,
 }
 
@@ -56,12 +47,10 @@ impl DiffPane {
         }
     }
 
-    /// The loaded diff, for stats and badges in the host's header.
     pub fn diff(&self) -> Option<&CommitDiff> {
         self.diff.as_ref()
     }
 
-    /// Replace the diff and rebuild the tree and the selected file's rows.
     pub fn set_diff(&mut self, diff: CommitDiff, cx: &mut Context<Self>) {
         let mut paths: Vec<PathBuf> = diff
             .files
@@ -86,9 +75,6 @@ impl DiffPane {
         }
     }
 
-    /// Forget the diff, e.g. when the compared branches changed.
-    ///
-    /// Clears the tree, the selection and the diff rows.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.diff = None;
         self.selected_file = None;
@@ -99,14 +85,12 @@ impl DiffPane {
         });
     }
 
-    /// Show the diff of the file at `path`, selected in the tree.
     fn select_file(&mut self, path: &str, cx: &mut Context<Self>) {
         self.selected_file = Some(path.into());
         self.set_diff_rows(path);
         cx.notify();
     }
 
-    /// Rebuild the virtual list state for `path` and scroll back to the top.
     fn set_diff_rows(&mut self, path: &str) {
         let Some(diff) = self.diff.as_ref() else {
             return;
@@ -119,7 +103,6 @@ impl DiffPane {
         self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
     }
 
-    /// One row of the changed-files tree, icon and name, indented by depth.
     fn render_tree_item(
         ix: usize,
         entry: &TreeEntry,
@@ -136,7 +119,6 @@ impl DiffPane {
         })
     }
 
-    /// Left column showing the changed-files tree.
     fn render_tree_column(&self, cx: &mut Context<Self>) -> AnyElement {
         let tree_state = self.tree_state.clone();
         let view = cx.entity().downgrade();
@@ -166,7 +148,6 @@ impl DiffPane {
             .into_any_element()
     }
 
-    /// Right column, header of the selected file plus its diff.
     fn render_detail_column(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(diff) = self.diff.as_ref() else {
             return placeholder("No changes", cx);
@@ -184,7 +165,6 @@ impl DiffPane {
         self.render_file_diff(file, cx.entity(), cx)
     }
 
-    /// The diff of one file, with a header showing status and stats.
     fn render_file_diff(&self, file: &FileDiff, view: Entity<Self>, cx: &App) -> AnyElement {
         let status_label = match file.status {
             DiffStatus::Added => "A",
@@ -311,19 +291,14 @@ impl Render for DiffPane {
     }
 }
 
-/// Detail panel showing the diff of one commit.
 pub struct CommitDiffView {
     focus_handle: FocusHandle,
-    /// Local clone the commit lives in.
     worktree: PathBuf,
-    /// Display name of the repository the commit belongs to.
     repo_name: SharedString,
-    /// The commit being shown in the header and tab title.
     commit: FileCommit,
     /// The diff is being computed on a background task.
     loading: bool,
     error: Option<SharedString>,
-    /// Changed-files explorer and per-file diff, also used by the new PR panel's compare view.
     pane: Entity<DiffPane>,
 }
 
@@ -359,7 +334,6 @@ impl CommitDiffView {
         }
     }
 
-    /// Load the commit diff and the full commit metadata.
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
@@ -407,7 +381,6 @@ impl CommitDiffView {
         task.detach();
     }
 
-    /// Header with the commit id, summary, author/time and overall change stats.
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let commit = &self.commit;
         let (files, insertions, deletions) = self.pane.read(cx).diff().map_or((0, 0, 0), |diff| {
@@ -534,4 +507,181 @@ impl Render for CommitDiffView {
             )
             .child(resizable_panel().child(body))
     }
+}
+
+const GUTTER_WIDTH: f32 = 44.;
+const DIFF_ROW_HEIGHT: f32 = 20.;
+
+#[derive(Clone, Copy)]
+enum DiffRow {
+    Hunk {
+        old_start: u32,
+        old_lines: u32,
+        new_start: u32,
+        new_lines: u32,
+    },
+    Line {
+        hunk: usize,
+        line: usize,
+    },
+}
+
+fn diff_rows(file: &FileDiff) -> Vec<DiffRow> {
+    let mut rows = Vec::new();
+    for (hunk_ix, hunk) in file.hunks.iter().enumerate() {
+        rows.push(DiffRow::Hunk {
+            old_start: hunk.old_start,
+            old_lines: hunk.old_lines,
+            new_start: hunk.new_start,
+            new_lines: hunk.new_lines,
+        });
+        rows.extend((0..hunk.lines.len()).map(|line| DiffRow::Line {
+            hunk: hunk_ix,
+            line,
+        }));
+    }
+    rows
+}
+
+fn render_diff_row(hunks: &[DiffHunk], row: DiffRow, cx: &App) -> AnyElement {
+    match row {
+        DiffRow::Hunk {
+            old_start,
+            old_lines,
+            new_start,
+            new_lines,
+        } => div()
+            .px_2()
+            .w_full()
+            .h(px(DIFF_ROW_HEIGHT))
+            .font_family(cx.theme().mono_font_family.clone())
+            .text_xs()
+            .bg(cx.theme().muted)
+            .border_y(px(1.))
+            .border_color(cx.theme().border)
+            .text_color(cx.theme().muted_foreground)
+            .child(SharedString::from(format!(
+                "@@ -{},{} +{},{} @@",
+                old_start, old_lines, new_start, new_lines
+            )))
+            .into_any_element(),
+        DiffRow::Line { hunk, line } => render_diff_line(&hunks[hunk].lines[line], cx),
+    }
+}
+
+fn render_diff_line(line: &DiffLine, cx: &App) -> AnyElement {
+    let bg = match line.kind {
+        DiffLineKind::Addition => Some(cx.theme().success.opacity(0.2)),
+        DiffLineKind::Deletion => Some(cx.theme().danger.opacity(0.2)),
+        DiffLineKind::Context => None,
+    };
+    let gutter = cx.theme().muted_foreground;
+
+    // Fixed height and nowrap, the virtual list assumes every row has the same height.
+    // Long lines are clipped instead of wrapped.
+    h_flex()
+        .w_full()
+        .h(px(DIFF_ROW_HEIGHT))
+        .items_center()
+        .font_family(cx.theme().mono_font_family.clone())
+        .text_xs()
+        .when_some(bg, |this, bg| this.bg(bg))
+        .child(
+            div()
+                .w(px(GUTTER_WIDTH))
+                .flex_none()
+                .pr_2()
+                .text_right()
+                .text_color(gutter)
+                .child(line.old.map(|n| n.to_string()).unwrap_or_default()),
+        )
+        .child(
+            div()
+                .w(px(GUTTER_WIDTH))
+                .flex_none()
+                .pr_2()
+                .text_right()
+                .text_color(gutter)
+                .child(line.new.map(|n| n.to_string()).unwrap_or_default()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_color(cx.theme().foreground)
+                .child(line.text.clone()),
+        )
+        .into_any_element()
+}
+
+fn find_item<'a>(items: &'a [TreeItem], id: Option<&str>) -> Option<&'a TreeItem> {
+    let id = id?;
+    items.iter().find_map(|item| {
+        if item.id.as_ref() == id {
+            Some(item)
+        } else {
+            find_item(&item.children, Some(id))
+        }
+    })
+}
+
+pub(crate) const COMMIT_ROW_HEIGHT: f32 = 56.;
+
+pub(crate) fn commit_row(
+    ix: usize,
+    commit: &FileCommit,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    h_flex()
+        .id(ix)
+        .px_4()
+        .h(px(COMMIT_ROW_HEIGHT))
+        .w_full()
+        .gap_3()
+        .items_center()
+        .border_b(px(1.))
+        .border_color(cx.theme().border)
+        .hover(|this| this.bg(cx.theme().list_hover))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .justify_center()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(commit.id.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(commit.summary.clone()),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(commit.author.clone())
+                        .child(relative_time_secs(commit.time)),
+                ),
+        )
+        .on_click(move |_event, window, cx| on_click(window, cx))
+        .into_any_element()
 }

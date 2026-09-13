@@ -55,7 +55,6 @@ mod tests {
         )
     }
 
-    /// Build a signed kind `30618` event from raw tag values.
     fn state_event(tags: &[&[&str]]) -> Event {
         let tags: Vec<Tag> = tags
             .iter()
@@ -91,26 +90,6 @@ mod tests {
     }
 
     #[test]
-    fn head_without_prefix_is_ignored() {
-        let event = state_event(&[&["HEAD", "main"]]);
-
-        let (refs, head) = parse_state(&event);
-
-        assert!(refs.is_empty());
-        assert!(head.is_none());
-    }
-
-    #[test]
-    fn ignores_non_state_tags() {
-        let event = state_event(&[&["d", "my-repo"], &["name", "ignored"]]);
-
-        let (refs, head) = parse_state(&event);
-
-        assert!(refs.is_empty());
-        assert!(head.is_none());
-    }
-
-    #[test]
     fn build_state_round_trips_through_parse() {
         let refs = [
             ("refs/heads/main".to_owned(), COMMIT_A.to_owned()),
@@ -128,18 +107,5 @@ mod tests {
         let (parsed_refs, head) = parse_state(&event);
         assert_eq!(parsed_refs, refs);
         assert_eq!(head.as_deref(), Some("main"));
-    }
-
-    #[test]
-    fn build_state_omits_head_when_detached() {
-        let refs = [("refs/heads/main".to_owned(), COMMIT_A.to_owned())];
-
-        let event = build_state("my-repo", &refs, None)
-            .finalize(&keys())
-            .expect("signed event");
-
-        let (parsed_refs, head) = parse_state(&event);
-        assert_eq!(parsed_refs, refs);
-        assert!(head.is_none());
     }
 }

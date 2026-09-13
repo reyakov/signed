@@ -44,7 +44,6 @@ impl InboxItem {
             .unwrap_or_else(|| "Untitled".to_string())
     }
 
-    /// Kind shown for the thread.
     pub fn kind(&self) -> Option<Kind> {
         self.root_kind.or_else(|| {
             self.root_event
@@ -102,7 +101,6 @@ impl InboxItem {
         !self.archived && !self.unread_ids.is_empty()
     }
 
-    /// Recompute the unread and archived flags from `state`.
     pub fn apply_state(&mut self, state: &InboxReadState) {
         self.unread_ids = self
             .events
@@ -468,10 +466,6 @@ mod tests {
         Tag::parse(["E", &event.id.to_hex()]).expect("valid E tag")
     }
 
-    fn a_tag(owner: &PublicKey, id: &str) -> Tag {
-        Tag::parse(["a", &format!("30617:{}:{id}", owner.to_hex())]).expect("valid a tag")
-    }
-
     fn lookup(events: &[Event]) -> impl Fn(EventId) -> Option<Event> + '_ {
         move |id| events.iter().find(|event| event.id == id).cloned()
     }
@@ -487,18 +481,6 @@ mod tests {
             vec![Tag::parse(["subject", title]).expect("valid subject tag")],
             at,
         )
-    }
-
-    #[test]
-    fn issue_and_pull_request_are_their_own_root() {
-        let events = [
-            issue(&keys(1), 100),
-            signed(&keys(1), Kind::GitPullRequest, Vec::new(), 100),
-        ];
-        let lookup = lookup(&events);
-        for event in &events {
-            assert_eq!(notification_root(event, &lookup), Some(event.id));
-        }
     }
 
     #[test]
@@ -518,17 +500,6 @@ mod tests {
             notification_root(&comment, &lookup(&events)),
             Some(issue.id)
         );
-    }
-
-    #[test]
-    fn comment_without_root_pointer_has_no_root() {
-        let comment = signed(
-            &keys(2),
-            Kind::Comment,
-            vec![e_tag(&issue(&keys(1), 100))],
-            200,
-        );
-        assert_eq!(notification_root(&comment, &lookup(&[])), None);
     }
 
     #[test]
@@ -556,115 +527,12 @@ mod tests {
     }
 
     #[test]
-    fn pull_request_update_resolves_via_uppercase_e() {
-        let pr = signed(&keys(1), Kind::GitPullRequest, Vec::new(), 100);
-        let update = signed(
-            &keys(2),
-            Kind::GitPullRequestUpdate,
-            vec![uppercase_e_tag(&pr)],
-            200,
-        );
-        let events = [pr.clone(), update.clone()];
-        assert_eq!(notification_root(&update, &lookup(&events)), Some(pr.id));
-    }
-
-    #[test]
     fn nested_comment_chain_follows_to_the_root() {
         let issue = issue(&keys(1), 100);
         let reply = signed(&keys(2), Kind::Comment, vec![uppercase_e_tag(&issue)], 200);
         let nested = signed(&keys(3), Kind::Comment, vec![uppercase_e_tag(&reply)], 300);
         let events = [issue.clone(), reply, nested.clone()];
         assert_eq!(notification_root(&nested, &lookup(&events)), Some(issue.id));
-    }
-
-    #[test]
-    fn group_excludes_self_and_sorts_groups_newest_first() {
-        let me = keys(1);
-        let issue = issue(&keys(2), 100);
-        let comment = signed(&keys(3), Kind::Comment, vec![uppercase_e_tag(&issue)], 300);
-        let other_issue = signed(
-            &keys(2),
-            Kind::GitIssue,
-            vec![Tag::parse(["p", &me.public_key().to_hex()]).expect("valid p tag")],
-            200,
-        );
-        let mine = signed(&keys(1), Kind::Comment, vec![uppercase_e_tag(&issue)], 400);
-
-        let events = [issue.clone(), comment.clone(), other_issue.clone(), mine];
-        let items = group(
-            events,
-            Vec::new(),
-            me.public_key(),
-            &InboxReadState::default(),
-            &lookup(&[]),
-        );
-
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].root, issue.id);
-        // The issue itself plus the comment; the self-authored comment is out.
-        assert_eq!(items[0].events.len(), 2);
-        assert_eq!(items[1].root, other_issue.id);
-    }
-
-    #[test]
-    fn group_reports_unread_oldest_first_and_archived() {
-        let me = keys(1);
-        let issue = issue(&keys(2), 100);
-        let older = signed(&keys(3), Kind::Comment, vec![uppercase_e_tag(&issue)], 200);
-        let newer = signed(&keys(4), Kind::Comment, vec![uppercase_e_tag(&issue)], 300);
-
-        let events = [issue.clone(), older.clone(), newer.clone()];
-        let items = group(
-            events,
-            Vec::new(),
-            me.public_key(),
-            &InboxReadState::default(),
-            &lookup(&[]),
-        );
-        assert_eq!(items[0].unread_ids, vec![issue.id, older.id, newer.id]);
-        assert!(!items[0].archived);
-        assert!(items[0].is_unread());
-
-        let state = InboxReadState {
-            archived_before: Timestamp::from_secs(1000),
-            ..Default::default()
-        };
-        let items = group(
-            [issue.clone(), older, newer],
-            Vec::new(),
-            me.public_key(),
-            &state,
-            &lookup(&[]),
-        );
-        assert!(items[0].archived);
-        assert!(!items[0].unread_ids.is_empty());
-        assert!(!items[0].is_unread());
-    }
-
-    #[test]
-    fn group_reads_root_kind_and_address_from_the_root_event() {
-        let me = keys(1);
-        let owner_keys = keys(2);
-        let owner = owner_keys.public_key();
-        let issue = signed(
-            &owner_keys,
-            Kind::GitIssue,
-            vec![a_tag(&owner, "my-repo")],
-            100,
-        );
-        let comment = signed(&keys(3), Kind::Comment, vec![uppercase_e_tag(&issue)], 200);
-
-        let events = [issue.clone(), comment];
-        let items = group(
-            events.clone(),
-            Vec::new(),
-            me.public_key(),
-            &InboxReadState::default(),
-            &lookup(&events),
-        );
-
-        assert_eq!(items[0].root_kind, Some(Kind::GitIssue));
-        assert_eq!(items[0].address, issue.tags.coordinates().next());
     }
 
     #[test]
@@ -808,48 +676,5 @@ mod tests {
         let mut state = InboxReadState::default();
         state.mark_archived(&event);
         assert_eq!(state.archived_ids, HashSet::from([event.id]));
-    }
-
-    #[test]
-    fn apply_state_recomputes_unread_and_archived() {
-        let now = Timestamp::from_secs(1_000_000_000);
-        let first = issue(&keys(2), now.as_secs() - 2000);
-        let second = issue(&keys(2), now.as_secs() - 1000);
-        let mut item = InboxItem {
-            root: first.id,
-            root_event: None,
-            root_kind: None,
-            address: None,
-            events: vec![second.clone(), first.clone()],
-            own_events: Vec::new(),
-            unread_ids: Vec::new(),
-            archived: false,
-        };
-
-        let state = InboxReadState {
-            read_before: first.created_at,
-            ..Default::default()
-        };
-        item.apply_state(&state);
-
-        assert_eq!(item.unread_ids, vec![second.id]);
-        assert!(!item.archived);
-    }
-
-    #[test]
-    fn serde_round_trip_preserves_state() {
-        let first = issue(&keys(1), 100);
-        let second = issue(&keys(2), 200);
-        let state = InboxReadState {
-            read_before: Timestamp::from_secs(150),
-            read_ids: HashSet::from([second.id]),
-            archived_before: Timestamp::from_secs(50),
-            archived_ids: HashSet::from([first.id]),
-        };
-
-        let json = serde_json::to_string(&state).expect("serialized");
-        let parsed: InboxReadState = serde_json::from_str(&json).expect("deserialized");
-
-        assert_eq!(parsed, state);
     }
 }

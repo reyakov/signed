@@ -164,8 +164,6 @@ pub struct WorktreeSnapshot {
     pub head_commit: Option<FileCommit>,
 }
 
-/// Snapshot the worktree after a branch or tag switch.
-///
 /// Collects entries, the README, the branch HEAD points to and its commit.
 pub fn worktree_snapshot(workdir: &Path) -> Result<WorktreeSnapshot> {
     let repo = gix::open(workdir)?;
@@ -183,7 +181,6 @@ pub fn worktree_snapshot(workdir: &Path) -> Result<WorktreeSnapshot> {
     })
 }
 
-/// Check out `tree` into the worktree of `repo`
 pub(crate) fn force_checkout(repo: &gix::Repository, tree: &gix::hash::oid) -> Result<()> {
     let workdir = repo
         .workdir()
@@ -229,7 +226,6 @@ pub(crate) fn force_checkout(repo: &gix::Repository, tree: &gix::hash::oid) -> R
     let files = gix::progress::Discard;
     let bytes = gix::progress::Discard;
 
-    // Check out the index into the worktree.
     gix_worktree_state::checkout(
         &mut index,
         workdir,
@@ -240,7 +236,6 @@ pub(crate) fn force_checkout(repo: &gix::Repository, tree: &gix::hash::oid) -> R
         options,
     )?;
 
-    // Write the index to disk.
     index.write(gix::index::write::Options::default())?;
 
     Ok(())
@@ -258,7 +253,6 @@ fn move_head(
     let head = gix::refs::FullName::try_from("HEAD")
         .map_err(|e| anyhow::anyhow!("invalid ref name: {e}"))?;
 
-    // Update the reference, creating a reflog entry.
     repo.edit_references_as(
         [RefEdit {
             change: Change::Update {
@@ -293,7 +287,6 @@ pub fn worktree_checkout_branch(workdir: &Path, name: &str) -> Result<()> {
     let (signature, mut time_buf) = repository_signature();
     let signature = signature.to_ref(&mut time_buf);
 
-    // Move HEAD to the branch, creating a reflog entry.
     move_head(
         &repo,
         signature,
@@ -301,7 +294,6 @@ pub fn worktree_checkout_branch(workdir: &Path, name: &str) -> Result<()> {
         &format!("checkout: moving to {name}"),
     )?;
 
-    // Check out the branch's tree, replacing index + worktree.
     force_checkout(&repo, &tree)?;
 
     Ok(())
@@ -320,7 +312,6 @@ pub fn worktree_checkout_tag(workdir: &Path, name: &str) -> Result<()> {
     let (signature, mut time_buf) = repository_signature();
     let signature = signature.to_ref(&mut time_buf);
 
-    // Move HEAD to the tag, creating a reflog entry.
     move_head(
         &repo,
         signature,
@@ -328,7 +319,6 @@ pub fn worktree_checkout_tag(workdir: &Path, name: &str) -> Result<()> {
         &format!("checkout: moving to {name}"),
     )?;
 
-    // Check out the tag's tree, replacing index + worktree.
     force_checkout(&repo, &tree)?;
 
     Ok(())

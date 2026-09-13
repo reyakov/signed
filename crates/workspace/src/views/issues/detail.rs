@@ -1,8 +1,8 @@
 use dock::{BasePanel, Panel, PanelEvent};
 use gpui::prelude::*;
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString, Window, div,
-    relative,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString, Subscription,
+    Window, div, relative,
 };
 use gpui_component::input::TextareaState;
 use gpui_component::scroll::ScrollableElement;
@@ -13,16 +13,14 @@ use signed_state::{ProfileStore, RepoStore};
 use signed_ui::{UserAvatar, placeholder, status_badge};
 use utils::relative_time;
 
-use super::helpers::{comment_form, comments_section, issue_roots, sidebar_section};
+use crate::views::discussion::{comment_form, comments_section, issue_roots, sidebar_section};
 
-/// Detail panel of a single issue.
 pub struct IssueDetailView {
-    /// Repo store holding the issues and their statuses.
+    focus_handle: FocusHandle,
     store: Entity<RepoStore>,
     issue_id: EventId,
-    /// Input state of the comment textarea.
     comment_input: Entity<TextareaState>,
-    focus_handle: FocusHandle,
+    _subscription: Subscription,
 }
 
 impl IssueDetailView {
@@ -35,11 +33,14 @@ impl IssueDetailView {
         let comment_input =
             cx.new(|cx| TextareaState::new(window, cx).placeholder("Leave a comment..."));
 
+        let subscription = cx.observe(&store, |_this, _store, cx| cx.notify());
+
         Self {
             focus_handle: cx.focus_handle(),
             store,
             issue_id,
             comment_input,
+            _subscription: subscription,
         }
     }
 }
@@ -81,7 +82,12 @@ impl Render for IssueDetailView {
         let store = self.store.read(cx);
 
         let Some(issue) = store.issues.iter().find(|issue| issue.id == self.issue_id) else {
-            return placeholder("Issue not found", cx);
+            // The store has not applied its first pass yet, the issue may still arrive.
+            return if store.loaded {
+                placeholder("Issue not found", cx)
+            } else {
+                placeholder("Loading issue...", cx)
+            };
         };
 
         let (title, author, picture, status, age, issue_id, content) = {

@@ -11,17 +11,16 @@ use signed_state::Backend;
 /// State of the grasp-server section of a publish dialog, so async results can be rendered.
 #[derive(Default)]
 pub struct GraspServersState {
-    /// The user's grasp list of kind `10317` is being loaded.
+    /// Set while the user's kind `10317` grasp list loads.
     pub loading_servers: bool,
     pub grasp_servers: Vec<RelayUrl>,
-    /// Whether the grasp server section is shown. Defaults to shown.
     pub servers_enabled: bool,
-    /// Error of the last grasp-server edit, an invalid relay URL for example.
+    /// Error from the last grasp-server edit, such as an invalid relay URL.
     pub error: Option<SharedString>,
 }
 
 impl GraspServersState {
-    /// Defaults used until the user's grasp list loads, which replaces them when non-empty.
+    /// Defaults used until the user's grasp list loads and replaces them.
     ///
     /// Persisted settings supply the defaults, an empty list falls back to the built-ins.
     pub fn new_default(settings: &GraspServersSettings) -> Self {
@@ -137,7 +136,6 @@ pub fn grasp_servers_field(
         }))
 }
 
-/// One grasp server row, the host in a tag plus a remove button.
 fn render_server_row(
     ix: usize,
     relay: &RelayUrl,
@@ -176,7 +174,7 @@ fn render_server_row(
         )
 }
 
-/// The bare host of a grasp server, defaults are entered without a scheme.
+/// Shows only the host, since grasp servers are entered without a scheme.
 fn display_server(relay: &RelayUrl) -> SharedString {
     relay
         .domain()
@@ -184,7 +182,7 @@ fn display_server(relay: &RelayUrl) -> SharedString {
         .unwrap_or_else(|| SharedString::from(relay.to_string()))
 }
 
-/// Parse the relay input, accepting a bare host, and append it to the list.
+/// Accepts a bare host as well as a full URL.
 fn add_relay(
     state: &Entity<GraspServersState>,
     input: &Entity<InputState>,
@@ -220,9 +218,9 @@ fn add_relay(
     }
 }
 
-/// Load the user's grasp list of kind `10317` from the local database.
+/// Loads the user's kind `10317` grasp list from the local database.
 ///
-/// It replaces the defaults when it lists any servers.
+/// Replaces the defaults when the list is non-empty.
 pub fn load_user_grasp_servers(
     state: Entity<GraspServersState>,
     window: &mut Window,

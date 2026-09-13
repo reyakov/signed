@@ -35,7 +35,6 @@ impl NavItem {
         }
     }
 
-    /// A trailing element rendered at the right edge of the row
     pub fn suffix(mut self, suffix: impl IntoElement) -> Self {
         self.suffix = Some(suffix.into_any_element());
         self

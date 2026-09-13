@@ -4,8 +4,8 @@ use assets::CustomIconName;
 use dock::{BasePanel, DockArea, Panel, PanelEvent, add_center_panel, panel_handle};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
-    SharedString, Size, WeakEntity, Window, div, px, size,
+    AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels,
+    Render, SharedString, Size, Subscription, WeakEntity, Window, div, px, size,
 };
 use gpui_base::Button as BaseButton;
 use gpui_component::alert::Alert;
@@ -19,31 +19,26 @@ use signed_state::{ProfileStore, RepoStore};
 use signed_ui::{DropdownButton, SegmentButton, UserAvatar, placeholder, status_badge};
 use utils::relative_time;
 
-use super::RepoAction;
-use super::new_pull_request::open_new_pull_panel;
-use super::pull_request_detail::PullRequestDetailView;
-use super::send_patch::open_send_patch_panel;
+pub(super) mod detail;
+pub(super) mod new;
 
-/// Height of one pull request row in the virtual list.
+use self::detail::PullRequestDetailView;
+use self::new::open_new_pull_panel;
+use super::send_patch::open_send_patch_panel;
+use crate::views::repo::RepoAction;
+
 const ROW_HEIGHT: f32 = 73.;
 
-/// Status filter of the pull request list, chosen via the header's filter buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PullRequestFilter {
-    /// Every pull request, regardless of status.
     All,
-    /// Pull requests whose resolved status is [`RepoStatus::Open`].
     Open,
-    /// Pull requests whose resolved status is [`RepoStatus::Closed`].
     Closed,
-    /// Pull requests whose resolved status is [`RepoStatus::Draft`].
     Draft,
-    /// Pull requests whose resolved status is [`RepoStatus::Applied`].
     Merged,
 }
 
 impl PullRequestFilter {
-    /// Whether a pull request with `status` is included by this filter.
     fn matches(self, status: RepoStatus) -> bool {
         match self {
             Self::All => true,
@@ -57,36 +52,38 @@ impl PullRequestFilter {
 
 pub struct PullRequestsView {
     focus_handle: FocusHandle,
-    /// Dock area the detail panels are added to.
     dock_area: WeakEntity<DockArea>,
-    /// Repo store holding the pull requests and their statuses.
     store: Entity<RepoStore>,
-    /// Display name of the repository, for the panel title.
     repo_name: SharedString,
-    /// Filter selected in the header filter buttons.
     filter: PullRequestFilter,
-    /// Per-row heights of the virtual list.
     item_sizes: Rc<Vec<Size<Pixels>>>,
-    /// The filtered pull request count [`Self::item_sizes`] was built for.
-    pr_len: usize,
     /// Indices into the store's `pull_requests` matching [`Self::filter`].
     visible_prs: Vec<usize>,
     /// Header counts `(total, open, closed, draft, merged)`.
     counts: (usize, usize, usize, usize, usize),
-    /// Store version and filter the cached rows/counts were built from.
-    cache_key: Option<(u64, PullRequestFilter)>,
-    /// Virtual list state of the pull requests list.
+    // A filter change notifies even when the visible rows are unchanged,
+    // e.g. switching between two empty filters.
+    synced_filter: PullRequestFilter,
     scroll_handle: VirtualListScrollHandle,
+    _subscription: Subscription,
 }
 
 impl PullRequestsView {
     pub fn new(
         dock_area: WeakEntity<DockArea>,
         store: Entity<RepoStore>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let repo_name = store.read(cx).name();
+
+        let subscription = cx.observe(&store, |this, _store, cx| {
+            this.rebuild(cx);
+        });
+
+        cx.defer_in(window, |this, _window, cx| {
+            this.rebuild(cx);
+        });
 
         Self {
             focus_handle: cx.focus_handle(),
@@ -95,15 +92,61 @@ impl PullRequestsView {
             repo_name,
             filter: PullRequestFilter::Open,
             item_sizes: Rc::new(Vec::new()),
-            pr_len: 0,
             visible_prs: Vec::new(),
             counts: (0, 0, 0, 0, 0),
-            cache_key: None,
+            synced_filter: PullRequestFilter::Open,
             scroll_handle: VirtualListScrollHandle::new(),
+            _subscription: subscription,
         }
     }
 
-    /// Open the detail panel of `pr_id` in the dock area.
+    fn rebuild(&mut self, cx: &mut Context<Self>) {
+        let filter = self.filter;
+
+        let (visible_prs, counts) = {
+            let store = self.store.read(cx);
+            let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize);
+
+            let visible_prs: Vec<usize> = store
+                .pull_requests
+                .iter()
+                .enumerate()
+                .filter_map(|(ix, pr)| {
+                    if pr.kind != Kind::GitPullRequest {
+                        return None;
+                    }
+
+                    let status = store.status_of(pr);
+                    counts.0 += 1;
+
+                    match status {
+                        RepoStatus::Open => counts.1 += 1,
+                        RepoStatus::Closed => counts.2 += 1,
+                        RepoStatus::Draft => counts.3 += 1,
+                        RepoStatus::Applied => counts.4 += 1,
+                    }
+
+                    filter.matches(status).then_some(ix)
+                })
+                .collect();
+
+            (visible_prs, counts)
+        };
+
+        let filter_changed = self.synced_filter != filter;
+
+        if !filter_changed && self.visible_prs == visible_prs && self.counts == counts {
+            return;
+        }
+
+        self.synced_filter = filter;
+        self.item_sizes = Rc::new(vec![size(px(0.), px(ROW_HEIGHT)); visible_prs.len()]);
+        self.visible_prs = visible_prs;
+        self.counts = counts;
+
+        cx.notify();
+    }
+
     fn open_pull_request_detail(
         &mut self,
         pr_id: EventId,
@@ -129,9 +172,6 @@ impl PullRequestsView {
         });
     }
 
-    /// Render one row of the pull request list.
-    ///
-    /// `ix` is the row index, `pr_ix` the index in the store's `pull_requests`.
     fn render_row(&self, ix: usize, pr_ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let pr = &self.store.read(cx).pull_requests[pr_ix];
         let pr_id = pr.id;
@@ -196,7 +236,6 @@ impl PullRequestsView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        // Counts of the last list rebuild.
         let (total, open, closed, draft, merged) = self.counts;
 
         h_flex()
@@ -217,7 +256,7 @@ impl PullRequestsView {
                             .selected(self.filter == PullRequestFilter::All)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::All;
-                                cx.notify();
+                                this.rebuild(cx);
                             })),
                     )
                     .child(
@@ -227,7 +266,7 @@ impl PullRequestsView {
                             .selected(self.filter == PullRequestFilter::Open)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Open;
-                                cx.notify();
+                                this.rebuild(cx);
                             })),
                     )
                     .child(
@@ -237,7 +276,7 @@ impl PullRequestsView {
                             .selected(self.filter == PullRequestFilter::Closed)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Closed;
-                                cx.notify();
+                                this.rebuild(cx);
                             })),
                     )
                     .child(
@@ -247,7 +286,7 @@ impl PullRequestsView {
                             .selected(self.filter == PullRequestFilter::Draft)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Draft;
-                                cx.notify();
+                                this.rebuild(cx);
                             })),
                     )
                     .child(
@@ -257,7 +296,7 @@ impl PullRequestsView {
                             .selected(self.filter == PullRequestFilter::Merged)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Merged;
-                                cx.notify();
+                                this.rebuild(cx);
                             })),
                     ),
             )
@@ -330,55 +369,11 @@ impl Focusable for PullRequestsView {
 impl Render for PullRequestsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filter = self.filter;
-
-        // Rows and counts are rebuilt only when the store refreshed or filter changed.
-        let version = self.store.read(cx).version();
-
-        if self.cache_key != Some((version, filter)) {
-            let store = self.store.read(cx);
-            let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize);
-            self.visible_prs = store
-                .pull_requests
-                .iter()
-                .enumerate()
-                .filter_map(|(ix, pr)| {
-                    if pr.kind != Kind::GitPullRequest {
-                        return None;
-                    }
-
-                    let status = store.status_of(pr);
-                    counts.0 += 1;
-
-                    match status {
-                        RepoStatus::Open => counts.1 += 1,
-                        RepoStatus::Closed => counts.2 += 1,
-                        RepoStatus::Draft => counts.3 += 1,
-                        RepoStatus::Applied => counts.4 += 1,
-                    }
-
-                    filter.matches(status).then_some(ix)
-                })
-                .collect();
-
-            self.counts = counts;
-            self.cache_key = Some((version, filter));
-        }
-
         let count = self.visible_prs.len();
-
-        // The virtual list's item count comes from `item_sizes`.
-        // Rebuild it whenever the filtered pull request count changes.
-        if count != self.pr_len {
-            self.pr_len = count;
-            self.item_sizes = Rc::new(vec![size(px(0.), px(ROW_HEIGHT)); count]);
-        }
-
         let sizes = self.item_sizes.clone();
         let scroll_handle = self.scroll_handle.clone();
         let view = cx.entity().clone();
 
-        // Non-fatal warnings and errors of the last action, like creating or updating a PR.
-        // Shown as dismissible banners above the list.
         let (last_error, last_warning) = {
             let store = self.store.read(cx);
             (store.last_error.clone(), store.last_warning.clone())

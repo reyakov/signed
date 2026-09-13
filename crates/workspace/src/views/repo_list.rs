@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::rc::Rc;
 
 use assets::CustomIconName;
@@ -5,7 +6,7 @@ use dock::{BasePanel, DockArea, Panel, PanelEvent};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Render,
-    SharedString, Size, Subscription, WeakEntity, Window, div, px, size,
+    SharedString, Size, Subscription, WeakEntity, Window, div, px, relative, size,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::scroll::Scrollbar;
@@ -23,19 +24,30 @@ use super::open_repo_panel;
 const COLUMNS: usize = 2;
 const CARD_HEIGHT: f32 = 40. + 64. + 48. + 2. + 6.;
 
-/// How many of the newest repositories the `Recent` sort shows.
 const RECENT_COUNT: usize = 10;
 
-/// Sort of the explore list, chosen via the header's filter buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum RepoFilter {
-    /// Every repository in the store's default order, newest first.
     All,
     #[default]
-    /// Repositories ranked by total issues + pull requests + commits.
     Popular,
-    /// The [`RECENT_COUNT`] newest repositories.
     Recent,
+}
+
+impl AsRef<str> for RepoFilter {
+    fn as_ref(&self) -> &str {
+        match self {
+            RepoFilter::All => "all",
+            RepoFilter::Popular => "popular",
+            RepoFilter::Recent => "recent",
+        }
+    }
+}
+
+impl Display for RepoFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_ref())
+    }
 }
 
 impl RepoFilter {
@@ -49,6 +61,7 @@ impl RepoFilter {
         // Narrow by the search query first.
         // Recent then limits the matches and Popular ranks them.
         let query = query.trim().to_lowercase();
+
         if !query.is_empty() {
             indices.retain(|&ix| {
                 let announcement = &announcements[ix];
@@ -82,23 +95,18 @@ impl RepoFilter {
     }
 }
 
-/// Browse all announced repositories.
 pub struct RepoListView {
     store: Entity<RepoListStore>,
     dock_area: WeakEntity<DockArea>,
     focus_handle: FocusHandle,
     scroll_handle: VirtualListScrollHandle,
-    /// Sort selected in the header filter buttons.
     filter: RepoFilter,
-    /// Per-row heights of the virtual list.
     item_sizes: Rc<Vec<Size<Pixels>>>,
     /// Number of rows [`Self::item_sizes`] was built for, the filtered repo count.
     repo_len: usize,
     /// Indices matching [`Self::filter`] into the store's `announcements`.
     visible: Vec<usize>,
-    /// Search box filtering repositories by name.
     search: Entity<InputState>,
-    /// Rebuilds the visible slice as the search text changes.
     _search_subscription: Subscription,
     _subscription: Subscription,
 }
@@ -111,7 +119,6 @@ impl RepoListView {
     ) -> Self {
         let store = RepoListStore::global(cx);
 
-        // Live search over repository names
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search..."));
         let search_subscription = cx.subscribe(&search, |this, _search, event, cx| {
             if matches!(event, InputEvent::Change) {
@@ -125,7 +132,11 @@ impl RepoListView {
             this.rebuild_rows(cx);
         });
 
-        let mut this = Self {
+        cx.defer_in(window, |this, _window, cx| {
+            this.rebuild_rows(cx);
+        });
+
+        Self {
             store,
             dock_area,
             focus_handle: cx.focus_handle(),
@@ -137,27 +148,19 @@ impl RepoListView {
             search,
             _search_subscription: search_subscription,
             _subscription: subscription,
-        };
-
-        // Seed the rows right away.
-        // The store may already hold announcements from before the panel opened.
-        // The first render must not depend on a later store update.
-        this.rebuild_rows(cx);
-
-        this
+        }
     }
 
-    /// Rebuild [`Self::visible`] and [`Self::item_sizes`] from the store.
-    ///
-    /// Uses the store contents, [`Self::filter`] and the search query.
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
         let filter = self.filter;
         let query = self.search.read(cx).value();
         let store = self.store.read(cx);
+
         self.visible = filter.visible(store, &query);
 
         // Each virtual list row holds `COLUMNS` repo cards.
         let rows = self.visible.len().div_ceil(COLUMNS);
+
         if self.repo_len != rows {
             self.repo_len = rows;
             self.item_sizes = Rc::new(vec![size(px(0.), px(CARD_HEIGHT)); rows]);
@@ -172,7 +175,13 @@ impl RepoListView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        open_repo_panel(&self.dock_area, announcement, window, &mut *cx);
+        open_repo_panel(
+            &self.dock_area,
+            &announcement.addr(),
+            Some(announcement),
+            window,
+            cx,
+        );
     }
 
     fn render_card(
@@ -308,6 +317,22 @@ impl RepoListView {
             .into_any_element()
     }
 
+    fn render_filter<T>(&self, filter: RepoFilter, label: T, cx: &mut Context<Self>) -> AnyElement
+    where
+        T: Into<SharedString>,
+    {
+        let active = self.filter == filter;
+
+        SegmentButton::new(filter.to_string(), label)
+            .icon(Icon::new(filter.icon_name()))
+            .selected(active)
+            .on_click(cx.listener(move |this, _event, _window, cx| {
+                this.filter = filter;
+                this.rebuild_rows(cx);
+            }))
+            .into_any_element()
+    }
+
     fn render_header(&self, count: usize, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
             .px_4()
@@ -315,18 +340,24 @@ impl RepoListView {
             .w_full()
             .gap_3()
             .child(
-                h_flex()
-                    .gap_1()
-                    .text_xs()
-                    .child(div().font_semibold().child("Repositories"))
+                v_flex()
+                    .gap_0p5()
                     .child(
                         div()
-                            .w_10()
                             .min_w_0()
                             .truncate()
                             .text_ellipsis()
+                            .font_semibold()
+                            .text_xs()
+                            .line_height(relative(1.2))
+                            .child("Repositories"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.))
                             .text_color(cx.theme().muted_foreground)
-                            .child(SharedString::from(format!("({count})"))),
+                            .line_height(relative(1.2))
+                            .child(SharedString::from(format!("Total: {count}"))),
                     ),
             )
             .child(
@@ -342,29 +373,10 @@ impl RepoListView {
             .child(
                 h_flex()
                     .gap_1()
-                    .child(self.filter_button(RepoFilter::All, "All", cx))
-                    .child(self.filter_button(RepoFilter::Popular, "Popular", cx))
-                    .child(self.filter_button(RepoFilter::Recent, "Recent", cx)),
+                    .child(self.render_filter(RepoFilter::All, "All", cx))
+                    .child(self.render_filter(RepoFilter::Popular, "Popular", cx))
+                    .child(self.render_filter(RepoFilter::Recent, "Recent", cx)),
             )
-            .into_any_element()
-    }
-
-    /// One segmented header filter button, like the issues list's status filter buttons.
-    fn filter_button(
-        &self,
-        filter: RepoFilter,
-        label: &'static str,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let active = self.filter == filter;
-
-        SegmentButton::new(label, label)
-            .icon(Icon::new(filter.icon_name()))
-            .selected(active)
-            .on_click(cx.listener(move |this, _event, _window, cx| {
-                this.filter = filter;
-                this.rebuild_rows(cx);
-            }))
             .into_any_element()
     }
 }

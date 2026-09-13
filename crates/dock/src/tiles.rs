@@ -59,7 +59,6 @@ impl SignedTilesSkin {
         }
     }
 
-    /// One edge or corner handle.
     fn resize_handle(
         &self,
         tile: &TileContext,

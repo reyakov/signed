@@ -7,7 +7,6 @@ use gpui_component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex};
 
 use crate::TAB_BAR_HEIGHT;
 
-/// The standard width of a window control button.
 const CONTROL_WIDTH: f32 = 34.;
 
 #[derive(IntoElement, Clone)]

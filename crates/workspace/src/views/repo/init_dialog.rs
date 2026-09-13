@@ -19,10 +19,8 @@ use crate::views::sidebar::grasp_servers::{
     GraspServersState, grasp_servers_field, load_user_grasp_servers,
 };
 
-/// Shared state for the Init dialog, so async results can be rendered.
 pub type InitRepoState = DialogProgress;
 
-/// Open the Init dialog for the local repository at `local_path`.
 pub fn open(
     local_path: PathBuf,
     view: WeakEntity<RepoDetailView>,
@@ -51,7 +49,6 @@ pub fn open(
             .placeholder("Short description")
     });
 
-    // Load the user's grasp servers.
     load_user_grasp_servers(grasp_state.clone(), window, cx);
 
     window.open_dialog(cx, move |dialog, _window, _cx| {
@@ -146,9 +143,6 @@ pub fn open(
     });
 }
 
-/// Run the init flow.
-///
-/// Closes the dialog and switches the repository into NIP-34 mode on success.
 fn init_repository(
     local_path: PathBuf,
     inputs: (Entity<InputState>, Entity<TextareaState>),

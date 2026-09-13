@@ -16,19 +16,16 @@ impl GitCache {
         Self { root }
     }
 
-    /// The root directory holding the mirror clones.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// Local path of the clone for a repository.
     pub fn repo_path(&self, addr: &RepoAddr) -> PathBuf {
         self.root
             .join(addr.public_key.to_hex())
             .join(sanitize_path_component(&addr.identifier))
     }
 
-    /// Open an existing clone.
     pub fn open(&self, addr: &RepoAddr) -> Result<Option<gix::Repository>> {
         let path = self.repo_path(addr);
         match gix::open(&path) {
@@ -64,9 +61,6 @@ impl GitCache {
 }
 
 /// Map an untrusted repository id or display name to a safe single path component.
-///
-/// Everything outside `[A-Za-z0-9._-]` becomes `_`.
-/// An id that maps to exactly `.` or `..` becomes `_`.
 pub fn sanitize_path_component(id: &str) -> String {
     let sanitized: String = id
         .chars()

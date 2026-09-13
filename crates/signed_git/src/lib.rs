@@ -38,8 +38,6 @@ pub use worktree::{
     worktree_commits_ahead, worktree_dirty, worktree_entries, worktree_read, worktree_snapshot,
 };
 
-/// Run a git command in `dir`, returning trimmed stdout.
-///
 /// The terminal prompt is disabled so a credential request fails instead of hanging.
 #[cfg(test)]
 fn git_in(dir: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {

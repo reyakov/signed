@@ -1,15 +1,11 @@
 /// Refresh coalescing shared by the event stores.
 #[derive(Debug, Default)]
 pub struct RefreshGate {
-    /// A run is in flight.
     running: bool,
-    /// A request arrived while a run was in flight.
     dirty: bool,
-    /// The debounce timer is pending.
     debouncing: bool,
 }
 
-/// What a refresh request decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshRequest {
     /// No run or timer covers the request, start the debounce timer.
@@ -19,12 +15,10 @@ pub enum RefreshRequest {
 }
 
 impl RefreshGate {
-    /// Whether a run is in flight.
     pub fn running(&self) -> bool {
         self.running
     }
 
-    /// Whether the debounce timer is pending.
     pub fn debouncing(&self) -> bool {
         self.debouncing
     }
@@ -45,7 +39,6 @@ impl RefreshGate {
         }
     }
 
-    /// The debounce timer fired and the run starts now.
     pub fn begin(&mut self) {
         self.debouncing = false;
         self.running = true;

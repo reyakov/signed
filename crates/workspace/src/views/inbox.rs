@@ -21,20 +21,13 @@ use utils::relative_time;
 
 use super::{RepoItem, open_repo_item};
 
-/// Delay between a refresh request and the actual re-query.
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
-
-/// Extra list rows measured above and below the visible area.
 const LIST_OVERDRAW: Pixels = px(400.);
-
-/// Maximum number of sub-activity lines shown under a thread row.
 const MAX_SUB_ACTIVITIES: usize = 5;
 
-/// A repository's slice of the inbox: the threads that belong to it.
 struct InboxSection {
-    /// Repository the section groups, `None` for items without one.
+    /// `None` for items without a repository.
     address: Option<RepoAddr>,
-    /// Number of threads with an unread event.
     unread: usize,
     /// Indices into the threads, newest activity first.
     entries: Vec<usize>,
@@ -54,15 +47,11 @@ pub struct InboxView {
     dock_area: WeakEntity<DockArea>,
     /// One row per thread, merging notifications and own activity, newest first.
     threads: Arc<Vec<InboxItem>>,
-    /// The threads grouped by repository, newest first.
     sections: Arc<Vec<InboxSection>>,
-    /// The flattened repository headers and rows of the list.
     rows: Arc<Vec<InboxRow>>,
-    /// Number of non-archived threads with an unread event.
     unread_count: usize,
     /// Copy of the global read state the current lists were derived with.
     state: InboxReadState,
-    /// Set once the global state has been read for the current user.
     state_loaded: bool,
     refresh: RefreshGate,
     list: ListState,
@@ -118,7 +107,6 @@ impl InboxView {
         }
     }
 
-    /// Mark every known notification read.
     pub fn mark_all_read(&mut self, cx: &mut Context<Self>) {
         let Some(me) = Backend::global(cx).read(cx).current_user() else {
             return;
@@ -136,7 +124,6 @@ impl InboxView {
         inbox.update(cx, |inbox, cx| inbox.mark_all_read(&all, me, cx));
     }
 
-    /// Re-derive from the global state when it is loaded or changes.
     pub fn sync_state(&mut self, cx: &mut Context<Self>) {
         let backend = Backend::global(cx);
         let inbox = backend.read(cx).inbox();
@@ -170,7 +157,6 @@ impl InboxView {
         }
     }
 
-    /// Handle a backend event that can change the derived sections.
     fn handle_backend_event(&mut self, event: &BackendEvent, cx: &mut Context<Self>) {
         match event {
             BackendEvent::NostrUpdate(updates) => {
@@ -192,7 +178,6 @@ impl InboxView {
         }
     }
 
-    /// One-shot initial load, no debounce.
     fn refresh_initial(&mut self, cx: &mut Context<Self>) {
         debug_assert!(!self.refresh.debouncing());
         if self.refresh.running() {
@@ -202,7 +187,6 @@ impl InboxView {
         self.run_refresh(cx);
     }
 
-    /// Re-query the local database.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if !self.state_loaded {
             return;
@@ -218,7 +202,6 @@ impl InboxView {
         }));
     }
 
-    /// One query and apply cycle, the debounced entry point.
     fn run_refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh.begin();
 
@@ -264,7 +247,6 @@ impl InboxView {
         }));
     }
 
-    /// Recompute the unread and archived flags from the current state.
     fn regroup(&mut self, cx: &mut Context<Self>) {
         let mut items = (*self.threads).clone();
 
@@ -277,7 +259,6 @@ impl InboxView {
         self.rebuild(cx);
     }
 
-    /// Regroup the current threads by repository and flatten them into rows.
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let backend = Backend::global(cx);
         let repo_list = RepoListStore::global(cx);
@@ -308,7 +289,6 @@ impl InboxView {
         self.rows = Arc::new(rows);
     }
 
-    /// Group the threads into one section per repository.
     fn group_sections(&self) -> Vec<InboxSection> {
         let mut by_repo: HashMap<Option<RepoAddr>, InboxSection> = HashMap::new();
 
@@ -349,7 +329,6 @@ impl InboxView {
         sections
     }
 
-    /// Flatten the sections into the list of repository headers and their rows.
     fn flatten_rows(&self, sections: &[InboxSection]) -> Vec<InboxRow> {
         let mut rows = Vec::new();
 
@@ -369,7 +348,6 @@ impl InboxView {
         rows
     }
 
-    /// Forget everything derived for the current user.
     fn clear(&mut self) {
         self.threads = Arc::new(Vec::new());
         self.sections = Arc::new(Vec::new());
@@ -393,16 +371,6 @@ impl InboxView {
             return;
         };
 
-        let Some(announcement) = RepoListStore::global(cx)
-            .read(cx)
-            .announcements
-            .iter()
-            .find(|announcement| announcement.addr() == address)
-            .cloned()
-        else {
-            return;
-        };
-
         let item = match kind {
             Some(Kind::GitIssue) => RepoItem::Issue(root),
             Some(Kind::GitPullRequest) => RepoItem::PullRequest(root),
@@ -410,7 +378,7 @@ impl InboxView {
             _ => return,
         };
 
-        open_repo_item(&self.dock_area, &announcement, item, window, cx);
+        open_repo_item(&self.dock_area, &address, None, item, window, cx);
     }
 
     fn render_entry(&self, ix: usize, cx: &Context<Self>) -> AnyElement {
@@ -455,7 +423,6 @@ impl InboxView {
     }
 }
 
-/// Display name of the repository at `addr`, from the announcement store.
 fn repo_name(addr: Option<&RepoAddr>, cx: &App) -> Option<SharedString> {
     let repo_list = RepoListStore::global(cx);
     let addr = addr?;
@@ -467,7 +434,6 @@ fn repo_name(addr: Option<&RepoAddr>, cx: &App) -> Option<SharedString> {
         .map(|announcement| announcement.name().map(SharedString::from))
 }
 
-/// Header of a repository section.
 fn repo_header(section: &InboxSection, cx: &App) -> AnyElement {
     let name =
         repo_name(section.address.as_ref(), cx).unwrap_or_else(|| SharedString::from("Untitled"));
@@ -491,7 +457,6 @@ fn repo_header(section: &InboxSection, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// Placeholder under a repository header that has nothing to show.
 fn empty_section_row(cx: &App) -> AnyElement {
     h_flex()
         .h_12()
@@ -610,7 +575,6 @@ fn sub_activity(event: &Event, me: Option<PublicKey>, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// Phrase describing an activity event, read as `[name] [phrase]`.
 fn activity_phrase(kind: Kind) -> &'static str {
     if kind == COVER_NOTE_KIND {
         return "added a note";
@@ -630,7 +594,6 @@ fn activity_phrase(kind: Kind) -> &'static str {
     }
 }
 
-/// Centered muted icon and message filling its container.
 fn empty_state(icon: impl IconNamed, message: &str, cx: &App) -> AnyElement {
     v_flex()
         .w_full()

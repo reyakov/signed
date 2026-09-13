@@ -7,7 +7,6 @@ use signed_core::Announcement;
 use signed_state::ProfileStore;
 use signed_ui::{UserAvatar, middle_truncate};
 
-/// Open the About dialog showing every field of the announcement event.
 pub(super) fn open_about_dialog(announcement: Announcement, window: &mut Window, cx: &mut App) {
     window.open_dialog(cx, move |dialog, _window, cx| {
         let announcement = announcement.clone();
@@ -21,7 +20,6 @@ pub(super) fn open_about_dialog(announcement: Announcement, window: &mut Window,
     });
 }
 
-/// The announcement's fields as labeled rows.
 fn announcement_rows(announcement: &Announcement, cx: &App) -> AnyElement {
     let mut rows: Vec<AnyElement> = Vec::new();
 
@@ -116,7 +114,6 @@ fn announcement_rows(announcement: &Announcement, cx: &App) -> AnyElement {
     v_flex().gap_3().w_full().children(rows).into_any_element()
 }
 
-/// One info row with a small muted label above the value.
 fn row(label: &'static str, value: AnyElement, cx: &App) -> AnyElement {
     v_flex()
         .gap_1()
@@ -132,7 +129,6 @@ fn row(label: &'static str, value: AnyElement, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// Plain text value, wrapping within the dialog.
 fn text<T>(value: T) -> AnyElement
 where
     T: Into<SharedString>,
@@ -147,7 +143,6 @@ where
         .into_any_element()
 }
 
-/// A mono-spaced value with a copy button, for hex identifiers.
 fn copy_value(id: &'static str, value: String, cx: &App) -> AnyElement {
     h_flex()
         .gap_2()
@@ -164,10 +159,6 @@ fn copy_value(id: &'static str, value: String, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// One row per maintainer with avatar and display name.
-/// The display name falls back to a shortened npub.
-///
-/// A copy button copies the full pubkey.
 fn maintainers(maintainers: &[PublicKey], cx: &App) -> AnyElement {
     let profile_store = ProfileStore::global(cx);
     v_flex()
@@ -197,9 +188,6 @@ fn maintainers(maintainers: &[PublicKey], cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// One row per item of a multi-value tag.
-///
-/// The value is truncated to a single line, with a copy button for the full value.
 fn list(id: &'static str, items: impl IntoIterator<Item = String>, cx: &App) -> AnyElement {
     v_flex()
         .gap_2()

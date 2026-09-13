@@ -39,15 +39,13 @@ pub struct SidebarPanel {
     dock_area: WeakEntity<DockArea>,
     inbox: Option<WeakEntity<InboxView>>,
     explore: Option<WeakEntity<RepoListView>>,
-    /// Artwork for the sign-in screen.
     banner: SharedString,
     /// The signed-in user's announced repositories, newest first.
     announcements: Arc<Vec<Announcement>>,
     /// Local repositories found by the scan that are not announced yet.
     local_repos: Arc<Vec<PathBuf>>,
-    /// A local scan is currently running.
     scanning: bool,
-    /// Unpushed local commits per announced repository, the row badge counts.
+    /// Unpushed commit counts per announced repository, shown as row badges.
     unpushed: HashMap<RepoAddr, usize>,
     _subscriptions: Vec<Subscription>,
 }
@@ -80,21 +78,19 @@ impl SidebarPanel {
             }
         }));
 
-        // The merged list re-derives when announcements or the local scan change.
         subscriptions.push(cx.observe(&repos, |this, _repos, cx| {
             if this.refresh(cx) {
                 cx.notify();
             }
         }));
 
-        // The local scan re-derives when announcements or the local scan change.
         subscriptions.push(cx.observe(&local, |this, _local, cx| {
             if this.refresh(cx) {
                 cx.notify();
             }
         }));
 
-        // Push statuses are recomputed in the background; only the badge counts change.
+        // Push statuses are recomputed in the background, so only the badge counts change.
         subscriptions.push(cx.observe(&checkouts, |this, _checkouts, cx| {
             if this.refresh_unpushed(cx) {
                 cx.notify();
@@ -125,8 +121,7 @@ impl SidebarPanel {
             .map(|user| repo_list.read(cx).announcements_of(user))
             .unwrap_or_default();
 
-        // A scanned repository is dropped from the local list
-        // once the user announces it, so it is not listed twice.
+        // Drop a scanned repository once the user announces it, so it is not listed twice.
         let local = LocalReposStore::global(cx);
         let scanning = local.read(cx).scanning;
 
@@ -162,14 +157,13 @@ impl SidebarPanel {
         announcements_changed || local_changed || scanning_changed
     }
 
-    /// Recompute the badge counts from the global checkouts store's ready-to-push statuses
     fn refresh_unpushed(&mut self, cx: &mut Context<Self>) -> bool {
-        let checkouts = CheckoutsStore::global(cx).read(cx);
+        let checkouts = CheckoutsStore::global(cx);
         let mut unpushed = HashMap::with_capacity(self.announcements.len());
 
         for announcement in self.announcements.iter() {
             let addr = announcement.addr();
-            let count = checkouts.unpushed(&addr);
+            let count = checkouts.read(cx).unpushed(&addr);
             if count > 0 {
                 unpushed.insert(addr, count);
             }
@@ -183,7 +177,6 @@ impl SidebarPanel {
         true
     }
 
-    /// Keep the `ready to push` statuses of the announced repositories current.
     fn request_push_watches(&self, cx: &mut Context<Self>) {
         let checkouts = CheckoutsStore::global(cx);
         checkouts.update(cx, |checkouts, cx| {
@@ -193,7 +186,6 @@ impl SidebarPanel {
         });
     }
 
-    /// Open the inbox home panel in the dock area's center.
     pub fn open_inbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.inbox.as_ref().and_then(WeakEntity::upgrade).is_some() {
             return;
@@ -202,12 +194,13 @@ impl SidebarPanel {
         let panel = cx.new(|cx| InboxView::new(self.dock_area.clone(), cx));
         self.inbox = Some(panel.downgrade());
 
-        let _ = self.dock_area.update(cx, |dock_area, cx| {
-            add_center_panel(dock_area, panel_handle(panel), window, cx);
-        });
+        self.dock_area
+            .update(cx, |dock_area, cx| {
+                add_center_panel(dock_area, panel_handle(panel), window, cx);
+            })
+            .ok();
     }
 
-    /// Open the Explore repository list panel in the dock area's center.
     pub fn open_explore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .explore
@@ -221,12 +214,13 @@ impl SidebarPanel {
         let panel = cx.new(|cx| RepoListView::new(self.dock_area.clone(), window, cx));
         self.explore = Some(panel.downgrade());
 
-        let _ = self.dock_area.update(cx, |dock_area, cx| {
-            add_center_panel(dock_area, panel_handle(panel), window, cx);
-        });
+        self.dock_area
+            .update(cx, |dock_area, cx| {
+                add_center_panel(dock_area, panel_handle(panel), window, cx);
+            })
+            .ok();
     }
 
-    /// Show the Onboarding dialog.
     fn open_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Enter desired name"));
         let pass_input = cx.new(|cx| {
@@ -244,23 +238,25 @@ impl SidebarPanel {
         onboarding_dialog::open(name_input, pass_input, repass_input, state, window, cx);
     }
 
-    /// Show the Create Repository dialog.
     fn open_create_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         create_repo_dialog::open(self.dock_area.clone(), window, cx);
     }
 
-    /// Open a repository's detail view in the dock's center.
     fn open_repo(
         &mut self,
         announcement: &Announcement,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        open_repo_panel(&self.dock_area, announcement, window, &mut *cx);
+        open_repo_panel(
+            &self.dock_area,
+            &announcement.addr(),
+            Some(announcement),
+            window,
+            &mut *cx,
+        );
     }
 
-    /// Open a local repository's detail view in the dock's center.
-    ///
     /// The detail view offers to publish it to NIP-34.
     fn open_local_repo(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let detail =
@@ -324,7 +320,7 @@ impl SidebarPanel {
                     ),
             )
             .map(|this| {
-                // Merged list, the user's NIP-34 repositories and local repositories discovered.
+                // The merged list: NIP-34 repositories first, then discovered local repositories.
                 let total = announcements.len() + local_repos.len();
 
                 if total == 0 {
@@ -364,7 +360,7 @@ impl SidebarPanel {
             })
     }
 
-    /// One row of the merged sidebar list, a NIP-34 or a local repository.
+    /// Renders row `ix` of the merged list: an announced repository or a local one.
     fn render_repo_at(
         &self,
         announcements: &[Announcement],
@@ -393,7 +389,6 @@ impl SidebarPanel {
         let avatar = PixelAvatar::new(format!("{}:{}", announcement.owner, announcement.id));
         let announcement = announcement.clone();
 
-        // Badge with the unpushed commit count of the repository's local checkouts.
         let unpushed = self
             .unpushed
             .get(&announcement.addr())
@@ -423,9 +418,7 @@ impl SidebarPanel {
         )
     }
 
-    /// One local repository row.
-    ///
-    /// The directory name and a warning suffix, the repo is not yet set up for NIP-34.
+    /// A local repository that is not yet set up for NIP-34, marked with a warning.
     fn render_local_row(&self, path: &Path, cx: &mut Context<Self>) -> impl IntoElement {
         let name = path
             .file_name()
@@ -445,12 +438,11 @@ impl SidebarPanel {
             }))
     }
 
-    /// Show the Import Identity dialog.
     fn open_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         import_dialog::open(window, cx);
     }
 
-    /// Render the user avatar and name in the sidebar, inside the titlebar drag area.
+    /// The user avatar and name, wired into the titlebar drag area.
     fn render_user(
         &self,
         profile: &Profile,
@@ -480,7 +472,7 @@ impl SidebarPanel {
         )
     }
 
-    /// Sign-in placeholder shown while logged out.
+    /// Shown while no identity is signed in.
     fn render_sign_in(&self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         v_flex()
             .size_full()
@@ -599,9 +591,9 @@ impl Render for SidebarPanel {
         }
 
         v_flex()
+            .image_cache(gpui::retain_all("sidebar"))
             .size_full()
             .justify_between()
-            .image_cache(gpui::retain_all("sidebar"))
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
             .child(

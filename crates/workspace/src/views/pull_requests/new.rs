@@ -27,26 +27,19 @@ use signed_git::{
     worktree_commit_range_commits, worktree_commit_range_diff,
 };
 use signed_state::{Backend, CheckoutsStore, GitStore, RepoListStore, RepoStore};
-use signed_ui::{CountBadge, placeholder};
+use signed_ui::{CountBadge, placeholder, ref_selector_trigger};
 
-use super::commits::{COMMIT_ROW_HEIGHT, commit_row};
-use super::diff::{CommitDiffView, DiffPane};
-use super::helpers::ref_selector_trigger;
+use crate::views::commit_diff::{COMMIT_ROW_HEIGHT, CommitDiffView, DiffPane, commit_row};
 
-/// The new pull request panel of a repository.
 pub struct NewPullRequestView {
     focus_handle: FocusHandle,
-    /// Dock area the panel lives in, commit diffs are opened there.
     dock_area: WeakEntity<DockArea>,
-    /// Store of the target repository, source of the announced HEAD default.
     store: Entity<RepoStore>,
-    /// Display name of the repository, for the panel title.
     repo_name: SharedString,
     /// The user's local checkout.
     repo_path: Option<PathBuf>,
-    /// Branches of the checkout, backing both selectors in checkout mode.
+    /// Backs both selectors in checkout mode.
     branches: Vec<SharedString>,
-    /// Fork-backed compare state.
     fork: Option<ForkCompare>,
     /// Selected base branch, the PR target, stored as a short name.
     base: SharedString,
@@ -54,33 +47,27 @@ pub struct NewPullRequestView {
     compare: SharedString,
     base_select: Entity<ComboboxState<SearchableVec<SharedString>>>,
     compare_select: Entity<ComboboxState<SearchableVec<SharedString>>>,
-    /// Title input, required.
     subject: Entity<InputState>,
-    /// Description input, optional.
     description: Entity<TextareaState>,
     /// Merge base of the selected branches, `None` until the compare loads.
     merge_base: Option<String>,
     /// Commits in `merge_base..compare`, newest first.
     commits: Option<Vec<signed_git::FileCommit>>,
-    /// The compare is being computed.
     loading: bool,
-    /// Error of the last compare or submit attempt.
     error: Option<SharedString>,
     /// A submit, patch generation and publish, is in flight.
     submitting: bool,
     /// Bumped on every branch switch, stale compare results are discarded.
     compare_generation: u64,
-    /// Active tab, 0 = Files and 1 = Commits.
+    /// 0 = Files, 1 = Commits.
     active_tab: usize,
     /// The compare diff, the Files tab body.
     pane: Entity<DiffPane>,
-    /// Virtual list state of the Commits tab.
     scroll_handle: VirtualListScrollHandle,
     item_sizes: Rc<Vec<Size<Pixels>>>,
     _subscriptions: Vec<Subscription>,
 }
 
-/// A fork-backed compare.
 struct ForkCompare {
     /// Fork announcement the compare branch is imported from.
     announcement: Announcement,
@@ -91,20 +78,15 @@ struct ForkCompare {
 }
 
 impl ForkCompare {
-    /// The full ref of the base branch `name` in the mirror.
     fn base_ref(name: &str) -> String {
         format!("refs/remotes/origin/{name}")
     }
 
-    /// The full ref of the compare branch `name` in the mirror.
     fn compare_ref(&self, name: &str) -> String {
         format!("refs/fork/{}/{}", self.namespace, name)
     }
 }
 
-/// The display name of an announcement.
-///
-/// Its human-readable name, falling back to the repository id.
 fn fork_display_name(announcement: &Announcement) -> SharedString {
     announcement
         .name
@@ -113,7 +95,6 @@ fn fork_display_name(announcement: &Announcement) -> SharedString {
         .unwrap_or_else(|| SharedString::from(announcement.id.clone()))
 }
 
-/// A short label of a fork's owner for the source picker, a hex prefix.
 fn shorten_owner(owner: &PublicKey) -> String {
     let hex = owner.to_hex();
     hex.chars().take(10).collect()
@@ -132,9 +113,6 @@ fn truncate_label(label: &str) -> SharedString {
     SharedString::from(label)
 }
 
-/// The compare-source menu entry of one local checkout folder.
-///
-/// Applies the folder directly, no picker.
 fn checkout_source_item(
     view: WeakEntity<NewPullRequestView>,
     path: PathBuf,
@@ -163,7 +141,6 @@ fn checkout_source_item(
     })
 }
 
-/// The compare-source menu entry prompting for an arbitrary folder.
 fn choose_folder_source_item(view: WeakEntity<NewPullRequestView>) -> PopupMenuItem {
     PopupMenuItem::element(move |_window, cx| {
         source_row(
@@ -180,9 +157,6 @@ fn choose_folder_source_item(view: WeakEntity<NewPullRequestView>) -> PopupMenuI
     })
 }
 
-/// The compare-source menu entry of one announced fork.
-///
-/// Imports its branches into the target's mirror and switches the panel to fork mode.
 fn fork_source_item(
     view: WeakEntity<NewPullRequestView>,
     announcement: Announcement,
@@ -208,7 +182,6 @@ fn fork_source_item(
     })
 }
 
-/// One row of the compare-source menu, icon, title and a muted subtitle.
 fn source_row<T>(icon: impl Into<Icon>, title: T, subtitle: T, cx: &App) -> AnyElement
 where
     T: Into<SharedString>,
@@ -306,7 +279,24 @@ impl NewPullRequestView {
             ),
         ];
 
-        let mut view = Self {
+        cx.defer_in(window, |this, window, cx| {
+            let Some(addr) = this.store.read(cx).addr().cloned() else {
+                return;
+            };
+
+            let Some(path) = CheckoutsStore::global(cx)
+                .read(cx)
+                .associations_of(&addr)
+                .into_iter()
+                .next()
+            else {
+                return;
+            };
+
+            this.apply_folder_path(path, window, cx);
+        });
+
+        Self {
             focus_handle: cx.focus_handle(),
             dock_area,
             store,
@@ -331,23 +321,9 @@ impl NewPullRequestView {
             scroll_handle: VirtualListScrollHandle::new(),
             item_sizes: Rc::new(Vec::new()),
             _subscriptions: subscriptions,
-        };
-
-        // Prefill with the store's freshest associated checkout, no folder dialog.
-        let addr = view.store.read(cx).addr().clone();
-        if let Some(path) = CheckoutsStore::global(cx)
-            .read(cx)
-            .associations_of(&addr)
-            .into_iter()
-            .next()
-        {
-            view.apply_folder_path(path, window, cx);
         }
-
-        view
     }
 
-    /// Whether a compare source, a checkout or a fork, is applied.
     fn has_source(&self) -> bool {
         self.repo_path.is_some() || self.fork.is_some()
     }
@@ -384,7 +360,6 @@ impl NewPullRequestView {
         }
     }
 
-    /// Prompt for a local checkout.
     fn choose_checkout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -415,9 +390,7 @@ impl NewPullRequestView {
         task.detach();
     }
 
-    /// Apply `path` as the local checkout, no picker.
-    ///
-    /// Branches and current branch are read off the UI thread, then applied.
+    /// Branches and the current branch are read off the UI thread, then applied.
     fn apply_folder_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let path = path.to_string_lossy().to_string();
 
@@ -446,7 +419,6 @@ impl NewPullRequestView {
         task.detach();
     }
 
-    /// Apply a picked checkout, filling the selectors and loading the compare.
     fn apply_checkout(
         &mut self,
         path: String,
@@ -497,11 +469,12 @@ impl NewPullRequestView {
 
         // Remember this folder as a checkout of the target repository.
         // The next panel pre-fills it.
-        let addr = self.store.read(cx).addr().clone();
-        let checkout_store = CheckoutsStore::global(cx);
-        checkout_store.update(cx, |store, cx| {
-            store.record(PathBuf::from(&path), addr, cx);
-        });
+        if let Some(addr) = self.store.read(cx).addr().cloned() {
+            let checkout_store = CheckoutsStore::global(cx);
+            checkout_store.update(cx, |store, cx| {
+                store.record(PathBuf::from(&path), addr, cx);
+            });
+        }
 
         let branches = self.branches.clone();
         let base = SharedString::from(base.clone());
@@ -523,20 +496,21 @@ impl NewPullRequestView {
         self.reload_compare(window, cx);
     }
 
-    /// The base repository of the panel, its address and announced EUC.
-    ///
-    /// Used to find fork candidates.
-    fn base_repo(&self, cx: &App) -> (RepoAddr, Option<String>) {
+    /// Used to find fork candidates. `None` while the repository is not announced.
+    fn base_repo(&self, cx: &App) -> Option<(RepoAddr, Option<String>)> {
         let store = self.store.read(cx);
+        let addr = store.addr()?.clone();
         let euc = store.announcement.as_ref().and_then(|a| a.euc.clone());
-        (store.addr().clone(), euc)
+        Some((addr, euc))
     }
 
     /// Announced forks of the target repository a compare can use, own first.
     ///
     /// Re-read whenever the picker opens.
     fn fork_candidates(&self, cx: &App) -> Vec<Announcement> {
-        let (base, euc) = self.base_repo(cx);
+        let Some((base, euc)) = self.base_repo(cx) else {
+            return Vec::new();
+        };
         let user = Backend::global(cx).read(cx).current_user();
         let announcements = RepoListStore::global(cx).read(cx).announcements.clone();
         fork_candidates(&announcements, &base, euc.as_deref(), user)
@@ -545,7 +519,6 @@ impl NewPullRequestView {
             .collect()
     }
 
-    /// Compare against an announced fork.
     fn choose_fork(
         &mut self,
         announcement: Announcement,
@@ -557,7 +530,9 @@ impl NewPullRequestView {
             .as_ref()
             .is_some_and(|fork| fork.announcement.addr() == announcement.addr());
 
-        let (base, _euc) = self.base_repo(cx);
+        let Some((base, _euc)) = self.base_repo(cx) else {
+            return;
+        };
         let cache = GitStore::global(cx).cache().clone();
         let mirror_path = cache.repo_path(&base);
         let namespace = fork_namespace(&announcement);
@@ -598,9 +573,6 @@ impl NewPullRequestView {
                         let clone_urls = clone_urls.clone();
                         let mirror_path = mirror_path.clone();
                         async move {
-                            // The fork and base must share history for a merge-base to exist.
-                            // The target's mirror is the object store both sides land in.
-                            // `ensure_clone` fetches `origin` when the mirror already exists.
                             cache.ensure_clone(&base, &base_clone_urls)?;
 
                             // Prune stale imports of any fork.
@@ -669,7 +641,6 @@ impl NewPullRequestView {
         task.detach();
     }
 
-    /// Apply an imported fork, filling the selectors and loading the compare.
     #[allow(clippy::too_many_arguments)]
     fn apply_fork(
         &mut self,
@@ -774,7 +745,6 @@ impl NewPullRequestView {
         self.reload_compare(window, cx);
     }
 
-    /// Recompute `merge_base..compare` of the selected branches on a background task.
     fn reload_compare(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(repo_path) = self.work_path() else {
             return;
@@ -868,7 +838,6 @@ impl NewPullRequestView {
         task.detach();
     }
 
-    /// Publish the pull request.
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.submitting || self.loading {
             return;
@@ -950,7 +919,6 @@ impl NewPullRequestView {
         task.detach();
     }
 
-    /// Open the diff of `commit_id`, from the Commits tab, in a new panel.
     fn open_commit_diff(&mut self, commit_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(repo_path) = self.work_path() else {
             return;
@@ -1108,7 +1076,6 @@ impl NewPullRequestView {
             .into_any_element()
     }
 
-    /// The source picker's trigger, a truncated label of the applied source.
     fn source_trigger(&self) -> SharedString {
         match &self.fork {
             Some(fork) => truncate_label(&fork_display_name(&fork.announcement)),
@@ -1119,14 +1086,17 @@ impl NewPullRequestView {
         }
     }
 
-    /// Build the compare-source menu.
     fn source_menu(
         &self,
         cx: &Context<Self>,
     ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
         let view = cx.entity().downgrade();
-        let addr = self.store.read(cx).addr().clone();
-        let associated = CheckoutsStore::global(cx).read(cx).associations_of(&addr);
+        let associated = self
+            .store
+            .read(cx)
+            .addr()
+            .map(|addr| CheckoutsStore::global(cx).read(cx).associations_of(addr))
+            .unwrap_or_default();
 
         let active_path = (self.fork.is_none())
             .then(|| self.repo_path.clone())
@@ -1172,7 +1142,6 @@ impl NewPullRequestView {
         }
     }
 
-    /// The title and description inputs.
     fn render_inputs(&self, _cx: &mut Context<Self>) -> AnyElement {
         v_flex()
             .px_4()
@@ -1183,7 +1152,6 @@ impl NewPullRequestView {
             .into_any_element()
     }
 
-    /// The Files/Commits tab bar, mirroring the repository panel's.
     fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
         let files = self.pane.read(cx).diff().map_or(0, |diff| diff.files.len());
         let commits = self.commits.as_ref().map_or(0, |commits| commits.len());
@@ -1255,7 +1223,6 @@ impl NewPullRequestView {
             .into_any_element()
     }
 
-    /// The active tab's body.
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.loading {
             return v_flex()
@@ -1341,8 +1308,7 @@ impl NewPullRequestView {
     }
 }
 
-/// Open the new pull request panel in the center dock.
-pub(super) fn open_new_pull_panel(
+pub(crate) fn open_new_pull_panel(
     dock_area: WeakEntity<DockArea>,
     store: Entity<RepoStore>,
     window: &mut Window,

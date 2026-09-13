@@ -10,7 +10,6 @@ pub struct Update {
 }
 
 impl Update {
-    /// Build an update from a received event.
     pub fn from_event(event: &Event) -> Self {
         let coordinate = event.tags.coordinates().nth(0);
 

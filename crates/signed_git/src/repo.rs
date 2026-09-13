@@ -55,7 +55,6 @@ pub fn commits_since(repo_path: &Path, base: Option<&str>) -> Result<Vec<String>
     };
 
     let Some(base) = base else {
-        // `HEAD` alone when no base is given.
         return Ok(vec![head.to_string()]);
     };
 
@@ -168,7 +167,7 @@ pub fn init_repository(path: &Path, name: &str, description: &str) -> Result<Str
     )?;
 
     // Populate the index so the fresh repository is clean,
-    // as `git add` and`git commit` would leave it.
+    // as `git add` and `git commit` would leave it.
     let mut index = repo.index_from_tree(&tree)?;
     index.write(gix::index::write::Options::default())?;
 
@@ -190,7 +189,6 @@ pub fn root_commit(repo_path: &Path) -> Result<Option<String>> {
     };
 
     let Ok(head) = repo.head_id() else {
-        // An unborn HEAD with no commits yet has no root commit.
         return Ok(None);
     };
 
@@ -234,7 +232,6 @@ pub fn refs_with_prefix(repo_path: &Path, prefix: &str) -> Result<Vec<String>> {
         }
     }
 
-    // Sort lexicographically, like `git for-each-ref`.
     names.sort();
 
     Ok(names)
@@ -267,7 +264,6 @@ pub fn delete_refs_with_prefix(repo_path: &Path, prefix: &str) -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    // Delete all refs with the given prefix.
     repo.edit_references(edits)?;
 
     Ok(())
@@ -282,7 +278,6 @@ pub fn worktree_current_branch(workdir: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(name.shorten()).into_owned())
 }
 
-/// Whether the reference `name` exists in the repository at `workdir`.
 pub fn worktree_ref_exists(workdir: &Path, name: &str) -> bool {
     let Ok(repo) = gix::open(workdir) else {
         return false;
@@ -374,10 +369,8 @@ pub fn fast_forward_branches(workdir: &Path) -> Result<bool> {
 
             let tree = repo.find_object(remote_oid)?.peel_to_tree()?.id;
 
-            // Check out the remote tree, discarding local changes.
             force_checkout(&repo, &tree)?;
 
-            // Update the branch reference to point to the remote tree.
             repo.edit_references_as(
                 [edit(gix::refs::Target::Object(remote_oid))],
                 Some(signature),
@@ -385,7 +378,6 @@ pub fn fast_forward_branches(workdir: &Path) -> Result<bool> {
 
             moved = true;
         } else {
-            // Update the branch reference to point to the remote tree.
             repo.edit_references_as(
                 [edit(gix::refs::Target::Object(remote_oid))],
                 Some(signature),
@@ -447,10 +439,6 @@ pub struct RepoRefState {
     pub head: Option<String>,
 }
 
-/// Collect the refs of `repo`.
-///
-/// Local branches and tags become `(refname, commit-id)` pairs.
-/// Also reports the branch HEAD points to.
 pub fn repo_ref_state(repo: &gix::Repository) -> Result<RepoRefState> {
     let mut refs = Vec::new();
 
@@ -482,7 +470,6 @@ pub fn repo_ref_state(repo: &gix::Repository) -> Result<RepoRefState> {
     Ok(RepoRefState { refs, head })
 }
 
-/// [`repo_ref_state`] for the repository at `workdir`.
 pub fn worktree_ref_state(workdir: &Path) -> Result<RepoRefState> {
     repo_ref_state(&gix::open(workdir)?)
 }

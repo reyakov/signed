@@ -22,7 +22,7 @@ use nostr::prelude::RelayUrl;
 use settings::{AppearanceMode, Settings, SettingsStore};
 use signed_ui::{SelectOption, setting_block, setting_row};
 
-/// The index of `value` in `options`, for seeding a [`SelectState`].
+/// Looks up the option index used to seed a [`SelectState`].
 fn selected_index(options: &[SelectOption], value: &str) -> Option<IndexPath> {
     options
         .iter()
@@ -30,7 +30,7 @@ fn selected_index(options: &[SelectOption], value: &str) -> Option<IndexPath> {
         .map(|row| IndexPath::default().row(row))
 }
 
-/// The light and dark themes registered in the theme registry.
+/// Registered themes split into light and dark options, light first.
 fn theme_options(cx: &App) -> (Vec<SelectOption>, Vec<SelectOption>) {
     let registry = ThemeRegistry::global(cx);
     let mut light = Vec::new();
@@ -48,7 +48,7 @@ fn theme_options(cx: &App) -> (Vec<SelectOption>, Vec<SelectOption>) {
     (light, dark)
 }
 
-/// Stateful controls of the settings dialog, created once when it opens.
+/// Created once when the dialog opens, so control state survives re-renders.
 struct SettingsControls {
     appearance: Entity<SelectState<Vec<SelectOption>>>,
     light_theme: Entity<SelectState<Vec<SelectOption>>>,
@@ -58,9 +58,9 @@ struct SettingsControls {
     radius: Entity<InputState>,
     radius_lg: Entity<InputState>,
     grasp_server_input: Entity<InputState>,
-    /// The effective default create-repository folder, shown in the disabled input.
+    /// The effective create-repository folder, shown in a disabled input.
     default_folder: Entity<InputState>,
-    /// Keeps the control subscriptions alive for the dialog's lifetime.
+    /// Keeps the control subscriptions alive while the dialog is open.
     _subscriptions: Vec<Subscription>,
 }
 
@@ -264,7 +264,6 @@ impl SettingsControls {
     }
 }
 
-/// Open the Settings dialog.
 pub fn open(window: &mut Window, cx: &mut App) {
     let controls = Rc::new(SettingsControls::new(window, cx));
 
@@ -278,8 +277,6 @@ pub fn open(window: &mut Window, cx: &mut App) {
     });
 }
 
-/// The settings content, one section per related setting.
-/// Sections are divided by horizontal separator lines.
 fn settings_view(controls: &SettingsControls, cx: &mut App) -> impl IntoElement {
     let store = SettingsStore::global(cx);
     let settings = store.read(cx).settings().clone();
@@ -297,7 +294,6 @@ fn settings_view(controls: &SettingsControls, cx: &mut App) -> impl IntoElement 
         .child(repositories_section(&settings, controls, cx))
 }
 
-/// How the app picks its appearance.
 fn appearance_section(controls: &SettingsControls, cx: &App) -> impl IntoElement {
     v_flex().w_full().gap_3().child(setting_row(
         cx,
@@ -307,7 +303,6 @@ fn appearance_section(controls: &SettingsControls, cx: &App) -> impl IntoElement
     ))
 }
 
-/// Theme configuration, the registry theme names plus tweaks the app customizes at startup.
 fn theme_section(settings: &Settings, controls: &SettingsControls, cx: &App) -> impl IntoElement {
     v_flex()
         .gap_3()
@@ -378,7 +373,7 @@ fn theme_section(settings: &Settings, controls: &SettingsControls, cx: &App) -> 
         ))
 }
 
-/// Default grasp servers offered until the user publishes a kind `10317` grasp list.
+/// Default grasp servers, used until the user's kind `10317` grasp list loads.
 fn grasp_servers_section(
     settings: &Settings,
     controls: &SettingsControls,
@@ -394,7 +389,6 @@ fn grasp_servers_section(
     ))
 }
 
-/// The editable list of default grasp servers plus an add-relay input.
 /// Styled like the grasp-server section of the publish dialogs.
 fn grasp_server_editor(
     servers: &[String],
@@ -459,7 +453,7 @@ fn grasp_server_editor(
         )
 }
 
-/// The bare host of a grasp server, defaults are entered without a scheme.
+/// Shows only the host, since grasp servers are entered without a scheme.
 /// Matches how the publish dialogs display servers.
 fn display_server(server: &str) -> SharedString {
     RelayUrl::parse(server)
@@ -469,7 +463,6 @@ fn display_server(server: &str) -> SharedString {
         .unwrap_or_else(|| SharedString::from(server.to_owned()))
 }
 
-/// Local repository scanning and the create-repository dialog default folder.
 fn repositories_section(
     settings: &Settings,
     controls: &SettingsControls,
@@ -494,7 +487,6 @@ fn repositories_section(
         ))
 }
 
-/// The editable list of scan directories plus an add-directory button.
 /// Styled like the grasp-server list.
 fn scan_paths_editor(scan_paths: &[PathBuf], cx: &App) -> impl IntoElement {
     v_flex()
@@ -547,7 +539,6 @@ fn scan_paths_editor(scan_paths: &[PathBuf], cx: &App) -> impl IntoElement {
         )
 }
 
-/// The default-folder selector, a disabled input plus a picker button.
 /// Matches the create-repository dialog.
 fn folder_selector(controls: &SettingsControls) -> impl IntoElement {
     let default_folder = controls.default_folder.clone();
@@ -571,8 +562,7 @@ fn folder_selector(controls: &SettingsControls) -> impl IntoElement {
         )
 }
 
-/// Parse the server input and append it to the default grasp servers.
-/// A bare host is accepted.
+/// Accepts a bare host as well as a full URL.
 fn add_server(input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     let value = input.read(cx).value().trim().to_owned();
     if value.is_empty() {
@@ -604,7 +594,6 @@ fn add_server(input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     input.update(cx, |input, cx| input.set_value("", window, cx));
 }
 
-/// Prompt for directories to add to the local-repository scan.
 fn add_scan_path(cx: &mut App) {
     let prompt = cx.prompt_for_paths(PathPromptOptions {
         files: false,
@@ -641,8 +630,7 @@ fn add_scan_path(cx: &mut App) {
     .detach();
 }
 
-/// Prompt for the Create Repository dialog's default folder.
-/// Remember it in the settings and show it in the disabled input.
+/// Persists the choice and reflects it in the disabled input.
 fn choose_default_folder(default_folder: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
     let default_folder = default_folder.clone();
@@ -676,9 +664,7 @@ fn choose_default_folder(default_folder: &Entity<InputState>, window: &mut Windo
     .detach();
 }
 
-/// Wire a number input to the settings.
-/// Step actions clamp and persist the value.
-/// Typed changes parse, clamp and persist.
+/// Step actions clamp and persist the value; typed changes parse, clamp and persist.
 fn wire_number_input(
     state: &Entity<InputState>,
     subscriptions: &mut Vec<Subscription>,
@@ -751,7 +737,6 @@ fn wire_number_input(
     }));
 }
 
-/// Apply the persisted appearance to the live theme.
 fn apply_appearance(appearance: AppearanceMode, cx: &mut App) {
     match appearance {
         AppearanceMode::System => Theme::sync_system_appearance(None, cx),
@@ -760,7 +745,6 @@ fn apply_appearance(appearance: AppearanceMode, cx: &mut App) {
     }
 }
 
-/// Re-apply the persisted theme configuration to the live theme.
 fn apply_theme(cx: &mut App) {
     let store = SettingsStore::global(cx);
     let settings = store.read(cx).settings().theme.clone();

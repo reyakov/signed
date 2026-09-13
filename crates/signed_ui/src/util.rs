@@ -33,7 +33,6 @@ mod tests {
             ),
             "30617:a008...3564d:ngit"
         );
-        // Too short to save space with the ellipsis, left alone.
         assert_eq!(middle_truncate("short", 10, 10), "short");
     }
 }

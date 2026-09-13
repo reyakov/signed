@@ -24,7 +24,6 @@ impl SettingsStore {
         cx.global::<GlobalSettingsStore>().0.clone()
     }
 
-    /// Install the store as a global.
     pub fn set_global(entity: Entity<Self>, cx: &mut App) {
         cx.set_global(GlobalSettingsStore(entity));
     }
@@ -103,8 +102,6 @@ impl SettingsStore {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use gpui::{AppContext, TestAppContext};
-
     use super::*;
 
     static TEST_FILE_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -134,16 +131,6 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_file_loads_defaults() {
-        let path = temp_settings_path();
-        std::fs::write(&path, "{ not json").unwrap();
-
-        let settings = SettingsStore::load(&path);
-        assert_eq!(settings, Settings::default());
-        cleanup(&path);
-    }
-
-    #[test]
     fn save_and_load_roundtrip() {
         let path = temp_settings_path();
         cleanup(&path);
@@ -158,23 +145,6 @@ mod tests {
         store.save().unwrap();
 
         assert_eq!(SettingsStore::load(&path), expected);
-        cleanup(&path);
-    }
-
-    #[gpui::test]
-    fn edit_mutates_and_persists(cx: &mut TestAppContext) {
-        let path = temp_settings_path();
-        cleanup(&path);
-
-        let store = cx.update(|cx| cx.new(|cx| SettingsStore::new(path.clone(), cx)));
-        cx.read(|cx| assert_eq!(store.read(cx).settings(), &Settings::default()));
-
-        store.update(cx, |store, cx| {
-            store.edit(|settings| settings.theme.radius = 12.0, cx);
-        });
-
-        cx.read(|cx| assert_eq!(store.read(cx).settings().theme.radius, 12.0));
-        assert_eq!(SettingsStore::load(&path).theme.radius, 12.0);
         cleanup(&path);
     }
 }

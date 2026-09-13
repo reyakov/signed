@@ -17,10 +17,9 @@ use super::super::open_repo_panel;
 use super::grasp_servers::{GraspServersState, grasp_servers_field, load_user_grasp_servers};
 use crate::views::dialog_state::{DialogProgress, error_row};
 
-/// Shared state for the Create Repository dialog, so async results can be rendered.
+/// Progress of the create-repository flow, so async results can be rendered.
 pub type CreateRepoState = DialogProgress;
 
-/// Open the Create Repository dialog.
 pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) {
     let settings = SettingsStore::global(cx);
     let default_folder = settings
@@ -151,7 +150,6 @@ pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) 
     });
 }
 
-/// Pick the repository's storage folder with the platform's native folder picker.
 fn choose_folder(folder_input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
     let folder_input = folder_input.clone();
@@ -186,8 +184,6 @@ fn choose_folder(folder_input: &Entity<InputState>, window: &mut Window, cx: &mu
     .detach();
 }
 
-/// Run the create-repository flow.
-///
 /// Opens the new working copy and the repository panel on success.
 #[allow(clippy::too_many_arguments)]
 fn create_repository(
@@ -250,12 +246,17 @@ fn create_repository(
     .detach();
 }
 
-/// Open the newly created repository in the dock's center.
 fn open_repo(
     dock_area: WeakEntity<DockArea>,
     announcement: Announcement,
     window: &mut Window,
     cx: &mut App,
 ) {
-    open_repo_panel(&dock_area, &announcement, window, cx);
+    open_repo_panel(
+        &dock_area,
+        &announcement.addr(),
+        Some(&announcement),
+        window,
+        cx,
+    );
 }

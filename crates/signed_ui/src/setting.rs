@@ -21,12 +21,10 @@ impl SelectOption {
         }
     }
 
-    /// The stored value of this option.
     pub fn value(&self) -> &SharedString {
         &self.value
     }
 
-    /// The display label of this option.
     pub fn label(&self) -> &SharedString {
         &self.label
     }

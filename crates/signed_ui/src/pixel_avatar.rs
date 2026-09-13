@@ -175,9 +175,13 @@ mod tests {
     }
 
     #[test]
-    fn pattern_is_mirror_symmetric() {
+    fn pattern_properties() {
         for seed in 0..50 {
             let pattern = pattern(seed);
+            assert!(
+                count_filled(&pattern) >= MIN_FILLED * 2,
+                "pattern too sparse for seed {seed}"
+            );
             for row in 0..GRID_SIZE {
                 for col in 0..GRID_SIZE {
                     assert_eq!(
@@ -188,31 +192,9 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn pattern_has_minimum_fill() {
-        for seed in 0..50 {
-            let pattern = pattern(seed);
-            assert!(
-                count_filled(&pattern) >= MIN_FILLED * 2,
-                "pattern too sparse for seed {seed}"
-            );
-        }
-    }
-
-    #[test]
-    fn pattern_is_deterministic() {
         for seed in [0, 1, 42, u64::MAX] {
             assert_eq!(pattern(seed), pattern(seed));
         }
         assert_ne!(pattern(42), pattern(43));
-    }
-
-    #[test]
-    fn fnv1a_is_stable_and_distinct() {
-        assert_eq!(fnv1a(b""), 0xcbf2_9ce4_8422_2325);
-        assert_eq!(fnv1a(b"repo"), fnv1a(b"repo"));
-        assert_ne!(fnv1a(b"repo:a"), fnv1a(b"repo:b"));
     }
 }

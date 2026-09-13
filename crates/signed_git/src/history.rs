@@ -20,7 +20,6 @@ pub struct FileCommit {
     ///
     /// `None` for single-line commit messages.
     pub description: Option<String>,
-    /// Author name.
     pub author: String,
     /// Author time, seconds since the Unix epoch.
     pub time: i64,
@@ -36,7 +35,7 @@ pub(crate) fn open_with_cache(workdir: &Path) -> Result<gix::Repository> {
     Ok(repo)
 }
 
-/// A [`FileCommit`] from a commit, with author, message title, body and shortened id.
+/// A [`FileCommit`] with author, message title, body and shortened id.
 ///
 /// The diff panel fetches the full commit on demand.
 fn file_commit(commit: &gix::Commit<'_>) -> Result<FileCommit> {
@@ -50,7 +49,6 @@ fn file_commit_summary(commit: &gix::Commit<'_>) -> Result<FileCommit> {
     file_commit_with_description(commit, false)
 }
 
-/// [`file_commit`] and [`file_commit_summary`], `include_description` picks the body.
 fn file_commit_with_description(
     commit: &gix::Commit<'_>,
     include_description: bool,
@@ -96,8 +94,6 @@ pub fn worktree_last_commits(
     last_commits(&open_with_cache(workdir)?, rels)
 }
 
-/// The walk behind [`last_commit`] and [`worktree_last_commits`].
-///
 /// Stops as soon as every pending path has its commit.
 fn last_commits(repo: &gix::Repository, rels: &[PathBuf]) -> Result<Vec<(PathBuf, FileCommit)>> {
     use gix::traverse::commit::simple::CommitTimeOrder;
@@ -106,7 +102,6 @@ fn last_commits(repo: &gix::Repository, rels: &[PathBuf]) -> Result<Vec<(PathBuf
         return Ok(Vec::new());
     };
 
-    // De-duplicate while preserving order.
     let mut pending: Vec<PathBuf> = Vec::with_capacity(rels.len());
     let mut seen: HashSet<&Path> = HashSet::with_capacity(rels.len());
 
@@ -136,7 +131,6 @@ fn last_commits(repo: &gix::Repository, rels: &[PathBuf]) -> Result<Vec<(PathBuf
         };
 
         // Compare each unresolved path against this commit and its first parent.
-        // Resolved paths leave the pending set.
         let mut ix = 0;
         while ix < pending.len() {
             let rel = &pending[ix];
@@ -206,8 +200,6 @@ pub fn all_commits(repo: &gix::Repository) -> Result<CommitList> {
     Ok(CommitList { total, commits })
 }
 
-/// Like [`all_commits`], but opens the repository at `workdir` first.
-///
 /// For non-bare clones the clone root is the worktree.
 pub fn worktree_all_commits(workdir: &Path) -> Result<CommitList> {
     all_commits(&open_with_cache(workdir)?)

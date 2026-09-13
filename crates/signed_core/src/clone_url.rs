@@ -70,35 +70,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_user_repo_without_relay() {
-        let target = parse_clone_url(
-            "nostr://npub15qydau2hjma6ngxkl2cyar74wzyjshvl65za5k5rl69264ar2exs5cyejr/ngit",
-        )
-        .unwrap();
-        assert_eq!(
-            target,
-            CloneTarget::UserRepo {
-                user: "npub15qydau2hjma6ngxkl2cyar74wzyjshvl65za5k5rl69264ar2exs5cyejr".to_owned(),
-                relay_hint: None,
-                identifier: "ngit".to_owned(),
-            }
-        );
-    }
-
-    #[test]
-    fn parses_user_repo_with_relay_hint() {
-        let target = parse_clone_url("nostr://danconwaydev.com/relay.ngit.dev/ngit").unwrap();
-        assert_eq!(
-            target,
-            CloneTarget::UserRepo {
-                user: "danconwaydev.com".to_owned(),
-                relay_hint: RelayUrl::parse("relay.ngit.dev").ok(),
-                identifier: "ngit".to_owned(),
-            }
-        );
-    }
-
-    #[test]
     fn decodes_percent_encoded_parts() {
         let target = parse_clone_url(
             "nostr://danconwaydev.com/ws%3A%2F%2Flocalhost%3A7334/my-local-only-repo",

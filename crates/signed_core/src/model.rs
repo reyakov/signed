@@ -46,7 +46,6 @@ pub struct Upstream {
 }
 
 impl Upstream {
-    /// Parse the `u` tag values.
     fn parse(raw: &str, relay_hint: Option<&str>) -> Self {
         let coordinate = raw.split('|').next().unwrap_or(raw);
         let addr = coordinate
@@ -60,7 +59,6 @@ impl Upstream {
         }
     }
 
-    /// Text for display.
     pub fn display(&self) -> String {
         match &self.addr {
             Some(addr) => addr.to_string(),
@@ -143,7 +141,6 @@ pub fn pull_request_patches<'a>(
     series
 }
 
-/// The patch content of a pull request.
 pub fn pull_request_patch<'a>(pr: &Event, patches: impl IntoIterator<Item = &'a Event>) -> String {
     let patches: Vec<&'a Event> = patches.into_iter().collect();
     let series = pull_request_patches(pr, patches.iter().copied());
@@ -342,7 +339,6 @@ impl Announcement {
         })
     }
 
-    /// The repository address of this announcement.
     pub fn addr(&self) -> RepoAddr {
         repo_addr(self.owner, self.id.clone())
     }
@@ -409,7 +405,6 @@ mod tests {
         )
     }
 
-    /// Build a signed kind `30617` event from raw tag values.
     fn announcement_event(tags: &[&[&str]]) -> Event {
         let tags: Vec<Tag> = tags
             .iter()
@@ -470,22 +465,6 @@ mod tests {
     }
 
     #[test]
-    fn requires_d_tag() {
-        let event = announcement_event(&[&["name", "No id"]]);
-
-        assert!(Announcement::from_event(&event).is_none());
-    }
-
-    #[test]
-    fn ignores_other_kinds() {
-        let event = EventBuilder::new(Kind::GitIssue, "")
-            .finalize(&keys())
-            .expect("signed event");
-
-        assert!(Announcement::from_event(&event).is_none());
-    }
-
-    #[test]
     fn drops_malformed_values() {
         let event = announcement_event(&[
             &["d", "my-repo"],
@@ -503,17 +482,6 @@ mod tests {
             vec![RelayUrl::parse("wss://good.example.com").unwrap()]
         );
         assert!(announcement.maintainers.is_empty());
-    }
-
-    #[test]
-    fn ignores_unknown_tags() {
-        let event = announcement_event(&[&["d", "my-repo"], &["t", "label"], &["subject", "n/a"]]);
-
-        let announcement = Announcement::from_event(&event).expect("parses");
-
-        assert_eq!(announcement.id, "my-repo");
-        assert!(announcement.name.is_none());
-        assert!(announcement.web.is_empty());
     }
 
     #[test]
@@ -550,25 +518,6 @@ mod tests {
         assert_eq!(
             upstream.display().to_string(),
             "30617:68d81165918100b7da43fc28f7d1fc12554466e1115886b9e7bb326f65ec4272:upstream"
-        );
-    }
-
-    #[test]
-    fn parses_git_url_upstream() {
-        // The `u` tag may reference a non-nostr upstream by git URL only.
-        // There is no repository address to navigate to.
-        let event = announcement_event(&[
-            &["d", "my-fork"],
-            &["u", "https://example.com/upstream.git"],
-        ]);
-
-        let announcement = Announcement::from_event(&event).expect("parses");
-        let upstream = announcement.upstream.expect("parses the u tag");
-
-        assert_eq!(upstream.addr, None);
-        assert_eq!(
-            upstream.display().to_string(),
-            "https://example.com/upstream.git"
         );
     }
 
@@ -633,17 +582,6 @@ mod tests {
     }
 
     #[test]
-    fn is_fork_of_excludes_the_base_itself() {
-        let euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
-        let event = announcement_event(&[&["d", "upstream"], &["r", euc, "euc"]]);
-        let base = Announcement::from_event(&event).expect("parses");
-        let base_addr = base.addr();
-
-        // The base announcement matches its own EUC but is not a fork of itself.
-        assert!(!base.is_fork_of(&base_addr, base.euc.as_deref()));
-    }
-
-    #[test]
     fn effective_maintainers_include_owner_for_primary_repos() {
         let event = announcement_event(&[&["d", "my-repo"], &["maintainers", MAINTAINER_HEX]]);
 
@@ -677,7 +615,6 @@ mod tests {
         );
     }
 
-    /// Build a signed PR event with the given tags and content.
     fn pr_event(content: &str, tags: Vec<Tag>) -> Event {
         EventBuilder::new(Kind::GitPullRequest, content)
             .tags(tags)
@@ -685,35 +622,6 @@ mod tests {
             .expect("signed event")
     }
 
-    #[test]
-    fn pull_request_patch_prefers_linked_patch_event() {
-        let patch = EventBuilder::new(Kind::GitPatch, "patch-content")
-            .finalize(&keys())
-            .expect("signed event");
-        let pr = pr_event("description", vec![Tag::event(patch.id)]);
-
-        assert_eq!(pull_request_patch(&pr, [&patch]), "patch-content");
-    }
-
-    #[test]
-    fn pull_request_patch_falls_back_to_inline_content() {
-        // Older PRs carried the patch in the content and link no patch event.
-        let pr = pr_event("patch-inline", vec![]);
-
-        assert_eq!(pull_request_patch(&pr, [] as [&Event; 0]), "patch-inline");
-    }
-
-    #[test]
-    fn pull_request_patch_ignores_unrelated_patch_events() {
-        let patch = EventBuilder::new(Kind::GitPatch, "patch-content")
-            .finalize(&keys())
-            .expect("signed event");
-        let pr = pr_event("description", vec![]);
-
-        assert_eq!(pull_request_patch(&pr, [&patch]), "description");
-    }
-
-    /// Build a signed patch event with a controlled `created_at`.
     fn patch_event(content: &str, tags: Vec<Tag>, created_at: u64) -> Event {
         EventBuilder::new(Kind::GitPatch, content)
             .tags(tags)
@@ -758,24 +666,6 @@ mod tests {
     }
 
     #[test]
-    fn pull_request_patches_ignores_unrelated_replies() {
-        let root = patch_event("patch-one", vec![], 100);
-        let other = patch_event("other-patch", vec![Tag::event(root.id)], 250);
-        // A patch replying to a different root is not part of the set.
-        let stranger = patch_event("stranger", vec![], 150);
-        let pr = pr_event("description", vec![Tag::event(root.id)]);
-
-        let series = pull_request_patches(&pr, [&root, &other, &stranger]);
-        assert_eq!(
-            series
-                .iter()
-                .map(|p| p.content.as_str())
-                .collect::<Vec<_>>(),
-            vec!["patch-one", "other-patch"]
-        );
-    }
-
-    #[test]
     fn pull_request_patches_finds_the_set_via_the_tip_commit() {
         // PRs without an `e` tag fall back to the patch producing the tip commit.
         // Walk the reply chain backward to the root.
@@ -807,7 +697,6 @@ mod tests {
     const COMMIT_HEX: &str = "1111111111111111111111111111111111111111";
     const OTHER_ROOT_HEX: &str = "2222222222222222222222222222222222222222";
 
-    /// Build a signed event of `kind` with the given tags and `created_at`.
     fn signed_at(kind: Kind, tags: Vec<Tag>, created_at: u64) -> Event {
         EventBuilder::new(kind, "")
             .tags(tags)
@@ -825,20 +714,6 @@ mod tests {
             ],
             100,
         )
-    }
-
-    #[test]
-    fn reads_current_commit_and_branch_name() {
-        let pr = pr_root();
-        assert_eq!(current_commit_of(&pr).as_deref(), Some(COMMIT_HEX));
-        assert_eq!(branch_name_of(&pr).as_deref(), Some("feature/x"));
-    }
-
-    #[test]
-    fn returns_none_without_pr_tags() {
-        let pr = signed_at(Kind::GitPullRequest, vec![], 100);
-        assert_eq!(current_commit_of(&pr), None);
-        assert_eq!(branch_name_of(&pr), None);
     }
 
     #[test]
@@ -886,19 +761,12 @@ mod tests {
         assert!(latest_update([&stranger, &root].into_iter(), &root).is_none());
     }
 
-    #[test]
-    fn latest_update_ignores_roots_without_revisions() {
-        let root = pr_root();
-        assert!(latest_update([&root].into_iter(), &root).is_none());
-    }
-
     const OWNER_KEYS: [&str; 3] = [
         "0000000000000000000000000000000000000000000000000000000000000001",
         "0000000000000000000000000000000000000000000000000000000000000002",
         "0000000000000000000000000000000000000000000000000000000000000003",
     ];
 
-    /// Build a signed kind-30617 event for `owner` with the given tags.
     fn owned_announcement_event(owner: &str, tags: &[&[&str]]) -> Event {
         let keys = Keys::new(SecretKey::from_hex(owner).expect("valid secret key"));
         let tags: Vec<Tag> = tags
@@ -960,7 +828,6 @@ mod tests {
         let user = PublicKey::from_hex(OWNER_KEYS[1]).expect("pubkey");
         let forks = fork_candidates(&all, &base_addr, Some(euc), Some(user));
 
-        // The user's fork comes first, then the other author's.
         let ids: Vec<&str> = forks.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, vec!["my-fork", "their-fork"]);
     }

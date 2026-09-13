@@ -2,13 +2,11 @@ use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 
-/// Maximum directory nesting depth when scanning for local repositories.
-///
-/// Pathological trees can't stall the scan.
+/// Caps nesting so pathological trees can't stall the scan.
 const SCAN_MAX_DEPTH: usize = 12;
 
-/// Walk `root` recursively and collect the paths of git repositories below it,
-/// honouring `.gitignore` (and `.ignore`) files.
+/// Walk `root` recursively and collect the paths of git repositories below it.
+/// `.gitignore` and `.ignore` files are honoured.
 pub fn find_git_repos(root: &Path) -> Vec<PathBuf> {
     if !root.is_dir() {
         return Vec::new();

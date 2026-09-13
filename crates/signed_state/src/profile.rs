@@ -53,7 +53,6 @@ impl Profile {
         SharedString::from(shorten_pubkey(self.public_key, 4))
     }
 
-    /// Avatar URL, if set.
     pub fn picture(&self) -> Option<SharedString> {
         self.metadata
             .picture
@@ -83,7 +82,6 @@ struct GlobalProfileStore(Entity<ProfileStore>);
 impl Global for GlobalProfileStore {}
 
 impl ProfileStore {
-    /// Retrieve the global profile store.
     pub fn global(cx: &App) -> Entity<Self> {
         cx.global::<GlobalProfileStore>().0.clone()
     }
@@ -157,7 +155,6 @@ impl ProfileStore {
         Profile::new(public_key, Metadata::default())
     }
 
-    /// Load recently seen profiles from the local database.
     fn load(&mut self, cx: &mut Context<Self>) {
         let backend = Backend::global(cx);
         let client = backend.read(cx).client();
@@ -194,7 +191,6 @@ impl ProfileStore {
         task.detach();
     }
 
-    /// Re-read the latest metadata of an author from the local database.
     fn apply_author(&mut self, public_key: PublicKey, cx: &mut Context<Self>) {
         let backend = Backend::global(cx);
         let client = backend.read(cx).client();
@@ -300,7 +296,6 @@ impl ProfileStore {
         let mut batch: HashSet<PublicKey> = HashSet::new();
 
         loop {
-            // Wait for the first request of a batch.
             match receiver.recv_async().await {
                 Ok(public_key) => {
                     batch.insert(public_key);
@@ -308,7 +303,6 @@ impl ProfileStore {
                 Err(_) => return Ok(()),
             }
 
-            // Collect everything that arrives within the debounce window.
             // The channel has no async timeout, race the receive against a timer.
             let deadline = Instant::now() + BATCH_TIMEOUT;
             loop {

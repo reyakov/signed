@@ -41,7 +41,6 @@ pub fn fetch_all(repo: &gix::Repository) -> Result<()> {
     Ok(())
 }
 
-/// Push `commit` to `reference` on the server at `url`, from `repo_path`.
 pub fn push_commit_ref(repo_path: &Path, url: &str, commit: &str, reference: &str) -> Result<()> {
     let output = Command::new("git")
         .arg("-C")
@@ -107,7 +106,6 @@ fn clone(url: &str, path: &Path) -> Result<gix::Repository> {
     Ok(repo)
 }
 
-/// Push the `main` branch of the repository at `repo_path` to a grasp server.
 pub fn push_main(repo_path: &Path, base_url: &str, owner: &str, repo_id: &str) -> Result<()> {
     push_refspecs(
         repo_path,
@@ -131,7 +129,6 @@ pub fn push_all(repo_path: &Path, base_url: &str, owner: &str, repo_id: &str) ->
     )
 }
 
-/// Push `refspecs` to the grasp server URL derived from `base_url`, `owner` and `repo_id`.
 fn push_refspecs(
     repo_path: &Path,
     base_url: &str,

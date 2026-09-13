@@ -2,8 +2,7 @@ use gpui::prelude::*;
 use gpui::{AnyElement, App, SharedString, div};
 use gpui_component::ActiveTheme;
 
-/// Progress of an async dialog action: a busy flag disabling the form,
-/// and an error line shown under it.
+/// Progress of an async dialog action: a busy flag that disables the form and an error shown below it.
 #[derive(Debug, Default)]
 pub struct DialogProgress {
     pub busy: bool,
@@ -11,13 +10,13 @@ pub struct DialogProgress {
 }
 
 impl DialogProgress {
-    /// An action started, disable the form and clear the previous error.
+    /// Marks an action as started, disabling the form and clearing the previous error.
     pub fn begin(&mut self) {
         self.busy = true;
         self.error = None;
     }
 
-    /// An action failed, re-enable the form and surface `message`.
+    /// Marks an action as failed, enabling the form and showing `message`.
     pub fn fail(&mut self, message: impl Into<SharedString>) {
         self.busy = false;
         self.error = Some(message.into());

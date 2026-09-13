@@ -3,18 +3,14 @@ use std::path::Path;
 use anyhow::Result;
 use gix::diff::blob::unified_diff::{ConsumeHunk, DiffLineKind as GixLineKind, HunkHeader};
 
-/// The kind of a [`DiffLine`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLineKind {
     /// An unchanged context line, present on both sides.
     Context,
-    /// A line added by the commit.
     Addition,
-    /// A line removed by the commit.
     Deletion,
 }
 
-/// One line of a file diff.
 #[derive(Debug, Clone)]
 pub struct DiffLine {
     pub kind: DiffLineKind,
@@ -31,16 +27,13 @@ pub struct DiffLine {
 pub struct DiffHunk {
     /// 1-based start line in the old version.
     pub old_start: u32,
-    /// Number of old lines covered by the hunk.
     pub old_lines: u32,
     /// 1-based start line in the new version.
     pub new_start: u32,
-    /// Number of new lines covered by the hunk.
     pub new_lines: u32,
     pub lines: Vec<DiffLine>,
 }
 
-/// How a file changed in a commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffStatus {
     Added,
@@ -50,7 +43,6 @@ pub enum DiffStatus {
     Copied,
 }
 
-/// The diff of one file in a commit.
 #[derive(Debug, Clone)]
 pub struct FileDiff {
     /// Path of the file relative to the repo root.
@@ -69,7 +61,6 @@ pub struct FileDiff {
     pub hunks: Vec<DiffHunk>,
 }
 
-/// The changes of one commit.
 #[derive(Debug, Clone)]
 pub struct CommitDiff {
     pub files: Vec<FileDiff>,
@@ -110,7 +101,7 @@ pub fn worktree_commit_range_diff(workdir: &Path, base: &str, tip: &str) -> Resu
         .tree()?;
     tree_diff(&repo, Some(&base_tree), &tip_tree)
 }
-/// The changes between two trees. Used by both [`commit_diff`] and [`worktree_commit_range_diff`].
+
 fn tree_diff(
     repo: &gix::Repository,
     old_tree: Option<&gix::Tree<'_>>,

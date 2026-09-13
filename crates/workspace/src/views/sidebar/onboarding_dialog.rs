@@ -9,10 +9,9 @@ use signed_state::Backend;
 
 use crate::views::dialog_state::{DialogProgress, error_row};
 
-/// Shared state for the Onboarding dialog, so async results can be rendered.
+/// Progress of the onboarding flow, so async results can be rendered.
 pub type OnboardingState = DialogProgress;
 
-/// Open the Onboarding dialog for creating a new identity.
 pub fn open(
     name_input: Entity<InputState>,
     pass_input: Entity<InputState>,

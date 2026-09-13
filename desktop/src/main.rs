@@ -17,14 +17,11 @@ fn main() {
             gpui_component::init(cx);
             theme::init(cx);
 
-            // Load the persisted settings before applying the theme.
-            // Stored appearance and theme settings then take effect at startup.
+            // The persisted settings must load before the theme is applied.
             let store = cx.new(|cx| SettingsStore::new(paths::settings_file(), cx));
             SettingsStore::set_global(store.clone(), cx);
             let settings = store.read(cx).settings().clone();
 
-            // Register the built-in Signed theme, light and dark variants.
-            // The stored appearance then selects the active theme.
             let registry = ThemeRegistry::global_mut(cx);
             for (name, content) in Assets.themes() {
                 if let Err(err) = registry.load_themes_from_str(&content) {
@@ -72,7 +69,6 @@ fn main() {
                 AppearanceMode::Dark => Theme::change(ThemeMode::Dark, None, cx),
             }
 
-            // Connects relays and restores the session.
             std::fs::create_dir_all(paths::nostr_dir()).ok();
             std::fs::create_dir_all(paths::repos_dir()).ok();
             signed_state::init(
