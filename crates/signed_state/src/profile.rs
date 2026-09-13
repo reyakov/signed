@@ -50,7 +50,7 @@ impl Profile {
             return SharedString::from(name.trim().to_owned());
         }
 
-        SharedString::from(shorten_pubkey(self.public_key, 4))
+        SharedString::from(shorten_pubkey(self.public_key))
     }
 
     pub fn picture(&self) -> Option<SharedString> {

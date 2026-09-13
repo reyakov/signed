@@ -198,7 +198,7 @@ impl SignedTabGroupSkin {
             DockPlacement::Bottom => area
                 .layout(DockPlacement::Bottom)
                 .and_then(|tree| left_top_group(tree.root())),
-            DockPlacement::Center => None,
+            DockPlacement::Center => return None,
         };
         if designated != Some(group.node()) {
             return None;

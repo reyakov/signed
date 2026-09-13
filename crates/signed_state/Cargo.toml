@@ -17,6 +17,7 @@ nostr-connect.workspace = true
 
 bitcoin_hashes = "1"
 
+gix.workspace = true
 gpui.workspace = true
 flume.workspace = true
 futures.workspace = true

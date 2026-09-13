@@ -8,6 +8,8 @@ use nostr::prelude::*;
 use settings::{DEFAULT_GRASP_SERVERS, GraspServersSettings};
 use signed_state::Backend;
 
+use super::{normalize_server, server_host};
+
 /// State of the grasp-server section of a publish dialog, so async results can be rendered.
 #[derive(Default)]
 pub struct GraspServersState {
@@ -155,7 +157,7 @@ fn render_server_row(
                 .text_color(cx.theme().muted_foreground)
                 .text_sm()
                 .rounded(cx.theme().radius)
-                .child(display_server(relay)),
+                .child(server_host(relay)),
         )
         .child(
             Button::new(format!("remove-relay:{ix}"))
@@ -174,14 +176,6 @@ fn render_server_row(
         )
 }
 
-/// Shows only the host, since grasp servers are entered without a scheme.
-fn display_server(relay: &RelayUrl) -> SharedString {
-    relay
-        .domain()
-        .map(SharedString::from)
-        .unwrap_or_else(|| SharedString::from(relay.to_string()))
-}
-
 /// Accepts a bare host as well as a full URL.
 fn add_relay(
     state: &Entity<GraspServersState>,
@@ -194,14 +188,8 @@ fn add_relay(
         return;
     }
 
-    let normalized = if value.contains("://") {
-        value.clone()
-    } else {
-        format!("wss://{value}")
-    };
-
-    match RelayUrl::parse(&normalized) {
-        Ok(relay) => {
+    match normalize_server(&value) {
+        Some((_, relay)) => {
             state.update(cx, |state, _| {
                 state.error = None;
                 if !state.grasp_servers.contains(&relay) {
@@ -210,7 +198,7 @@ fn add_relay(
             });
             input.update(cx, |input, cx| input.set_value("", window, cx));
         }
-        Err(_) => {
+        None => {
             state.update(cx, |state, _| {
                 state.error = Some(format!("Invalid grasp server URL: {value}").into());
             });

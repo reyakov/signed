@@ -90,9 +90,13 @@ pub fn nostr_dir() -> &'static PathBuf {
 }
 
 /// Returns the path to the local git clone cache, the grasp mirrors.
+///
+/// The mirrors are disposable and re-cloned from their grasp server on
+/// demand, so the cache lives in the OS temp directory for the system to
+/// reclaim.
 pub fn repos_dir() -> &'static PathBuf {
     static REPOS_DIR: OnceLock<PathBuf> = OnceLock::new();
-    REPOS_DIR.get_or_init(|| data_dir().join("repos"))
+    REPOS_DIR.get_or_init(|| std::env::temp_dir().join(APP_NAME_LOWERCASE).join("repos"))
 }
 
 pub fn settings_file() -> &'static PathBuf {

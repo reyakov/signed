@@ -17,6 +17,7 @@ use gpui_base::Button as BaseButton;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::InputState;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
+use nostr::prelude::RelayUrl;
 use signed_core::{Announcement, RepoAddr, identifier_from_name};
 use signed_state::{
     Backend, BackendEvent, CheckoutsStore, LocalReposStore, Profile, ProfileStore, RepoListStore,
@@ -540,6 +541,26 @@ impl SidebarPanel {
                     ),
             )
     }
+}
+
+/// Normalize a user-typed grasp server, adding a `wss://` scheme when none is given.
+///
+/// Returns the text to store and the parsed relay URL, or `None` when it is not a valid relay URL.
+pub(super) fn normalize_server(input: &str) -> Option<(String, RelayUrl)> {
+    let text = if input.contains("://") {
+        input.to_owned()
+    } else {
+        format!("wss://{input}")
+    };
+    RelayUrl::parse(&text).ok().map(|relay| (text, relay))
+}
+
+/// The host of a relay URL, which is what the server lists show; the scheme is implied.
+pub(super) fn server_host(relay: &RelayUrl) -> SharedString {
+    relay
+        .domain()
+        .map(SharedString::from)
+        .unwrap_or_else(|| SharedString::from(relay.to_string()))
 }
 
 fn pick_banner() -> SharedString {

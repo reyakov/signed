@@ -39,12 +39,7 @@ impl Assets {
             .filter_map(|path| {
                 let data = Self::get(path.as_ref())?;
                 let name = path.strip_prefix("themes/").unwrap_or(path.as_ref());
-                let content = match data.data {
-                    std::borrow::Cow::Borrowed(bytes) => {
-                        std::str::from_utf8(bytes).ok()?.to_owned()
-                    }
-                    std::borrow::Cow::Owned(bytes) => String::from_utf8(bytes).ok()?,
-                };
+                let content = std::str::from_utf8(data.data.as_ref()).ok()?.to_owned();
                 Some((name.to_owned(), content))
             })
             .collect()

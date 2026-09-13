@@ -1,32 +1,41 @@
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
-use gpui::{App, Global};
+use anyhow::Result;
+use gix::Repository;
+use signed_core::RepoAddr;
 use signed_git::GitCache;
 
-struct GlobalGitStore(GitCache);
+static GIT_CACHE: OnceLock<GitCache> = OnceLock::new();
 
-impl Global for GlobalGitStore {}
+fn git_cache() -> &'static GitCache {
+    GIT_CACHE
+        .get()
+        .expect("git cache is initialized by signed_state::init")
+}
 
-/// Global access to the on-disk git clone cache, the grasp mirrors.
-#[derive(Debug, Clone)]
-pub struct GitStore(GitCache);
+/// The root directory of the repository mirrors.
+pub(crate) fn repo_mirror_root() -> PathBuf {
+    git_cache().root().to_path_buf()
+}
 
-impl GitStore {
-    pub fn set_global(root: impl Into<PathBuf>, cx: &mut App) -> Self {
-        let store = Self::new(root);
-        cx.set_global(GlobalGitStore(store.0.clone()));
-        store
-    }
+/// The on-disk path of the mirror of `addr`.
+pub fn repo_mirror_path(addr: &RepoAddr) -> PathBuf {
+    git_cache().repo_path(addr)
+}
 
-    pub fn global(cx: &App) -> Self {
-        Self(cx.global::<GlobalGitStore>().0.clone())
-    }
+/// Open the mirror of `addr`, if it has been cloned.
+pub fn open_repo_mirror(addr: &RepoAddr) -> Result<Option<Repository>> {
+    git_cache().open(addr)
+}
 
-    fn new(root: impl Into<PathBuf>) -> Self {
-        Self(GitCache::new(root.into()))
-    }
+/// Open the mirror of `addr`, cloning it first when it does not exist yet.
+pub fn ensure_repo_mirror<U: AsRef<str>>(addr: &RepoAddr, clone_urls: &[U]) -> Result<Repository> {
+    git_cache().ensure_clone(addr, clone_urls)
+}
 
-    pub fn cache(&self) -> &GitCache {
-        &self.0
+pub(crate) fn set_git_cache(root: impl Into<PathBuf>) {
+    if GIT_CACHE.set(GitCache::new(root.into())).is_err() {
+        log::warn!("git cache root is already set, keeping the first one");
     }
 }

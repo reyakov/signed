@@ -26,7 +26,7 @@ use signed_core::{
     merge_base_of, pull_request_patch,
 };
 use signed_git::{FileCommit, patch_commits, patch_diffs};
-use signed_state::{Backend, GitStore, ProfileStore, RepoStore};
+use signed_state::{Backend, ProfileStore, RepoStore, ensure_repo_mirror};
 use signed_ui::{CountBadge, UserAvatar, placeholder, status_badge};
 use utils::{relative_time, relative_time_secs};
 
@@ -217,8 +217,6 @@ impl PullRequestDetailView {
         self.current_commit = binding.tip.clone().map(SharedString::from);
         cx.notify();
 
-        let cache = GitStore::global(cx).cache().clone();
-
         self.load_generation = self.load_generation.wrapping_add(1);
         let generation = self.load_generation;
 
@@ -257,7 +255,6 @@ impl PullRequestDetailView {
             let git = if use_nostr {
                 None
             } else {
-                let cache = cache.clone();
                 let addr = addr.clone();
                 let clone_urls = clone_urls.clone();
                 let base = base.clone();
@@ -265,7 +262,7 @@ impl PullRequestDetailView {
 
                 Some(
                     cx.background_spawn(async move {
-                        let repo = cache.ensure_clone(&addr, &clone_urls)?;
+                        let repo = ensure_repo_mirror(&addr, &clone_urls)?;
 
                         let workdir = repo
                             .workdir()

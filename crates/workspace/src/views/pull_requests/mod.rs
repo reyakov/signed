@@ -25,6 +25,7 @@ pub(super) mod new;
 use self::detail::PullRequestDetailView;
 use self::new::open_new_pull_panel;
 use super::send_patch::open_send_patch_panel;
+use super::status_list::{StatusCounts, filter_by_status};
 use crate::views::repo::RepoAction;
 
 const ROW_HEIGHT: f32 = 73.;
@@ -59,8 +60,7 @@ pub struct PullRequestsView {
     item_sizes: Rc<Vec<Size<Pixels>>>,
     /// Indices into the store's `pull_requests` matching [`Self::filter`].
     visible_prs: Vec<usize>,
-    /// Header counts `(total, open, closed, draft, merged)`.
-    counts: (usize, usize, usize, usize, usize),
+    counts: StatusCounts,
     // A filter change notifies even when the visible rows are unchanged,
     // e.g. switching between two empty filters.
     synced_filter: PullRequestFilter,
@@ -93,7 +93,7 @@ impl PullRequestsView {
             filter: PullRequestFilter::Open,
             item_sizes: Rc::new(Vec::new()),
             visible_prs: Vec::new(),
-            counts: (0, 0, 0, 0, 0),
+            counts: StatusCounts::default(),
             synced_filter: PullRequestFilter::Open,
             scroll_handle: VirtualListScrollHandle::new(),
             _subscription: subscription,
@@ -105,32 +105,15 @@ impl PullRequestsView {
 
         let (visible_prs, counts) = {
             let store = self.store.read(cx);
-            let mut counts = (0usize, 0usize, 0usize, 0usize, 0usize);
-
-            let visible_prs: Vec<usize> = store
+            let roots = store
                 .pull_requests
                 .iter()
-                .enumerate()
-                .filter_map(|(ix, pr)| {
-                    if pr.kind != Kind::GitPullRequest {
-                        return None;
-                    }
-
-                    let status = store.status_of(pr);
-                    counts.0 += 1;
-
-                    match status {
-                        RepoStatus::Open => counts.1 += 1,
-                        RepoStatus::Closed => counts.2 += 1,
-                        RepoStatus::Draft => counts.3 += 1,
-                        RepoStatus::Applied => counts.4 += 1,
-                    }
-
-                    filter.matches(status).then_some(ix)
-                })
-                .collect();
-
-            (visible_prs, counts)
+                .filter(|pr| pr.kind == Kind::GitPullRequest);
+            filter_by_status(
+                roots,
+                |pr| store.status_of(pr),
+                |status| filter.matches(status),
+            )
         };
 
         let filter_changed = self.synced_filter != filter;
@@ -236,7 +219,7 @@ impl PullRequestsView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (total, open, closed, draft, merged) = self.counts;
+        let counts = self.counts;
 
         h_flex()
             .px_4()
@@ -252,7 +235,7 @@ impl PullRequestsView {
                     .child(
                         SegmentButton::new("all", "All")
                             .icon(Icon::new(CustomIconName::GitPullRequest))
-                            .count(total)
+                            .count(counts.total)
                             .selected(self.filter == PullRequestFilter::All)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::All;
@@ -262,7 +245,7 @@ impl PullRequestsView {
                     .child(
                         SegmentButton::new("open", "Open")
                             .icon(Icon::new(CustomIconName::GitPullRequest))
-                            .count(open)
+                            .count(counts.open)
                             .selected(self.filter == PullRequestFilter::Open)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Open;
@@ -272,7 +255,7 @@ impl PullRequestsView {
                     .child(
                         SegmentButton::new("closed", "Closed")
                             .icon(Icon::new(CustomIconName::GitPullRequestClosed))
-                            .count(closed)
+                            .count(counts.closed)
                             .selected(self.filter == PullRequestFilter::Closed)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Closed;
@@ -282,7 +265,7 @@ impl PullRequestsView {
                     .child(
                         SegmentButton::new("draft", "Draft")
                             .icon(Icon::new(CustomIconName::GitPullRequestDraft))
-                            .count(draft)
+                            .count(counts.draft)
                             .selected(self.filter == PullRequestFilter::Draft)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Draft;
@@ -292,7 +275,7 @@ impl PullRequestsView {
                     .child(
                         SegmentButton::new("merged", "Merged")
                             .icon(Icon::new(CustomIconName::GitPullRequestMerged))
-                            .count(merged)
+                            .count(counts.applied)
                             .selected(self.filter == PullRequestFilter::Merged)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = PullRequestFilter::Merged;

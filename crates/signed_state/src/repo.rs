@@ -17,7 +17,7 @@ use crate::backend::{
     user_grasp_list_servers,
 };
 use crate::checkouts::CheckoutsStore;
-use crate::git_store::GitStore;
+use crate::git_store::ensure_repo_mirror;
 use crate::refresh::{RefreshGate, RefreshRequest};
 use crate::repos::RepoListStore;
 
@@ -56,10 +56,6 @@ pub struct RepoStore {
     /// Computed with [`Self::status_by_root`] on every refresh.
     open_issue_count: usize,
     open_pr_count: usize,
-    /// Incremented on every applied refresh.
-    ///
-    /// Views key their derived-data caches to it instead of recomputing on every render.
-    version: u64,
     pub last_error: Option<String>,
     /// Non-fatal warning of the last action, if any.
     ///
@@ -125,7 +121,6 @@ impl RepoStore {
             status_by_root: HashMap::new(),
             open_issue_count: 0,
             open_pr_count: 0,
-            version: 0,
             last_error: None,
             last_warning: None,
             last_push_warning: None,
@@ -153,7 +148,6 @@ impl RepoStore {
             status_by_root: HashMap::new(),
             open_issue_count: 0,
             open_pr_count: 0,
-            version: 0,
             last_error: None,
             last_warning: None,
             last_push_warning: None,
@@ -401,9 +395,6 @@ impl RepoStore {
                 }
             }
 
-            // Cover notes, 1624, and label events, 1985, carry no `a` tag.
-            // Query them per root like comments and statuses.
-            // The events are only stored for interop and nothing displays them.
             sort_newest_first(&mut issues);
             sort_newest_first(&mut patches);
             sort_newest_first(&mut pull_requests);
@@ -522,7 +513,6 @@ impl RepoStore {
                 this.open_issue_count = open_issue_count;
                 this.open_pr_count = open_pr_count;
                 this.loaded = true;
-                this.version = this.version.wrapping_add(1);
 
                 // Comments and statuses without an `a` tag.
                 // None are addressed to the repository.
@@ -578,10 +568,6 @@ impl RepoStore {
     /// Resolve the status of a root event, an issue, patch or PR, per NIP-34.
     pub fn status_of(&self, root: &Event) -> RepoStatus {
         status_of(&self.status_by_root, root)
-    }
-
-    pub fn version(&self) -> u64 {
-        self.version
     }
 
     /// Number of open issues.
@@ -1210,8 +1196,6 @@ impl RepoStore {
             return;
         }
 
-        let cache = GitStore::global(cx).cache().clone();
-
         let clone_urls: Vec<Url> = self
             .announcement
             .as_ref()
@@ -1237,7 +1221,7 @@ impl RepoStore {
         let root = root.clone();
 
         let apply = cx.background_spawn(async move {
-            let repo = cache.ensure_clone(&addr, &clone_urls)?;
+            let repo = ensure_repo_mirror(&addr, &clone_urls)?;
             let workdir = repo
                 .workdir()
                 .ok_or_else(|| anyhow::anyhow!("repository has no worktree"))?

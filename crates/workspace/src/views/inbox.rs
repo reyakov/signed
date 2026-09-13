@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Error;
 use dock::{BasePanel, DockArea, Panel, PanelEvent};
@@ -21,7 +20,6 @@ use utils::relative_time;
 
 use super::{RepoItem, open_repo_item};
 
-const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
 const LIST_OVERDRAW: Pixels = px(400.);
 const MAX_SUB_ACTIVITIES: usize = 5;
 
@@ -179,7 +177,6 @@ impl InboxView {
     }
 
     fn refresh_initial(&mut self, cx: &mut Context<Self>) {
-        debug_assert!(!self.refresh.debouncing());
         if self.refresh.running() {
             self.refresh.request();
             return;
@@ -196,10 +193,7 @@ impl InboxView {
             return;
         }
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(REFRESH_DEBOUNCE).await;
-            this.update(cx, |this, cx| this.run_refresh(cx))
-        }));
+        self.run_refresh(cx);
     }
 
     fn run_refresh(&mut self, cx: &mut Context<Self>) {
@@ -408,7 +402,7 @@ impl InboxView {
                 };
 
                 let root = item.root;
-                let kind = item.root_kind;
+                let kind = item.root_event.as_ref().map(|event| event.kind);
                 let address = section.address.clone();
                 let first = entry_ix == 0;
                 let last = entry_ix + 1 == section.entries.len();

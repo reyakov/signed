@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::*;
@@ -578,7 +578,7 @@ fn git_run(dir: &Path, args: &[&str]) {
 }
 
 #[test]
-fn last_commit_returns_most_recent_change() {
+fn worktree_last_commits_returns_most_recent_change() {
     let (dir, repo) = fixture(&[("a.txt", b"one")]);
     commit_all(&repo, "initial");
 
@@ -589,9 +589,12 @@ fn last_commit_returns_most_recent_change() {
     std::fs::write(dir.path().join("b.txt"), b"other").expect("write");
     commit_all(&repo, "add b");
 
-    let commit = last_commit(&repo, Path::new("a.txt"))
+    let commit = worktree_last_commits(dir.path(), &[PathBuf::from("a.txt")])
         .expect("lookup")
-        .expect("found");
+        .into_iter()
+        .next()
+        .expect("found")
+        .1;
     assert_eq!(commit.summary, "change a");
     assert_eq!(commit.author, "Test Author");
     assert!(!commit.id.is_empty());
@@ -621,7 +624,7 @@ fn all_commits_lists_every_commit() {
 }
 
 #[test]
-fn last_commit_reports_merge_commits() {
+fn worktree_last_commits_reports_merge_commits() {
     let (dir, repo) = fixture(&[("a.txt", b"base")]);
     commit_all(&repo, "initial");
 
@@ -645,9 +648,12 @@ fn last_commit_reports_merge_commits() {
     // `--no-ff` forces a merge commit, it is the latest commit changing a.txt.
     run(&["merge", "--no-ff", "--no-edit", "feature"]);
 
-    let commit = last_commit(&repo, Path::new("a.txt"))
+    let commit = worktree_last_commits(dir.path(), &[PathBuf::from("a.txt")])
         .expect("lookup")
-        .expect("found");
+        .into_iter()
+        .next()
+        .expect("found")
+        .1;
     assert_eq!(
         commit.id,
         repo.head_id().expect("head").shorten_or_id().to_string()

@@ -24,6 +24,7 @@ use utils::relative_time;
 pub(super) mod detail;
 
 use self::detail::IssueDetailView;
+use super::status_list::{StatusCounts, filter_by_status};
 
 const ISSUE_ROW_HEIGHT: f32 = 73.;
 
@@ -52,7 +53,7 @@ pub struct IssuesView {
     filter: IssueFilter,
     item_sizes: Rc<Vec<Size<Pixels>>>,
     visible_issues: Vec<usize>,
-    counts: (usize, usize, usize),
+    counts: StatusCounts,
     // A filter change notifies even when the visible rows are unchanged,
     // e.g. switching between two empty filters.
     synced_filter: IssueFilter,
@@ -85,7 +86,7 @@ impl IssuesView {
             filter: IssueFilter::Open,
             item_sizes: Rc::new(Vec::new()),
             visible_issues: Vec::new(),
-            counts: (0, 0, 0),
+            counts: StatusCounts::default(),
             synced_filter: IssueFilter::Open,
             scroll_handle: VirtualListScrollHandle::new(),
             _subscription: subscription,
@@ -97,25 +98,11 @@ impl IssuesView {
 
         let (visible_issues, counts) = {
             let store = self.store.read(cx);
-            let mut counts = (0usize, 0usize, 0usize);
-
-            let visible_issues: Vec<usize> = store
-                .issues
-                .iter()
-                .enumerate()
-                .filter_map(|(ix, issue)| {
-                    let status = store.status_of(issue);
-                    counts.0 += 1;
-                    match status {
-                        RepoStatus::Open => counts.1 += 1,
-                        RepoStatus::Closed => counts.2 += 1,
-                        RepoStatus::Draft | RepoStatus::Applied => {}
-                    }
-                    filter.matches(status).then_some(ix)
-                })
-                .collect();
-
-            (visible_issues, counts)
+            filter_by_status(
+                &store.issues,
+                |issue| store.status_of(issue),
+                |status| filter.matches(status),
+            )
         };
 
         let filter_changed = self.synced_filter != filter;
@@ -218,7 +205,7 @@ impl IssuesView {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let (total, open, closed) = self.counts;
+        let counts = self.counts;
 
         h_flex()
             .px_4()
@@ -234,7 +221,7 @@ impl IssuesView {
                     .child(
                         SegmentButton::new("all", "All")
                             .icon(Icon::new(CustomIconName::GitIssueDone))
-                            .count(total)
+                            .count(counts.total)
                             .selected(self.filter == IssueFilter::All)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = IssueFilter::All;
@@ -244,7 +231,7 @@ impl IssuesView {
                     .child(
                         SegmentButton::new("open", "Open")
                             .icon(Icon::new(CustomIconName::GitIssueOpen))
-                            .count(open)
+                            .count(counts.open)
                             .selected(self.filter == IssueFilter::Open)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = IssueFilter::Open;
@@ -254,7 +241,7 @@ impl IssuesView {
                     .child(
                         SegmentButton::new("closed", "Closed")
                             .icon(Icon::new(CustomIconName::GitIssueClosed))
-                            .count(closed)
+                            .count(counts.closed)
                             .selected(self.filter == IssueFilter::Closed)
                             .on_click(cx.listener(|this, _event, _window, cx| {
                                 this.filter = IssueFilter::Closed;

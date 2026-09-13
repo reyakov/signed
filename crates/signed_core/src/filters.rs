@@ -91,18 +91,6 @@ pub fn statuses_for(roots: impl IntoIterator<Item = EventId>) -> Filter {
         .events(roots)
 }
 
-/// Cover notes and NIP-32 label events referencing any of the given root events.
-/// These are kinds 1624 and 1985, matched via the `#e` tag.
-///
-/// Because they carry no repository `a` tag, they are fetched by root like comments.
-///
-/// Batched, like [`statuses_for`].
-pub fn annotations_for(roots: impl IntoIterator<Item = EventId>) -> Filter {
-    Filter::new()
-        .kinds([crate::COVER_NOTE_KIND, Kind::Label])
-        .events(roots)
-}
-
 /// A user's grasp list, kind `10317`.
 pub fn grasp_list(public_key: PublicKey) -> Filter {
     Filter::new()

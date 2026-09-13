@@ -26,8 +26,8 @@ use nostr::prelude::{RelayUrl, ToBech32, Url};
 use signed_core::{Announcement, RepoAddr, RepoStatus};
 use signed_git::FileCommit;
 use signed_state::{
-    Backend, CheckoutStatus, CheckoutsStore, GitStore, LocalReposStore, ProfileStore,
-    RepoListStore, RepoStore, pr_proposes_checkout,
+    Backend, CheckoutStatus, CheckoutsStore, LocalReposStore, ProfileStore, RepoListStore,
+    RepoStore, ensure_repo_mirror, open_repo_mirror, pr_proposes_checkout,
 };
 use signed_ui::{
     CountBadge, DropdownButton, PixelAvatar, UserAvatar, copy_row, menu_copy_row, middle_truncate,
@@ -343,15 +343,13 @@ impl RepoDetailView {
 
         self.repo_started = true;
 
-        let cache = GitStore::global(cx).cache().clone();
         let addr = announcement.addr();
         let clone_urls: Vec<Url> = announcement.clone.clone();
 
         let disk = {
-            let cache = cache.clone();
             let addr = addr.clone();
             cx.background_spawn(async move {
-                match cache.open(&addr)? {
+                match open_repo_mirror(&addr)? {
                     Some(repo) => Ok(Some(load_repo_data(&repo)?)),
                     None => Ok(None),
                 }
@@ -365,11 +363,10 @@ impl RepoDetailView {
             let data = match disk {
                 Ok(Some(data)) => Ok(data),
                 Ok(None) => {
-                    let cache = cache.clone();
                     let addr = addr.clone();
                     let clone_urls = clone_urls.clone();
                     cx.background_spawn(async move {
-                        let repo = cache.ensure_clone(&addr, &clone_urls)?;
+                        let repo = ensure_repo_mirror(&addr, &clone_urls)?;
                         load_repo_data(&repo)
                     })
                     .await
@@ -393,11 +390,10 @@ impl RepoDetailView {
             }
 
             let refresh = {
-                let cache = cache.clone();
                 let addr = addr.clone();
 
                 cx.background_spawn(async move {
-                    let Some(repo) = cache.open(&addr)? else {
+                    let Some(repo) = open_repo_mirror(&addr)? else {
                         return Ok::<_, Error>(None);
                     };
 

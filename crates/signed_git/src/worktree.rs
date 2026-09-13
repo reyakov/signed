@@ -64,20 +64,10 @@ pub fn worktree_commits_ahead(workdir: &Path, base: &str, branch: &str) -> u32 {
     walk.filter_map(Result::ok).count().min(u32::MAX as usize) as u32
 }
 
-/// Resolve `rev` to a commit id, accepting full refs,
-/// symbolic refs and the bare branch names callers pass, like git's DWIM.
+/// Resolve `rev` to a commit id, accepting full refs or the bare branch names
+/// callers pass. `gix`'s revision parser already applies git's ref DWIM.
 fn resolve_commit<'a>(repo: &'a gix::Repository, rev: &str) -> Option<gix::Id<'a>> {
-    if let Ok(id) = repo.rev_parse_single(rev.as_bytes()) {
-        return Some(id);
-    }
-
-    // Branch names arrive bare, like git resolving `main`.
-    if rev.contains('/') {
-        return None;
-    }
-
-    repo.rev_parse_single(format!("refs/heads/{rev}").as_bytes())
-        .ok()
+    repo.rev_parse_single(rev.as_bytes()).ok()
 }
 
 /// Relative paths of all entries in the worktree, files and directories.

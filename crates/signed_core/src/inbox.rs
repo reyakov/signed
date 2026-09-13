@@ -19,8 +19,6 @@ pub struct InboxItem {
     pub root: EventId,
     /// The root event itself, when it is known locally.
     pub root_event: Option<Event>,
-    /// Kind of the root event, when it is known locally.
-    pub root_kind: Option<Kind>,
     /// Repository the root belongs to, from the root's `a` tag.
     pub address: Option<RepoAddr>,
     /// Notification events directed at the user, newest first.
@@ -45,13 +43,11 @@ impl InboxItem {
     }
 
     pub fn kind(&self) -> Option<Kind> {
-        self.root_kind.or_else(|| {
-            self.root_event
-                .as_ref()
-                .or_else(|| self.own_events.first())
-                .or_else(|| self.events.first())
-                .map(|event| event.kind)
-        })
+        self.root_event
+            .as_ref()
+            .or_else(|| self.own_events.first())
+            .or_else(|| self.events.first())
+            .map(|event| event.kind)
     }
 
     /// Timestamp of the newest event in the thread.
@@ -202,7 +198,6 @@ where
 
             let mut item = InboxItem {
                 root,
-                root_kind: root_event.as_ref().map(|event| event.kind),
                 address: root_event
                     .as_ref()
                     .and_then(|event| event.tags.coordinates().next()),

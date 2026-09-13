@@ -41,12 +41,10 @@ pub struct Upstream {
     /// Upstream repository coordinate when the `u` tag names a NIP-34 repository.
     /// `None` for the git-URL form.
     pub addr: Option<RepoAddr>,
-    /// Relay hint for the upstream, if the `u` tag carries one.
-    pub relay_hint: Option<RelayUrl>,
 }
 
 impl Upstream {
-    fn parse(raw: &str, relay_hint: Option<&str>) -> Self {
+    fn parse(raw: &str) -> Self {
         let coordinate = raw.split('|').next().unwrap_or(raw);
         let addr = coordinate
             .parse::<Coordinate>()
@@ -55,7 +53,6 @@ impl Upstream {
         Self {
             raw: raw.to_owned(),
             addr,
-            relay_hint: relay_hint.and_then(|hint| RelayUrl::parse(hint).ok()),
         }
     }
 
@@ -317,7 +314,7 @@ impl Announcement {
                 let values = tag.as_slice();
                 let raw = values.get(1).map(String::as_str).unwrap_or_default();
                 if !raw.is_empty() {
-                    upstream = Some(Upstream::parse(raw, values.get(2).map(String::as_str)));
+                    upstream = Some(Upstream::parse(raw));
                 }
             }
         }
@@ -510,10 +507,6 @@ mod tests {
         assert_eq!(
             upstream.raw,
             "30617:68d81165918100b7da43fc28f7d1fc12554466e1115886b9e7bb326f65ec4272:upstream|https://example.com/upstream.git"
-        );
-        assert_eq!(
-            upstream.relay_hint,
-            Some(RelayUrl::parse("wss://relay.example.com").expect("valid relay"))
         );
         assert_eq!(
             upstream.display().to_string(),

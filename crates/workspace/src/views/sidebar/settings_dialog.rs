@@ -18,9 +18,10 @@ use gpui_component::{
     ActiveTheme, IconName, IndexPath, Sizable, Theme, ThemeMode, ThemeRegistry, WindowExt, h_flex,
     v_flex,
 };
-use nostr::prelude::RelayUrl;
 use settings::{AppearanceMode, Settings, SettingsStore};
 use signed_ui::{SelectOption, setting_block, setting_row};
+
+use super::{normalize_server, server_host};
 
 /// Looks up the option index used to seed a [`SelectState`].
 fn selected_index(options: &[SelectOption], value: &str) -> Option<IndexPath> {
@@ -454,13 +455,11 @@ fn grasp_server_editor(
 }
 
 /// Shows only the host, since grasp servers are entered without a scheme.
-/// Matches how the publish dialogs display servers.
 fn display_server(server: &str) -> SharedString {
-    RelayUrl::parse(server)
-        .ok()
-        .and_then(|relay| relay.domain().map(|domain| domain.to_owned()))
-        .map(SharedString::from)
-        .unwrap_or_else(|| SharedString::from(server.to_owned()))
+    match normalize_server(server) {
+        Some((_, relay)) => server_host(&relay),
+        None => SharedString::from(server.to_owned()),
+    }
 }
 
 fn repositories_section(
@@ -568,14 +567,9 @@ fn add_server(input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     if value.is_empty() {
         return;
     }
-    let normalized = if value.contains("://") {
-        value
-    } else {
-        format!("wss://{value}")
-    };
-    if RelayUrl::parse(&normalized).is_err() {
+    let Some((normalized, _)) = normalize_server(&value) else {
         return;
-    }
+    };
 
     let store = SettingsStore::global(cx);
     store.update(cx, |store, cx| {

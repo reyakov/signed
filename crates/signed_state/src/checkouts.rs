@@ -9,7 +9,7 @@ use settings::{CheckoutRecord, SettingsStore};
 use signed_core::{Announcement, RepoAddr};
 
 use crate::backend::{Backend, BackendEvent};
-use crate::git_store::GitStore;
+use crate::git_store::repo_mirror_root;
 use crate::refresh::{RefreshGate, RefreshRequest};
 use crate::repos::{LocalReposStore, RepoListStore};
 
@@ -93,6 +93,8 @@ pub struct CheckoutsStore {
     /// A recompute defaults the base the same way.
     requested_head: HashMap<RepoAddr, Option<String>>,
     refresh: RefreshGate,
+    /// True while the timer between a scheduled refresh and its run is pending.
+    debounce_pending: bool,
     local_pending: bool,
     /// When the last full pass (with a remote refresh) completed.
     ///
@@ -163,6 +165,7 @@ impl CheckoutsStore {
             push_statuses: HashMap::new(),
             requested_head: HashMap::new(),
             refresh: RefreshGate::default(),
+            debounce_pending: false,
             local_pending: false,
             last_full_sync: None,
             _subscriptions: subscriptions,
@@ -279,11 +282,14 @@ impl CheckoutsStore {
 
     /// Re-resolve the associations and the requested statuses.
     ///
-    /// Requests arriving while a pass runs fold into a follow-up.
+    /// Requests arriving while a pass runs fold into a follow-up, requests
+    /// arriving while the debounce timer is pending are dropped.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if self.refresh.request() != RefreshRequest::Schedule {
+        if self.debounce_pending || self.refresh.request() != RefreshRequest::Schedule {
             return;
         }
+
+        self.debounce_pending = true;
 
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REFRESH_DEBOUNCE).await;
@@ -300,6 +306,7 @@ impl CheckoutsStore {
     /// remote reconciliation cadence ([`Self::local_tick`]); they also restart
     /// the fast local pass.
     fn run_refresh(&mut self, cx: &mut Context<Self>) {
+        self.debounce_pending = false;
         self.refresh.begin();
 
         let records = {
@@ -321,7 +328,7 @@ impl CheckoutsStore {
 
         let announcements = RepoListStore::global(cx).read(cx).announcements.clone();
         let scanned = LocalReposStore::global(cx).read(cx).repos.clone();
-        let cache_root = GitStore::global(cx).cache().root().canonicalize().ok();
+        let cache_root = repo_mirror_root().canonicalize().ok();
 
         let requested: Vec<(RepoAddr, Option<String>)> = self
             .status_requested
@@ -453,7 +460,7 @@ impl CheckoutsStore {
         }
 
         // A full pass or a fresh request covers this tick, skip it.
-        if self.refresh.running() || self.refresh.debouncing() {
+        if self.refresh.running() || self.debounce_pending {
             self.schedule_local_pass(cx);
             return;
         }
@@ -515,7 +522,7 @@ impl CheckoutsStore {
             this.update(cx, |this, cx| {
                 // A full pass or a fresh request will apply fresher data
                 // (the tracking refs move only when a full pass fetches).
-                if this.refresh.running() || this.refresh.debouncing() {
+                if this.refresh.running() || this.debounce_pending {
                     return;
                 }
 

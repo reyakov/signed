@@ -8,22 +8,18 @@ use gpui_component::menu::PopupMenu;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex};
 
 /// A split dropdown button built on `gpui_base::Popover`.
-/// An action element with a separate caret trigger that opens a [`PopupMenu`].
-/// The action and the caret are caller-supplied elements, so the look stays in the app.
-/// This component only owns the popover wiring.
+/// An action element next to a caret that opens a [`PopupMenu`].
 #[derive(IntoElement)]
 pub struct DropdownButton {
     id: ElementId,
     style: StyleRefinement,
     anchor: Anchor,
     action: Option<AnyElement>,
-    caret: Option<CaretBuilder>,
     menu: Option<MenuBuilder>,
 }
 
 type MenuBuilder =
     Box<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static>;
-type CaretBuilder = Box<dyn FnOnce(bool, &Window, &App) -> AnyElement>;
 
 impl DropdownButton {
     pub fn new(id: impl Into<ElementId>) -> Self {
@@ -32,7 +28,6 @@ impl DropdownButton {
             style: StyleRefinement::default(),
             anchor: Anchor::TopRight,
             action: None,
-            caret: None,
             menu: None,
         }
     }
@@ -52,14 +47,6 @@ impl DropdownButton {
         builder: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
     ) -> Self {
         self.menu = Some(Box::new(builder));
-        self
-    }
-
-    /// Which corner of the caret the menu anchors to.
-    /// Defaults to [`Anchor::TopRight`], lining the menu's right edge up with the caret's.
-    #[allow(dead_code)] // API knob, current call sites use the default anchor.
-    pub fn anchor(mut self, anchor: impl Into<Anchor>) -> Self {
-        self.anchor = anchor.into();
         self
     }
 }
@@ -91,28 +78,24 @@ impl RenderOnce for DropdownButton {
         let menu_state =
             window.use_keyed_state(popover_id.clone(), cx, |_, _| DropdownMenuState::default());
 
-        let caret = self.caret.unwrap_or_else(|| {
-            let id = popover_id.clone();
-            Box::new(move |is_open, _, cx| {
-                let caret = default_caret(id.clone(), cx);
-                let selected = caret.is_selected();
-                caret.selected(selected || is_open).into_any_element()
-            })
-        });
-
         h_flex()
             .id(self.id)
             .refine_style(&self.style)
             .gap_0p5()
             .when_some(self.action, |this, action| this.child(action))
             .when_some(self.menu, |this, builder| {
+                let caret_id = popover_id.clone();
                 this.child(
                     Popover::new(popover_id)
                         .anchor(anchor)
                         // The menu dismisses itself on outside click or Escape.
                         // The subscription below closes the popover along with it.
                         .overlay_closable(false)
-                        .trigger_with(caret)
+                        .trigger_with(move |is_open, _, cx| {
+                            let caret = default_caret(caret_id.clone(), cx);
+                            let selected = caret.is_selected();
+                            caret.selected(selected || is_open).into_any_element()
+                        })
                         .content(
                             move |_, window, cx| match menu_state.read(cx).menu.clone() {
                                 Some(menu) => menu,

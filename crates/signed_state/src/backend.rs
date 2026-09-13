@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Error, anyhow, bail};
 use bitcoin_hashes::sha1::Hash as Sha1Hash;
-use gpui::{App, AppContext, Context, Entity, EventEmitter, Global, Task};
+use gpui::{App, AppContext, BackgroundExecutor, Context, Entity, EventEmitter, Global, Task};
 use nostr::event::IntoEventBuilder;
 use nostr_connect::prelude::*;
 use nostr_sdk::client::SyncSummary;
@@ -13,7 +13,7 @@ use nostr_sdk::prelude::*;
 use signed_core::{Announcement, RepoAddr, build_state, filters, identifier_from_name};
 use signed_nostr::{SignedAuthUrlHandler, UniversalSigner, Update};
 
-use crate::git_store::GitStore;
+use crate::git_store::repo_mirror_path;
 use crate::inbox::Inbox;
 use crate::repos::RepoListStore;
 
@@ -531,6 +531,7 @@ impl Backend {
                 let repo_id = repo_id.clone();
                 let servers = servers.clone();
                 let refs = refs.clone();
+                let executor = cx.background_executor().clone();
                 async move {
                     push_staged_to_grasps(
                         &client,
@@ -541,6 +542,7 @@ impl Backend {
                         &destination,
                         &owner,
                         &servers,
+                        &executor,
                         signed_git::push_main,
                     )
                     .await
@@ -686,6 +688,7 @@ impl Backend {
                     let servers = servers.clone();
                     let refs = refs.clone();
                     let head = head.clone();
+                    let executor = cx.background_executor().clone();
                     async move {
                         push_staged_to_grasps(
                             &client,
@@ -696,6 +699,7 @@ impl Backend {
                             &path,
                             &owner,
                             &servers,
+                            &executor,
                             signed_git::push_all,
                         )
                         .await
@@ -752,8 +756,7 @@ impl Backend {
         announcement: Announcement,
         cx: &mut Context<Self>,
     ) -> Task<Result<PushOutcome, Error>> {
-        let cache = GitStore::global(cx).cache().clone();
-        let path = cache.repo_path(&announcement.addr());
+        let path = repo_mirror_path(&announcement.addr());
         self.push_repo_from(announcement, path, None, cx)
     }
 
@@ -854,6 +857,7 @@ impl Backend {
                     let relays = relays.clone();
                     let refs = refs.clone();
                     let head = head.clone();
+                    let executor = cx.background_executor().clone();
                     async move {
                         push_staged_to_grasps(
                             &client,
@@ -864,6 +868,7 @@ impl Backend {
                             &path,
                             &owner,
                             &relays,
+                            &executor,
                             signed_git::push_all,
                         )
                         .await
@@ -1086,10 +1091,6 @@ impl Backend {
         self.signer.clone()
     }
 
-    pub fn pushing_repos(&self) -> Entity<HashSet<RepoAddr>> {
-        self.pushing_repos.clone()
-    }
-
     pub fn inbox(&self) -> Entity<Inbox> {
         self.inbox.clone()
     }
@@ -1100,10 +1101,6 @@ impl Backend {
 
     pub fn passphrase_required(&self) -> bool {
         self.passphrase_required
-    }
-
-    pub fn emit_error(&mut self, message: impl Into<String>, cx: &mut Context<Self>) {
-        cx.emit(BackendEvent::error(message));
     }
 
     fn sync_inbox(&mut self, cx: &mut Context<Self>) {
@@ -1498,24 +1495,21 @@ const GRASP_RETRY_DELAY: Duration = Duration::from_secs(1);
 #[derive(Debug, Clone)]
 pub struct GraspServerResult {
     pub relay: RelayUrl,
-    pub git_url: String,
     /// `None` when the server accepted the data, the reason otherwise.
     pub reason: Option<String>,
 }
 
 impl GraspServerResult {
-    fn ok(relay: RelayUrl, git_url: String) -> Self {
+    fn ok(relay: RelayUrl) -> Self {
         Self {
             relay,
-            git_url,
             reason: None,
         }
     }
 
-    fn failed(relay: RelayUrl, git_url: String, reason: impl Into<String>) -> Self {
+    fn failed(relay: RelayUrl, reason: impl Into<String>) -> Self {
         Self {
             relay,
-            git_url,
             reason: Some(reason.into()),
         }
     }
@@ -1711,21 +1705,16 @@ async fn push_staged_to_grasps(
     path: &Path,
     owner: &str,
     servers: &[RelayUrl],
+    executor: &BackgroundExecutor,
     push: fn(&Path, &str, &str, &str) -> Result<(), Error>,
 ) -> PushOutcome {
     let mut outcome = PushOutcome::default();
 
-    if refs.is_empty() {
-        return outcome;
-    }
-
     for relay in servers {
         let Some(base) = grasp_base_url(relay) else {
-            outcome.servers.push(GraspServerResult::failed(
-                relay.clone(),
-                relay.to_string(),
-                "no domain",
-            ));
+            outcome
+                .servers
+                .push(GraspServerResult::failed(relay.clone(), "no domain"));
             continue;
         };
         let git_url = format!("{base}/{owner}/{repo_id}.git");
@@ -1739,7 +1728,7 @@ async fn push_staged_to_grasps(
         'server: for attempt in 1..=GRASP_PUSH_ATTEMPTS {
             if attempt > 1 {
                 // Give the server's ingest a moment before re-staging.
-                std::thread::sleep(GRASP_RETRY_DELAY);
+                executor.timer(GRASP_RETRY_DELAY).await;
             }
 
             let (event, created_at) =
@@ -1806,11 +1795,9 @@ async fn push_staged_to_grasps(
                 log::warn!("grasp push failed: {relay}: {reason}");
                 outcome
                     .servers
-                    .push(GraspServerResult::failed(relay.clone(), git_url, reason));
+                    .push(GraspServerResult::failed(relay.clone(), reason));
             }
-            None => outcome
-                .servers
-                .push(GraspServerResult::ok(relay.clone(), git_url)),
+            None => outcome.servers.push(GraspServerResult::ok(relay.clone())),
         }
     }
 
@@ -1968,13 +1955,9 @@ mod tests {
     fn push_outcome_reports_partial_failures() {
         let outcome = PushOutcome {
             servers: vec![
-                GraspServerResult::ok(
-                    RelayUrl::parse("wss://gitnostr.com").expect("url"),
-                    "https://gitnostr.com/npub1owner/repo.git".to_owned(),
-                ),
+                GraspServerResult::ok(RelayUrl::parse("wss://gitnostr.com").expect("url")),
                 GraspServerResult::failed(
                     RelayUrl::parse("wss://relay.ngit.dev").expect("url"),
-                    "https://relay.ngit.dev/npub1owner/repo.git".to_owned(),
                     "remote: ERR authorisation failed: No state events in purgatory\nfatal: ...",
                 ),
             ],

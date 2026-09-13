@@ -3,14 +3,13 @@
 pub struct RefreshGate {
     running: bool,
     dirty: bool,
-    debouncing: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshRequest {
-    /// No run or timer covers the request, start the debounce timer.
+    /// No run covers the request, start one now.
     Schedule,
-    /// A run or pending timer already covers the request.
+    /// A run is in flight and covers the request, fold it into a follow-up.
     Fold,
 }
 
@@ -19,28 +18,20 @@ impl RefreshGate {
         self.running
     }
 
-    pub fn debouncing(&self) -> bool {
-        self.debouncing
-    }
-
     /// A new refresh request arrived.
     ///
-    /// Folded into a follow-up run while one is in flight, dropped while the
-    /// debounce timer is pending, otherwise starts the timer.
+    /// Folded into a follow-up run while one is in flight, otherwise the
+    /// caller starts the run itself.
     pub fn request(&mut self) -> RefreshRequest {
         if self.running {
             self.dirty = true;
             RefreshRequest::Fold
-        } else if self.debouncing {
-            RefreshRequest::Fold
         } else {
-            self.debouncing = true;
             RefreshRequest::Schedule
         }
     }
 
     pub fn begin(&mut self) {
-        self.debouncing = false;
         self.running = true;
     }
 
@@ -53,5 +44,50 @@ impl RefreshGate {
     /// The run was abandoned, e.g. on error. Pending follow-up requests survive.
     pub fn abort(&mut self) {
         self.running = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_request_while_running_folds_into_a_follow_up() {
+        let mut gate = RefreshGate::default();
+        gate.begin();
+
+        assert_eq!(gate.request(), RefreshRequest::Fold);
+        assert!(gate.finish());
+    }
+
+    #[test]
+    fn a_request_without_a_run_schedules() {
+        let mut gate = RefreshGate::default();
+
+        assert_eq!(gate.request(), RefreshRequest::Schedule);
+        assert!(!gate.running());
+    }
+
+    #[test]
+    fn a_request_after_a_run_schedules_again() {
+        let mut gate = RefreshGate::default();
+        gate.begin();
+        assert_eq!(gate.request(), RefreshRequest::Fold);
+        assert!(gate.finish());
+
+        assert_eq!(gate.request(), RefreshRequest::Schedule);
+    }
+
+    #[test]
+    fn abort_keeps_the_pending_request() {
+        let mut gate = RefreshGate::default();
+        gate.begin();
+        assert_eq!(gate.request(), RefreshRequest::Fold);
+
+        gate.abort();
+        assert!(!gate.running());
+
+        gate.begin();
+        assert!(gate.finish());
     }
 }

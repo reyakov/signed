@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use crate::history::open_with_cache;
 use crate::worktree::{force_checkout, worktree_dirty};
@@ -171,12 +171,7 @@ pub fn init_repository(path: &Path, name: &str, description: &str) -> Result<Str
     let mut index = repo.index_from_tree(&tree)?;
     index.write(gix::index::write::Options::default())?;
 
-    let commit = commit.to_string();
-    if commit.len() != 40 {
-        bail!("unexpected initial commit id: {commit}");
-    }
-
-    Ok(commit)
+    Ok(commit.to_string())
 }
 
 /// The earliest unique commit of the repository at `repo_path`.
@@ -201,8 +196,7 @@ pub fn root_commit(repo_path: &Path) -> Result<Option<String>> {
     {
         let info = info?;
         if info.parent_ids().next().is_none() {
-            let id = info.id().to_string();
-            return Ok((id.len() == 40).then_some(id));
+            return Ok(Some(info.id().to_string()));
         }
     }
 

@@ -5,31 +5,8 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 use nostr_connect::client::AuthUrlHandler;
+use nostr_sdk::error::Error as SignerError;
 use nostr_sdk::prelude::*;
-
-#[derive(Debug)]
-pub struct UniversalSignerError(Box<dyn Error + Send + Sync + 'static>);
-
-impl fmt::Display for UniversalSignerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl Error for UniversalSignerError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&*self.0)
-    }
-}
-
-impl UniversalSignerError {
-    pub fn new<E>(err: E) -> Self
-    where
-        E: Error + Send + Sync + 'static,
-    {
-        UniversalSignerError(Box::new(err))
-    }
-}
 
 /// A type-erased signer whose inner signer can be swapped in-place.
 #[derive(Clone, Debug)]
@@ -65,21 +42,21 @@ impl UniversalSigner {
 trait InnerSigner: fmt::Debug + Send + Sync + 'static {
     fn get_public_key_async(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<PublicKey, UniversalSignerError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<PublicKey, SignerError>> + Send + '_>>;
     fn sign_event_async(
         &self,
         unsigned: UnsignedEvent,
-    ) -> Pin<Box<dyn Future<Output = Result<Event, UniversalSignerError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Event, SignerError>> + Send + '_>>;
     fn nip44_encrypt_async<'a>(
         &'a self,
         public_key: &'a PublicKey,
         content: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, UniversalSignerError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<String, SignerError>> + Send + 'a>>;
     fn nip44_decrypt_async<'a>(
         &'a self,
         public_key: &'a PublicKey,
         payload: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, UniversalSignerError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<String, SignerError>> + Send + 'a>>;
 }
 
 #[derive(Debug)]
@@ -94,22 +71,22 @@ where
 {
     fn get_public_key_async(
         &self,
-    ) -> Pin<Box<dyn Future<Output = Result<PublicKey, UniversalSignerError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<PublicKey, SignerError>> + Send + '_>> {
         Box::pin(async move {
             AsyncGetPublicKey::get_public_key_async(&self.0)
                 .await
-                .map_err(UniversalSignerError::new)
+                .map_err(SignerError::other)
         })
     }
 
     fn sign_event_async(
         &self,
         unsigned: UnsignedEvent,
-    ) -> Pin<Box<dyn Future<Output = Result<Event, UniversalSignerError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Event, SignerError>> + Send + '_>> {
         Box::pin(async move {
             AsyncSignEvent::sign_event_async(&self.0, unsigned)
                 .await
-                .map_err(UniversalSignerError::new)
+                .map_err(SignerError::other)
         })
     }
 
@@ -117,11 +94,11 @@ where
         &'a self,
         public_key: &'a PublicKey,
         content: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, UniversalSignerError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<String, SignerError>> + Send + 'a>> {
         Box::pin(async move {
             AsyncNip44::nip44_encrypt_async(&self.0, public_key, content)
                 .await
-                .map_err(UniversalSignerError::new)
+                .map_err(SignerError::other)
         })
     }
 
@@ -129,17 +106,17 @@ where
         &'a self,
         public_key: &'a PublicKey,
         payload: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<String, UniversalSignerError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<String, SignerError>> + Send + 'a>> {
         Box::pin(async move {
             AsyncNip44::nip44_decrypt_async(&self.0, public_key, payload)
                 .await
-                .map_err(UniversalSignerError::new)
+                .map_err(SignerError::other)
         })
     }
 }
 
 impl AsyncGetPublicKey for UniversalSigner {
-    type Error = UniversalSignerError;
+    type Error = SignerError;
 
     fn get_public_key_async(
         &self,
@@ -150,7 +127,7 @@ impl AsyncGetPublicKey for UniversalSigner {
 }
 
 impl AsyncSignEvent for UniversalSigner {
-    type Error = UniversalSignerError;
+    type Error = SignerError;
 
     fn sign_event_async(
         &self,
@@ -162,7 +139,7 @@ impl AsyncSignEvent for UniversalSigner {
 }
 
 impl AsyncNip44 for UniversalSigner {
-    type Error = UniversalSignerError;
+    type Error = SignerError;
 
     fn nip44_encrypt_async<'a>(
         &'a self,

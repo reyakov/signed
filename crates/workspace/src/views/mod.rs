@@ -8,6 +8,7 @@ mod repo;
 mod repo_list;
 mod send_patch;
 pub(crate) mod sidebar;
+mod status_list;
 pub(crate) mod tree;
 
 pub use inbox::InboxView;

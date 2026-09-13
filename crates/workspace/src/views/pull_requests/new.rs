@@ -26,7 +26,9 @@ use signed_git::{
     delete_refs_with_prefix, fetch_repo_refs, fork_namespace, merge_base, refs_with_prefix,
     worktree_commit_range_commits, worktree_commit_range_diff,
 };
-use signed_state::{Backend, CheckoutsStore, GitStore, RepoListStore, RepoStore};
+use signed_state::{
+    Backend, CheckoutsStore, RepoListStore, RepoStore, ensure_repo_mirror, repo_mirror_path,
+};
 use signed_ui::{CountBadge, placeholder, ref_selector_trigger};
 
 use crate::views::commit_diff::{COMMIT_ROW_HEIGHT, CommitDiffView, DiffPane, commit_row};
@@ -73,7 +75,7 @@ struct ForkCompare {
     announcement: Announcement,
     /// Import namespace of the form `<owner-hex>/<sanitized-id>`.
     namespace: String,
-    /// Path of the target repository's GitCache mirror.
+    /// Path of the target repository's mirror.
     mirror_path: PathBuf,
 }
 
@@ -533,8 +535,7 @@ impl NewPullRequestView {
         let Some((base, _euc)) = self.base_repo(cx) else {
             return;
         };
-        let cache = GitStore::global(cx).cache().clone();
-        let mirror_path = cache.repo_path(&base);
+        let mirror_path = repo_mirror_path(&base);
         let namespace = fork_namespace(&announcement);
         let clone_urls = announcement.clone.clone();
 
@@ -561,24 +562,20 @@ impl NewPullRequestView {
 
         let task: gpui::Task<Result<(), anyhow::Error>> =
             cx.spawn_in(window, async move |this, cx| {
-                // The fork and base must share history for a merge-base to exist.
-                // The target's mirror is the object store both sides land in.
-                // `ensure_clone` fetches `origin` when the mirror already exists.
                 let result = cx
                     .background_spawn({
-                        let cache = cache.clone();
                         let base = base.clone();
                         let base_clone_urls = base_clone_urls.clone();
                         let namespace = namespace.clone();
                         let clone_urls = clone_urls.clone();
                         let mirror_path = mirror_path.clone();
                         async move {
-                            cache.ensure_clone(&base, &base_clone_urls)?;
+                            ensure_repo_mirror(&base, &base_clone_urls)?;
 
-                            // Prune stale imports of any fork.
-                            // Then import this fork's heads under its namespace.
+                            // Prune stale imports of any fork. Then import this fork's heads under its namespace.
                             delete_refs_with_prefix(&mirror_path, "refs/fork")?;
 
+                            // Fetch the fork's refs and import them under the fork's namespace.
                             fetch_repo_refs(
                                 &mirror_path,
                                 &clone_urls,
@@ -658,8 +655,6 @@ impl NewPullRequestView {
         let (base_branches, compare_branches) = match result {
             Ok(branches) => branches,
             Err(error) => {
-                // Keep the previous source, if any.
-                // The error shows inline next to the compare bar.
                 self.error = Some(format!("Could not compare against the fork: {error}").into());
                 cx.notify();
                 return;
@@ -673,8 +668,7 @@ impl NewPullRequestView {
         }
 
         if base_branches.is_empty() {
-            self.error =
-                Some("Could not list the target repository's branches; try again later".into());
+            self.error = Some("Could not list the target repository's branches.".into());
             cx.notify();
             return;
         }
@@ -687,11 +681,8 @@ impl NewPullRequestView {
             .map(SharedString::from)
             .collect();
 
-        // Base defaults to the announced HEAD branch when the mirror has it.
-        // Otherwise `main`, then the first branch.
-        // The fork's `main` is the compare default, else the first branch.
-        // A refresh keeps the previous selection when the branch still exists.
         let announced = self.store.read(cx).head.clone();
+
         let contains =
             |name: &str, list: &[SharedString]| list.iter().any(|branch| branch.as_ref() == name);
 
@@ -790,16 +781,19 @@ impl NewPullRequestView {
                                         "{base_name} and {compare_name} share no common ancestor"
                                     )
                                 })?;
+
                             let commits = worktree_commit_range_commits(
                                 Path::new(&repo_path),
                                 &merge_base,
                                 &compare,
                             )?;
+
                             let diff = worktree_commit_range_diff(
                                 Path::new(&repo_path),
                                 &merge_base,
                                 &compare,
                             )?;
+
                             Ok::<_, anyhow::Error>((merge_base, commits, diff))
                         }
                     })
@@ -923,6 +917,7 @@ impl NewPullRequestView {
         let Some(repo_path) = self.work_path() else {
             return;
         };
+
         let Some(dock_area) = self.dock_area.upgrade() else {
             return;
         };

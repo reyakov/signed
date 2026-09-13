@@ -15,7 +15,7 @@ use gpui_base::dock::{
 };
 use gpui_base::resize_handle;
 use gpui_component::scroll::ScrollbarMode;
-use gpui_component::{ActiveTheme as _, Side, StyledExt as _};
+use gpui_component::{ActiveTheme as _, Side};
 
 use crate::invalid_panel::InvalidPanel;
 use crate::tab_panel::SignedTabGroupSkin;
@@ -155,27 +155,13 @@ impl DockAreaRenderer for SignedDockSkin {
         cx: &mut App,
     ) -> AnyElement {
         let placement = dock.placement();
-        let open = dock.is_open();
-
-        // A closed left or right dock takes no space.
-        // A closed bottom dock keeps a strip so its tab bar stays clickable.
-        if !open && !placement.is_bottom() {
-            return div().into_any_element();
-        }
 
         div()
             .flex()
-            .flex_none()
+            .size_full()
             .relative()
-            .overflow_hidden()
-            .map(|this| match placement {
-                DockPlacement::Left | DockPlacement::Right => this.h_flex().h_full().w(dock.size()),
-                DockPlacement::Bottom => this.w_full().h(dock.size()),
-                // Base never builds a dock for the centre.
-                DockPlacement::Center => this,
-            })
-            // The closed bottom dock's strip is the tab bar itself, a full tab bar tall.
-            .when(!open && placement.is_bottom(), |this| {
+            // A closed bottom dock keeps a strip, and that strip is the tab bar.
+            .when(!dock.is_open() && placement.is_bottom(), |this| {
                 this.h(TAB_BAR_HEIGHT)
             })
             .child(content)

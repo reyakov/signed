@@ -16,8 +16,8 @@ pub use diff::{
     worktree_commit_range_diff,
 };
 pub use history::{
-    CommitList, FileCommit, MAX_LISTED_COMMITS, all_commits, head_commit, last_commit,
-    worktree_all_commits, worktree_commit, worktree_commit_range_commits, worktree_last_commits,
+    CommitList, FileCommit, MAX_LISTED_COMMITS, all_commits, head_commit, worktree_all_commits,
+    worktree_commit, worktree_commit_range_commits, worktree_last_commits,
 };
 pub use patch::{
     apply_patch, format_patch_between, patch_commits, patch_diffs, split_patch_series,

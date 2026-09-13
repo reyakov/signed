@@ -1,6 +1,5 @@
 pub mod addr;
 pub mod annotations;
-pub mod clone_url;
 pub mod deletions;
 pub mod filters;
 pub mod inbox;
@@ -9,8 +8,7 @@ pub mod state;
 pub mod status;
 
 pub use addr::{RepoAddr, identifier_from_name, repo_addr};
-pub use annotations::{COVER_NOTE_KIND, cover_note, labels_and_subject, subject_override};
-pub use clone_url::{CloneTarget, parse_clone_url};
+pub use annotations::COVER_NOTE_KIND;
 pub use deletions::Deletions;
 pub use filters::{
     NOTIFICATION_KINDS, authored_activity, is_git_activity, notification_comments, notifications,

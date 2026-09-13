@@ -72,17 +72,6 @@ fn file_commit_with_description(
     })
 }
 
-/// Find the most recent commit that changed `rel`, a path relative to the worktree.
-///
-/// `Ok(None)` when no commit touched the file, e.g. an untracked file.
-pub fn last_commit(repo: &gix::Repository, rel: &Path) -> Result<Option<FileCommit>> {
-    let rel = rel.to_path_buf();
-    Ok(last_commits(repo, std::slice::from_ref(&rel))?
-        .into_iter()
-        .next()
-        .map(|(_, commit)| commit))
-}
-
 /// Newest commit touching each of `rels`, like `git log -1 -- <rel>` per path.
 /// `rels` are paths relative to the worktree.
 ///
