@@ -4,7 +4,7 @@
 # This script:
 # 1. Vendors all Rust dependencies (crates.io + git)
 # 2. Generates release info for metainfo.xml
-# 3. Creates the Flathub manifest (su.reya.signed.yml)
+# 3. Creates the Flathub manifest (info.reya.signed.yml)
 #
 # Usage: ./script/prepare-flathub [--release-date YYYY-MM-DD]
 
@@ -12,7 +12,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Configuration
-APP_ID="su.reya.signed"
+APP_ID="info.reya.signed"
 APP_NAME="Signed"
 REPO_URL="https://git.reya.su/reya/signed"
 BRANDING_LIGHT="#C6FF4D"
@@ -106,7 +106,7 @@ COMMIT=$(git rev-parse HEAD)
 
 # Generate the YAML manifest
 cat > flathub/${APP_ID}.yml << 'MANIFEST_EOF'
-id: su.reya.signed
+id: info.reya.signed
 runtime: org.freedesktop.Platform
 runtime-version: "24.08"
 sdk: org.freedesktop.Sdk
@@ -153,22 +153,22 @@ modules:
       - install -Dm755 target/release/signed /app/bin/signed
 
       # Install icons
-      - install -Dm644 desktop/resources/icon.png /app/share/icons/hicolor/512x512/apps/su.reya.signed.png
-      - install -Dm644 desktop/resources/icon@2x.png /app/share/icons/hicolor/1024x1024/apps/su.reya.signed.png
+      - install -Dm644 desktop/resources/icon.png /app/share/icons/hicolor/512x512/apps/info.reya.signed.png
+      - install -Dm644 desktop/resources/icon@2x.png /app/share/icons/hicolor/1024x1024/apps/info.reya.signed.png
 
       # Install desktop file
       - |
-        export APP_ID="su.reya.signed"
-        export APP_ICON="su.reya.signed"
+        export APP_ID="info.reya.signed"
+        export APP_ICON="info.reya.signed"
         export APP_NAME="Signed"
         export APP_CLI="signed"
         export APP_ARGS="%U"
         export DO_STARTUP_NOTIFY="true"
         envsubst < desktop/resources/signed.desktop.in > signed.desktop
-        install -Dm644 signed.desktop /app/share/applications/su.reya.signed.desktop
+        install -Dm644 signed.desktop /app/share/applications/info.reya.signed.desktop
 
       # Install metainfo (use pre-generated one with release info)
-      - install -Dm644 su.reya.signed.metainfo.xml /app/share/metainfo/su.reya.signed.metainfo.xml
+      - install -Dm644 info.reya.signed.metainfo.xml /app/share/metainfo/info.reya.signed.metainfo.xml
 
     sources:
       # Main source code - specific commit
@@ -184,7 +184,7 @@ modules:
 
       # Pre-generated metainfo with release info
       - type: file
-        path: su.reya.signed.metainfo.xml
+        path: info.reya.signed.metainfo.xml
         sha256: "@METAINFO_SHA256@"
 
       # Cargo config for vendoring

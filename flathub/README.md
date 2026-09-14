@@ -19,14 +19,14 @@ Run the preparation script from the repo root:
 This will:
 1. Vendor all Rust dependencies (crates.io + git)
 2. Generate the metainfo.xml with proper release info
-3. Create `su.reya.signed.yml` - the Flatpak manifest for Flathub
+3. Create `info.reya.signed.yml` - the Flatpak manifest for Flathub
 
 ## Files Generated
 
 | File | Purpose |
 |------|---------|
-| `su.reya.signed.yml` | Main Flatpak manifest (submit this to Flathub) |
-| `su.reya.signed.metainfo.xml` | AppStream metadata with release info |
+| `info.reya.signed.yml` | Main Flatpak manifest (submit this to Flathub) |
+| `info.reya.signed.metainfo.xml` | AppStream metadata with release info |
 | `vendor.tar.gz` | Vendored Rust dependencies |
 | `cargo-config.toml` | Cargo configuration for offline builds |
 | `release-info.xml` | Release info snippet for metainfo |
@@ -39,13 +39,13 @@ Before submitting to Flathub, test the build:
 cd flathub
 
 # Build and install locally
-flatpak-builder --user --install --force-clean build su.reya.signed.yml
+flatpak-builder --user --install --force-clean build info.reya.signed.yml
 
 # Test the app
-flatpak run su.reya.signed
+flatpak run info.reya.signed
 
 # Run the Flathub linter (must pass!)
-flatpak run --command=flatpak-builder-lint org.flatpak.Builder manifest su.reya.signed.yml
+flatpak run --command=flatpak-builder-lint org.flatpak.Builder manifest info.reya.signed.yml
 flatpak run --command=flatpak-builder-lint org.flatpak.Builder repo repo
 ```
 
@@ -69,15 +69,15 @@ git clone --branch=new-pr git@github.com:YOUR_USERNAME/flathub.git
 cd flathub
 
 # Create a new branch
-git checkout -b su.reya.signed
+git checkout -b info.reya.signed
 
 # Copy ONLY the manifest file from your project
-cp /path/to/signed/flathub/su.reya.signed.yml .
+cp /path/to/signed/flathub/info.reya.signed.yml .
 
 # Commit and push
-git add su.reya.signed.yml
-git commit -m "Add su.reya.signed"
-git push origin su.reya.signed
+git add info.reya.signed.yml
+git commit -m "Add info.reya.signed"
+git push origin info.reya.signed
 ```
 
 ### 3. Open Pull Request
@@ -92,9 +92,9 @@ git push origin su.reya.signed
 
 1. Flathub's automated CI will build your app
 2. A maintainer will review your submission
-3. Once approved, a new repo `flathub/su.reya.signed` will be created
+3. Once approved, a new repo `flathub/info.reya.signed` will be created
 4. You'll get write access to maintain the app
-5. Future updates: Push new commits to `flathub/su.reya.signed`
+5. Future updates: Push new commits to `flathub/info.reya.signed`
 
 ## Updating the App
 
@@ -104,9 +104,9 @@ To release a new version:
 2. Tag the new release: `git tag -a v0.1.0 -m "Release v0.1.0"`
 3. Push the tag: `git push origin v0.1.0`
 4. Run `./script/prepare-flathub` to regenerate
-5. Clone the flathub repo: `git clone https://github.com/flathub/su.reya.signed.git`
+5. Clone the flathub repo: `git clone https://github.com/flathub/info.reya.signed.git`
 6. Update the manifest with new commit/tag and hashes
-7. Submit PR to `flathub/su.reya.signed`
+7. Submit PR to `flathub/info.reya.signed`
 
 ## Troubleshooting
 
@@ -115,7 +115,7 @@ To release a new version:
 - Ensure `vendor.tar.gz` is properly extracted before building
 
 ### Linter complains about metainfo
-- Ensure `su.reya.signed.metainfo.xml` has at least one `<release>` entry
+- Ensure `info.reya.signed.metainfo.xml` has at least one `<release>` entry
 - Add accessible screenshot URLs if required
 
 ### Missing dependencies

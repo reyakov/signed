@@ -16,7 +16,7 @@ archive_match="signed(-[a-zA-Z0-9]+)?-linux-${ARCH_SUFFIX}\.tar\.gz"
 archive=$(ls "target/release" | grep -E ${archive_match})
 
 export ARCHIVE="$archive"
-export APP_ID="su.reya.signed"
+export APP_ID="info.reya.signed"
 export APP_NAME="Signed"
 export BRANDING_LIGHT="#C6FF4D"
 export BRANDING_DARK="#C6FF4D"

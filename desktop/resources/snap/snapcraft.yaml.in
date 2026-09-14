@@ -54,4 +54,4 @@ parts:
 apps:
   signed:
     command: usr/bin/signed
-    common-id: su.reya.signed
+    common-id: info.reya.signed

@@ -78,7 +78,7 @@ fn main() {
                 cx,
             );
 
-            cx.set_app_identity("su.reya.signed", "Signed");
+            cx.set_app_identity("info.reya.signed", "Signed");
 
             let bounds = Bounds::centered(None, size(px(1120.0), px(750.0)), cx);
             let opts = WindowOptions {
