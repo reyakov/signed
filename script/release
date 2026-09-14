@@ -54,65 +54,77 @@ echo "Updating versions..."
 update_version "$WORKSPACE_CARGO"
 update_version "$CRATE_CARGO"
 
-# Check git status before committing
-echo "Checking git status..."
-if git status --porcelain | grep -q .; then
-    echo "Current uncommitted changes:"
-    git status --short
-
-    # Ask user if they want to commit all changes or just version files
-    echo ""
-    echo "Do you want to:"
-    echo "1) Commit all current changes (including the version updates)"
-    echo "2) Commit only the version file changes"
-    echo "3) Abort the release"
-    read -p "Enter choice (1/2/3): " choice
-
-    case $choice in
-        1)
-            echo "Committing all changes..."
-            git add .
-            ;;
-        2)
-            echo "Committing only version file changes..."
-            git add "$WORKSPACE_CARGO" "$CRATE_CARGO"
-            ;;
-        3)
-            echo "Release aborted by user"
-            exit 0
-            ;;
-        *)
-            echo "Invalid choice. Release aborted."
-            exit 1
-            ;;
-    esac
-else
-    # Only version files were modified, add them specifically
-    echo "Only version files were modified, adding them for commit..."
-    git add "$WORKSPACE_CARGO" "$CRATE_CARGO"
-fi
-
-# Commit the changes
 COMMIT_MSG="chore: release version $NEW_VERSION"
 
-if git commit -m "$COMMIT_MSG"; then
-    echo "✓ Committed version changes"
+# When the requested version is already set there is nothing to bump or commit,
+# so the current commit is tagged as-is.
+if git diff --quiet -- "$WORKSPACE_CARGO" "$CRATE_CARGO"; then
+    echo "Version is already $NEW_VERSION, tagging the current commit"
 else
-    echo "Error: Failed to commit version changes"
-    exit 1
-fi
+    # Check git status before committing
+    echo "Checking git status..."
+    # The version files are always modified at this point, so only ask about other changes.
+    if [ -n "$(git status --porcelain -- . ":(exclude,top)$WORKSPACE_CARGO" ":(exclude,top)$CRATE_CARGO")" ]; then
+        echo "Current uncommitted changes:"
+        git status --short
 
-# Push version changes to origin
-echo "Pushing version changes to origin..."
-if git push origin master; then
-    echo "✓ Successfully pushed version changes to origin"
-else
-    echo "Error: Failed to push version changes to origin"
-    exit 1
+        # Ask user if they want to commit all changes or just version files
+        echo ""
+        echo "Do you want to:"
+        echo "1) Commit all current changes (including the version updates)"
+        echo "2) Commit only the version file changes"
+        echo "3) Abort the release"
+        read -p "Enter choice (1/2/3): " choice
+
+        case $choice in
+            1)
+                echo "Committing all changes..."
+                git add .
+                ;;
+            2)
+                echo "Committing only version file changes..."
+                git add "$WORKSPACE_CARGO" "$CRATE_CARGO"
+                ;;
+            3)
+                echo "Release aborted by user"
+                exit 0
+                ;;
+            *)
+                echo "Invalid choice. Release aborted."
+                exit 1
+                ;;
+        esac
+    else
+        # Only version files were modified, add them specifically
+        echo "Only version files were modified, adding them for commit..."
+        git add "$WORKSPACE_CARGO" "$CRATE_CARGO"
+    fi
+
+    # Commit the changes
+    if git commit -m "$COMMIT_MSG"; then
+        echo "✓ Committed version changes"
+    else
+        echo "Error: Failed to commit version changes"
+        exit 1
+    fi
+
+    # Push version changes to origin
+    echo "Pushing version changes to origin..."
+    if git push origin master; then
+        echo "✓ Successfully pushed version changes to origin"
+    else
+        echo "Error: Failed to push version changes to origin"
+        exit 1
+    fi
 fi
 
 # Create git tag
 TAG_NAME="v$NEW_VERSION"
+
+if git rev-parse -q --verify "refs/tags/$TAG_NAME" >/dev/null; then
+    echo "Error: tag $TAG_NAME already exists"
+    exit 1
+fi
 
 if git tag -a "$TAG_NAME" -m "$COMMIT_MSG"; then
     echo "✓ Created git tag: $TAG_NAME"

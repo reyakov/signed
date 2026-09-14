@@ -159,7 +159,7 @@ jobs:
         id: create_release
         uses: akkuman/gitea-release-action@v1
         with:
-          server_url: "https://git.reya.su/"
+          server_url: "https://git.reya.info/"
           repository: "reya/signed"
           token: ${{ secrets.GITEA_TOKEN }}
           draft: true
