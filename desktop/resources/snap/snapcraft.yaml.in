@@ -17,7 +17,7 @@ contact: https://reya.su
 parts:
   signed:
     plugin: dump
-    source: target/release/signed-linux-$ARCH_SUFFIX.tar.gz
+    source: target/release/signed-linux-$TARBALL_ARCH_SUFFIX.tar.gz
 
     organize:
       # These renames seem to not be necessary, but it's tidier.

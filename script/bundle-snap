@@ -11,9 +11,12 @@ ARCH=$(uname -m)
 # Snap uses its own architecture names, which must match the file name and
 # the architecture asserted inside the .snap. `x86_64`/`aarch64` here would
 # produce a file like signed_1.0.0_x86_64.snap that snapd cannot match.
+#
+# The source tarball is named by `script/bundle-linux` after `uname -m`, so it
+# keeps the x86_64/aarch64 spelling rather than the snap-native one.
 case "$ARCH" in
-  x86_64|amd64) ARCH_SUFFIX="amd64" ;;
-  aarch64|arm64) ARCH_SUFFIX="arm64" ;;
+  x86_64|amd64) ARCH_SUFFIX="amd64"; TARBALL_ARCH_SUFFIX="x86_64" ;;
+  aarch64|arm64) ARCH_SUFFIX="arm64"; TARBALL_ARCH_SUFFIX="aarch64" ;;
   *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
@@ -27,7 +30,7 @@ envsubst < "desktop/resources/signed.desktop.in" > "snap/gui/signed.desktop"
 cp "desktop/resources/icon.png" "snap/gui/signed.png"
 
 # Generate snapcraft.yaml with version and architecture
-RELEASE_VERSION="$1" ARCH_SUFFIX="$ARCH_SUFFIX" envsubst < desktop/resources/snap/snapcraft.yaml.in > snap/snapcraft.yaml
+RELEASE_VERSION="$1" TARBALL_ARCH_SUFFIX="$TARBALL_ARCH_SUFFIX" envsubst < desktop/resources/snap/snapcraft.yaml.in > snap/snapcraft.yaml
 
 # Clean previous builds
 snapcraft clean
