@@ -252,10 +252,7 @@ pub fn set_origin(repo_path: &Path, url: &str) -> Result<()> {
 }
 
 /// Apply `edit` to the repository-local configuration and persist it.
-///
-/// The config file is locked while it is read, edited and written back,
-/// like git would when running `git config` or `git remote`.
-fn edit_local_config(
+pub(crate) fn edit_local_config(
     repo: &gix::Repository,
     edit: impl FnOnce(&mut gix::config::File) -> Result<()>,
 ) -> Result<()> {

@@ -42,7 +42,10 @@ fn find_git_repos_discovers_repositories_recursively() {
     std::fs::create_dir_all(outer.join(".git")).unwrap();
     std::fs::create_dir_all(outer.join("sub/other/.git")).unwrap();
 
-    let mut found = find_git_repos(root);
+    let mut found: Vec<PathBuf> = find_git_repos(root)
+        .into_iter()
+        .map(|repo| repo.path)
+        .collect();
     found.sort();
 
     let mut expected = vec![

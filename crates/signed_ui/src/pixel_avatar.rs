@@ -1,7 +1,7 @@
 use gpui::prelude::*;
 use gpui::{App, Pixels, StyleRefinement, Window, div, px};
 use gpui_base::StyledExt;
-use gpui_component::{ActiveTheme, Colorize};
+use gpui_component::{ActiveTheme, Colorize, Sizable, Size};
 
 /// Number of rows and columns in the pixel grid.
 const GRID_SIZE: usize = 8;
@@ -10,31 +10,33 @@ const FILL_PROBABILITY: f32 = 0.42;
 /// Probability that a filled cell uses the accent shade instead of the main color.
 const ACCENT_PROBABILITY: f32 = 0.25;
 /// Minimum number of filled left-half cells.
-/// A sparse roll still yields a recognizable shape.
-/// Each left-half cell is mirrored to a right-half one.
 const MIN_FILLED: usize = 5;
 
-/// Side length of the avatar in pixels, no setter.
-const AVATAR_SIZE: Pixels = px(16.);
-
 /// A deterministic, offline pixel-art avatar.
-/// An 8×8 grid with horizontal mirror symmetry.
-/// Seeded from a stable string such as the repository id and owner public key.
-/// The same seed always renders the same avatar.
 #[derive(IntoElement)]
 pub struct PixelAvatar {
     seed: u64,
+    size: Size,
     style: StyleRefinement,
 }
 
 impl PixelAvatar {
     /// Create an avatar seeded from `seed`.
+    ///
     /// The seed should be a stable string unique to the entity the avatar represents.
     pub fn new(seed: impl AsRef<str>) -> Self {
         Self {
             seed: fnv1a(seed.as_ref().as_bytes()),
+            size: Size::XSmall,
             style: StyleRefinement::default(),
         }
+    }
+}
+
+impl Sizable for PixelAvatar {
+    fn with_size(mut self, size: impl Into<Size>) -> Self {
+        self.size = size.into();
+        self
     }
 }
 
@@ -48,16 +50,17 @@ impl RenderOnce for PixelAvatar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let pattern = pattern(self.seed);
+        let mut cells = Vec::new();
 
         let hue = self.seed as f32 / u64::MAX as f32;
         let main = theme.blue.hue(hue);
+
         let shade = if theme.is_dark() {
             main.lightness((main.l * 1.6).min(0.95))
         } else {
             main.lightness((main.l * 0.45).max(0.18))
         };
 
-        let mut cells = Vec::new();
         for row in 0..GRID_SIZE {
             for col in 0..GRID_SIZE {
                 let value = pattern[row * GRID_SIZE + col];
@@ -80,7 +83,7 @@ impl RenderOnce for PixelAvatar {
             .grid()
             .grid_cols(GRID_SIZE as u16)
             .grid_rows(GRID_SIZE as u16)
-            .size(AVATAR_SIZE)
+            .size(side_length(self.size))
             .flex_shrink_0()
             .overflow_hidden()
             .bg(main.opacity(0.16))
@@ -88,9 +91,16 @@ impl RenderOnce for PixelAvatar {
     }
 }
 
-/// Generate the 8×8 cell pattern for `seed`.
-/// Cells are `0` for empty, `1` for main color and `2` for accent shade.
-/// The right half mirrors the left half.
+fn side_length(size: Size) -> Pixels {
+    match size {
+        Size::XSmall => px(16.),
+        Size::Small => px(24.),
+        Size::Medium => px(48.),
+        Size::Large => px(80.),
+        Size::Size(size) => size,
+    }
+}
+
 fn pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
     let mut rng = PixelRng::new(seed);
     let mut pattern = [0u8; GRID_SIZE * GRID_SIZE];
@@ -106,18 +116,19 @@ fn pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
         }
     }
 
-    // Sparse rolls can come out nearly empty.
-    // Top the pattern up to the minimum fill, scanning from a seeded starting cell.
     if filled < MIN_FILLED {
         let half = GRID_SIZE * GRID_SIZE / 2;
         let start = (rng.next() % half as u64) as usize;
+
         for offset in 0..half {
             if filled >= MIN_FILLED {
                 break;
             }
+
             let ix = (start + offset) % half;
             let row = ix / (GRID_SIZE / 2);
             let col = ix % (GRID_SIZE / 2);
+
             if pattern[row * GRID_SIZE + col] == 0 {
                 set_cell(&mut pattern, row, col, 1);
                 filled += 1;

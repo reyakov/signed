@@ -1,6 +1,7 @@
 mod cache;
 mod diff;
 mod history;
+mod nip34;
 mod patch;
 mod remote;
 mod repo;
@@ -19,6 +20,9 @@ pub use history::{
     CommitList, FileCommit, MAX_LISTED_COMMITS, all_commits, head_commit, worktree_all_commits,
     worktree_commit, worktree_commit_range_commits, worktree_last_commits,
 };
+pub use nip34::{
+    GraspSignals, Nip34Binding, Nip34Kind, detect_nip34, is_grasp_url, set_nostr_repo,
+};
 pub use patch::{
     apply_patch, format_patch_between, patch_commits, patch_diffs, split_patch_series,
 };
@@ -32,7 +36,7 @@ pub use repo::{
     repo_tags, root_commit, worktree_branches, worktree_current_branch, worktree_ref_exists,
     worktree_ref_state,
 };
-pub use scan::find_git_repos;
+pub use scan::{LocalRepo, find_git_repos};
 pub use worktree::{
     WorktreeSnapshot, find_readme, worktree_checkout_branch, worktree_checkout_tag,
     worktree_commits_ahead, worktree_dirty, worktree_entries, worktree_read, worktree_snapshot,

@@ -11,6 +11,7 @@ use signed_core::{
     Announcement, Deletions, RepoAddr, RepoStatus, filters, parse_state, pull_request_patch,
     pull_request_patches,
 };
+use signed_git::Nip34Binding;
 
 use crate::backend::{
     Backend, BackendEvent, grasp_base_url, grasp06_prs_url, pr_clone_urls, require_relay_accepted,
@@ -39,6 +40,8 @@ pub struct RepoStore {
     /// Local working copy. The scan path for a local repository, kept when it is
     /// later announced so the panel keeps its worktree.
     pub path: Option<PathBuf>,
+    /// NIP-34 state detected on disk for a local repository, if any.
+    pub nip34: Option<Nip34Binding>,
     /// The first local pass has been applied.
     ///
     /// Views distinguish "no data yet" from a genuinely empty repository with it.
@@ -112,6 +115,7 @@ impl RepoStore {
             addr: Some(addr),
             announcement: hint,
             path: None,
+            nip34: None,
             loaded: false,
             head: None,
             issues: Vec::new(),
@@ -134,11 +138,12 @@ impl RepoStore {
     }
 
     /// Local repository discovered by the scan, not announced to NIP-34 yet.
-    pub fn new_local(path: PathBuf) -> Self {
+    pub fn new_local(path: PathBuf, nip34: Option<Nip34Binding>) -> Self {
         Self {
             addr: None,
             announcement: None,
             path: Some(path),
+            nip34,
             loaded: true,
             head: None,
             issues: Vec::new(),
@@ -158,6 +163,18 @@ impl RepoStore {
             refresh: RefreshGate::default(),
             _subscription: None,
         }
+    }
+
+    /// An announced repository whose working copy is already on disk.
+    pub fn from_worktree(
+        addr: RepoAddr,
+        announcement: Announcement,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut store = Self::new(addr, Some(announcement), cx);
+        store.path = Some(path);
+        store
     }
 
     /// Switch a local repository to its NIP-34 mode, keeping its path.

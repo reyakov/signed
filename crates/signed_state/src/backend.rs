@@ -7,10 +7,11 @@ use anyhow::{Error, anyhow, bail};
 use bitcoin_hashes::sha1::Hash as Sha1Hash;
 use gpui::{App, AppContext, BackgroundExecutor, Context, Entity, EventEmitter, Global, Task};
 use nostr::event::IntoEventBuilder;
+use nostr::nips::nip19::Nip19Coordinate;
 use nostr_connect::prelude::*;
 use nostr_sdk::client::SyncSummary;
 use nostr_sdk::prelude::*;
-use signed_core::{Announcement, RepoAddr, build_state, filters, identifier_from_name};
+use signed_core::{Announcement, RepoAddr, build_state, filters, identifier_from_name, repo_addr};
 use signed_nostr::{SignedAuthUrlHandler, UniversalSigner, Update};
 
 use crate::git_store::repo_mirror_path;
@@ -741,6 +742,25 @@ impl Backend {
                     signed_git::ensure_origin(&path, &url).ok();
                 })
                 .await;
+            }
+
+            // Record the ngit-compatible `nostr.repo` marker,
+            // so the next scan detects the repository instead of offering to publish it again.
+            let coordinate = repo_addr(event.pubkey, repo_id.clone());
+            match Nip19Coordinate::new(coordinate, servers.clone()).to_bech32() {
+                Ok(naddr) => {
+                    let path = path.clone();
+                    cx.background_spawn(async move {
+                        if let Err(error) = signed_git::set_nostr_repo(&path, &naddr) {
+                            log::warn!(
+                                "failed to record the NIP-34 marker for {}: {error}",
+                                path.display()
+                            );
+                        }
+                    })
+                    .await;
+                }
+                Err(error) => log::warn!("failed to encode the repository coordinate: {error}"),
             }
 
             Announcement::from_event(&event).ok_or_else(|| anyhow!("failed to parse announcement"))

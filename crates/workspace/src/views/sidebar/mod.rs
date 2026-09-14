@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,7 +10,7 @@ use dock::{
 };
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, ObjectFit, Render,
+    AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, ObjectFit, Render,
     SharedString, Subscription, WeakEntity, Window, div, img, px, relative, uniform_list, white,
 };
 use gpui_base::Button as BaseButton;
@@ -18,9 +18,10 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::InputState;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
 use nostr::prelude::RelayUrl;
-use signed_core::{Announcement, RepoAddr, identifier_from_name};
+use signed_core::{Announcement, RepoAddr};
 use signed_state::{
-    Backend, BackendEvent, CheckoutsStore, LocalReposStore, Profile, ProfileStore, RepoListStore,
+    Backend, BackendEvent, CheckoutsStore, LocalReposStore, Nip34Binding, Nip34Kind, Profile,
+    ProfileStore, RepoListStore, ResolvedLocalRepo, resolve_local_repos,
 };
 use signed_ui::{NavItem, PixelAvatar, UserAvatar, title_bar_drag_handlers};
 
@@ -35,18 +36,31 @@ mod settings_dialog;
 
 use self::onboarding_dialog::OnboardingState;
 
+/// The platform that bound a repository, `"nak"` or `"ngit"`.
+fn local_platform(binding: &Nip34Binding) -> Option<&'static str> {
+    let signals = &binding.signals;
+
+    if signals.nip34_json || signals.nip34_grasp_remote || signals.nip34_state_refs {
+        Some("nak")
+    } else if signals.nostr_repo_config {
+        Some("ngit")
+    } else {
+        None
+    }
+}
+
 pub struct SidebarPanel {
     focus_handle: FocusHandle,
     dock_area: WeakEntity<DockArea>,
     inbox: Option<WeakEntity<InboxView>>,
     explore: Option<WeakEntity<RepoListView>>,
     banner: SharedString,
-    /// The signed-in user's announced repositories, newest first.
+    /// User's announced repositories.
     announcements: Arc<Vec<Announcement>>,
     /// Local repositories found by the scan that are not announced yet.
-    local_repos: Arc<Vec<PathBuf>>,
+    local_repos: Arc<Vec<ResolvedLocalRepo>>,
     scanning: bool,
-    /// Unpushed commit counts per announced repository, shown as row badges.
+    /// Unpushed commit counts per announced repository.
     unpushed: HashMap<RepoAddr, usize>,
     _subscriptions: Vec<Subscription>,
 }
@@ -116,30 +130,21 @@ impl SidebarPanel {
         let backend = Backend::global(cx);
         let user = backend.read(cx).current_user();
 
-        let repo_list = RepoListStore::global(cx);
-        let announcements = user
-            .as_ref()
-            .map(|user| repo_list.read(cx).announcements_of(user))
-            .unwrap_or_default();
+        let (announcements, local_repos, scanning) = {
+            let repo_list = RepoListStore::global(cx);
+            let repo_list = repo_list.read(cx);
 
-        // Drop a scanned repository once the user announces it, so it is not listed twice.
-        let local = LocalReposStore::global(cx);
-        let scanning = local.read(cx).scanning;
+            let announcements = user
+                .as_ref()
+                .map(|user| repo_list.announcements_of(user))
+                .unwrap_or_default();
 
-        let local_repos = {
-            let ids: HashSet<String> = announcements.iter().map(|a| a.id.clone()).collect();
-            local
-                .read(cx)
-                .repos
-                .iter()
-                .filter(|path| {
-                    let Some(name) = path.file_name() else {
-                        return true;
-                    };
-                    !ids.contains(&identifier_from_name(&name.to_string_lossy()))
-                })
-                .cloned()
-                .collect()
+            let local = LocalReposStore::global(cx);
+            let local = local.read(cx);
+            let local_repos =
+                resolve_local_repos(&local.repos, &repo_list.announcements, &announcements);
+
+            (announcements, local_repos, local.scanning)
         };
 
         let announcements_changed = *self.announcements != announcements;
@@ -259,10 +264,66 @@ impl SidebarPanel {
     }
 
     /// The detail view offers to publish it to NIP-34.
-    fn open_local_repo(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_local_repo(
+        &mut self,
+        path: PathBuf,
+        nip34: Option<Nip34Binding>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let detail =
-            cx.new(|cx| RepoDetailView::new_local(self.dock_area.clone(), path, window, cx));
+            cx.new(|cx| RepoDetailView::new_local(self.dock_area.clone(), path, nip34, window, cx));
+        self.add_detail_panel(detail, window, cx);
+    }
 
+    /// A local repository whose binding matches an announcement opens as the announced repository.
+    fn open_local_announced(
+        &mut self,
+        announcement: Announcement,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let detail = cx.new(|cx| {
+            RepoDetailView::new_local_announced(
+                self.dock_area.clone(),
+                announcement,
+                path,
+                window,
+                cx,
+            )
+        });
+        self.add_detail_panel(detail, window, cx);
+    }
+
+    /// A local repository opens as the announced repository
+    /// when its binding matches one, and as a local-only repository otherwise.
+    fn open_local_entry(
+        &mut self,
+        entry: ResolvedLocalRepo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ResolvedLocalRepo {
+            path,
+            nip34,
+            announcement,
+        } = entry;
+
+        if let Some(announcement) = announcement {
+            self.open_local_announced(announcement, path, window, cx);
+            return;
+        }
+
+        self.open_local_repo(path, nip34, window, cx);
+    }
+
+    fn add_detail_panel(
+        &mut self,
+        detail: Entity<RepoDetailView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.dock_area
             .update(cx, |dock_area, cx| {
                 add_center_panel(dock_area, panel_handle(detail), window, cx);
@@ -361,11 +422,10 @@ impl SidebarPanel {
             })
     }
 
-    /// Renders row `ix` of the merged list: an announced repository or a local one.
     fn render_repo_at(
         &self,
         announcements: &[Announcement],
-        local_repos: &[PathBuf],
+        local_repos: &[ResolvedLocalRepo],
         ix: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -376,9 +436,9 @@ impl SidebarPanel {
         }
 
         let local_ix = ix - announcements.len();
-        let path = &local_repos[local_ix];
+        let entry = &local_repos[local_ix];
 
-        self.render_local_row(path, cx).into_any_element()
+        self.render_local_row(entry, cx).into_any_element()
     }
 
     fn render_repo_row(
@@ -419,23 +479,52 @@ impl SidebarPanel {
         )
     }
 
-    /// A local repository that is not yet set up for NIP-34, marked with a warning.
-    fn render_local_row(&self, path: &Path, cx: &mut Context<Self>) -> impl IntoElement {
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or("Untitled".into());
-        let path = path.to_path_buf();
-        let avatar = PixelAvatar::new(path.to_string_lossy());
+    fn render_local_row(
+        &self,
+        entry: &ResolvedLocalRepo,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let name = entry.name();
+        let avatar = local_avatar(entry, cx);
 
-        NavItem::new(format!("local-repo:{}", path.display()), name, avatar)
-            .suffix(
-                Icon::new(IconName::TriangleAlert)
-                    .small()
-                    .text_color(cx.theme().warning),
-            )
+        let id = format!("local-repo:{}", entry.path.display());
+        let entry = entry.clone();
+
+        let suffix: AnyElement = match entry.nip34.as_ref() {
+            Some(binding) => {
+                let (label, tooltip) = match binding.kind {
+                    Nip34Kind::Initialized => {
+                        let platform = local_platform(binding).unwrap_or("Grasp");
+                        let tooltip = match platform {
+                            "nak" => "Initialized with nak",
+                            "ngit" => "Initialized with ngit",
+                            _ => "Initialized for NIP-34",
+                        };
+                        (platform, tooltip)
+                    }
+                    Nip34Kind::Cloned => ("Cloned", "Cloned buts not initialized"),
+                    Nip34Kind::ToolingOnly => ("Tooling", "Grasp tooling only"),
+                };
+
+                Button::new(id.clone())
+                    .xsmall()
+                    .child(div().text_size(px(10.)).child(label))
+                    .tooltip(tooltip)
+                    .secondary()
+                    .into_any_element()
+            }
+            None => Button::new(id.clone())
+                .xsmall()
+                .icon(IconName::TriangleAlert)
+                .tooltip("Not published yet")
+                .ghost()
+                .into_any_element(),
+        };
+
+        NavItem::new(id, name, avatar)
+            .suffix(suffix)
             .on_click(cx.listener(move |this, _ev, window, cx| {
-                this.open_local_repo(path.clone(), window, cx);
+                this.open_local_entry(entry.clone(), window, cx);
             }))
     }
 
@@ -561,6 +650,30 @@ pub(super) fn server_host(relay: &RelayUrl) -> SharedString {
         .domain()
         .map(SharedString::from)
         .unwrap_or_else(|| SharedString::from(relay.to_string()))
+}
+
+/// The repository's pixel avatar, with the bound owner's avatar at its bottom right.
+fn local_avatar(entry: &ResolvedLocalRepo, cx: &App) -> AnyElement {
+    let avatar = PixelAvatar::new(entry.path.to_string_lossy());
+
+    let Some(owner) = entry.nip34.as_ref().and_then(|binding| binding.owner) else {
+        return avatar.into_any_element();
+    };
+
+    let store = ProfileStore::global(cx);
+    let profile = store.read(cx).get(&owner);
+
+    div()
+        .relative()
+        .child(avatar)
+        .child(
+            div().absolute().bottom_neg_0p5().right_neg_0p5().child(
+                UserAvatar::new(profile.name())
+                    .picture(profile.picture())
+                    .size(px(14.)),
+            ),
+        )
+        .into_any_element()
 }
 
 fn pick_banner() -> SharedString {

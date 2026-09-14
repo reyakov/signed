@@ -2,12 +2,21 @@ use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;
 
+use crate::nip34::{Nip34Binding, detect_nip34};
+
 /// Caps nesting so pathological trees can't stall the scan.
 const SCAN_MAX_DEPTH: usize = 12;
 
-/// Walk `root` recursively and collect the paths of git repositories below it.
-/// `.gitignore` and `.ignore` files are honoured.
-pub fn find_git_repos(root: &Path) -> Vec<PathBuf> {
+/// A git repository discovered under a scan root.
+#[derive(Debug, Clone)]
+pub struct LocalRepo {
+    pub path: PathBuf,
+    /// `None` for a plain repository.
+    pub nip34: Option<Nip34Binding>,
+}
+
+/// Walk `root` recursively and collect the git repositories below it.
+pub fn find_git_repos(root: &Path) -> Vec<LocalRepo> {
     if !root.is_dir() {
         return Vec::new();
     }
@@ -38,4 +47,10 @@ pub fn find_git_repos(root: &Path) -> Vec<PathBuf> {
     }
 
     roots
+        .into_iter()
+        .map(|path| {
+            let nip34 = detect_nip34(&path);
+            LocalRepo { path, nip34 }
+        })
+        .collect()
 }

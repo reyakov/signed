@@ -2,6 +2,7 @@ mod backend;
 mod checkouts;
 mod git_store;
 mod inbox;
+mod local_repos;
 mod profile;
 mod refresh;
 mod repo;
@@ -15,11 +16,13 @@ use git_store::set_git_cache;
 pub use git_store::{ensure_repo_mirror, open_repo_mirror, repo_mirror_path};
 use gpui::{App, AppContext};
 pub use inbox::{Inbox, query_inbox};
+pub use local_repos::{LocalReposStore, ResolvedLocalRepo, local_repo_addr, resolve_local_repos};
 pub use nostr_sdk::prelude::Timestamp;
 pub use profile::{Profile, ProfileStore};
 pub use refresh::{RefreshGate, RefreshRequest};
 pub use repo::RepoStore;
-pub use repos::{LocalReposStore, RepoActivityCounts, RepoListStore};
+pub use repos::{RepoActivityCounts, RepoListStore};
+pub use signed_git::{GraspSignals, LocalRepo, Nip34Binding, Nip34Kind};
 use signed_nostr::new_backend;
 
 #[cfg(not(target_arch = "wasm32"))]

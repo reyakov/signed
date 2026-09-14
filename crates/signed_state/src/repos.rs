@@ -1,115 +1,14 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Error;
-use gpui::{App, AppContext, Context, Entity, Global, Subscription, Task};
+use gpui::{App, AppContext, Context, Entity, Global, Subscription};
 use nostr_sdk::prelude::*;
 use signed_core::{Announcement, Deletions, RepoAddr, filters, repo_addr};
-use signed_git::find_git_repos;
 
 use crate::backend::{Backend, BackendEvent};
 use crate::refresh::{RefreshGate, RefreshRequest};
-
-struct GlobalLocalReposStore(Entity<LocalReposStore>);
-
-impl Global for GlobalLocalReposStore {}
-
-/// Store of the git repositories discovered under a set of scan paths.
-pub struct LocalReposStore {
-    pub roots: Arc<Vec<PathBuf>>,
-    /// Git repositories discovered under [`Self::roots`], sorted by path.
-    pub repos: Arc<Vec<PathBuf>>,
-    pub scanning: bool,
-    scan_dirty: bool,
-}
-
-impl LocalReposStore {
-    pub fn global(cx: &App) -> Entity<Self> {
-        cx.global::<GlobalLocalReposStore>().0.clone()
-    }
-
-    pub(crate) fn set_global(entity: Entity<Self>, cx: &mut App) {
-        cx.set_global(GlobalLocalReposStore(entity));
-    }
-
-    pub fn new(roots: Vec<PathBuf>, cx: &mut Context<Self>) -> Self {
-        let weak = cx.entity().downgrade();
-        cx.defer(move |cx| {
-            if let Err(error) = weak.update(cx, |this, cx| this.rescan(cx)) {
-                log::warn!("local repos store dropped before initial scan could run: {error}");
-            }
-        });
-
-        Self {
-            roots: Arc::new(roots),
-            repos: Arc::new(Vec::new()),
-            scanning: false,
-            scan_dirty: false,
-        }
-    }
-
-    /// Forget a repository that has just been published to NIP-34.
-    pub fn remove(&mut self, path: &Path, cx: &mut Context<Self>) {
-        self.repos = Arc::new(
-            self.repos
-                .iter()
-                .filter(|repo| repo.as_path() != path)
-                .cloned()
-                .collect(),
-        );
-        cx.notify();
-    }
-
-    pub fn rescan(&mut self, cx: &mut Context<Self>) {
-        if self.scanning {
-            self.scan_dirty = true;
-            return;
-        }
-
-        if self.roots.is_empty() {
-            return;
-        }
-
-        self.scanning = true;
-        cx.notify();
-
-        let roots = self.roots.clone();
-
-        let work = cx.background_spawn(async move {
-            let mut repos = Vec::new();
-            for root in roots.iter() {
-                repos.extend(find_git_repos(root));
-            }
-            repos.sort();
-            repos.dedup();
-            repos
-        });
-
-        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
-            let repos = work.await;
-            let again = this.update(cx, |this, cx| {
-                this.repos = Arc::new(repos);
-                this.scanning = false;
-                cx.notify();
-
-                let dirty = this.scan_dirty;
-                this.scan_dirty = false;
-                dirty
-            })?;
-
-            // Scans requested while this one ran are coalesced into one follow-up scan.
-            if again {
-                this.update(cx, |this, cx| this.rescan(cx))?;
-            }
-
-            Ok(())
-        });
-
-        task.detach();
-    }
-}
 
 /// How far back activity events count toward a repository's last activity.
 const ACTIVITY_WINDOW: Duration = Duration::from_secs(90 * 86_400);

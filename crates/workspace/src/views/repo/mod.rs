@@ -26,8 +26,9 @@ use nostr::prelude::{RelayUrl, ToBech32, Url};
 use signed_core::{Announcement, RepoAddr, RepoStatus};
 use signed_git::FileCommit;
 use signed_state::{
-    Backend, CheckoutStatus, CheckoutsStore, LocalReposStore, ProfileStore, RepoListStore,
-    RepoStore, ensure_repo_mirror, open_repo_mirror, pr_proposes_checkout,
+    Backend, CheckoutStatus, CheckoutsStore, LocalReposStore, Nip34Binding, Nip34Kind,
+    ProfileStore, RepoListStore, RepoStore, ensure_repo_mirror, open_repo_mirror,
+    pr_proposes_checkout,
 };
 use signed_ui::{
     CountBadge, DropdownButton, PixelAvatar, UserAvatar, copy_row, menu_copy_row, middle_truncate,
@@ -123,10 +124,26 @@ impl RepoDetailView {
     pub fn new_local(
         dock_area: WeakEntity<DockArea>,
         local_path: PathBuf,
+        nip34: Option<Nip34Binding>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let store = cx.new(move |_cx| RepoStore::new_local(local_path));
+        let store = cx.new(move |_cx| RepoStore::new_local(local_path, nip34));
+        Self::new_common(dock_area, store, window, cx)
+    }
+
+    /// A local repository whose detected binding matches an announcement.
+    ///
+    /// Opens as the announced repository with the local worktree attached.
+    pub fn new_local_announced(
+        dock_area: WeakEntity<DockArea>,
+        announcement: Announcement,
+        local_path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let addr = announcement.addr();
+        let store = cx.new(move |cx| RepoStore::from_worktree(addr, announcement, local_path, cx));
         Self::new_common(dock_area, store, window, cx)
     }
 
@@ -294,23 +311,16 @@ impl RepoDetailView {
         self.error = None;
         cx.notify();
 
-        let (addr, announcement, local_path) = {
+        let (announcement, local_path) = {
             let store = self.store.read(cx);
-            (
-                store.addr().cloned(),
-                store.announcement.clone(),
-                store.path.clone(),
-            )
+            (store.announcement.clone(), store.path.clone())
         };
 
-        // Local repositories live on disk at their scan path.
-        // No clone step or network refresh applies here.
-        if addr.is_none() {
+        // A repository with a local worktree shows it directly. An announced one
+        // still loads its announcement and activity from the store, which is
+        // subscribed to the relays independently.
+        if let Some(local_path) = local_path {
             self.repo_started = true;
-
-            let Some(local_path) = local_path else {
-                return;
-            };
 
             let task: gpui::Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
                 let data = cx
@@ -1254,6 +1264,24 @@ impl RepoDetailView {
             .unwrap_or_default();
         let avatar = PixelAvatar::new(path.clone());
 
+        // A repository already bound to a coordinate is not offered for publishing again.
+        let bound = self.store.read(cx).nip34.clone();
+        let action = match bound
+            .as_ref()
+            .filter(|binding| binding.kind == Nip34Kind::Initialized)
+        {
+            Some(binding) => bound_repo_label(binding, cx),
+            None => Button::new("init")
+                .icon(CustomIconName::Init)
+                .label("Initialize on Nostr")
+                .primary()
+                .tooltip("Publish this repository to Nostr")
+                .on_click(cx.listener(|this, _event, window, cx| {
+                    this.open_init_dialog(window, cx);
+                }))
+                .into_any_element(),
+        };
+
         v_flex()
             .px_4()
             .pb_4()
@@ -1291,16 +1319,7 @@ impl RepoDetailView {
                                     .child(path),
                             ),
                     )
-                    .child(
-                        Button::new("init")
-                            .icon(CustomIconName::Init)
-                            .label("Initialize on Nostr")
-                            .primary()
-                            .tooltip("Publish this repository to Nostr")
-                            .on_click(cx.listener(|this, _event, window, cx| {
-                                this.open_init_dialog(window, cx);
-                            })),
-                    ),
+                    .child(action),
             )
             .child(self.render_header_tabs(cx))
             .into_any_element()
@@ -1994,6 +2013,37 @@ pub(super) fn repo_display_name(store: &RepoStore) -> SharedString {
                 .unwrap_or_else(|| SharedString::from(announcement.id.clone()))
         })
         .unwrap_or_default()
+}
+
+/// The owner and identifier a local repository is already bound to.
+fn bound_repo_label(binding: &Nip34Binding, cx: &App) -> AnyElement {
+    let store = ProfileStore::global(cx);
+    let profile = binding.owner.map(|pk| store.read(cx).get(&pk));
+
+    h_flex()
+        .flex_shrink_0()
+        .gap_2()
+        .text_sm()
+        .child("Initialized by")
+        .text_color(cx.theme().muted_foreground)
+        .when_some(profile, |this, profile| {
+            this.child(
+                h_flex()
+                    .gap_1()
+                    .text_color(cx.theme().foreground)
+                    .child(UserAvatar::new(profile.name()).picture(profile.picture()))
+                    .child(profile.name()),
+            )
+        })
+        .when_some(binding.identifier.as_deref(), |this, ident| {
+            this.child(
+                div()
+                    .text_xs()
+                    .font_semibold()
+                    .child(SharedString::from(format!("/{ident}"))),
+            )
+        })
+        .into_any_element()
 }
 
 impl BasePanel for RepoDetailView {

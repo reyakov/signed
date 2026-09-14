@@ -10,8 +10,9 @@ use signed_core::{Announcement, RepoAddr};
 
 use crate::backend::{Backend, BackendEvent};
 use crate::git_store::repo_mirror_root;
+use crate::local_repos::LocalReposStore;
 use crate::refresh::{RefreshGate, RefreshRequest};
-use crate::repos::{LocalReposStore, RepoListStore};
+use crate::repos::RepoListStore;
 
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
 
@@ -349,7 +350,9 @@ impl CheckoutsStore {
             //
             // The facts are the origin URL and the root commit, both CLI reads.
             let mut facts: Vec<(PathBuf, Option<String>, Option<String>)> = Vec::new();
-            for path in scanned.iter() {
+            for scanned in scanned.iter() {
+                let path = &scanned.path;
+
                 // The browser's mirror clones share the announce URLs and EUCs. They are not user checkouts.
                 if cache_root
                     .as_ref()
