@@ -54,6 +54,22 @@ impl Default for ThemeSettings {
     }
 }
 
+/// Tab bar chrome.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TabBarSettings {
+    /// Hide the previous and next tab buttons.
+    pub hide_navigation_buttons: bool,
+}
+
+impl Default for TabBarSettings {
+    fn default() -> Self {
+        Self {
+            hide_navigation_buttons: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GraspServersSettings {
@@ -126,6 +142,7 @@ pub struct CreateRepositorySettings {
 pub struct Settings {
     pub appearance: AppearanceMode,
     pub theme: ThemeSettings,
+    pub tab_bar: TabBarSettings,
     pub grasp_servers: GraspServersSettings,
     pub local_repos: LocalReposSettings,
     pub checkouts: CheckoutsSettings,

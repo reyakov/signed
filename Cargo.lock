@@ -1791,6 +1791,7 @@ dependencies = [
  "gpui-base",
  "gpui-component",
  "gpui-pre",
+ "settings",
  "signed_ui",
 ]
 

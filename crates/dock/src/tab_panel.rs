@@ -19,21 +19,23 @@ use gpui_component::animation::{Lerp as _, ease_out_cubic};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{ClosePanel, PanelControl, PanelHandle, ToggleZoom};
 use gpui_component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
+use settings::{SettingsStore, TabBarSettings};
 use signed_ui::title_bar_drag_handlers;
 
 use crate::dock_area::SkinShared;
 use crate::{TAB_BAR_HEIGHT, t, window_controls};
 
-/// A rough size for the drag preview, reported to base so a drop placeholder
-/// knows where to fly in from.
-///
-/// The preview itself fits its content, so this is an estimate used only to
-/// place the placeholder.
 const DRAG_PREVIEW_SIZE: gpui::Size<gpui::Pixels> = size(px(96.), px(30.));
 const COLLAPSED_TAB_BAR_SELECTOR: &str = "signed-dock-collapsed-tab-bar";
 const ACTIVE_TAB_SELECTOR: &str = "signed-dock-active-tab";
 const ACTIVE_TAB_CLOSE_SELECTOR: &str = "signed-dock-active-tab-close";
 const TAB_HOVER_GROUP: &str = "signed-dock-tab";
+const NAVIGATION_BUTTONS_TAB_THRESHOLD: usize = 10;
+
+/// Whether a group's prev/next buttons should be drawn.
+fn navigation_buttons_visible(hide_navigation_buttons: bool, panels_len: usize) -> bool {
+    !hide_navigation_buttons && panels_len > NAVIGATION_BUTTONS_TAB_THRESHOLD
+}
 
 /// A panel's title, or its registered name when the panel has no handle.
 pub(crate) fn panel_title(
@@ -48,9 +50,6 @@ pub(crate) fn panel_title(
 }
 
 /// The preview that follows the cursor while a panel is dragged.
-///
-/// Base's `DragPanel` is the payload and draws nothing, this is the appearance half.
-/// It fits its content rather than a fixed width, so a long title is never cut off.
 struct DragPanelPreview {
     panel: Arc<dyn BasePanelView>,
 }
@@ -277,15 +276,22 @@ impl SignedTabGroupSkin {
     }
 
     /// The previous and next tab buttons in the tab bar's leading prefix.
-    /// Always rendered, disabled at the strip ends or when collapsed.
-    fn render_prev_next_tab_buttons(
-        &self,
-        group: &TabGroupContext,
-        _cx: &mut App,
-    ) -> impl IntoElement {
+    ///
+    /// Hidden by default, and only offered for crowded strips where the active
+    /// tab may have scrolled out of view. Disabled at the strip ends or collapsed.
+    fn render_prev_next_tab_buttons(&self, group: &TabGroupContext, cx: &mut App) -> AnyElement {
         let collapsed = group.is_collapsed();
         let active_ix = group.active_ix();
         let panels_len = group.panels().len();
+
+        let hidden = SettingsStore::try_global(cx)
+            .map(|store| store.read(cx).settings().tab_bar.hide_navigation_buttons)
+            .unwrap_or_else(|| TabBarSettings::default().hide_navigation_buttons);
+
+        if !navigation_buttons_visible(hidden, panels_len) {
+            return Empty.into_any_element();
+        }
+
         let prev_enabled = !collapsed && active_ix > 0;
         let next_enabled = !collapsed && active_ix + 1 < panels_len;
 
@@ -317,11 +323,10 @@ impl SignedTabGroupSkin {
                         move |_, window, cx| group.select_tab(active_ix + 1, window, cx)
                     }),
             )
+            .into_any_element()
     }
 
     /// One tab of the pill strip.
-    /// While collapsed, tabs lose the active style and all interactions.
-    /// The strip is also how a closed bottom dock is opened again.
     #[allow(clippy::too_many_arguments)]
     fn render_tab(
         &self,
@@ -848,7 +853,7 @@ mod tests {
     };
     use gpui_base::dock::{DockArea, DockLayout, DockPlacement, PanelEvent};
 
-    use super::COLLAPSED_TAB_BAR_SELECTOR;
+    use super::{COLLAPSED_TAB_BAR_SELECTOR, navigation_buttons_visible};
     use crate::{BasePanel, Panel, SignedDockSkin, panel_handle};
 
     struct Probe {
@@ -946,5 +951,16 @@ mod tests {
             bounds.size.height,
             reserved_strip,
         );
+    }
+
+    #[test]
+    fn navigation_buttons_follow_the_setting_and_tab_count() {
+        // Hidden by default, no matter how many tabs there are.
+        assert!(!navigation_buttons_visible(true, 1));
+        assert!(!navigation_buttons_visible(true, 20));
+
+        // When not hidden they still only appear for a crowded strip.
+        assert!(!navigation_buttons_visible(false, 10));
+        assert!(navigation_buttons_visible(false, 11));
     }
 }

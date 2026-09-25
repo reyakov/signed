@@ -24,6 +24,12 @@ impl SettingsStore {
         cx.global::<GlobalSettingsStore>().0.clone()
     }
 
+    /// Retrieve the global settings store if one has been installed.
+    pub fn try_global(cx: &App) -> Option<Entity<Self>> {
+        cx.try_global::<GlobalSettingsStore>()
+            .map(|store| store.0.clone())
+    }
+
     pub fn set_global(entity: Entity<Self>, cx: &mut App) {
         cx.set_global(GlobalSettingsStore(entity));
     }

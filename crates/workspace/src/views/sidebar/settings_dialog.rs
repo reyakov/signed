@@ -290,6 +290,8 @@ fn settings_view(controls: &SettingsControls, cx: &mut App) -> impl IntoElement 
         .child(Separator::horizontal())
         .child(theme_section(&settings, controls, cx))
         .child(Separator::horizontal())
+        .child(tab_bar_section(&settings, cx))
+        .child(Separator::horizontal())
         .child(grasp_servers_section(&settings, controls, cx))
         .child(Separator::horizontal())
         .child(repositories_section(&settings, controls, cx))
@@ -372,6 +374,26 @@ fn theme_section(settings: &Settings, controls: &SettingsControls, cx: &App) -> 
                     apply_theme(cx);
                 }),
         ))
+}
+
+/// Tab bar chrome, such as its next/previous tab buttons.
+fn tab_bar_section(settings: &Settings, cx: &App) -> impl IntoElement {
+    v_flex().w_full().gap_3().child(setting_row(
+        cx,
+        "Hide Tab Navigation Buttons",
+        "Enable to show navigation buttons when more than 10 tabs.",
+        Switch::new("hide-tab-navigation")
+            .checked(settings.tab_bar.hide_navigation_buttons)
+            .on_click(move |checked: &bool, _window, cx| {
+                let store = SettingsStore::global(cx);
+                store.update(cx, |store, cx| {
+                    store.edit(
+                        |settings| settings.tab_bar.hide_navigation_buttons = *checked,
+                        cx,
+                    );
+                });
+            }),
+    ))
 }
 
 /// Default grasp servers, used until the user's kind `10317` grasp list loads.
