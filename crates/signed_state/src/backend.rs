@@ -1229,7 +1229,7 @@ impl Backend {
         self.sync_progress = Some((0, 0));
         cx.notify();
 
-        let progress_task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let mut last_percent: u64 = 0;
 
             while rx.changed().await.is_ok() {
@@ -1254,23 +1254,18 @@ impl Backend {
                 }
             }
 
-            Ok(())
-        });
-        progress_task.detach();
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
 
         let sync = cx.background_spawn(async move {
             let opts = SyncOptions::default().progress(tx);
             sync_bootstrap_only(&client, filter, opts).await
         });
 
-        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             match sync.await {
-                Ok(summary) => {
-                    log::debug!(
-                        "sync done: {} received, {} sent",
-                        summary.received.len(),
-                        summary.sent.len()
-                    );
+                Ok(_) => {
                     this.update(cx, |this, cx| {
                         this.sync_progress = None;
                         cx.emit(BackendEvent::Synced);
@@ -1284,9 +1279,10 @@ impl Backend {
                     })?;
                 }
             }
-            Ok(())
-        });
-        task.detach();
+
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
     }
 
     /// Emit [`BackendEvent::Published`] for cross-store invalidation.

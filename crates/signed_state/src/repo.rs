@@ -205,29 +205,32 @@ impl RepoStore {
                     // Deletions may target any event of this repository.
                     let deletion =
                         update.kind == Kind::EventDeletion || update.kind == Kind::RequestToVanish;
+
                     let coordinate = update.coordinate.as_ref() == Some(addr);
                     let author = update.author == addr.public_key;
-                    let kind = update.kind == Kind::GitRepoAnnouncement;
-                    // NIP-22 comments carry no `a` tag.
-                    // Coordinate matching fails for them.
-                    // Any comment may reference this repository's roots.
+
+                    let authored = (update.kind == Kind::GitRepoAnnouncement
+                        || update.kind == Kind::RepoState)
+                        && author;
+
                     let comment = update.kind == Kind::Comment;
-                    // Status events may omit their `a` tag, NIP-34.
-                    // Any status event may reference a root of this repository.
                     let status = RepoStatus::from_kind(update.kind).is_some();
 
-                    deletion || coordinate || (author && kind) || comment || status
+                    deletion || coordinate || authored || comment || status
                 }),
                 BackendEvent::Published(event) => {
-                    let kind = event.kind == Kind::GitRepoAnnouncement;
+                    let announcement = event.kind == Kind::GitRepoAnnouncement;
                     let author = event.pubkey == addr.public_key;
                     let coordinate = event.tags.coordinates().into_iter().any(|c| c == *addr);
-                    // Locally published deletions may target any event of this repository.
-                    // Refresh so they take effect immediately, like relay deletions.
+
+                    let state = event.kind == Kind::RepoState
+                        && author
+                        && event.tags.identifier().as_deref() == Some(addr.identifier.as_str());
+
                     let deletion =
                         event.kind == Kind::EventDeletion || event.kind == Kind::RequestToVanish;
 
-                    coordinate || (kind && author) || deletion
+                    coordinate || (announcement && author) || state || deletion
                 }
                 _ => false,
             };
@@ -256,8 +259,6 @@ impl RepoStore {
     /// Announcement, state, activity and deletions targeting it.
     fn repo_filters(addr: &RepoAddr) -> Vec<Filter> {
         let mut filters = vec![
-            // Announcement and state share author and identifier.
-            // They combine into one filter, one fewer negentropy reconciliation per relay.
             Filter::new()
                 .kinds([Kind::GitRepoAnnouncement, Kind::RepoState])
                 .author(addr.public_key)
@@ -306,9 +307,6 @@ impl RepoStore {
     }
 
     /// Re-query the local database and update all fields.
-    ///
-    /// Runs immediately. The backend pump already batches the relay events that
-    /// trigger a refresh, so no per-store debounce is needed.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.addr.is_none() {
             return;
@@ -345,11 +343,10 @@ impl RepoStore {
 
             let deletions = Deletions::from_events(deletion_events);
 
-            // Parse and sort off the main thread.
-            // Only plain data crosses back into the entity.
             let all_announcements = announcements
                 .into_iter()
                 .filter(|e| !deletions.is_deleted(e));
+
             let announcement = latest(all_announcements)
                 .as_ref()
                 .and_then(Announcement::from_event);
@@ -374,8 +371,6 @@ impl RepoStore {
                 }
             }
 
-            // NIP-22 comments reference their root via an `E` or `e` tag.
-            // Not the repository's `a` tag, so query them by the root events.
             let mut seen_comments: HashSet<EventId> = comments.iter().map(|e| e.id).collect();
             let db = client.database();
 
@@ -393,8 +388,6 @@ impl RepoStore {
                 }
             }
 
-            // Status events may omit their `a` tag.
-            // Query them by the root events they reference too.
             let mut seen_statuses: HashSet<EventId> = statuses.iter().map(|e| e.id).collect();
             let db = client.database();
 
@@ -417,9 +410,6 @@ impl RepoStore {
             sort_newest_first(&mut pull_requests);
             sort_oldest_first(&mut comments);
 
-            // Resolve every root's status once here.
-            // Render paths do HashMap lookups instead of per-root status scans.
-            // Those scans are quadratic, with an allocation per pair.
             let maintainers = announcement
                 .as_ref()
                 .map(Announcement::effective_maintainers)
@@ -477,25 +467,13 @@ impl RepoStore {
             };
 
             let again = this.update(cx, |this, cx| {
-                // Compare before moving the freshly queried data in, so a pass
-                // that found nothing new does not notify observers. The store
-                // is polled in bursts while a sync is in flight; notifying on
-                // every identical pass would re-render the repository panel
-                // several times for no visible change.
-                //
-                // The first pass is the exception: it must notify even when it
-                // found nothing, so views can leave their loading state and show
-                // the empty result.
-                //
-                // Keep the open-time hint until that first pass has confirmed what
-                // the database holds; afterwards the database is the truth,
-                // including a deletion.
                 let keep_hint = announcement.is_none() && !this.loaded;
-
                 let first_pass = !this.loaded;
+
                 let head_changed = state
                     .as_ref()
                     .is_some_and(|(_, head)| this.head.as_deref() != head.as_deref());
+
                 let changed = first_pass
                     || (!keep_hint && this.announcement != announcement)
                     || head_changed
@@ -516,6 +494,7 @@ impl RepoStore {
                     .as_ref()
                     .map(|a| a.relays.clone())
                     .unwrap_or_default();
+
                 this.connect_announced_relays(&relays, cx);
 
                 if let Some((_, head)) = state {
@@ -531,10 +510,6 @@ impl RepoStore {
                 this.open_pr_count = open_pr_count;
                 this.loaded = true;
 
-                // Comments and statuses without an `a` tag.
-                // None are addressed to the repository.
-                // Fetch them by the root events they reference.
-                // Use the bootstrap relays and the relays this repository announced.
                 let roots = this
                     .issues
                     .iter()
@@ -551,13 +526,13 @@ impl RepoStore {
 
                 if !new_roots.is_empty() {
                     this.root_fetches.extend(new_roots.iter().copied());
-                    // Batch the per-root filters.
-                    // One filter per root costs a negentropy reconciliation per relay.
+
                     let mut root_filters = filters::comments_for(new_roots.clone());
                     root_filters.push(filters::statuses_for(new_roots.iter().copied()));
 
                     let announced: Vec<RelayUrl> = this.repo_relays.iter().cloned().collect();
                     let backend = Backend::global(cx);
+
                     backend.update(cx, |backend, cx| {
                         backend.subscribe_bootstrap(root_filters.clone(), cx);
                         backend.connect_repo_relays(announced, root_filters, cx);
@@ -571,8 +546,6 @@ impl RepoStore {
                 this.refresh.finish()
             })?;
 
-            // Requests that arrived while the refresh was running.
-            // They are coalesced into one follow-up refresh.
             if again {
                 this.update(cx, |this, cx| this.refresh(cx))?;
             }
@@ -588,25 +561,16 @@ impl RepoStore {
     }
 
     /// Number of open issues.
-    ///
-    /// Issues whose resolved status is [`RepoStatus::Open`].
-    /// Issues without status events default to open.
     pub fn issue_count(&self) -> usize {
         self.open_issue_count
     }
 
     /// Number of open pull requests.
-    ///
-    /// Only root PR events count, PR updates do not.
-    /// They must resolve to [`RepoStatus::Open`].
     pub fn pull_request_count(&self) -> usize {
         self.open_pr_count
     }
 
     /// Whether `user` is the author or owner of this repository.
-    ///
-    /// The author is the public key of the repository address.
-    /// Only the author may manage pull requests, close, reopen or merge.
     pub fn is_author(&self, user: &PublicKey) -> bool {
         self.addr
             .as_ref()

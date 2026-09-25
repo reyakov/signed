@@ -7,6 +7,7 @@
 ### Added
 
 - Show an avatar in each panel's tab, using the repository owner's profile picture when set and a pixel avatar otherwise
+- Add a Tab Bar setting to hide the previous/next tab buttons, hidden by default
 
 ### Changed
 
@@ -17,6 +18,7 @@
 ### Fixed
 
 - Render every avatar at one consistent size, where a surrounding border had shrunk pictures by two pixels and the pixel avatar ignored an explicit size
+- Date repositories from their repository state event, so the explore list and open repository views show the latest push instead of the announcement date
 
 ### Removed
 

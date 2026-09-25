@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -47,6 +47,8 @@ pub struct RepoListStore {
     ///
     /// Used for the Popular ranking of the explore list.
     pub counts: Arc<HashMap<RepoAddr, RepoActivityCounts>>,
+    /// Own repositories whose state events were fetched from their announced relays.
+    state_synced_repos: HashSet<RepoAddr>,
     refresh: RefreshGate,
     _subscription: Subscription,
 }
@@ -82,17 +84,16 @@ impl RepoListStore {
                 }),
                 BackendEvent::Published(event) => {
                     let announcement = event.kind == Kind::GitRepoAnnouncement;
-
-                    // Locally published deletions are already in the local database.
-                    // Refresh so they take effect immediately, like relay deletions.
+                    let state = event.kind == Kind::RepoState;
                     let deletion =
                         event.kind == Kind::EventDeletion || event.kind == Kind::RequestToVanish;
 
-                    announcement || deletion
+                    announcement || state || deletion
                 }
-                // Only a completed sync refreshes the list.
-                // Progress ticks would re-scan the whole database several times
-                // per sync to reveal entries incrementally.
+                BackendEvent::SignerChanged => {
+                    this.state_synced_repos.clear();
+                    true
+                }
                 BackendEvent::Synced => true,
                 _ => false,
             };
@@ -114,6 +115,7 @@ impl RepoListStore {
             announcements: Arc::new(Vec::new()),
             last_activity: Arc::new(HashMap::new()),
             counts: Arc::new(HashMap::new()),
+            state_synced_repos: HashSet::new(),
             refresh: RefreshGate::default(),
             _subscription: subscription,
         }
@@ -133,9 +135,34 @@ impl RepoListStore {
 
         backend.update(cx, |backend, cx| {
             backend.sync_bootstrap(filters::all_announcements(), cx);
+            backend.sync_bootstrap(filters::all_states(), cx);
             // Deletion requests, NIP-09/62, must be known before any announcement is shown.
             backend.sync_bootstrap(filters::deletions(), cx);
         });
+    }
+
+    /// Fetch the state events of the user's own repositories.
+    fn sync_own_repo_states(&mut self, cx: &mut Context<Self>) {
+        let backend = Backend::global(cx);
+        let Some(me) = backend.read(cx).current_user() else {
+            return;
+        };
+
+        let pending: Vec<(RepoAddr, Vec<RelayUrl>)> = self
+            .announcements
+            .iter()
+            .filter(|announcement| announcement.owner == me && !announcement.relays.is_empty())
+            .map(|announcement| (announcement.addr(), announcement.relays.clone()))
+            .filter(|(addr, _)| !self.state_synced_repos.contains(addr))
+            .collect();
+
+        for (addr, relays) in pending {
+            self.state_synced_repos.insert(addr.clone());
+
+            backend.update(cx, |backend, cx| {
+                backend.connect_repo_relays(relays, vec![filters::state(&addr)], cx);
+            });
+        }
     }
 
     /// Re-query the local database.
@@ -189,9 +216,6 @@ impl RepoListStore {
             let mut announcements: Vec<Announcement> = by_repo.into_values().collect();
             announcements.sort_by_key(|a| std::cmp::Reverse(a.created_at));
 
-            // Last activity per repository.
-            // State updates count, and all NIP-34 activity events.
-            // The activity events are patches, PRs, issues and statuses.
             let mut last_activity: HashMap<RepoAddr, Timestamp> = announcements
                 .iter()
                 .map(|a| (a.addr(), a.created_at))
@@ -217,6 +241,7 @@ impl RepoListStore {
             let activity_filter = Filter::new()
                 .kinds(filters::ACTIVITY_KINDS)
                 .since(Timestamp::now() - ACTIVITY_WINDOW);
+
             for event in client.database().query(activity_filter).await? {
                 if deletions.is_deleted(&event) {
                     continue;
@@ -225,8 +250,6 @@ impl RepoListStore {
                     if addr.kind != Kind::GitRepoAnnouncement {
                         continue;
                     }
-                    // Skip events for repos we do not list.
-                    // The map cannot grow beyond the number of announcements.
                     let Some(entry) = last_activity.get_mut(&addr) else {
                         continue;
                     };
@@ -239,13 +262,12 @@ impl RepoListStore {
             let mut counts: HashMap<RepoAddr, RepoActivityCounts> = HashMap::new();
             let count_filter =
                 Filter::new().kinds([Kind::GitIssue, Kind::GitPullRequest, Kind::GitPatch]);
+
             for event in client.database().query(count_filter).await? {
                 if deletions.is_deleted(&event) {
                     continue;
                 }
                 for addr in event.tags.coordinates() {
-                    // Skip events for repos we do not list.
-                    // The map cannot grow beyond the number of announcements.
                     if addr.kind != Kind::GitRepoAnnouncement || !last_activity.contains_key(&addr)
                     {
                         continue;
@@ -278,6 +300,7 @@ impl RepoListStore {
                 this.announcements = Arc::new(announcements);
                 this.last_activity = Arc::new(last_activity);
                 this.counts = Arc::new(counts);
+                this.sync_own_repo_states(cx);
                 cx.notify();
 
                 this.refresh.finish()

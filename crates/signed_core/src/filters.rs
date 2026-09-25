@@ -184,6 +184,11 @@ pub fn all_announcements() -> Filter {
     Filter::new().kind(Kind::GitRepoAnnouncement)
 }
 
+/// All repository state events, carrying each repository's refs and last push time.
+pub fn all_states() -> Filter {
+    Filter::new().kind(Kind::RepoState)
+}
+
 /// How far back deletion requests are fetched and stored.
 const DELETIONS_LOOKBACK: Duration = Duration::from_secs(3 * 365 * 86_400);
 
