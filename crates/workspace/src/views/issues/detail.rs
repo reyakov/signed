@@ -10,10 +10,11 @@ use gpui_component::{ActiveTheme, StyledExt, h_flex, v_flex};
 use nostr::prelude::EventId;
 use signed_core::activity_subject;
 use signed_state::{ProfileStore, RepoStore};
-use signed_ui::{UserAvatar, placeholder, status_badge};
+use signed_ui::{Avatar, placeholder, status_badge};
 use utils::relative_time;
 
 use crate::views::discussion::{comment_form, comments_section, issue_roots, sidebar_section};
+use crate::views::{repo_tab_avatar, tab_title};
 
 pub struct IssueDetailView {
     focus_handle: FocusHandle,
@@ -65,7 +66,9 @@ impl Panel for IssueDetailView {
             })
             .unwrap_or_else(|| SharedString::from("Issue"));
 
-        div().text_sm().child(short_id)
+        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+
+        tab_title(avatar, short_id)
     }
 }
 
@@ -150,9 +153,7 @@ impl Render for IssueDetailView {
                                             .child(
                                                 h_flex()
                                                     .gap_1()
-                                                    .child(
-                                                        UserAvatar::new(&author).picture(picture),
-                                                    )
+                                                    .child(Avatar::new(&author).picture(picture))
                                                     .child(author),
                                             )
                                             .child(

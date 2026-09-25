@@ -16,10 +16,10 @@ use gpui_component::{
 };
 use signed_core::Announcement;
 use signed_state::{ProfileStore, RepoListStore, Timestamp};
-use signed_ui::{SegmentButton, UserAvatar};
+use signed_ui::{Avatar, SegmentButton};
 use utils::relative_time;
 
-use super::open_repo_panel;
+use super::{open_repo_panel, panel_avatar, tab_title};
 
 const COLUMNS: usize = 2;
 const CARD_HEIGHT: f32 = 40. + 64. + 48. + 2. + 6.;
@@ -289,7 +289,7 @@ impl RepoListView {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(UserAvatar::new(owner.name()).picture(owner.picture()))
+                            .child(Avatar::new(owner.name()).picture(owner.picture()))
                             .child(
                                 div()
                                     .text_xs()
@@ -389,7 +389,7 @@ impl BasePanel for RepoListView {
 
 impl Panel for RepoListView {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().child(SharedString::from("Explore"))
+        tab_title(panel_avatar("explore"), SharedString::from("Explore"))
     }
 }
 

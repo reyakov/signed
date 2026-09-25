@@ -32,6 +32,7 @@ use signed_state::{
 use signed_ui::{CountBadge, placeholder, ref_selector_trigger};
 
 use crate::views::commit_diff::{COMMIT_ROW_HEIGHT, CommitDiffView, DiffPane, commit_row};
+use crate::views::{repo_tab_avatar, tab_title};
 
 pub struct NewPullRequestView {
     focus_handle: FocusHandle,
@@ -924,6 +925,7 @@ impl NewPullRequestView {
 
         let panel = cx.new(|cx| {
             CommitDiffView::new(
+                self.store.clone(),
                 repo_path,
                 self.repo_name.clone(),
                 commit_id.into(),
@@ -1323,11 +1325,11 @@ impl BasePanel for NewPullRequestView {
 }
 
 impl Panel for NewPullRequestView {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().child(SharedString::from(format!(
-            "{}/new-pull-request",
-            self.repo_name
-        )))
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let label = SharedString::from(format!("{}/new-pull-request", self.repo_name));
+
+        tab_title(avatar, label)
     }
 }
 

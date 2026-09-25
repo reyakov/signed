@@ -106,8 +106,10 @@ impl RepoHistoryView {
         // Same display name as the repo detail panel's title.
         let repo_name = repo_display_name(self.store.read(cx));
 
-        let panel =
-            cx.new(|cx| CommitDiffView::new(worktree, repo_name, commit_id.into(), window, cx));
+        let store = self.store.clone();
+        let panel = cx.new(|cx| {
+            CommitDiffView::new(store, worktree, repo_name, commit_id.into(), window, cx)
+        });
 
         dock_area.update(cx, |dock_area, cx| {
             add_center_panel(dock_area, panel_handle(panel), window, cx);

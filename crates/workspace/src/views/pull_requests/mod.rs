@@ -16,7 +16,7 @@ use gpui_component::{
 use nostr::prelude::{EventId, Kind};
 use signed_core::{RepoStatus, activity_subject};
 use signed_state::{ProfileStore, RepoStore};
-use signed_ui::{DropdownButton, SegmentButton, UserAvatar, placeholder, status_badge};
+use signed_ui::{Avatar, DropdownButton, SegmentButton, placeholder, status_badge};
 use utils::relative_time;
 
 pub(super) mod detail;
@@ -27,6 +27,7 @@ use self::new::open_new_pull_panel;
 use super::send_patch::open_send_patch_panel;
 use super::status_list::{StatusCounts, filter_by_status};
 use crate::views::repo::RepoAction;
+use crate::views::{repo_tab_avatar, tab_title};
 
 const ROW_HEIGHT: f32 = 73.;
 
@@ -202,7 +203,7 @@ impl PullRequestsView {
                             .child(
                                 h_flex()
                                     .gap_1()
-                                    .child(UserAvatar::new(author.clone()).picture(picture))
+                                    .child(Avatar::new(author.clone()).picture(picture))
                                     .child(div().child(author)),
                             )
                             .child(SharedString::from("opened"))
@@ -333,11 +334,11 @@ impl BasePanel for PullRequestsView {
 }
 
 impl Panel for PullRequestsView {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().child(SharedString::from(format!(
-            "{}/pull-requests",
-            self.repo_name
-        )))
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let label = SharedString::from(format!("{}/pulls", self.repo_name));
+
+        tab_title(avatar, label)
     }
 }
 

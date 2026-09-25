@@ -18,10 +18,12 @@ use gpui_component::{
     ActiveTheme, Sizable, StyledExt, VirtualListScrollHandle, h_flex, v_flex, v_virtual_list,
 };
 use signed_git::{CommitDiff, DiffHunk, DiffLine, DiffLineKind, DiffStatus, FileCommit, FileDiff};
+use signed_state::RepoStore;
 use signed_ui::{placeholder, tree_row};
 use utils::relative_time_secs;
 
 use crate::views::tree::{build_tree_items, tree_items};
+use crate::views::{repo_tab_avatar, tab_title};
 
 const TREE_WIDTH: f32 = 260.;
 
@@ -293,6 +295,7 @@ impl Render for DiffPane {
 
 pub struct CommitDiffView {
     focus_handle: FocusHandle,
+    store: Entity<RepoStore>,
     worktree: PathBuf,
     repo_name: SharedString,
     commit: FileCommit,
@@ -304,6 +307,7 @@ pub struct CommitDiffView {
 
 impl CommitDiffView {
     pub fn new(
+        store: Entity<RepoStore>,
         worktree: PathBuf,
         repo_name: SharedString,
         commit_id: String,
@@ -319,6 +323,7 @@ impl CommitDiffView {
 
         Self {
             focus_handle: cx.focus_handle(),
+            store,
             worktree,
             repo_name,
             commit: FileCommit {
@@ -465,11 +470,11 @@ impl BasePanel for CommitDiffView {
 }
 
 impl Panel for CommitDiffView {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().child(SharedString::from(format!(
-            "{}/{}",
-            self.repo_name, self.commit.id
-        )))
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let label = SharedString::from(format!("{}/{}", self.repo_name, self.commit.id));
+
+        tab_title(avatar, label)
     }
 }
 

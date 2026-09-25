@@ -27,11 +27,12 @@ use signed_core::{
 };
 use signed_git::{FileCommit, patch_commits, patch_diffs};
 use signed_state::{Backend, ProfileStore, RepoStore, ensure_repo_mirror};
-use signed_ui::{CountBadge, UserAvatar, placeholder, status_badge};
+use signed_ui::{Avatar, CountBadge, placeholder, status_badge};
 use utils::{relative_time, relative_time_secs};
 
 use crate::views::commit_diff::{CommitDiffView, DiffPane};
 use crate::views::discussion::{comment_form, comments_section, pr_roots, sidebar_section};
+use crate::views::{repo_tab_avatar, tab_title};
 
 const ROW_HEIGHT: f32 = 37.;
 
@@ -343,6 +344,7 @@ impl PullRequestDetailView {
 
         let panel = cx.new(|cx| {
             CommitDiffView::new(
+                self.store.clone(),
                 worktree,
                 self.repo_name.clone(),
                 commit_id.into(),
@@ -451,7 +453,7 @@ impl PullRequestDetailView {
                                                 h_flex()
                                                     .gap_1()
                                                     .child(
-                                                        UserAvatar::new(author.clone())
+                                                        Avatar::new(author.clone())
                                                             .picture(picture),
                                                     )
                                                     .child(author),
@@ -788,15 +790,17 @@ impl BasePanel for PullRequestDetailView {
 }
 
 impl Panel for PullRequestDetailView {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let avatar = repo_tab_avatar(self.store.read(cx), cx);
         let hex = self.pr_id.to_hex();
         let id = SharedString::from(&hex[..8]);
-        let title = if self.repo_name.is_empty() {
+        let label = if self.repo_name.is_empty() {
             id
         } else {
             SharedString::from(format!("{}/{}", self.repo_name, id))
         };
-        div().text_sm().child(title)
+
+        tab_title(avatar, label)
     }
 }
 

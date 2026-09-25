@@ -5,7 +5,10 @@ use gpui_component::{ActiveTheme, Colorize, Sizable, Size};
 
 /// Number of rows and columns in the pixel grid.
 const GRID_SIZE: usize = 8;
-/// Probability that a cell in the left half is filled.
+/// Empty cells kept between the pattern and the avatar edge, so the art
+/// gathers in the center instead of filling the whole avatar.
+const MARGIN: usize = 1;
+/// Probability that a cell in the left half of the pattern area is filled.
 const FILL_PROBABILITY: f32 = 0.42;
 /// Probability that a filled cell uses the accent shade instead of the main color.
 const ACCENT_PROBABILITY: f32 = 0.25;
@@ -22,12 +25,10 @@ pub struct PixelAvatar {
 
 impl PixelAvatar {
     /// Create an avatar seeded from `seed`.
-    ///
-    /// The seed should be a stable string unique to the entity the avatar represents.
     pub fn new(seed: impl AsRef<str>) -> Self {
         Self {
             seed: fnv1a(seed.as_ref().as_bytes()),
-            size: Size::XSmall,
+            size: Size::Small,
             style: StyleRefinement::default(),
         }
     }
@@ -79,19 +80,21 @@ impl RenderOnce for PixelAvatar {
         }
 
         div()
-            .refine_style(&self.style)
             .grid()
             .grid_cols(GRID_SIZE as u16)
             .grid_rows(GRID_SIZE as u16)
             .size(side_length(self.size))
             .flex_shrink_0()
+            .rounded(theme.radius)
             .overflow_hidden()
             .bg(main.opacity(0.16))
             .children(cells)
+            .refine_style(&self.style)
     }
 }
 
-fn side_length(size: Size) -> Pixels {
+/// The rendered side length of an avatar at `size`, shared with [`Avatar`].
+pub(crate) fn side_length(size: Size) -> Pixels {
     match size {
         Size::XSmall => px(16.),
         Size::Small => px(24.),
@@ -106,8 +109,13 @@ fn pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
     let mut pattern = [0u8; GRID_SIZE * GRID_SIZE];
     let mut filled = 0usize;
 
-    for row in 0..GRID_SIZE {
-        for col in 0..GRID_SIZE / 2 {
+    // Only the inner rows and the inner left half are candidates; mirroring
+    // then keeps the art within the same inset, leaving the outer ring empty.
+    let art_rows = GRID_SIZE - 2 * MARGIN;
+    let art_columns = GRID_SIZE / 2 - MARGIN;
+
+    for row in MARGIN..GRID_SIZE - MARGIN {
+        for col in MARGIN..GRID_SIZE / 2 {
             if rng.chance(FILL_PROBABILITY) {
                 let accent = rng.chance(ACCENT_PROBABILITY);
                 set_cell(&mut pattern, row, col, if accent { 2 } else { 1 });
@@ -117,17 +125,17 @@ fn pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
     }
 
     if filled < MIN_FILLED {
-        let half = GRID_SIZE * GRID_SIZE / 2;
-        let start = (rng.next() % half as u64) as usize;
+        let total = art_rows * art_columns;
+        let start = (rng.next() % total as u64) as usize;
 
-        for offset in 0..half {
+        for offset in 0..total {
             if filled >= MIN_FILLED {
                 break;
             }
 
-            let ix = (start + offset) % half;
-            let row = ix / (GRID_SIZE / 2);
-            let col = ix % (GRID_SIZE / 2);
+            let ix = (start + offset) % total;
+            let row = MARGIN + ix / art_columns;
+            let col = MARGIN + ix % art_columns;
 
             if pattern[row * GRID_SIZE + col] == 0 {
                 set_cell(&mut pattern, row, col, 1);

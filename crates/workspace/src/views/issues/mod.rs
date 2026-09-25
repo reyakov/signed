@@ -18,13 +18,14 @@ use gpui_component::{
 use nostr::prelude::EventId;
 use signed_core::{RepoStatus, activity_subject};
 use signed_state::{ProfileStore, RepoStore};
-use signed_ui::{SegmentButton, UserAvatar, placeholder, status_badge};
+use signed_ui::{Avatar, SegmentButton, placeholder, status_badge};
 use utils::relative_time;
 
 pub(super) mod detail;
 
 use self::detail::IssueDetailView;
 use super::status_list::{StatusCounts, filter_by_status};
+use crate::views::{repo_tab_avatar, tab_title};
 
 const ISSUE_ROW_HEIGHT: f32 = 73.;
 
@@ -188,7 +189,7 @@ impl IssuesView {
                             .child(
                                 h_flex()
                                     .gap_1()
-                                    .child(UserAvatar::new(author.clone()).picture(picture))
+                                    .child(Avatar::new(author.clone()).picture(picture))
                                     .child(div().child(author)),
                             )
                             .child(SharedString::from("opened"))
@@ -333,8 +334,11 @@ impl BasePanel for IssuesView {
 }
 
 impl Panel for IssuesView {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().child(SharedString::from(format!("{}/issues", self.repo_name)))
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let label = SharedString::from(format!("{}/issues", self.repo_name));
+
+        tab_title(avatar, label)
     }
 }
 

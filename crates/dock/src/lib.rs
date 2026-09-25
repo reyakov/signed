@@ -6,7 +6,6 @@ use gpui_base::dock::PanelView;
 mod dock_area;
 mod invalid_panel;
 mod tab_panel;
-mod tiles;
 mod window_controls;
 
 pub use dock_area::SignedDockSkin;

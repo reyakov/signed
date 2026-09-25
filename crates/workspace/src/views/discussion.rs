@@ -7,7 +7,7 @@ use gpui_component::tag::Tag;
 use gpui_component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, v_flex};
 use nostr::prelude::{Event, EventId, PublicKey};
 use signed_state::{ProfileStore, RepoStore};
-use signed_ui::UserAvatar;
+use signed_ui::Avatar;
 use utils::relative_time;
 
 pub(crate) fn issue_roots(store: &RepoStore) -> &[Event] {
@@ -71,7 +71,7 @@ pub(crate) fn sidebar_section(
                     h_flex()
                         .gap_1()
                         .items_center()
-                        .child(UserAvatar::new(name.clone()).picture(picture))
+                        .child(Avatar::new(name.clone()).picture(picture))
                         .child(div().text_sm().truncate().text_ellipsis().child(name))
                         .into_any_element()
                 })),
@@ -137,7 +137,7 @@ pub(crate) fn comments_section(store: &Entity<RepoStore>, root: EventId, cx: &Ap
                         .child(
                             h_flex()
                                 .gap_1()
-                                .child(UserAvatar::new(author.clone()).picture(picture))
+                                .child(Avatar::new(author.clone()).picture(picture))
                                 .child(author),
                         )
                         .child(

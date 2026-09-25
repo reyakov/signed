@@ -31,7 +31,7 @@ use signed_state::{
     pr_proposes_checkout,
 };
 use signed_ui::{
-    CountBadge, DropdownButton, PixelAvatar, UserAvatar, copy_row, menu_copy_row, middle_truncate,
+    Avatar, CountBadge, DropdownButton, PixelAvatar, copy_row, menu_copy_row, middle_truncate,
     ref_selector_trigger,
 };
 
@@ -55,6 +55,7 @@ use crate::views::pull_requests::new::open_new_pull_panel;
 use crate::views::repo::about::open_about_dialog;
 use crate::views::send_patch::open_send_patch_panel;
 use crate::views::tree::{TreeItemSeed, build_tree_items, sorted_worktree_paths};
+use crate::views::{repo_tab_avatar, tab_title};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RefKind {
@@ -1490,7 +1491,7 @@ impl RepoDetailView {
                         .child(
                             h_flex()
                                 .gap_1()
-                                .child(UserAvatar::new(owner_name.clone()).picture(owner_picture))
+                                .child(Avatar::new(owner_name.clone()).picture(owner_picture))
                                 .child(div().text_xs().whitespace_nowrap().child(owner_name)),
                         )
                         .when(!rest.is_empty(), |this| {
@@ -2031,7 +2032,7 @@ fn bound_repo_label(binding: &Nip34Binding, cx: &App) -> AnyElement {
                 h_flex()
                     .gap_1()
                     .text_color(cx.theme().foreground)
-                    .child(UserAvatar::new(profile.name()).picture(profile.picture()))
+                    .child(Avatar::new(profile.name()).picture(profile.picture()))
                     .child(profile.name()),
             )
         })
@@ -2054,7 +2055,11 @@ impl BasePanel for RepoDetailView {
 
 impl Panel for RepoDetailView {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        repo_display_name(self.store.read(cx))
+        let store = self.store.read(cx);
+        let name = repo_display_name(store);
+        let avatar = repo_tab_avatar(store, cx);
+
+        tab_title(avatar, name)
     }
 }
 

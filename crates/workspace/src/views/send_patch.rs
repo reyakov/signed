@@ -11,6 +11,8 @@ use gpui_component::spinner::Spinner;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
 use signed_state::RepoStore;
 
+use crate::views::{repo_tab_avatar, tab_title};
+
 pub struct SendPatchView {
     focus_handle: FocusHandle,
     dock_area: WeakEntity<DockArea>,
@@ -205,8 +207,11 @@ impl BasePanel for SendPatchView {
 }
 
 impl Panel for SendPatchView {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().child(SharedString::from(format!("{}/send-patch", self.repo_name)))
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let label = SharedString::from(format!("{}/send-patch", self.repo_name));
+
+        tab_title(avatar, label)
     }
 }
 

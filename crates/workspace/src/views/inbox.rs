@@ -15,10 +15,10 @@ use signed_core::{COVER_NOTE_KIND, InboxItem, InboxReadState, RepoAddr, filters}
 use signed_state::{
     Backend, BackendEvent, ProfileStore, RefreshGate, RefreshRequest, RepoListStore, query_inbox,
 };
-use signed_ui::{CountBadge, UserAvatar};
+use signed_ui::{Avatar, CountBadge};
 use utils::relative_time;
 
-use super::{RepoItem, open_repo_item};
+use super::{RepoItem, open_repo_item, panel_avatar, tab_title};
 
 const LIST_OVERDRAW: Pixels = px(400.);
 const MAX_SUB_ACTIVITIES: usize = 5;
@@ -553,7 +553,7 @@ fn sub_activity(event: &Event, me: Option<PublicKey>, cx: &App) -> AnyElement {
                 .items_center()
                 .text_xs()
                 .child(
-                    UserAvatar::new(name.clone())
+                    Avatar::new(name.clone())
                         .picture(profile.picture())
                         .xsmall(),
                 )
@@ -619,7 +619,7 @@ impl BasePanel for InboxView {
 
 impl Panel for InboxView {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().text_sm().child(SharedString::from("Inbox"))
+        tab_title(panel_avatar("inbox"), SharedString::from("Inbox"))
     }
 }
 

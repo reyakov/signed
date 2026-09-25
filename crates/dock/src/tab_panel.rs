@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Anchor, Animation, AnimationExt as _, AnyElement, AnyView, App, AppContext as _, Bounds,
-    Context, Div, Empty, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point,
-    Render, ScrollHandle, SharedString, Stateful, StatefulInteractiveElement as _, StyleRefinement,
+    Animation, AnimationExt as _, AnyElement, AnyView, App, AppContext as _, Bounds, Context, Div,
+    Empty, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Point, Render,
+    ScrollHandle, SharedString, Stateful, StatefulInteractiveElement as _, StyleRefinement,
     Styled as _, Window, div, px, size,
 };
 use gpui_base::dock::{
@@ -18,17 +18,22 @@ use gpui_base::{ElementExt, InteractiveElementExt, Tab, Tabs};
 use gpui_component::animation::{Lerp as _, ease_out_cubic};
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{ClosePanel, PanelControl, PanelHandle, ToggleZoom};
-use gpui_component::menu::DropdownMenu as _;
-use gpui_component::{
-    ActiveTheme as _, Disableable as _, IconName, Selectable as _, Sizable as _, h_flex, v_flex,
-};
+use gpui_component::{ActiveTheme as _, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
 use signed_ui::title_bar_drag_handlers;
 
 use crate::dock_area::SkinShared;
 use crate::{TAB_BAR_HEIGHT, t, window_controls};
 
-/// The drag preview's size, reported to base for the drop placeholder.
+/// A rough size for the drag preview, reported to base so a drop placeholder
+/// knows where to fly in from.
+///
+/// The preview itself fits its content, so this is an estimate used only to
+/// place the placeholder.
 const DRAG_PREVIEW_SIZE: gpui::Size<gpui::Pixels> = size(px(96.), px(30.));
+const COLLAPSED_TAB_BAR_SELECTOR: &str = "signed-dock-collapsed-tab-bar";
+const ACTIVE_TAB_SELECTOR: &str = "signed-dock-active-tab";
+const ACTIVE_TAB_CLOSE_SELECTOR: &str = "signed-dock-active-tab-close";
+const TAB_HOVER_GROUP: &str = "signed-dock-tab";
 
 /// A panel's title, or its registered name when the panel has no handle.
 pub(crate) fn panel_title(
@@ -43,24 +48,23 @@ pub(crate) fn panel_title(
 }
 
 /// The preview that follows the cursor while a panel is dragged.
+///
 /// Base's `DragPanel` is the payload and draws nothing, this is the appearance half.
+/// It fits its content rather than a fixed width, so a long title is never cut off.
 struct DragPanelPreview {
     panel: Arc<dyn BasePanelView>,
 }
 
 impl Render for DragPanelPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        h_flex()
             .id("drag-panel")
             .cursor_grab()
-            .py_1()
-            .px_3()
-            .w_24()
-            .overflow_hidden()
+            .p_1()
             .whitespace_nowrap()
             .border_1()
             .border_color(cx.theme().border)
-            .rounded(cx.theme().radius)
+            .rounded(cx.theme().radius_lg)
             .text_color(cx.theme().tab_foreground)
             .bg(cx.theme().tokens.tab_active)
             .opacity(0.75)
@@ -69,9 +73,14 @@ impl Render for DragPanelPreview {
 }
 
 /// The zoom affordance for the group's displayed panel, if it offers one.
-/// The panel must offer a control and be zoomable, base refuses a zoom otherwise.
 fn zoom_control(group: &TabGroupContext, cx: &App) -> Option<PanelControl> {
-    let panel = group.active_panel()?;
+    panel_zoom_control(group.active_panel()?, cx)
+}
+
+/// The zoom affordance `panel` offers, if any.
+///
+/// The panel must offer a control and be zoomable, base refuses a zoom otherwise.
+fn panel_zoom_control(panel: &Arc<dyn BasePanelView>, cx: &App) -> Option<PanelControl> {
     panel
         .zoomable(cx)
         .then(|| PanelHandle::of(panel).and_then(|handle| handle.zoom_control(cx)))
@@ -79,16 +88,17 @@ fn zoom_control(group: &TabGroupContext, cx: &App) -> Option<PanelControl> {
 }
 
 /// The left-most, top-most tab group in a container.
+///
 /// A left dock's collapse button lives in this group.
 fn left_top_group(node: &PaneNode) -> Option<NodeId> {
     match node.kind() {
         PaneRef::Tabs { .. } => Some(node.id()),
         PaneRef::Split { children, .. } => children.first().and_then(left_top_group),
-        PaneRef::Tiles { .. } => None,
     }
 }
 
 /// The right-most, top-most tab group.
+///
 /// A vertical split picks its first child, a horizontal split picks its last.
 fn right_top_group(node: &PaneNode) -> Option<NodeId> {
     match node.kind() {
@@ -98,7 +108,53 @@ fn right_top_group(node: &PaneNode) -> Option<NodeId> {
             gpui::Axis::Horizontal => children.last(),
         }
         .and_then(right_top_group),
-        PaneRef::Tiles { .. } => None,
+    }
+}
+
+/// The bottom or right dock whose root tab group is this one, if any.
+///
+/// Base keeps a dock's last group, so the skin removes these docks as a whole.
+fn dock_root_group(
+    shared: &SkinShared,
+    group: &TabGroupContext,
+    cx: &App,
+) -> Option<DockPlacement> {
+    let area = shared.area().upgrade()?;
+    let area = area.read(cx);
+
+    [DockPlacement::Bottom, DockPlacement::Right]
+        .into_iter()
+        .find(|placement| {
+            area.layout(*placement)
+                .is_some_and(|tree| tree.root().id() == group.node())
+        })
+}
+
+/// Close `panel`, removing its dock instead when base would refuse an empty one.
+///
+/// A bottom or right dock's only panel is that case, so the whole dock goes.
+fn close_panel(
+    shared: &SkinShared,
+    group: &TabGroupContext,
+    panel: &Arc<dyn BasePanelView>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if !panel.closable(cx) {
+        return;
+    }
+
+    let dock = (group.panels().len() <= 1)
+        .then(|| dock_root_group(shared, group, cx))
+        .flatten();
+
+    match dock {
+        Some(placement) => {
+            _ = shared.area().update(cx, |area, cx| {
+                area.remove_dock(placement, window, cx);
+            });
+        }
+        None => group.close(panel.panel_id(cx), window, cx),
     }
 }
 
@@ -144,26 +200,14 @@ impl SignedTabGroupSkin {
         left == group.node() && group.panels().len() == 1
     }
 
-    /// The bottom or right dock whose root tab group is this one, if any.
-    /// Base keeps a dock's last group, so the skin removes these docks as a whole.
-    fn is_dock_root_group(&self, group: &TabGroupContext, cx: &App) -> Option<DockPlacement> {
-        let area = self.shared.area().upgrade()?;
-        let area = area.read(cx);
-        [DockPlacement::Bottom, DockPlacement::Right]
-            .into_iter()
-            .find(|placement| {
-                area.layout(*placement)
-                    .is_some_and(|tree| tree.root().id() == group.node())
-            })
-    }
-
     /// The tab's drag payload, or `None` when the group must not be rearranged.
+    ///
     /// A locked group never is, a bottom or right dock root always is.
     fn tab_drag(&self, group: &TabGroupContext, ix: usize, cx: &App) -> Option<DragPanel> {
         if group.is_locked() {
             return None;
         }
-        if !group.is_draggable() && self.is_dock_root_group(group, cx).is_none() {
+        if !group.is_draggable() && dock_root_group(&self.shared, group, cx).is_none() {
             return None;
         }
         group.drag_panel(ix, cx)
@@ -275,95 +319,6 @@ impl SignedTabGroupSkin {
             )
     }
 
-    /// The trailing controls, the panel's own buttons, zoom and the ellipsis menu.
-    fn render_toolbar(
-        &self,
-        group: &TabGroupContext,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> impl IntoElement {
-        if group.is_collapsed() {
-            return div();
-        }
-
-        let zoomed = group.is_zoomed();
-        let handle = group.active_panel().and_then(PanelHandle::of);
-        let control = zoom_control(group, cx);
-        let toolbar_zoom = control.is_some_and(|control| control.toolbar_visible());
-        let menu_zoom = control.is_some_and(|control| control.menu_visible());
-        // A bottom or right dock's only panel cannot close through the group.
-        // The close item is offered, the skin removes the whole dock instead.
-        let closable = group.is_closable()
-            || (self.is_dock_root_group(group, cx).is_some()
-                && group.active_panel().is_some_and(|panel| panel.closable(cx)));
-        let buttons = handle.and_then(|handle| handle.toolbar_buttons(window, cx));
-        let panel = handle.map(|handle| handle.panel());
-
-        h_flex()
-            .gap_1()
-            .occlude()
-            .when_some(buttons, |this, buttons| {
-                this.children(
-                    buttons
-                        .into_iter()
-                        .map(|button| button.small().ghost().tab_stop(false)),
-                )
-            })
-            .map(|this| {
-                let value = if zoomed {
-                    Some(("zoom-out", IconName::Minimize, t("Dock.Zoom Out")))
-                } else if toolbar_zoom {
-                    Some(("zoom-in", IconName::Maximize, t("Dock.Zoom In")))
-                } else {
-                    None
-                };
-
-                if let Some((id, icon, tooltip)) = value {
-                    this.child(
-                        Button::new(id)
-                            .icon(icon)
-                            .small()
-                            .ghost()
-                            .tab_stop(false)
-                            .tooltip_with_action(tooltip, &ToggleZoom, None)
-                            .selected(zoomed)
-                            .on_click({
-                                let group = group.clone();
-                                move |_, window, cx| group.toggle_zoom(window, cx)
-                            }),
-                    )
-                } else {
-                    this
-                }
-            })
-            .child(
-                Button::new("menu")
-                    .icon(IconName::Ellipsis)
-                    .small()
-                    .ghost()
-                    .tab_stop(false)
-                    .dropdown_menu(move |menu, window, cx| {
-                        menu.when_some(panel.clone(), |menu, panel| {
-                            panel.dropdown_menu(menu, window, cx)
-                        })
-                        .separator()
-                        .menu_with_disabled(
-                            if zoomed {
-                                t("Dock.Zoom Out")
-                            } else {
-                                t("Dock.Zoom In")
-                            },
-                            Box::new(ToggleZoom),
-                            !menu_zoom,
-                        )
-                        .when(closable, |menu| {
-                            menu.separator().menu(t("Dock.Close"), Box::new(ClosePanel))
-                        })
-                    })
-                    .anchor(Anchor::TopRight),
-            )
-    }
-
     /// One tab of the pill strip.
     /// While collapsed, tabs lose the active style and all interactions.
     /// The strip is also how a closed bottom dock is opened again.
@@ -382,25 +337,73 @@ impl SignedTabGroupSkin {
         let droppable = group.is_droppable();
         let drag = self.tab_drag(group, ix, cx);
         let handle = PanelHandle::of(&panel);
+        let id = SharedString::from(format!("close-tab:{}:{ix}", group.node().as_u64()));
+
+        let closable = !collapsed
+            && (group.is_closable()
+                || (dock_root_group(&self.shared, group, cx).is_some() && panel.closable(cx)));
+
+        // Whether a double-click zooms this tab in.
+        let can_zoom_in = panel_zoom_control(&panel, cx).is_some();
 
         Tab::new(ix)
-            .h_6()
-            .px_3()
-            .text_sm()
-            .whitespace_nowrap()
+            .group(TAB_HOVER_GROUP)
+            .when(active, |this| {
+                this.debug_selector(|| ACTIVE_TAB_SELECTOR.to_string())
+            })
             .flex()
             .items_center()
-            .justify_center()
-            .gap_1()
             .flex_shrink_0()
+            .h_7()
+            .min_w_40()
+            .gap_1()
+            .px_1p5()
+            .text_sm()
             .overflow_hidden()
             .rounded(cx.theme().radius)
-            .text_color(cx.theme().foreground)
-            .map(|this| match handle.and_then(|handle| handle.tab_name(cx)) {
-                Some(tab_name) => this.child(tab_name),
-                None => this.child(panel_title(&panel, window, cx)),
+            .text_color(cx.theme().tab_foreground)
+            .child(
+                h_flex()
+                    .flex_1()
+                    .h_6()
+                    .items_center()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .map(|this| match handle.and_then(|handle| handle.tab_name(cx)) {
+                        Some(tab_name) => this.child(tab_name),
+                        None => this.child(panel_title(&panel, window, cx)),
+                    }),
+            )
+            .when(closable, |this| {
+                this.child(
+                    div()
+                        .flex_shrink_0()
+                        .when(active, |this| {
+                            this.debug_selector(|| ACTIVE_TAB_CLOSE_SELECTOR.to_string())
+                        })
+                        .when(!active, |this| {
+                            this.invisible()
+                                .group_hover(TAB_HOVER_GROUP, |this| this.visible())
+                        })
+                        .child(
+                            Button::new(id)
+                                .icon(IconName::Close)
+                                .tooltip(t("Dock.Close"))
+                                .ghost()
+                                .xsmall()
+                                .tab_stop(false)
+                                .on_click({
+                                    let group = group.clone();
+                                    let shared = self.shared.clone();
+                                    let panel = panel.clone();
+                                    move |_, window, cx| {
+                                        cx.stop_propagation();
+                                        close_panel(&shared, &group, &panel, window, cx);
+                                    }
+                                }),
+                        ),
+                )
             })
-            // Pill style, the selected tab is the filled pill, others show only on hover.
             .styles(|styles| {
                 styles.selected(|style| {
                     style
@@ -412,15 +415,15 @@ impl SignedTabGroupSkin {
                 if active {
                     this
                 } else {
-                    this.text_color(cx.theme().secondary_foreground)
-                        .bg(cx.theme().secondary_hover)
+                    this.text_color(cx.theme().tab_foreground)
+                        .bg(cx.theme().tab)
                 }
             })
             .selected(active)
             .on_click({
                 let group = group.clone();
                 let area = self.shared.area().clone();
-                move |_, window, cx| {
+                move |event, window, cx| {
                     group.select_tab(ix, window, cx);
 
                     // Clicking the strip of a collapsed bottom dock reopens it.
@@ -428,7 +431,15 @@ impl SignedTabGroupSkin {
                         _ = area.update(cx, |area, cx| {
                             area.toggle_dock(DockPlacement::Bottom, window, cx);
                         });
+                        return;
                     }
+
+                    // A double-click zooms the tab's panel
+                    if event.click_count() < 2 || (!group.is_zoomed() && !can_zoom_in) {
+                        return;
+                    }
+
+                    group.toggle_zoom(window, cx);
                 }
             })
             .when(!collapsed, |this| {
@@ -531,10 +542,6 @@ impl TabGroupRenderer for SignedTabGroupSkin {
         if group.panels().is_empty() {
             return div().id("tab-panel");
         }
-        // Base refuses an empty dock, so closing its only panel removes the dock.
-        let dock_to_remove = (group.panels().len() <= 1)
-            .then(|| self.is_dock_root_group(group, cx))
-            .flatten();
         let shared = self.shared.clone();
 
         // `v_flex`, a plain `div` ignores `flex_grow` and the content would collapse.
@@ -543,14 +550,10 @@ impl TabGroupRenderer for SignedTabGroupSkin {
             .size_full()
             .overflow_hidden()
             .bg(cx.theme().tokens.background)
-            // A collapsed group has no content, so these actions are not registered.
             .when(!group.is_collapsed(), |this| {
                 this.on_action({
                     let group = group.clone();
                     move |_: &ToggleZoom, window, cx| {
-                        // A panel with no zoom control is not zoomed in by the keybinding.
-                        // Zooming out is never refused.
-                        // Otherwise a zoomed panel that lost its control would strand the user.
                         if !group.is_zoomed() && control.is_none() {
                             return;
                         }
@@ -564,18 +567,7 @@ impl TabGroupRenderer for SignedTabGroupSkin {
                         let Some(panel) = group.active_panel() else {
                             return;
                         };
-                        if !panel.closable(cx) {
-                            return;
-                        }
-                        let panel = panel.panel_id(cx);
-                        match dock_to_remove {
-                            Some(placement) => {
-                                _ = shared.area().update(cx, |area, cx| {
-                                    area.remove_dock(placement, window, cx);
-                                });
-                            }
-                            None => group.close(panel, window, cx),
-                        }
+                        close_panel(&shared, &group, panel, window, cx);
                     }
                 })
             })
@@ -613,17 +605,23 @@ impl TabGroupRenderer for SignedTabGroupSkin {
         let right_dock_button = self.dock_toggle_button(DockPlacement::Right, group, cx);
         let is_bottom_dock = bottom_dock_button.is_some();
 
-        // On macOS the traffic lights overlay the window's top-left corner.
-        // Only the tab bar that sits under them reserves the space.
-        // That is the center's top-left group when the left dock is closed or absent.
+        // On macOS the traffic lights overlay the window's top-left corner, so the
+        // tab bar under them reserves the space. That is the center's top-left group
+        // when the left dock is closed or absent, and the zoomed group otherwise:
+        // a zoom fills the whole area, hiding the docks the frame would draw.
         let needs_traffic_light_padding = cfg!(target_os = "macos")
             && self.shared.area().upgrade().is_some_and(|area| {
                 let area = area.read(cx);
-                !area.is_dock_open(DockPlacement::Left)
-                    && area
-                        .layout(DockPlacement::Center)
-                        .and_then(|tree| left_top_group(tree.root()))
-                        == Some(group.node())
+                match area.zoomed_group() {
+                    Some(zoomed) => zoomed == group.node(),
+                    None => {
+                        !area.is_dock_open(DockPlacement::Left)
+                            && area
+                                .layout(DockPlacement::Center)
+                                .and_then(|tree| left_top_group(tree.root()))
+                                == Some(group.node())
+                    }
+                }
             });
 
         // Bring a newly displayed tab into view.
@@ -709,7 +707,16 @@ impl TabGroupRenderer for SignedTabGroupSkin {
                     .child(
                         Tabs::new("tab-bar")
                             .px(px(-1.))
-                            .h(TAB_BAR_HEIGHT)
+                            // A collapsed group stands in for a closed bottom dock,
+                            // which base gives only its reserved strip. The bar keeps
+                            // its own height there rather than the title-bar height,
+                            // so it fits instead of being clipped away.
+                            .when(!collapsed, |this| this.h(TAB_BAR_HEIGHT))
+                            // Only a collapsed (bottom) dock tags its bar, so the
+                            // selector is unique when a test measures it.
+                            .when(collapsed, |this| {
+                                this.debug_selector(|| COLLAPSED_TAB_BAR_SELECTOR.to_string())
+                            })
                             .flex()
                             .items_center()
                             .text_color(cx.theme().tab_foreground)
@@ -763,7 +770,6 @@ impl TabGroupRenderer for SignedTabGroupSkin {
                                                 .and_then(PanelHandle::of)
                                                 .and_then(|handle| handle.title_suffix(window, cx)),
                                         )
-                                        .child(self.render_toolbar(group, window, cx))
                                         .children(right_dock_button),
                                 )
                             }),
@@ -831,5 +837,114 @@ impl TabGroupRenderer for SignedTabGroupSkin {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{
+        App, AppContext as _, Context, Empty, EventEmitter, FocusHandle, Focusable, IntoElement,
+        Render, TestAppContext, Window, px,
+    };
+    use gpui_base::dock::{DockArea, DockLayout, DockPlacement, PanelEvent};
+
+    use super::COLLAPSED_TAB_BAR_SELECTOR;
+    use crate::{BasePanel, Panel, SignedDockSkin, panel_handle};
+
+    struct Probe {
+        focus_handle: FocusHandle,
+    }
+
+    impl Probe {
+        fn new(cx: &mut Context<Self>) -> Self {
+            Self {
+                focus_handle: cx.focus_handle(),
+            }
+        }
+    }
+
+    impl BasePanel for Probe {
+        fn panel_name(&self) -> &'static str {
+            "Probe"
+        }
+    }
+
+    impl Panel for Probe {
+        fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            "Probe"
+        }
+    }
+
+    impl EventEmitter<PanelEvent> for Probe {}
+
+    impl Focusable for Probe {
+        fn focus_handle(&self, _: &App) -> FocusHandle {
+            self.focus_handle.clone()
+        }
+    }
+
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            Empty
+        }
+    }
+
+    /// Base reserves only `gpui_base::dock::CLOSED_BOTTOM_STRIP` for a closed
+    /// bottom dock, so the tab bar drawn in place of one has to shrink to that
+    /// height; at the full title-bar height its bottom was clipped away.
+    #[gpui::test]
+    fn a_collapsed_bottom_dock_bar_fits_the_reserved_strip(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+        });
+        let (area, cx) = cx.add_window_view(|window, cx| {
+            let skin = SignedDockSkin::new(cx);
+            DockArea::new("test", None, window, cx).with_renderer(skin)
+        });
+
+        cx.update(|window, cx| {
+            let center = cx.new(Probe::new);
+            let bottom = cx.new(Probe::new);
+            area.update(cx, |area, cx| {
+                area.set_center(
+                    DockLayout::tabs().panel_view(panel_handle(center), cx),
+                    window,
+                    cx,
+                );
+                area.set_dock(
+                    DockPlacement::Bottom,
+                    DockLayout::tabs().panel_view(panel_handle(bottom), cx),
+                    window,
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        // Open, nothing is collapsed, so no bar carries the selector.
+        assert!(cx.debug_bounds(COLLAPSED_TAB_BAR_SELECTOR).is_none());
+
+        cx.update(|window, cx| {
+            area.update(cx, |area, cx| {
+                area.toggle_dock(DockPlacement::Bottom, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let bounds = cx
+            .debug_bounds(COLLAPSED_TAB_BAR_SELECTOR)
+            .expect("a collapsed bottom dock draws its stand-in tab bar");
+        // `gpui_base::dock::CLOSED_BOTTOM_STRIP`, which the engine does not
+        // re-export. The bar used to be `TAB_BAR_HEIGHT` here and its bottom was
+        // clipped away; it now has to fit inside what base reserves.
+        let reserved_strip = px(29.);
+        assert!(
+            bounds.size.height <= reserved_strip,
+            "the collapsed bar is {}px tall, more than the {}px strip base reserves",
+            bounds.size.height,
+            reserved_strip,
+        );
     }
 }
