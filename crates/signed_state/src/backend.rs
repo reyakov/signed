@@ -1192,6 +1192,21 @@ impl Backend {
         .detach();
     }
 
+    /// Sync filters through the SDK's NIP-65 gossip targeting.
+    pub fn sync_auto(&mut self, filters: Vec<Filter>, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+
+        cx.spawn(async move |_this, _cx| {
+            for filter in filters {
+                if let Err(e) = client.sync(filter).await {
+                    log::warn!("gossip relay fetch failed: {e}");
+                }
+            }
+            Ok::<(), Error>(())
+        })
+        .detach();
+    }
+
     pub fn subscribe_bootstrap(&mut self, filters: Vec<Filter>, cx: &mut Context<Self>) {
         let client = self.client.clone();
 

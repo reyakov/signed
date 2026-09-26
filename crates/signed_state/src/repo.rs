@@ -7,6 +7,7 @@ use bitcoin_hashes::sha1::Hash as Sha1Hash;
 use gpui::{App, AppContext, AsyncApp, Context, SharedString, Subscription, Task, WeakEntity};
 use nostr::event::IntoEventBuilder;
 use nostr_sdk::prelude::*;
+use settings::{EventFetchingStrategy, SettingsStore};
 use signed_core::{
     Announcement, Deletions, RepoAddr, RepoStatus, filters, parse_state, pull_request_patch,
     pull_request_patches,
@@ -84,6 +85,10 @@ pub struct RepoStore {
     ///
     /// The per-root fetches cover NIP-22 comments and statuses without an `a` tag.
     root_fetches: HashSet<EventId>,
+    /// Maintainers already synced through gossip in Uncensored mode.
+    ///
+    /// Avoids re-running the maintainer Auto sync on every refresh.
+    synced_maintainers: HashSet<PublicKey>,
     refresh: RefreshGate,
     /// Backend subscription of an announced repository. `None` while local-only.
     _subscription: Option<Subscription>,
@@ -132,6 +137,7 @@ impl RepoStore {
             cloning: false,
             repo_relays: HashSet::new(),
             root_fetches: HashSet::new(),
+            synced_maintainers: HashSet::new(),
             refresh: RefreshGate::default(),
             _subscription: Some(subscription),
         }
@@ -160,6 +166,7 @@ impl RepoStore {
             cloning: false,
             repo_relays: HashSet::new(),
             root_fetches: HashSet::new(),
+            synced_maintainers: HashSet::new(),
             refresh: RefreshGate::default(),
             _subscription: None,
         }
@@ -292,6 +299,67 @@ impl RepoStore {
 
         backend.update(cx, |backend, cx| {
             backend.connect_repo_relays(new, filters, cx);
+        });
+    }
+
+    /// Filters the SDK resolves through NIP-65 gossip in Uncensored mode.
+    fn maintainer_filters(addr: &RepoAddr, maintainers: &[PublicKey]) -> Vec<Filter> {
+        let mut pubkeys = maintainers.to_vec();
+        // NIP-34 events tag the announcement author,
+        // which may not be a maintainer for subordinate forks.
+        if !pubkeys.contains(&addr.public_key) {
+            pubkeys.push(addr.public_key);
+        }
+
+        vec![
+            // Announcement and state events, including co-maintainer states.
+            Filter::new()
+                .kinds([Kind::GitRepoAnnouncement, Kind::RepoState])
+                .authors(pubkeys.clone())
+                .identifier(addr.identifier.clone()),
+            // Activity tagging a maintainer, resolved to their read relays.
+            Filter::new()
+                .kinds(filters::ACTIVITY_KINDS)
+                .coordinate(addr)
+                .pubkeys(pubkeys.clone()),
+            // Activity authored by a maintainer, resolved to their write relays.
+            Filter::new()
+                .kinds(filters::ACTIVITY_KINDS)
+                .coordinate(addr)
+                .authors(pubkeys.clone()),
+            // Deletions authored by a maintainer.
+            Filter::new()
+                .kinds([Kind::EventDeletion, Kind::RequestToVanish])
+                .authors(pubkeys),
+        ]
+    }
+
+    /// In Uncensored mode, sync the maintainer-shaped filters through the SDK's NIP-65 gossip targeting
+    fn sync_maintainer_relays(&mut self, maintainers: &[PublicKey], cx: &mut Context<Self>) {
+        let strategy = SettingsStore::try_global(cx)
+            .map(|store| store.read(cx).settings().event_fetching)
+            .unwrap_or_default();
+        if strategy != EventFetchingStrategy::Uncensored {
+            return;
+        }
+
+        let Some(addr) = self.addr.clone() else {
+            return;
+        };
+
+        if !maintainers
+            .iter()
+            .any(|public_key| !self.synced_maintainers.contains(public_key))
+        {
+            return;
+        }
+        self.synced_maintainers.extend(maintainers.iter().copied());
+
+        let filters = Self::maintainer_filters(&addr, maintainers);
+        let backend = Backend::global(cx);
+
+        backend.update(cx, |backend, cx| {
+            backend.sync_auto(filters, cx);
         });
     }
 
@@ -489,7 +557,6 @@ impl RepoStore {
                 }
 
                 // The announcement may list relays for this repository's activity.
-                // Connect to any we have not fetched from yet.
                 let relays = this
                     .announcement
                     .as_ref()
@@ -497,6 +564,15 @@ impl RepoStore {
                     .unwrap_or_default();
 
                 this.connect_announced_relays(&relays, cx);
+
+                // Uncensored mode also covers the maintainers' NIP-65 relays.
+                let maintainers = this
+                    .announcement
+                    .as_ref()
+                    .map(Announcement::effective_maintainers)
+                    .unwrap_or_default();
+
+                this.sync_maintainer_relays(&maintainers, cx);
 
                 if let Some((_, head)) = state {
                     this.head = head;
@@ -1734,9 +1810,11 @@ fn comment_builder(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use nostr_sdk::prelude::*;
 
-    use super::{comment_builder, patch_current_commit};
+    use super::{RepoStore, comment_builder, patch_current_commit};
 
     #[test]
     fn parses_format_patch_header() {
@@ -1781,5 +1859,61 @@ mod tests {
 
         // Signed's own `references_root` must keep matching the comment.
         assert!(signed_core::references_root(&event, &root.id));
+    }
+
+    #[test]
+    fn maintainer_filters_name_owner_and_maintainers() {
+        let owner = Keys::generate().public_key();
+        let maintainer = Keys::generate().public_key();
+        let addr = Coordinate::new(Kind::GitRepoAnnouncement, owner).identifier("my-repo");
+
+        // The owner is not among the maintainers, as on a subordinate fork.
+        let filters = RepoStore::maintainer_filters(&addr, &[maintainer]);
+        assert_eq!(filters.len(), 4);
+
+        let expected = HashSet::from([owner, maintainer]);
+
+        // Gossip only resolves pubkeys from `authors` and the lowercase `#p` tag.
+        let named = |filter: &Filter| -> HashSet<PublicKey> {
+            let authors = filter.authors.iter().flatten().copied();
+            let p_tag = filter
+                .generic_tags
+                .get(&SingleLetterTag::LOWERCASE_P)
+                .into_iter()
+                .flatten()
+                .filter_map(|value| PublicKey::from_hex(value).ok());
+            authors.chain(p_tag).collect()
+        };
+
+        // Announcement and state events, scoped to the repository identifier.
+        let announcement = &filters[0];
+        assert_eq!(named(announcement), expected);
+        assert!(
+            announcement
+                .generic_tags
+                .contains_key(&SingleLetterTag::LOWERCASE_D)
+        );
+
+        // Activity filters, scoped to the repository coordinate.
+        for filter in &filters[1..3] {
+            assert_eq!(named(filter), expected);
+            assert!(
+                filter
+                    .generic_tags
+                    .contains_key(&SingleLetterTag::LOWERCASE_A)
+            );
+        }
+
+        // Deletions, named by author only.
+        let deletions = &filters[3];
+        assert_eq!(
+            deletions
+                .authors
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            expected
+        );
     }
 }

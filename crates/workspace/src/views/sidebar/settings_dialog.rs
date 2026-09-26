@@ -18,7 +18,7 @@ use gpui_component::{
     ActiveTheme, IconName, IndexPath, Sizable, Theme, ThemeMode, ThemeRegistry, WindowExt, h_flex,
     v_flex,
 };
-use settings::{AppearanceMode, Settings, SettingsStore};
+use settings::{AppearanceMode, EventFetchingStrategy, Settings, SettingsStore};
 use signed_ui::{SelectOption, setting_block, setting_row};
 
 use super::{normalize_server, server_host};
@@ -52,6 +52,7 @@ fn theme_options(cx: &App) -> (Vec<SelectOption>, Vec<SelectOption>) {
 /// Created once when the dialog opens, so control state survives re-renders.
 struct SettingsControls {
     appearance: Entity<SelectState<Vec<SelectOption>>>,
+    event_fetching: Entity<SelectState<Vec<SelectOption>>>,
     light_theme: Entity<SelectState<Vec<SelectOption>>>,
     dark_theme: Entity<SelectState<Vec<SelectOption>>>,
     font_size: Entity<InputState>,
@@ -84,6 +85,23 @@ impl SettingsControls {
             SelectState::new(
                 appearance_options.clone(),
                 selected_index(&appearance_options, appearance_value),
+                window,
+                cx,
+            )
+        });
+
+        let event_fetching_options = vec![
+            SelectOption::new("curated", "Curated"),
+            SelectOption::new("uncensored", "Uncensored"),
+        ];
+        let event_fetching_value = match settings.event_fetching {
+            EventFetchingStrategy::Curated => "curated",
+            EventFetchingStrategy::Uncensored => "uncensored",
+        };
+        let event_fetching = cx.new(|cx| {
+            SelectState::new(
+                event_fetching_options.clone(),
+                selected_index(&event_fetching_options, event_fetching_value),
                 window,
                 cx,
             )
@@ -144,6 +162,19 @@ impl SettingsControls {
                     store.edit(|settings| settings.appearance = appearance, cx);
                 });
                 apply_appearance(appearance, cx);
+            }
+        }));
+
+        subscriptions.push(cx.subscribe(&event_fetching, |_, event, cx| {
+            if let SelectEvent::Confirm(Some(value)) = event {
+                let strategy = match value.as_ref() {
+                    "curated" => EventFetchingStrategy::Curated,
+                    _ => EventFetchingStrategy::Uncensored,
+                };
+                let store = SettingsStore::global(cx);
+                store.update(cx, |store, cx| {
+                    store.edit(|settings| settings.event_fetching = strategy, cx);
+                });
             }
         }));
 
@@ -252,6 +283,7 @@ impl SettingsControls {
 
         Self {
             appearance,
+            event_fetching,
             light_theme,
             dark_theme,
             font_size,
@@ -294,6 +326,8 @@ fn settings_view(controls: &SettingsControls, cx: &mut App) -> impl IntoElement 
         .child(Separator::horizontal())
         .child(grasp_servers_section(&settings, controls, cx))
         .child(Separator::horizontal())
+        .child(event_fetching_section(controls, cx))
+        .child(Separator::horizontal())
         .child(repositories_section(&settings, controls, cx))
 }
 
@@ -303,6 +337,16 @@ fn appearance_section(controls: &SettingsControls, cx: &App) -> impl IntoElement
         "Appearance",
         "Choose whether the app follows the system theme or uses a light/dark theme.",
         Select::new(&controls.appearance).w_full(),
+    ))
+}
+
+/// Which relays repository activity is fetched from.
+fn event_fetching_section(controls: &SettingsControls, cx: &App) -> impl IntoElement {
+    v_flex().w_full().gap_3().child(setting_row(
+        cx,
+        "Event Fetching Strategy",
+        "Curated fetches events from relays in the repository's announcement. Uncensored also fetches from every maintainer's relays.",
+        Select::new(&controls.event_fetching).w_full(),
     ))
 }
 
