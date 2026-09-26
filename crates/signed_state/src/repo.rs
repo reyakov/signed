@@ -288,9 +288,10 @@ impl RepoStore {
         self.repo_relays.extend(new.iter().cloned());
 
         let backend = Backend::global(cx);
+        let filters = Self::repo_filters(&addr);
 
         backend.update(cx, |backend, cx| {
-            backend.connect_repo_relays(new, Self::repo_filters(&addr), cx);
+            backend.connect_repo_relays(new, filters, cx);
         });
     }
 

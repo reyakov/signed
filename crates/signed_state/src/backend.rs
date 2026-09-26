@@ -23,12 +23,7 @@ pub const USER_KEYRING: &str = "Signed Safe Storage";
 pub const NOSTR_CONNECT_TIMEOUT: u64 = 60;
 
 /// Relays connected at startup, before any user-specific relay config is known.
-pub const BOOTSTRAP_RELAYS: [&str; 4] = [
-    "wss://relay.primal.net",
-    "wss://relay.ditto.pub",
-    "wss://index.ngit.dev",
-    "wss://profiles.nostr1.com",
-];
+pub const BOOTSTRAP_RELAYS: [&str; 2] = ["wss://relay.ditto.pub", "wss://index.ngit.dev"];
 
 /// Relays used to index the user's NIP-65 relay list.
 pub const INDEXER_RELAYS: [&str; 2] = ["wss://indexer.coracle.social", "wss://user.kindpag.es"];
@@ -43,11 +38,6 @@ pub enum BackendEvent {
     /// The signer changed on login, logout or account switch.
     SignerChanged,
     /// New events were received from a relay and stored in the database.
-    ///
-    /// Batched: [`Backend`]'s notification pump coalesces everything a
-    /// relay delivers within one debounce window into a single event,
-    /// instead of emitting per-event and making every subscriber debounce
-    /// the same burst independently.
     NostrUpdate(Vec<Update>),
     Synced,
     SyncProgress {
@@ -446,9 +436,6 @@ impl Backend {
         let client = self.client.clone();
 
         // Initialize directly at the user's chosen destination.
-        // No mirror is pre-populated: `GitCache::ensure_clone` lazily clones
-        // from the grasp server the first time the repo detail view needs it,
-        // exactly like every other repository.
         let destination = {
             let dir_name = signed_git::sanitize_path_component(&name);
             let dir_name = if dir_name.is_empty() {
@@ -1222,7 +1209,8 @@ impl Backend {
         .detach();
     }
 
-    pub fn sync_bootstrap(&mut self, filter: Filter, cx: &mut Context<Self>) {
+    /// Sync several bootstrap filters in order, within a single task.
+    pub fn sync_bootstraps(&mut self, filters: Vec<Filter>, cx: &mut Context<Self>) {
         let client = self.client.clone();
         let (tx, mut rx) = SyncProgress::channel();
 
@@ -1259,8 +1247,19 @@ impl Backend {
         .detach();
 
         let sync = cx.background_spawn(async move {
-            let opts = SyncOptions::default().progress(tx);
-            sync_bootstrap_only(&client, filter, opts).await
+            let mut first_error = None;
+
+            for filter in filters {
+                let opts = SyncOptions::default().progress(tx.clone());
+                if let Err(error) = sync_bootstrap_only(&client, filter, opts).await {
+                    first_error.get_or_insert(error);
+                }
+            }
+
+            match first_error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         });
 
         cx.spawn(async move |this, cx| {
@@ -1419,6 +1418,7 @@ pub(crate) async fn sync_bootstrap_only(
         .with(BOOTSTRAP_RELAYS)
         .opts(opts)
         .await?;
+
     Ok(output.value)
 }
 

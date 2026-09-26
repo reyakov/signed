@@ -134,10 +134,15 @@ impl RepoListStore {
         let backend = Backend::global(cx);
 
         backend.update(cx, |backend, cx| {
-            backend.sync_bootstrap(filters::all_announcements(), cx);
-            backend.sync_bootstrap(filters::all_states(), cx);
-            // Deletion requests, NIP-09/62, must be known before any announcement is shown.
-            backend.sync_bootstrap(filters::deletions(), cx);
+            backend.sync_bootstraps(
+                vec![
+                    filters::all_announcements(),
+                    filters::all_states(),
+                    // Deletion requests, NIP-09/62, must be known before any announcement is shown.
+                    filters::deletions(),
+                ],
+                cx,
+            );
         });
     }
 
