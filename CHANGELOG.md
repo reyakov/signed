@@ -15,7 +15,9 @@
 - Migrate the GPUI foundation to the published `gpui-pre` crates and GPUI Kit 0.6, off the zed and gpui-component git pins
 - Use the pixel avatar as the single fallback for a missing picture, sized and rounded to match the other avatars
 - Redesign the dock tab bar, using muted grey active tab, added close buttons, double-click to zoom, and removed panel toolbar
-- Connect to fewer relays at startup, keeping only ditto and the git indexer as bootstrap relays
+- Connect to bootstrap relays on demand instead of at startup
+- Fetch profile metadata in batches of 100 authors, applying every requested profile in a single database query
+- Prefetch the 500 most recent profiles at startup instead of 200
 
 ### Fixed
 

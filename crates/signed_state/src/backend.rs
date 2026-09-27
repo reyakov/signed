@@ -21,10 +21,8 @@ use crate::repos::RepoListStore;
 pub const USER_KEYRING: &str = "Signed Safe Storage";
 /// Timeout for NIP-46 signer responses.
 pub const NOSTR_CONNECT_TIMEOUT: u64 = 60;
-
 /// Relays connected at startup, before any user-specific relay config is known.
 pub const BOOTSTRAP_RELAYS: [&str; 2] = ["wss://relay.ditto.pub", "wss://index.ngit.dev"];
-
 /// Relays used to index the user's NIP-65 relay list.
 pub const INDEXER_RELAYS: [&str; 2] = ["wss://indexer.coracle.social", "wss://user.kindpag.es"];
 
@@ -151,9 +149,10 @@ impl Backend {
         pump.detach();
 
         cx.defer(move |cx| {
-            if let Err(error) = weak.update(cx, |this, cx| this.bootstrap(cx)) {
-                log::warn!("backend dropped before bootstrap could run: {error}");
-            }
+            weak.update(cx, |this, cx| {
+                this.restore_session(cx);
+            })
+            .ok();
         });
 
         Self {
@@ -165,42 +164,6 @@ impl Backend {
             passphrase_required: false,
             pushing_repos: cx.new(|_| HashSet::new()),
         }
-    }
-
-    fn bootstrap(&mut self, cx: &mut Context<Self>) {
-        let client = self.client.clone();
-
-        let task = cx.background_spawn(async move {
-            for url in BOOTSTRAP_RELAYS {
-                client.add_relay(url).await?;
-            }
-
-            for url in INDEXER_RELAYS {
-                client
-                    .add_relay(url)
-                    .capabilities(RelayCapabilities::DISCOVERY)
-                    .await?;
-            }
-
-            client.connect().await;
-
-            Ok::<(), Error>(())
-        });
-
-        let notify_task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
-            match task.await {
-                Ok(()) => {
-                    this.update(cx, |this, cx| {
-                        this.restore_session(cx);
-                    })?;
-                }
-                Err(e) => {
-                    this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
-                }
-            }
-            Ok::<(), Error>(())
-        });
-        notify_task.detach();
     }
 
     /// Restore the saved session from the Keyring.
@@ -227,7 +190,9 @@ impl Backend {
             let result = async {
                 if content.starts_with("nsec1") {
                     let keys = Keys::new(SecretKey::parse(&content)?);
-                    this.update(cx, |this, cx| this.set_signer(keys, cx))?;
+                    this.update(cx, |this, cx| {
+                        this.set_signer(keys, cx);
+                    })?;
                 } else if content.starts_with("bunker://") {
                     let (base, keys) = extract_master_key(&content);
                     let uri = NostrConnectUri::parse(base)?;
@@ -238,14 +203,19 @@ impl Backend {
                         None,
                     )?;
                     signer.auth_url_handler(SignedAuthUrlHandler);
-                    this.update(cx, |this, cx| this.set_signer(signer, cx))?;
+
+                    this.update(cx, |this, cx| {
+                        this.set_signer(signer, cx);
+                    })?;
                 } else if content.starts_with("ncryptsec1") {
                     this.update(cx, |this, cx| {
                         this.passphrase_required = true;
                         cx.emit(BackendEvent::PassphraseRequired);
                     })?;
                 } else {
-                    this.update(cx, |_this, cx| cx.emit(BackendEvent::SignerRequired))?;
+                    this.update(cx, |_this, cx| {
+                        cx.emit(BackendEvent::SignerRequired);
+                    })?;
                 }
 
                 Ok::<_, Error>(())
@@ -1424,10 +1394,29 @@ async fn connect_repo_relays(
     Ok(())
 }
 
+/// Add and connect the startup relays.
+async fn ensure_bootstrap_relays(client: &Client) -> Result<(), Error> {
+    for url in BOOTSTRAP_RELAYS {
+        client.add_relay(url).and_connect().await?;
+    }
+
+    for url in INDEXER_RELAYS {
+        client
+            .add_relay(url)
+            .capabilities(RelayCapabilities::DISCOVERY)
+            .and_connect()
+            .await?;
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn subscribe_bootstrap_only(
     client: &Client,
     filters: Vec<Filter>,
 ) -> Result<(), Error> {
+    ensure_bootstrap_relays(client).await?;
+
     let opts = SubscribeAutoCloseOptions::default()
         .exit_policy(ReqExitPolicy::ExitOnEOSE)
         .timeout(Some(Duration::from_secs(10)));
@@ -1447,6 +1436,8 @@ pub(crate) async fn sync_bootstrap_only(
     filter: Filter,
     opts: SyncOptions,
 ) -> Result<SyncSummary, Error> {
+    ensure_bootstrap_relays(client).await?;
+
     let output = client
         .sync(filter)
         .with(BOOTSTRAP_RELAYS)
