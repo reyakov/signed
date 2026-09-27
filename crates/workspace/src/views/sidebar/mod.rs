@@ -79,16 +79,12 @@ impl SidebarPanel {
             let signer_changed = matches!(event, BackendEvent::SignerChanged);
             let signer_required = matches!(event, BackendEvent::SignerRequired);
 
-            if !signer_changed && !signer_required {
-                return;
-            }
-
             if signer_required {
                 this.banner = pick_banner();
                 cx.notify();
             }
 
-            if this.refresh(cx) || signer_required {
+            if this.refresh(cx) || signer_changed {
                 cx.notify();
             }
         }));
@@ -131,16 +127,14 @@ impl SidebarPanel {
         let user = backend.read(cx).current_user();
 
         let (announcements, local_repos, scanning) = {
-            let repo_list = RepoListStore::global(cx);
-            let repo_list = repo_list.read(cx);
+            let repo_list = RepoListStore::global(cx).read(cx);
 
             let announcements = user
                 .as_ref()
                 .map(|user| repo_list.announcements_of(user))
                 .unwrap_or_default();
 
-            let local = LocalReposStore::global(cx);
-            let local = local.read(cx);
+            let local = LocalReposStore::global(cx).read(cx);
             let local_repos =
                 resolve_local_repos(&local.repos, &repo_list.announcements, &announcements);
 

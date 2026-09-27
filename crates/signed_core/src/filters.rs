@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use nostr::prelude::*;
 
-use crate::{COVER_NOTE_KIND, RepoAddr};
+use crate::RepoAddr;
 
 /// Kinds that make up the activity of a repository.
 pub const ACTIVITY_KINDS: [Kind; 9] = [
@@ -18,25 +18,33 @@ pub const ACTIVITY_KINDS: [Kind; 9] = [
 ];
 
 /// Kinds that notify a user when they tag them via their `p` tag.
-pub const NOTIFICATION_KINDS: [Kind; 9] = [
+pub const NOTIFICATION_KINDS: [Kind; 8] = [
     Kind::GitIssue,
     Kind::GitPullRequest,
     Kind::GitPatch,
     Kind::GitPullRequestUpdate,
-    COVER_NOTE_KIND,
     Kind::GitStatusOpen,
     Kind::GitStatusApplied,
     Kind::GitStatusClosed,
     Kind::GitStatusDraft,
 ];
 
-/// Git root kinds that make a comment or cover note count as git activity.
+/// Git root kinds that make a comment count as git activity.
 const GIT_ROOT_KINDS: [Kind; 4] = [
     Kind::GitIssue,
     Kind::GitPatch,
     Kind::GitPullRequest,
     Kind::GitRepoAnnouncement,
 ];
+
+/// Kinds that carry repository data: announcements, states, activity and deletions.
+pub fn is_repo_kind(kind: Kind) -> bool {
+    kind == Kind::GitRepoAnnouncement
+        || kind == Kind::RepoState
+        || kind == Kind::EventDeletion
+        || kind == Kind::RequestToVanish
+        || ACTIVITY_KINDS.contains(&kind)
+}
 
 /// Value of the first tag named `name` on `event`.
 fn tag_value<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
@@ -140,25 +148,13 @@ pub fn notifications(me: PublicKey) -> Vec<Filter> {
 /// A comment on an unrelated kind is matched too, so results must be filtered
 /// through [`is_git_activity`] before display.
 pub fn authored_activity(me: PublicKey) -> Filter {
-    Filter::new()
-        .kinds(
-            ACTIVITY_KINDS
-                .into_iter()
-                .chain(std::iter::once(COVER_NOTE_KIND)),
-        )
-        .author(me)
+    Filter::new().kinds(ACTIVITY_KINDS).author(me)
 }
 
 /// Whether a kind-1111 comment targets a git root, checked via its `K` tag.
 fn is_git_comment(event: &Event) -> bool {
     event.kind == Kind::Comment
         && tag_kind(event, "K").is_some_and(|kind| GIT_ROOT_KINDS.contains(&kind))
-}
-
-/// Whether a kind-1624 cover note targets a git root, checked via its `k` tag.
-fn is_git_cover_note(event: &Event) -> bool {
-    event.kind == COVER_NOTE_KIND
-        && tag_kind(event, "k").is_some_and(|kind| GIT_ROOT_KINDS.contains(&kind))
 }
 
 /// Whether a status event references a git root, checked via its `k` tag.
@@ -175,7 +171,7 @@ pub fn is_git_activity(event: &Event) -> bool {
         | Kind::GitStatusApplied
         | Kind::GitStatusClosed
         | Kind::GitStatusDraft => is_git_status(event),
-        kind => kind == COVER_NOTE_KIND && is_git_cover_note(event),
+        _ => false,
     }
 }
 
@@ -267,16 +263,11 @@ mod tests {
     }
 
     #[test]
-    fn status_and_cover_note_activity_depend_on_the_lowercase_k_tag() {
+    fn status_activity_depends_on_the_lowercase_k_tag() {
         let status = signed(
             &keys(1),
             Kind::GitStatusClosed,
             vec![kind_tag("k", Kind::GitPullRequest)],
-        );
-        let cover = signed(
-            &keys(1),
-            COVER_NOTE_KIND,
-            vec![kind_tag("k", Kind::GitPatch)],
         );
         let unrelated = signed(
             &keys(1),
@@ -285,7 +276,6 @@ mod tests {
         );
 
         assert!(is_git_activity(&status));
-        assert!(is_git_activity(&cover));
         assert!(!is_git_activity(&unrelated));
         assert!(!is_git_activity(&signed(
             &keys(1),

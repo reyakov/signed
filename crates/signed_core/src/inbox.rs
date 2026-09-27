@@ -4,7 +4,7 @@ use std::time::Duration;
 use nostr::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::{COVER_NOTE_KIND, RepoAddr, activity_subject};
+use crate::{RepoAddr, activity_subject};
 
 /// Window before `now` that an advanced cutoff retreats to.
 const ADVANCE_WINDOW: Duration = Duration::from_secs(3 * 24 * 60 * 60);
@@ -121,14 +121,11 @@ impl InboxItem {
 /// - patch (1617): its `e` parent patch, else itself
 /// - NIP-22 comment (1111): uppercase `E` root pointer
 /// - PR update (1619): uppercase `E`
-/// - statuses (1630-1633) / cover note (1624): NIP-10 root `e`
+/// - statuses (1630-1633): NIP-10 root `e`
 pub fn notification_root<L>(event: &Event, lookup: &L) -> Option<EventId>
 where
     L: Fn(EventId) -> Option<Event>,
 {
-    if event.kind == COVER_NOTE_KIND {
-        return nip10_root_id(event).map(|root| resolve_thread_root(root, lookup));
-    }
     match event.kind {
         Kind::GitIssue | Kind::GitPullRequest => Some(event.id),
         Kind::GitPatch => Some(match first_e_id(event) {

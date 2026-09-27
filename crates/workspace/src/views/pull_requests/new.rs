@@ -68,6 +68,7 @@ pub struct NewPullRequestView {
     pane: Entity<DiffPane>,
     scroll_handle: VirtualListScrollHandle,
     item_sizes: Rc<Vec<Size<Pixels>>>,
+    tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -323,6 +324,7 @@ impl NewPullRequestView {
             pane,
             scroll_handle: VirtualListScrollHandle::new(),
             item_sizes: Rc::new(Vec::new()),
+            tasks: Vec::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -390,7 +392,8 @@ impl NewPullRequestView {
 
                 Ok(())
             });
-        task.detach();
+
+        self.tasks.push(task);
     }
 
     /// Branches and the current branch are read off the UI thread, then applied.
@@ -419,7 +422,8 @@ impl NewPullRequestView {
 
                 Ok(())
             });
-        task.detach();
+
+        self.tasks.push(task);
     }
 
     fn apply_checkout(
@@ -636,7 +640,8 @@ impl NewPullRequestView {
 
                 Ok(())
             });
-        task.detach();
+
+        self.tasks.push(task);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -830,7 +835,7 @@ impl NewPullRequestView {
                 Ok(())
             });
 
-        task.detach();
+        self.tasks.push(task);
     }
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -911,7 +916,7 @@ impl NewPullRequestView {
                 Ok(())
             });
 
-        task.detach();
+        self.tasks.push(task);
     }
 
     fn open_commit_diff(&mut self, commit_id: &str, window: &mut Window, cx: &mut Context<Self>) {

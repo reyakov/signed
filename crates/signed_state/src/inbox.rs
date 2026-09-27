@@ -104,11 +104,16 @@ impl Inbox {
 
     /// Sign the state with a random key and store it locally.
     fn persist(&mut self, cx: &mut Context<Self>) {
-        let Some(me) = Backend::global(cx).read(cx).current_user() else {
+        let backend = Backend::global(cx);
+        let (me, client) = {
+            let backend = backend.read(cx);
+            (backend.current_user(), backend.client())
+        };
+
+        let Some(me) = me else {
             return;
         };
 
-        let client = Backend::global(cx).read(cx).client();
         let state = self.state.clone();
 
         let task: Task<Result<(), Error>> = cx.background_spawn(async move {

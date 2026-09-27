@@ -8,19 +8,24 @@
 
 - Show an avatar in each panel's tab, using the repository owner's profile picture when set and a pixel avatar otherwise
 - Add a Tab Bar setting to hide the previous/next tab buttons, hidden by default
+- Add an Event Fetching Strategy setting, fetching a repository's activity from its announced relays only (Curated) or from every maintainer's relays as well (Uncensored, the default)
 
 ### Changed
 
 - Migrate the GPUI foundation to the published `gpui-pre` crates and GPUI Kit 0.6, off the zed and gpui-component git pins
 - Use the pixel avatar as the single fallback for a missing picture, sized and rounded to match the other avatars
 - Redesign the dock tab bar, using muted grey active tab, added close buttons, double-click to zoom, and removed panel toolbar
+- Connect to fewer relays at startup, keeping only ditto and the git indexer as bootstrap relays
 
 ### Fixed
 
 - Render every avatar at one consistent size, where a surrounding border had shrunk pictures by two pixels and the pixel avatar ignored an explicit size
 - Date repositories from their repository state event, so the explore list and open repository views show the latest push instead of the announcement date
+- Fix background tasks outliving their view, so a closed repository panel or pull request view stops fetching and publishing on its own
 
 ### Removed
+
+- Remove cover note support, the kind-1624 GitWorkshop and `ngit` extension outside the NIP-34
 
 ### Deprecated
 

@@ -17,15 +17,9 @@ use crate::repos::RepoListStore;
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// How often the statuses are recomputed against the local refs.
-///
-/// A commit lands in a checkout long before the remote reconciliation cadence,
-/// so this fast pass surfaces ready-to-push and ready-to-contribute checkouts
-/// within a second or two. It reads the tracking refs only, no network.
 const LOCAL_POLL: Duration = Duration::from_secs(2);
-
 /// How often a full pass refreshes the remotes while any repository panel is open.
 const STATUS_POLL: Duration = Duration::from_secs(15);
-
 /// Remote refresh interval for the `ready to push` badges of the user's own repositories.
 const PUSH_POLL: Duration = Duration::from_secs(60);
 
@@ -46,10 +40,6 @@ pub struct CheckoutStatus {
     /// Commit the branch points at, for tip-based PR dedupe.
     pub head: String,
     /// What the branch is compared against.
-    /// For ready-to-contribute statuses, the announced HEAD branch.
-    /// The fallbacks are `main`, then the first local branch.
-    /// For ready-to-push statuses, the remote-tracking ref.
-    /// Unpushed commits are counted against it.
     ///
     /// It is `refs/remotes/origin/<branch>`, else `origin/HEAD` for new branches.
     pub base: String,
@@ -67,11 +57,6 @@ struct Remembered {
 }
 
 /// Global store of local-checkout associations and per-checkout statuses.
-///
-/// Readers (the sidebar rows, the repository panels) observe this store and
-/// derive what they display from their own snapshots, so publishing needs no
-/// fine-grained entities: the store notifies when a slice changed and each
-/// reader re-derives only what it shows.
 pub struct CheckoutsStore {
     /// Checkout paths per announced repository.
     by_repo: HashMap<RepoAddr, Vec<PathBuf>>,
@@ -144,6 +129,7 @@ impl CheckoutsStore {
                     this.statuses.clear();
                     this.push_statuses.clear();
                     cx.notify();
+
                     this.refresh(cx);
                 }
             }));
@@ -282,9 +268,6 @@ impl CheckoutsStore {
     }
 
     /// Re-resolve the associations and the requested statuses.
-    ///
-    /// Requests arriving while a pass runs fold into a follow-up, requests
-    /// arriving while the debounce timer is pending are dropped.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.debounce_pending || self.refresh.request() != RefreshRequest::Schedule {
             return;
@@ -300,12 +283,6 @@ impl CheckoutsStore {
     }
 
     /// One full resolve and apply cycle, the debounced entry point.
-    ///
-    /// Re-resolves the associations from the settings, the scan and the
-    /// announcements, then recomputes the requested statuses against freshly
-    /// fetched remotes. Full passes run on every input change and on the
-    /// remote reconciliation cadence ([`Self::local_tick`]); they also restart
-    /// the fast local pass.
     fn run_refresh(&mut self, cx: &mut Context<Self>) {
         self.debounce_pending = false;
         self.refresh.begin();
@@ -431,10 +408,6 @@ impl CheckoutsStore {
     }
 
     /// Schedule the fast local status pass, unless one is already pending.
-    ///
-    /// Every [`LOCAL_POLL`] the pass recomputes the requested statuses against
-    /// the local refs, with no network, so a new commit in a checkout surfaces in
-    /// a second or two instead of at the next remote reconciliation.
     fn schedule_local_pass(&mut self, cx: &mut Context<Self>) {
         if self.local_pending {
             return;
@@ -452,10 +425,6 @@ impl CheckoutsStore {
     }
 
     /// The fast local status pass.
-    ///
-    /// Recomputes the statuses against the local refs; when the remote
-    /// reconciliation cadence elapsed, it runs a full pass instead so pushes
-    /// made elsewhere do not linger as `to push`.
     fn local_tick(&mut self, cx: &mut Context<Self>) {
         // Nothing watched: the chain idles out until a new request restarts it.
         if self.status_requested.is_empty() && self.push_requested.is_empty() {
@@ -490,10 +459,6 @@ impl CheckoutsStore {
     }
 
     /// Recompute the requested statuses against the tracking refs only.
-    ///
-    /// The refs were last refreshed by a full pass. Comparing against them is
-    /// enough to pick up new local commits, and skipping the network keeps
-    /// this pass cheap enough to run every [`LOCAL_POLL`].
     fn run_local_statuses(&mut self, cx: &mut Context<Self>) {
         let associations = self.by_repo.clone();
 
@@ -635,10 +600,6 @@ fn checkout_status(path: &Path, announced_head: Option<&str>) -> Option<Checkout
 }
 
 /// The `ready to push` status of one checkout of the user's own repository.
-///
-/// `fetch` refreshes the remote heads first, so a full pass sees pushes made
-/// elsewhere; the fast local pass skips it and compares against the tracking
-/// refs left by the last full pass, which is enough to detect local commits.
 fn checkout_push_status(path: &Path, fetch: bool) -> Option<CheckoutStatus> {
     if signed_git::worktree_dirty(path) {
         return None;
@@ -649,8 +610,6 @@ fn checkout_push_status(path: &Path, fetch: bool) -> Option<CheckoutStatus> {
     let origin = signed_git::origin_url(path).ok().flatten()?;
 
     if fetch {
-        // Refresh the remote heads first.
-        // Commits made elsewhere or pushed from another machine must not linger as `to push`.
         signed_git::fetch_repo_refs(path, &[origin], "+refs/heads/*:refs/remotes/origin/*").ok();
     }
 
@@ -678,10 +637,6 @@ fn checkout_push_status(path: &Path, fetch: bool) -> Option<CheckoutStatus> {
 }
 
 /// Compute the requested statuses against the checkout paths of `associations`.
-///
-/// Shared by the full and the local pass. `fetch` refreshes the checkouts'
-/// remote heads first, so the full pass sees remote moves; the fast local
-/// pass reads the tracking refs only, which is enough to detect local commits.
 fn compute_statuses(
     associations: &HashMap<RepoAddr, Vec<PathBuf>>,
     requested: &[(RepoAddr, Option<String>)],
@@ -737,12 +692,14 @@ pub fn pr_proposes_checkout(
     if pr.kind != Kind::GitPullRequest || !open || pr.pubkey != user {
         return false;
     }
+
     let branch_matches = pr
         .tags
         .iter()
         .find(|t| t.kind() == "branch-name")
         .and_then(|t| t.content())
         .is_some_and(|name| name == checkout.branch);
+
     // A renamed branch falls back to the proposed tip commit.
     let tip_matches = pr
         .tags
@@ -750,6 +707,7 @@ pub fn pr_proposes_checkout(
         .find(|t| t.kind() == "c")
         .and_then(|t| t.content())
         .is_some_and(|tip| tip == checkout.head);
+
     branch_matches || tip_matches
 }
 

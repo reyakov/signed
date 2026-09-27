@@ -215,15 +215,19 @@ pub fn load_user_grasp_servers(
     cx: &mut App,
 ) {
     let backend = Backend::global(cx);
-    let Some(user) = backend.read(cx).current_user() else {
+    let (user, client) = {
+        let backend = backend.read(cx);
+        (backend.current_user(), backend.client())
+    };
+
+    let Some(user) = user else {
         state.update(cx, |state, _| state.loading_servers = false);
         return;
     };
-    let client = backend.read(cx).client();
     let handle = window.window_handle();
 
     cx.spawn(async move |cx| {
-        let result = signed_state::user_grasp_list_servers(client, user).await;
+        let result = signed_state::user_grasp_list_servers(&client, user).await;
 
         let _ = cx.update_window(handle, |_, _window, cx| {
             state.update(cx, |state, _| {

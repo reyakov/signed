@@ -68,32 +68,11 @@ impl RepoListStore {
 
         let subscription = cx.subscribe(&backend, |this, _backend, event, cx| {
             let relevant = match event {
-                BackendEvent::NostrUpdate(updates) => updates.iter().any(|update| {
-                    // Deletions may target anything we list, always refresh.
-                    if update.kind == Kind::EventDeletion || update.kind == Kind::RequestToVanish {
-                        true
-                    } else if filters::ACTIVITY_KINDS.contains(&update.kind) {
-                        // Activity events are addressed to repos via `a` tags.
-                        // Their author is not the repo owner, always refresh.
-                        true
-                    } else {
-                        let is_announcement = update.kind == Kind::GitRepoAnnouncement;
-                        let is_repo_state = update.kind == Kind::RepoState;
-                        is_announcement || is_repo_state
-                    }
-                }),
-                BackendEvent::Published(event) => {
-                    let announcement = event.kind == Kind::GitRepoAnnouncement;
-                    let state = event.kind == Kind::RepoState;
-                    let deletion =
-                        event.kind == Kind::EventDeletion || event.kind == Kind::RequestToVanish;
-
-                    announcement || state || deletion
-                }
                 BackendEvent::SignerChanged => {
                     this.state_synced_repos.clear();
                     true
                 }
+                BackendEvent::RepoUpdates(_) => true,
                 BackendEvent::Synced => true,
                 _ => false,
             };
@@ -134,10 +113,15 @@ impl RepoListStore {
         let backend = Backend::global(cx);
 
         backend.update(cx, |backend, cx| {
-            backend.sync_bootstrap(filters::all_announcements(), cx);
-            backend.sync_bootstrap(filters::all_states(), cx);
-            // Deletion requests, NIP-09/62, must be known before any announcement is shown.
-            backend.sync_bootstrap(filters::deletions(), cx);
+            backend.sync_bootstraps(
+                vec![
+                    filters::all_announcements(),
+                    filters::all_states(),
+                    // Deletion requests, NIP-09/62, must be known before any announcement is shown.
+                    filters::deletions(),
+                ],
+                cx,
+            );
         });
     }
 

@@ -18,10 +18,6 @@ impl RefreshGate {
         self.running
     }
 
-    /// A new refresh request arrived.
-    ///
-    /// Folded into a follow-up run while one is in flight, otherwise the
-    /// caller starts the run itself.
     pub fn request(&mut self) -> RefreshRequest {
         if self.running {
             self.dirty = true;

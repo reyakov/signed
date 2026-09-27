@@ -18,6 +18,16 @@ pub enum AppearanceMode {
     Dark,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventFetchingStrategy {
+    /// Only the relays declared in the repository announcement.
+    Curated,
+    /// Repository relays plus every maintainer's NIP-65 relays.
+    #[default]
+    Uncensored,
+}
+
 /// Fields mirror the gpui-component `Theme` surface customized at startup.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -141,6 +151,7 @@ pub struct CreateRepositorySettings {
 #[serde(default)]
 pub struct Settings {
     pub appearance: AppearanceMode,
+    pub event_fetching: EventFetchingStrategy,
     pub theme: ThemeSettings,
     pub tab_bar: TabBarSettings,
     pub grasp_servers: GraspServersSettings,
@@ -157,6 +168,7 @@ mod tests {
     fn json_roundtrip_preserves_everything() {
         let settings = Settings {
             appearance: AppearanceMode::Dark,
+            event_fetching: EventFetchingStrategy::Curated,
             theme: ThemeSettings {
                 radius: 8.0,
                 ..Default::default()
@@ -178,9 +190,19 @@ mod tests {
             serde_json::from_str(r#"{"appearance": "dark", "theme": {"radius": 4.0}}"#).unwrap();
         assert_eq!(settings.appearance, AppearanceMode::Dark);
         assert_eq!(settings.theme.radius, 4.0);
+        // Unset fields fall back to their defaults, including the fetching strategy.
+        assert_eq!(settings.event_fetching, EventFetchingStrategy::Uncensored);
         // The rest of the theme and the other groups keep their defaults.
         assert_eq!(settings.theme.light_theme, "Signed Light");
         assert_eq!(settings.grasp_servers, GraspServersSettings::default());
         assert_eq!(settings.create_repository.default_folder, None);
+    }
+
+    #[test]
+    fn event_fetching_uses_snake_case() {
+        let json = serde_json::to_string(&EventFetchingStrategy::Curated).unwrap();
+        assert_eq!(json, r#""curated""#);
+        let parsed: EventFetchingStrategy = serde_json::from_str(r#""uncensored""#).unwrap();
+        assert_eq!(parsed, EventFetchingStrategy::Uncensored);
     }
 }

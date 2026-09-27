@@ -92,38 +92,28 @@ impl ProfileStore {
 
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let backend = Backend::global(cx);
+        let client = backend.read(cx).client();
 
-        let subscription = cx.subscribe(&backend, |this, _backend, event, cx| match event {
-            BackendEvent::NostrUpdate(updates) => {
-                for update in updates
-                    .iter()
-                    .filter(|update| update.kind == Kind::Metadata)
-                {
-                    this.apply_author(update.author, cx);
+        let subscription = cx.subscribe(&backend, |this, _backend, event, cx| {
+            if let BackendEvent::ProfileUpdates(authors) = event {
+                for author in authors {
+                    this.apply_author(*author, cx);
                 }
             }
-            BackendEvent::Published(event) if event.kind == Kind::Metadata => {
-                let metadata = Metadata::from_json(&event.content).unwrap_or_default();
-                this.profiles
-                    .insert(event.pubkey, Profile::new(event.pubkey, metadata));
-                cx.notify();
-            }
-            _ => {}
         });
 
-        // Fetch requests are queued on a channel, batched into one sync per debounce window.
-        let client = backend.read(cx).client();
-        let (sender, receiver) = flume::unbounded::<PublicKey>();
         let entity = cx.entity().downgrade();
+        let entity_clone = entity.clone();
+
+        let (sender, receiver) = flume::unbounded::<PublicKey>();
 
         cx.spawn(async move |_this, cx| {
             Self::handle_requests(entity, &client, &receiver, cx).await
         })
         .detach();
 
-        let weak = cx.entity().downgrade();
         cx.defer(move |cx| {
-            if let Err(error) = weak.update(cx, |this, cx| this.load(cx)) {
+            if let Err(error) = entity_clone.update(cx, |this, cx| this.load(cx)) {
                 log::warn!("profile store dropped before initial load could run: {error}");
             }
         });
@@ -228,8 +218,6 @@ impl ProfileStore {
     }
 
     /// Re-read the latest metadata of every requested author from the local database.
-    ///
-    /// Used after a sync, which produces no NostrUpdate events.
     fn apply_seen(&mut self, cx: &mut Context<Self>) {
         let authors: Vec<PublicKey> = self.seen.borrow().iter().copied().collect();
 
@@ -305,15 +293,20 @@ impl ProfileStore {
 
             // The channel has no async timeout, race the receive against a timer.
             let deadline = Instant::now() + BATCH_TIMEOUT;
+
             loop {
                 let now = Instant::now();
+
                 if now >= deadline {
                     break;
                 }
+
                 let timer = cx.background_executor().timer(deadline - now);
                 futures::pin_mut!(timer);
+
                 let recv = receiver.recv_async();
                 futures::pin_mut!(recv);
+
                 match futures::future::select(recv, timer).await {
                     futures::future::Either::Left((Ok(public_key), _)) => {
                         batch.insert(public_key);
@@ -327,9 +320,6 @@ impl ProfileStore {
                 .kind(Kind::Metadata)
                 .authors(batch.drain().collect::<Vec<PublicKey>>());
 
-            // Negentropy-sync with the bootstrap relays.
-            // Synced events are written to the database directly, no NostrUpdate.
-            // Re-apply from the database afterwards.
             match sync_bootstrap_only(client, filter, SyncOptions::default()).await {
                 Ok(_) => {
                     this.update(cx, |this, cx| this.apply_seen(cx)).ok();

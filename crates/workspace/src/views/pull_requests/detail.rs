@@ -79,8 +79,7 @@ pub struct PullRequestDetailView {
     pane: Entity<DiffPane>,
     commit_item_sizes: Rc<Vec<Size<Pixels>>>,
     commit_scroll_handle: VirtualListScrollHandle,
-    /// The dock caches item panels, so without this observer a panel opened
-    /// before the store loaded would stay on its placeholder.
+    tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
     _subscription: Subscription,
 }
 
@@ -124,6 +123,7 @@ impl PullRequestDetailView {
             pane,
             commit_item_sizes: Rc::new(Vec::new()),
             commit_scroll_handle: VirtualListScrollHandle::new(),
+            tasks: Vec::new(),
             _subscription: subscription,
         }
     }
@@ -327,7 +327,7 @@ impl PullRequestDetailView {
             Ok(())
         });
 
-        task.detach();
+        self.tasks.push(task);
     }
 
     /// Open the diff of `commit_id` in the bottom dock of the area.

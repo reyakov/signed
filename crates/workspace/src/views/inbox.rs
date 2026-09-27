@@ -11,7 +11,7 @@ use gpui::{
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::{ActiveTheme, Icon, IconName, IconNamed, Sizable, StyledExt, h_flex, v_flex};
 use nostr::prelude::{Event, EventId, Kind, PublicKey, Timestamp};
-use signed_core::{COVER_NOTE_KIND, InboxItem, InboxReadState, RepoAddr, filters};
+use signed_core::{InboxItem, InboxReadState, RepoAddr};
 use signed_state::{
     Backend, BackendEvent, ProfileStore, RefreshGate, RefreshRequest, RepoListStore, query_inbox,
 };
@@ -157,21 +157,8 @@ impl InboxView {
 
     fn handle_backend_event(&mut self, event: &BackendEvent, cx: &mut Context<Self>) {
         match event {
-            BackendEvent::NostrUpdate(updates) => {
-                let relevant = updates.iter().any(|update| {
-                    let is_notification = filters::NOTIFICATION_KINDS.contains(&update.kind);
-                    let is_comment = update.kind == Kind::Comment;
-                    let is_event_deletion = update.kind == Kind::EventDeletion;
-                    let is_request_to_vanish = update.kind == Kind::RequestToVanish;
-
-                    is_notification || is_comment || is_event_deletion || is_request_to_vanish
-                });
-
-                if relevant {
-                    self.refresh(cx);
-                }
-            }
-            BackendEvent::Synced | BackendEvent::Published(_) => self.refresh(cx),
+            BackendEvent::RepoUpdates(_) => self.refresh(cx),
+            BackendEvent::Synced => self.refresh(cx),
             _ => {}
         }
     }
@@ -200,12 +187,16 @@ impl InboxView {
         self.refresh.begin();
 
         let backend = Backend::global(cx);
-        let Some(me) = backend.read(cx).current_user() else {
+        let (me, client) = {
+            let backend = backend.read(cx);
+            (backend.current_user(), backend.client())
+        };
+
+        let Some(me) = me else {
             self.refresh.abort();
             return;
         };
 
-        let client = backend.read(cx).client();
         let state = self.state.clone();
 
         let work = cx.background_spawn(async move { query_inbox(&client, me, &state).await });
@@ -570,10 +561,6 @@ fn sub_activity(event: &Event, me: Option<PublicKey>, cx: &App) -> AnyElement {
 }
 
 fn activity_phrase(kind: Kind) -> &'static str {
-    if kind == COVER_NOTE_KIND {
-        return "added a note";
-    }
-
     match kind {
         Kind::GitIssue => "opened an issue",
         Kind::GitPullRequest => "opened a PR",

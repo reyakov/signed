@@ -81,6 +81,8 @@ Both `cx.spawn` and `cx.background_spawn` return a `Task<R>`, which is a future 
 
 A task which doesn't do anything but provide a value can be created with `Task::ready(value)`.
 
+Prefer keeping a task in a field over `.detach()` when the work belongs to a view or store. A detached task outlives the view that started it (for example, a repository panel the user has closed), while a task stored in a field is cancelled when that struct drops. A finished `Task` held in a container is not reaped by GPUI - it stays alive until its handle is dropped - so if the container can accumulate many runs, either drop the finished handles before pushing a new one, or hold a single `Option<Task<_>>` and replace it.
+
 ## Elements
 
 The `Render` trait is used to render some state into an element tree that is laid out using flexbox layout. An `Entity<T>` where `T` implements `Render` is sometimes called a "view".

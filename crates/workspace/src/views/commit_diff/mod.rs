@@ -303,6 +303,7 @@ pub struct CommitDiffView {
     loading: bool,
     error: Option<SharedString>,
     pane: Entity<DiffPane>,
+    tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
 }
 
 impl CommitDiffView {
@@ -336,6 +337,7 @@ impl CommitDiffView {
             loading: true,
             error: None,
             pane,
+            tasks: Vec::new(),
         }
     }
 
@@ -383,7 +385,7 @@ impl CommitDiffView {
                 Ok(())
             });
 
-        task.detach();
+        self.tasks.push(task);
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
