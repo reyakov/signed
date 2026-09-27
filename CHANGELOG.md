@@ -6,6 +6,18 @@
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Deprecated
+
+## v0.2.0-alpha - 2026/09/27
+
+### Added
+
 - Show an avatar in each panel's tab, using the repository owner's profile picture when set and a pixel avatar otherwise
 - Add a Tab Bar setting to hide the previous/next tab buttons, hidden by default
 - Add an Event Fetching Strategy setting, fetching a repository's activity from its announced relays only (Curated) or from every maintainer's relays as well (Uncensored, the default)
@@ -28,8 +40,6 @@
 ### Removed
 
 - Remove cover note support, the kind-1624 GitWorkshop and `ngit` extension outside the NIP-34
-
-### Deprecated
 
 ## v0.1.0-alpha - 2026/09/14
 
