@@ -4,7 +4,7 @@ members = ["crates/*", "desktop"]
 default-members = ["desktop"]
 
 [workspace.package]
-version = "0.1.0-alpha"
+version = "0.2.0-alpha"
 edition = "2024"
 publish = false
 
