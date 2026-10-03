@@ -5,7 +5,8 @@ use gpui_component::{ActiveTheme, StyledExt, WindowExt, h_flex, v_flex};
 use nostr::prelude::PublicKey;
 use signed_core::Announcement;
 use signed_state::ProfileStore;
-use signed_ui::{Avatar, middle_truncate};
+use signed_ui::Avatar;
+use utils::middle_truncate;
 
 pub(super) fn open_about_dialog(announcement: Announcement, window: &mut Window, cx: &mut App) {
     window.open_dialog(cx, move |dialog, _window, cx| {

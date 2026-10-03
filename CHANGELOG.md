@@ -8,9 +8,15 @@
 
 ### Changed
 
+- Surface backend errors as error notifications in the workspace instead of silently dropping them
+- Break ties in repository activity lists by event id, so same-second events order deterministically
+- Restructure the backend around domain types: git operations behind a `Repo` type, the grasp push pipeline behind `GraspPush`, nostr connectivity behind `NostrBackend`, and shared helpers consolidated into `utils`
+
 ### Fixed
 
 ### Removed
+
+- Remove dead code: the unused `login`/`logout` family, the unwired `SyncProgress` pipeline, `merge_pull_request`, inbox mark-read/archive APIs and the wasm32-only code paths
 
 ### Deprecated
 

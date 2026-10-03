@@ -11,7 +11,6 @@ mod title_bar;
 mod tree_row;
 
 pub mod copy_row;
-pub mod util;
 
 pub use avatar::Avatar;
 pub use copy_row::{copy_row, menu_copy_row};
@@ -25,4 +24,3 @@ pub use setting::{SelectOption, setting_block, setting_row};
 pub use status_badge::status_badge;
 pub use title_bar::title_bar_drag_handlers;
 pub use tree_row::tree_row;
-pub use util::middle_truncate;

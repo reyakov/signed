@@ -5,7 +5,6 @@ use std::rc::Rc;
 use anyhow::Error;
 use assets::CustomIconName;
 use dock::{BasePanel, DockArea, Panel, PanelEvent, add_center_panel, panel_handle};
-use gix::Repository;
 use gpui::prelude::*;
 use gpui::{
     Action, Anchor, AnyElement, App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
@@ -24,16 +23,15 @@ use gpui_component::{
 use nostr::nips::nip19::Nip19Coordinate;
 use nostr::prelude::{RelayUrl, ToBech32, Url};
 use signed_core::{Announcement, RepoAddr, RepoStatus};
-use signed_git::FileCommit;
+use signed_git::{FileCommit, GitCache, Repo};
 use signed_state::{
-    Backend, CheckoutStatus, CheckoutsStore, LocalReposStore, Nip34Binding, Nip34Kind,
-    ProfileStore, RepoListStore, RepoStore, ensure_repo_mirror, open_repo_mirror,
-    pr_proposes_checkout,
+    Backend, CheckoutStatus, CheckoutsStore, LocalReposStore, Mirrors, Nip34Binding, Nip34Kind,
+    ProfileStore, RepoListStore, RepoStore,
 };
 use signed_ui::{
-    Avatar, CountBadge, DropdownButton, PixelAvatar, copy_row, menu_copy_row, middle_truncate,
-    ref_selector_trigger,
+    Avatar, CountBadge, DropdownButton, PixelAvatar, copy_row, menu_copy_row, ref_selector_trigger,
 };
+use utils::middle_truncate;
 
 mod about;
 mod actions;
@@ -326,7 +324,7 @@ impl RepoDetailView {
             let task: gpui::Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
                 let data = cx
                     .background_spawn(async move {
-                        let repo = gix::open(&local_path)?;
+                        let repo = Repo::open(&local_path)?;
                         load_repo_data(&repo)
                     })
                     .await;
@@ -360,7 +358,7 @@ impl RepoDetailView {
         let disk = {
             let addr = addr.clone();
             cx.background_spawn(async move {
-                match open_repo_mirror(&addr)? {
+                match Mirrors::open(&addr)? {
                     Some(repo) => Ok(Some(load_repo_data(&repo)?)),
                     None => Ok(None),
                 }
@@ -377,7 +375,7 @@ impl RepoDetailView {
                     let addr = addr.clone();
                     let clone_urls = clone_urls.clone();
                     cx.background_spawn(async move {
-                        let repo = ensure_repo_mirror(&addr, &clone_urls)?;
+                        let repo = Mirrors::ensure(&addr, &clone_urls)?;
                         load_repo_data(&repo)
                     })
                     .await
@@ -404,42 +402,27 @@ impl RepoDetailView {
                 let addr = addr.clone();
 
                 cx.background_spawn(async move {
-                    let Some(repo) = open_repo_mirror(&addr)? else {
+                    let Some(repo) = Mirrors::open(&addr)? else {
                         return Ok::<_, Error>(None);
                     };
 
                     // Best-effort, a fetch failure, e.g. offline, keeps the cached state.
-                    signed_git::fetch_all(&repo).ok();
+                    repo.fetch().ok();
 
-                    let worktree = repo.workdir().map(Path::to_path_buf);
+                    let moved = repo.fast_forward_branches().unwrap_or(false);
 
-                    let moved = match &worktree {
-                        Some(worktree) => {
-                            signed_git::fast_forward_branches(worktree).unwrap_or(false)
-                        }
-                        None => false,
-                    };
-
-                    let (branches, tags) = match &worktree {
-                        Some(_) => (
-                            signed_git::repo_branches(&repo).unwrap_or_default(),
-                            signed_git::repo_tags(&repo).unwrap_or_default(),
-                        ),
-                        None => (Vec::new(), Vec::new()),
-                    };
-
-                    let current_branch = signed_git::current_branch(&repo).unwrap_or(None);
-                    let head_commit = signed_git::head_commit(&repo).unwrap_or(None);
-
-                    Ok::<_, Error>(Some((moved, branches, tags, current_branch, head_commit)))
+                    Ok::<_, Error>(Some((moved, repo.snapshot()?)))
                 })
             }
             .await;
 
             this.update_in(cx, |this, window, cx| {
-                if let Ok(Some((moved, branches, tags, current_branch, head_commit))) = refresh {
-                    let branches: Vec<SharedString> = branches.iter().map(Into::into).collect();
-                    let tags: Vec<SharedString> = tags.iter().map(Into::into).collect();
+                if let Ok(Some((moved, snapshot))) = refresh {
+                    let branches: Vec<SharedString> =
+                        snapshot.branches.iter().map(Into::into).collect();
+                    let tags: Vec<SharedString> = snapshot.tags.iter().map(Into::into).collect();
+                    let current_branch = snapshot.current_branch.clone();
+                    let head_commit = snapshot.head_commit.clone();
 
                     let branches_changed = this.refs.set_branches(
                         branches,
@@ -531,8 +514,8 @@ impl RepoDetailView {
                 .as_ref()
                 .map(|name| name.to_string())
                 .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| addr.identifier.clone());
-            let name = signed_git::sanitize_path_component(&name);
+                .unwrap_or_else(|| addr.identifier().to_owned());
+            let name = GitCache::sanitize_path_component(&name);
 
             if name.is_empty() {
                 "repository".to_owned()
@@ -617,13 +600,12 @@ impl RepoDetailView {
         let task: gpui::Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
+                    let repo = Repo::open(&worktree);
                     match kind {
                         RefKind::Branch => {
-                            signed_git::worktree_checkout_branch(&worktree, &checkout_name)
+                            repo.and_then(|repo| repo.checkout_branch(&checkout_name))
                         }
-                        RefKind::Tag => {
-                            signed_git::worktree_checkout_tag(&worktree, &checkout_name)
-                        }
+                        RefKind::Tag => repo.and_then(|repo| repo.checkout_tag(&checkout_name)),
                     }
                 })
                 .await;
@@ -665,7 +647,7 @@ impl RepoDetailView {
         let task: gpui::Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let snapshot = signed_git::worktree_snapshot(&worktree)?;
+                    let snapshot = Repo::open(&worktree)?.snapshot()?;
                     // Build the tree off the main thread, like [`Self::load_repo`].
                     let tree = build_tree_items(&snapshot.entries);
                     let paths = sorted_worktree_paths(&snapshot.entries);
@@ -716,7 +698,7 @@ impl RepoDetailView {
         let task: gpui::Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let snapshot = signed_git::worktree_snapshot(&worktree)?;
+                    let snapshot = Repo::open(&worktree)?.snapshot()?;
                     let tree = build_tree_items(&snapshot.entries);
                     let paths = sorted_worktree_paths(&snapshot.entries);
                     Ok::<_, Error>((snapshot, tree, paths))
@@ -1523,8 +1505,12 @@ impl RepoDetailView {
                 continue;
             }
             for pr in &store.pull_requests {
-                if pr_proposes_checkout(pr, store.status_of(pr) == RepoStatus::Open, user, &status)
-                {
+                if CheckoutsStore::pr_proposes_checkout(
+                    pr,
+                    store.status_of(pr) == RepoStatus::Open,
+                    user,
+                    &status,
+                ) {
                     continue 'status;
                 }
             }
@@ -1857,7 +1843,7 @@ fn fork_row(announcement: &Announcement, cx: &mut Context<RepoDetailView>) -> Op
                         .map(SharedString::from)
                         .unwrap_or_else(|| SharedString::from(a.id.clone()))
                 })
-                .unwrap_or_else(|| SharedString::from(addr.identifier.clone()));
+                .unwrap_or_else(|| SharedString::from(addr.identifier().to_owned()));
             (SharedString::from(format!("Forked from {name}")), true)
         }
         None => (SharedString::from(upstream.display().as_str()), false),
@@ -1900,7 +1886,7 @@ impl ShareTargets {
     fn from_announcement(announcement: &Announcement) -> Self {
         let addr = announcement.addr();
         let coordinate = addr.to_string();
-        let naddr = Nip19Coordinate::new(addr, announcement.relays.iter().cloned())
+        let naddr = Nip19Coordinate::new(addr.into(), announcement.relays.iter().cloned())
             .to_bech32()
             .expect("a complete coordinate always encodes to naddr");
 
@@ -1952,38 +1938,21 @@ fn truncate_naddr_link(url: &str, tail: usize) -> String {
     format!("{}...{}", &url[..end], &url[url.len() - tail..])
 }
 
-fn load_repo_data(repo: &Repository) -> Result<RepoData, Error> {
-    let entries = signed_git::worktree_entries(repo)?;
-    let tree = build_tree_items(&entries);
-    let readme_path = signed_git::find_readme(repo)?;
-
-    let readme = match &readme_path {
-        Some(path) => signed_git::worktree_read(repo, path)?,
-        None => None,
-    };
-
+fn load_repo_data(repo: &Repo) -> Result<RepoData, Error> {
+    let snapshot = repo.snapshot()?;
     let worktree = repo.workdir().map(Path::to_path_buf);
-    let head_commit = signed_git::head_commit(repo).unwrap_or(None);
-
-    let (branches, tags, current_branch) = match &worktree {
-        Some(_) => (
-            signed_git::repo_branches(repo).unwrap_or_default(),
-            signed_git::repo_tags(repo).unwrap_or_default(),
-            signed_git::current_branch(repo).unwrap_or(None),
-        ),
-        None => (Vec::new(), Vec::new(), None),
-    };
+    let tree = build_tree_items(&snapshot.entries);
 
     Ok(RepoData {
         tree,
-        entries,
-        readme_path,
-        readme,
+        entries: snapshot.entries,
+        readme_path: snapshot.readme_path,
+        readme: snapshot.readme,
         worktree,
-        branches,
-        tags,
-        current_branch,
-        head_commit,
+        branches: snapshot.branches,
+        tags: snapshot.tags,
+        current_branch: snapshot.current_branch,
+        head_commit: snapshot.head_commit,
     })
 }
 

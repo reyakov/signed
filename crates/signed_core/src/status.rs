@@ -1,6 +1,5 @@
 use nostr::prelude::*;
 
-/// Status of a root patch, pull request or issue, kinds `1630..=1633`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RepoStatus {
     Open,
@@ -28,42 +27,30 @@ impl RepoStatus {
             Self::Draft => Kind::GitStatusDraft,
         }
     }
-}
 
-/// NIP-10 and NIP-34 use the lowercase `e` tag.
-///
-/// NIP-22 comments, kind `1111`, use the uppercase `E` tag for the thread root.
-pub fn references_root(event: &Event, root: &EventId) -> bool {
-    let root = root.to_hex();
-    event
-        .tags
-        .iter()
-        .any(|tag| matches!(tag.kind(), "e" | "E") && tag.content() == Some(root.as_str()))
-}
-
-/// Resolve the status of a root event per NIP-34.
-///
-/// Defaults to [`RepoStatus::Open`].
-pub fn resolve_status<'a, I>(
-    status_events: I,
-    root_author: &PublicKey,
-    maintainers: &[PublicKey],
-) -> RepoStatus
-where
-    I: IntoIterator<Item = &'a Event>,
-{
-    status_events
-        .into_iter()
-        .filter(|e| RepoStatus::from_kind(e.kind).is_some())
-        .filter(|e| &e.pubkey == root_author || maintainers.contains(&e.pubkey))
-        .max_by_key(|e| e.created_at)
-        .and_then(|e| RepoStatus::from_kind(e.kind))
-        .unwrap_or(RepoStatus::Open)
+    // Defaults to Open when no authorized status event exists.
+    pub fn resolve<'a, I>(
+        status_events: I,
+        root_author: &PublicKey,
+        maintainers: &[PublicKey],
+    ) -> Self
+    where
+        I: IntoIterator<Item = &'a Event>,
+    {
+        status_events
+            .into_iter()
+            .filter(|e| RepoStatus::from_kind(e.kind).is_some())
+            .filter(|e| &e.pubkey == root_author || maintainers.contains(&e.pubkey))
+            .max_by_key(|e| e.created_at)
+            .and_then(|e| RepoStatus::from_kind(e.kind))
+            .unwrap_or(RepoStatus::Open)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::GitEvent;
 
     const ROOT_ID_HEX: &str = "1111111111111111111111111111111111111111111111111111111111111111";
     const OTHER_ID_HEX: &str = "2222222222222222222222222222222222222222222222222222222222222222";
@@ -94,11 +81,8 @@ mod tests {
             ))
             .expect("signed event");
 
-        assert!(references_root(&event, &root));
-        assert!(!references_root(
-            &event,
-            &EventId::from_hex(OTHER_ID_HEX).expect("valid id")
-        ));
+        assert!(event.references_root(&root));
+        assert!(!event.references_root(&EventId::from_hex(OTHER_ID_HEX).expect("valid id")));
     }
 
     #[test]
@@ -115,7 +99,7 @@ mod tests {
         ];
 
         assert_eq!(
-            resolve_status(
+            RepoStatus::resolve(
                 statuses.iter(),
                 &owner.public_key(),
                 &[maintainer.public_key()]
@@ -140,7 +124,7 @@ mod tests {
         ];
 
         assert_eq!(
-            resolve_status(
+            RepoStatus::resolve(
                 statuses.iter(),
                 &owner.public_key(),
                 &[maintainer.public_key()]

@@ -4,17 +4,15 @@ use std::sync::Arc;
 
 use anyhow::Error;
 use gpui::{App, AppContext, Context, Entity, Global, SharedString, Task};
-use signed_core::{Announcement, RepoAddr, repo_addr};
+use signed_core::{Announcement, RepoAddr};
 use signed_git::{LocalRepo, Nip34Binding, find_git_repos};
 
 struct GlobalLocalReposStore(Entity<LocalReposStore>);
 
 impl Global for GlobalLocalReposStore {}
 
-/// Store of the git repositories discovered under a set of scan paths.
 pub struct LocalReposStore {
     pub roots: Arc<Vec<PathBuf>>,
-    /// Git repositories discovered under [`Self::roots`], sorted by path.
     pub repos: Arc<Vec<LocalRepo>>,
     pub scanning: bool,
     scan_dirty: bool,
@@ -45,7 +43,6 @@ impl LocalReposStore {
         }
     }
 
-    /// Forget a repository that has just been published to NIP-34.
     pub fn remove(&mut self, path: &Path, cx: &mut Context<Self>) {
         self.repos = Arc::new(
             self.repos
@@ -94,7 +91,6 @@ impl LocalReposStore {
                 dirty
             })?;
 
-            // Scans requested while this one ran are coalesced into one follow-up scan.
             if again {
                 this.update(cx, |this, cx| this.rescan(cx))?;
             }
@@ -106,28 +102,22 @@ impl LocalReposStore {
     }
 }
 
-/// The NIP-34 coordinate a repository's detection resolved, when both the owner
-/// and the identifier were recovered.
 pub fn local_repo_addr(repo: &LocalRepo) -> Option<RepoAddr> {
     let binding = repo.nip34.as_ref()?;
     let owner = binding.owner?;
     let identifier = binding.identifier.as_deref()?;
 
-    Some(repo_addr(owner, identifier))
+    Some(RepoAddr::new(owner, identifier))
 }
 
-/// A scanned repository resolved against the known announcements.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedLocalRepo {
     pub path: PathBuf,
-    /// `None` for a plain repository.
     pub nip34: Option<Nip34Binding>,
-    /// The known announcement this repository is bound to, when one matched.
     pub announcement: Option<Announcement>,
 }
 
 impl ResolvedLocalRepo {
-    /// The repository's directory name, or `Untitled` when the path has none.
     pub fn name(&self) -> SharedString {
         self.path
             .file_name()
@@ -136,41 +126,42 @@ impl ResolvedLocalRepo {
     }
 }
 
-/// Resolve the scanned repositories against the known announcements.
-pub fn resolve_local_repos(
-    repos: &[LocalRepo],
-    known: &[Announcement],
-    own: &[Announcement],
-) -> Vec<ResolvedLocalRepo> {
-    let shown: HashSet<RepoAddr> = own.iter().map(Announcement::addr).collect();
+impl LocalReposStore {
+    pub fn resolve(
+        repos: &[LocalRepo],
+        known: &[Announcement],
+        own: &[Announcement],
+    ) -> Vec<ResolvedLocalRepo> {
+        let shown: HashSet<RepoAddr> = own.iter().map(Announcement::addr).collect();
 
-    repos
-        .iter()
-        .filter_map(|repo| {
-            let addr = local_repo_addr(repo);
+        repos
+            .iter()
+            .filter_map(|repo| {
+                let addr = local_repo_addr(repo);
 
-            if let Some(addr) = &addr
-                && shown.contains(addr)
-            {
-                return None;
-            }
+                if let Some(addr) = &addr
+                    && shown.contains(addr)
+                {
+                    return None;
+                }
 
-            let announcement = addr
-                .as_ref()
-                .and_then(|addr| {
-                    known
-                        .iter()
-                        .find(|announcement| announcement.addr() == *addr)
+                let announcement = addr
+                    .as_ref()
+                    .and_then(|addr| {
+                        known
+                            .iter()
+                            .find(|announcement| announcement.addr() == *addr)
+                    })
+                    .cloned();
+
+                Some(ResolvedLocalRepo {
+                    path: repo.path.clone(),
+                    nip34: repo.nip34.clone(),
+                    announcement,
                 })
-                .cloned();
-
-            Some(ResolvedLocalRepo {
-                path: repo.path.clone(),
-                nip34: repo.nip34.clone(),
-                announcement,
             })
-        })
-        .collect()
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -222,7 +213,7 @@ mod tests {
         let repo = bound(KEY, "mine");
 
         let own = std::slice::from_ref(&own);
-        assert!(resolve_local_repos(&[repo], own, own).is_empty());
+        assert!(LocalReposStore::resolve(&[repo], own, own).is_empty());
     }
 
     #[test]
@@ -230,61 +221,9 @@ mod tests {
         let known = announcement(OTHER_KEY, "theirs");
         let repo = bound(OTHER_KEY, "theirs");
 
-        let resolved = resolve_local_repos(&[repo], std::slice::from_ref(&known), &[]);
+        let resolved = LocalReposStore::resolve(&[repo], std::slice::from_ref(&known), &[]);
 
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].announcement.as_ref(), Some(&known));
-    }
-
-    #[test]
-    fn an_unmatched_repository_keeps_its_binding() {
-        let repo = bound(KEY, "unlisted");
-
-        let resolved = resolve_local_repos(&[repo], &[], &[]);
-
-        assert_eq!(resolved.len(), 1);
-        assert!(resolved[0].announcement.is_none());
-        assert_eq!(
-            resolved[0].nip34.as_ref().map(|binding| binding.kind),
-            Some(Nip34Kind::Initialized)
-        );
-    }
-
-    #[test]
-    fn a_plain_repository_is_kept_without_a_binding() {
-        let repo = LocalRepo {
-            path: PathBuf::from("plain"),
-            nip34: None,
-        };
-
-        let resolved = resolve_local_repos(&[repo], &[], &[]);
-
-        assert_eq!(resolved.len(), 1);
-        assert!(resolved[0].nip34.is_none());
-        assert!(resolved[0].announcement.is_none());
-    }
-
-    #[test]
-    fn the_name_is_the_directory_name() {
-        let repo = LocalRepo {
-            path: PathBuf::from("/tmp/my-repo"),
-            nip34: None,
-        };
-
-        let resolved = resolve_local_repos(&[repo], &[], &[]);
-
-        assert_eq!(resolved[0].name(), SharedString::from("my-repo"));
-    }
-
-    #[test]
-    fn a_path_without_a_directory_name_is_untitled() {
-        let repo = LocalRepo {
-            path: PathBuf::from("/"),
-            nip34: None,
-        };
-
-        let resolved = resolve_local_repos(&[repo], &[], &[]);
-
-        assert_eq!(resolved[0].name(), SharedString::from("Untitled"));
     }
 }

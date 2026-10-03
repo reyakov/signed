@@ -228,7 +228,7 @@ impl RepoListView {
                             .map(SharedString::from)
                             .unwrap_or_else(|| SharedString::from(a.id.clone()))
                     })
-                    .unwrap_or_else(|| SharedString::from(addr.identifier.clone()));
+                    .unwrap_or_else(|| SharedString::from(addr.identifier().to_owned()));
                 Some(SharedString::from(format!("forked from {name}")))
             });
 

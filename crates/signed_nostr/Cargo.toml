@@ -8,12 +8,7 @@ publish.workspace = true
 nostr-sdk.workspace = true
 nostr-connect.workspace = true
 nostr-gossip-memory.workspace = true
+nostr-lmdb.workspace = true
 
 anyhow.workspace = true
 webbrowser.workspace = true
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-nostr-memory.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-nostr-lmdb.workspace = true

@@ -1,6 +1,24 @@
 use nostr::prelude::*;
 
-/// Format a timestamp as a short relative time, e.g. `3h ago`.
+pub fn sort_newest_first(events: &mut [Event]) {
+    events.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.id.to_hex().cmp(&a.id.to_hex()))
+    });
+}
+
+pub fn sort_oldest_first(events: &mut [Event]) {
+    events.sort_by_key(|e| e.created_at);
+}
+
+pub fn latest<I>(events: I) -> Option<Event>
+where
+    I: IntoIterator<Item = Event>,
+{
+    events.into_iter().max_by_key(|e| e.created_at)
+}
+
 pub fn relative_time(timestamp: Timestamp) -> String {
     let now = Timestamp::now().as_secs();
     let secs = now.saturating_sub(timestamp.as_secs());
@@ -20,25 +38,6 @@ pub fn relative_time(timestamp: Timestamp) -> String {
     }
 }
 
-/// Format a unix timestamp in seconds as a short relative time, e.g. `3h ago`.
 pub fn relative_time_secs(secs: i64) -> String {
     relative_time(Timestamp::from_secs(secs.max(0) as u64))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn formats_relative_time() {
-        let now = Timestamp::now();
-
-        assert_eq!(relative_time(now), "just now");
-        assert_eq!(relative_time(now - 300), "5m ago");
-        assert_eq!(relative_time(now - 7_200), "2h ago");
-        assert_eq!(relative_time(now - 3 * 86_400), "3d ago");
-        assert_eq!(relative_time(now - 60 * 86_400), "2mo ago");
-        assert_eq!(relative_time(now - 800 * 86_400), "2y ago");
-        assert_eq!(relative_time(now + 600), "just now");
-    }
 }

@@ -13,7 +13,7 @@ use gpui_component::{ActiveTheme, Icon, IconName, IconNamed, Sizable, StyledExt,
 use nostr::prelude::{Event, EventId, Kind, PublicKey, Timestamp};
 use signed_core::{InboxItem, InboxReadState, RepoAddr};
 use signed_state::{
-    Backend, BackendEvent, ProfileStore, RefreshGate, RefreshRequest, RepoListStore, query_inbox,
+    Backend, BackendEvent, Inbox, ProfileStore, RefreshGate, RefreshRequest, RepoListStore,
 };
 use signed_ui::{Avatar, CountBadge};
 use utils::relative_time;
@@ -199,7 +199,7 @@ impl InboxView {
 
         let state = self.state.clone();
 
-        let work = cx.background_spawn(async move { query_inbox(&client, me, &state).await });
+        let work = cx.background_spawn(async move { Inbox::query(&client, me, &state).await });
 
         self.tasks.push(cx.spawn(async move |this, cx| {
             let (threads, unread_count) = match work.await {

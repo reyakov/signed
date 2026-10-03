@@ -10,16 +10,13 @@ use gpui::{
 use nostr_sdk::prelude::*;
 use utils::shorten_pubkey;
 
-use crate::backend::{Backend, BackendEvent, sync_bootstrap_only};
+use crate::backend::{Backend, BackendEvent};
+use crate::bootstrap::sync_bootstrap_only;
 
-/// How long to wait for more requests before firing a batched fetch.
 const BATCH_TIMEOUT: Duration = Duration::from_millis(500);
-/// Max authors per profile request, keeping each filter within relay limits.
 const REQUEST_CHUNK: usize = 100;
-/// Recent profiles prefetched at startup and read back from the cache.
 const WARM_LIMIT: usize = 500;
 
-/// A user profile as plain data for the UI, from the kind-0 metadata.
 #[derive(Debug, Clone)]
 pub struct Profile {
     public_key: PublicKey,
@@ -42,7 +39,7 @@ impl Profile {
         &self.metadata
     }
 
-    /// Display name, falling back to `name`, then a shortened npub.
+    // Falls back to `name`, then a shortened npub.
     pub fn name(&self) -> SharedString {
         if let Some(display_name) = self.metadata.display_name.as_ref()
             && !display_name.is_empty()
@@ -68,14 +65,9 @@ impl Profile {
     }
 }
 
-/// Global profile cache.
-///
-/// Profiles are fetched in batches and kept as plain data.
 pub struct ProfileStore {
     profiles: HashMap<PublicKey, Profile>,
-    /// Public keys requested this session, main thread only.
     seen: RefCell<HashSet<PublicKey>>,
-    /// Sender for queuing fetch requests, batched by a background task.
     sender: Sender<PublicKey>,
     _subscription: Subscription,
 }
@@ -125,9 +117,7 @@ impl ProfileStore {
         }
     }
 
-    /// Get a profile.
-    ///
-    /// Returns a placeholder with default metadata. Queues a fetch when the profile is not cached yet.
+    // Returns a placeholder until fetched; queues a fetch when uncached.
     pub fn get(&self, public_key: &PublicKey) -> Profile {
         if let Some(profile) = self.profiles.get(public_key) {
             return profile.clone();
@@ -178,7 +168,6 @@ impl ProfileStore {
         .detach();
     }
 
-    /// Re-read the latest metadata of `authors` from the local database in one query.
     fn apply_authors(&mut self, authors: Vec<PublicKey>, cx: &mut Context<Self>) {
         if authors.is_empty() {
             return;
@@ -231,13 +220,11 @@ impl ProfileStore {
         .detach();
     }
 
-    /// Re-read the latest metadata of every requested author from the local database.
     fn apply_seen(&mut self, cx: &mut Context<Self>) {
         let authors: Vec<PublicKey> = self.seen.borrow().iter().copied().collect();
         self.apply_authors(authors, cx);
     }
 
-    /// Fetch metadata for requested authors in batches, debounced to collect requests.
     async fn handle_requests(
         this: WeakEntity<ProfileStore>,
         client: &Client,

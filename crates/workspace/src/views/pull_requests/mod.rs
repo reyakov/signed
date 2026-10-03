@@ -14,7 +14,7 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, VirtualListScrollHandle, h_flex, v_flex, v_virtual_list,
 };
 use nostr::prelude::{EventId, Kind};
-use signed_core::{RepoStatus, activity_subject};
+use signed_core::{GitEvent, RepoStatus};
 use signed_state::{ProfileStore, RepoStore};
 use signed_ui::{Avatar, DropdownButton, SegmentButton, placeholder, status_badge};
 use utils::relative_time;
@@ -159,7 +159,7 @@ impl PullRequestsView {
     fn render_row(&self, ix: usize, pr_ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let pr = &self.store.read(cx).pull_requests[pr_ix];
         let pr_id = pr.id;
-        let title = activity_subject(pr);
+        let title = pr.activity_subject();
         let id_hex = pr.id.to_hex();
 
         let age = relative_time(pr.created_at);

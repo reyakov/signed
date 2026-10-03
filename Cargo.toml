@@ -22,7 +22,6 @@ settings = { path = "crates/settings" }
 
 nostr = { git = "https://github.com/rust-nostr/nostr", features = ["nip59", "nip49", "nip44", "os-rng"] }
 nostr-lmdb = { git = "https://github.com/rust-nostr/nostr" }
-nostr-memory = { git = "https://github.com/rust-nostr/nostr" }
 nostr-blossom = { git = "https://github.com/rust-nostr/nostr" }
 nostr-gossip-memory = { git = "https://github.com/rust-nostr/nostr" }
 nostr-connect = { git = "https://github.com/rust-nostr/nostr" }

@@ -1,7 +1,8 @@
 use dock::{DockArea, DockEvent, DockLayout, DockPlacement, SignedDockSkin, panel_handle};
 use gpui::prelude::*;
 use gpui::{Context, Entity, Render, Subscription, Window, div, px};
-use gpui_component::{Root, StyledExt, Theme};
+use gpui_component::notification::NotificationType;
+use gpui_component::{Root, StyledExt, Theme, WindowExt};
 use settings::{AppearanceMode, SettingsStore};
 use signed_state::{Backend, BackendEvent};
 
@@ -65,6 +66,10 @@ impl Workspace {
             |_this, _state, event, window, cx| {
                 if matches!(event, BackendEvent::PassphraseRequired) {
                     passphrase_dialog::open(window, cx);
+                }
+
+                if let BackendEvent::Error(message) = event {
+                    window.push_notification((NotificationType::Error, message.clone()), cx);
                 }
             },
         ));

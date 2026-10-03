@@ -8,7 +8,7 @@ use gpui_component::input::TextareaState;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, StyledExt, h_flex, v_flex};
 use nostr::prelude::EventId;
-use signed_core::activity_subject;
+use signed_core::GitEvent;
 use signed_state::{ProfileStore, RepoStore};
 use signed_ui::{Avatar, placeholder, status_badge};
 use utils::relative_time;
@@ -103,7 +103,7 @@ impl Render for IssueDetailView {
             };
 
             (
-                activity_subject(issue),
+                issue.activity_subject(),
                 profile.name(),
                 profile.picture(),
                 store.status_of(issue),

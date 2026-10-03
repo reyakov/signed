@@ -21,7 +21,7 @@ use nostr::prelude::RelayUrl;
 use signed_core::{Announcement, RepoAddr};
 use signed_state::{
     Backend, BackendEvent, CheckoutsStore, LocalReposStore, Nip34Binding, Nip34Kind, Profile,
-    ProfileStore, RepoListStore, ResolvedLocalRepo, resolve_local_repos,
+    ProfileStore, RepoListStore, ResolvedLocalRepo,
 };
 use signed_ui::{Avatar, NavItem, PixelAvatar, title_bar_drag_handlers};
 
@@ -136,7 +136,7 @@ impl SidebarPanel {
 
             let local = LocalReposStore::global(cx).read(cx);
             let local_repos =
-                resolve_local_repos(&local.repos, &repo_list.announcements, &announcements);
+                LocalReposStore::resolve(&local.repos, &repo_list.announcements, &announcements);
 
             (announcements, local_repos, local.scanning)
         };

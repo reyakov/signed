@@ -21,12 +21,9 @@ use gpui_component::{
     v_virtual_list,
 };
 use nostr::prelude::{Event, EventId, Kind, Url};
-use signed_core::{
-    RepoAddr, activity_subject, branch_name_of, clone_urls_of, current_commit_of, latest_update,
-    merge_base_of, pull_request_patch,
-};
-use signed_git::{FileCommit, patch_commits, patch_diffs};
-use signed_state::{Backend, ProfileStore, RepoStore, ensure_repo_mirror};
+use signed_core::{GitEvent, PullRequest, RepoAddr};
+use signed_git::{FileCommit, PatchParser};
+use signed_state::{Backend, Mirrors, ProfileStore, RepoStore};
 use signed_ui::{Avatar, CountBadge, placeholder, status_badge};
 use utils::{relative_time, relative_time_secs};
 
@@ -145,23 +142,24 @@ impl PullRequestDetailView {
                     .iter()
                     .find(|pr| pr.id == self.pr_id && pr.kind == Kind::GitPullRequest)
                     .map(|root| {
-                        let update = latest_update(store.pull_requests.iter(), root);
+                        let update = PullRequest::latest_update(store.pull_requests.iter(), root);
 
                         let tip = update
-                            .and_then(current_commit_of)
-                            .or_else(|| current_commit_of(root));
+                            .and_then(GitEvent::current_commit)
+                            .or_else(|| root.current_commit());
 
                         let base = update
-                            .and_then(merge_base_of)
-                            .or_else(|| merge_base_of(root));
+                            .and_then(GitEvent::merge_base)
+                            .or_else(|| root.merge_base());
 
-                        let clone_urls = clone_urls_of(root)
+                        let clone_urls = root
+                            .clone_urls()
                             .or_else(|| store.announcement.as_ref().map(|a| a.clone.clone()))
                             .unwrap_or_default();
 
                         PrBinding {
                             description: root.content.clone(),
-                            patch: pull_request_patch(root, store.patches.iter()),
+                            patch: PullRequest::new(root).patch(store.patches.iter()),
                             tip,
                             base,
                             clone_urls,
@@ -235,14 +233,14 @@ impl PullRequestDetailView {
             let nostr_diff = cx
                 .background_spawn({
                     let patch = patch.clone();
-                    async move { patch_diffs(&patch) }
+                    async move { PatchParser::patch_diffs(&patch) }
                 })
                 .await;
 
             let nostr_commits = cx
                 .background_spawn({
                     let patch = patch.clone();
-                    async move { patch_commits(&patch) }
+                    async move { PatchParser::patch_commits(&patch) }
                 })
                 .await;
 
@@ -263,9 +261,10 @@ impl PullRequestDetailView {
 
                 Some(
                     cx.background_spawn(async move {
-                        let repo = ensure_repo_mirror(&addr, &clone_urls)?;
+                        let repo = Mirrors::ensure(&addr, &clone_urls)?;
+                        let gix_repo = repo.inner();
 
-                        let workdir = repo
+                        let workdir = gix_repo
                             .workdir()
                             .ok_or_else(|| anyhow::anyhow!("repository has no worktree"))?
                             .to_path_buf();
@@ -277,17 +276,16 @@ impl PullRequestDetailView {
                             Some(base) => base,
                             // No `merge-base` tag. Use the merge base of the tip and the default branch.
                             None => {
-                                let head = repo
+                                let head = gix_repo
                                     .head_id()
                                     .map_err(|_| anyhow::anyhow!("repository has no HEAD"))?;
-                                let tip_id = repo.rev_parse_single(tip.as_bytes())?;
-                                repo.merge_base(tip_id, head)?.to_string()
+                                let tip_id = gix_repo.rev_parse_single(tip.as_bytes())?;
+                                gix_repo.merge_base(tip_id, head)?.to_string()
                             }
                         };
 
-                        let diff = signed_git::worktree_commit_range_diff(&workdir, &base, &tip)?;
-                        let commits =
-                            signed_git::worktree_commit_range_commits(&workdir, &base, &tip)?;
+                        let diff = repo.range_diff(&base, &tip)?;
+                        let commits = repo.commit_range(&base, &tip)?;
 
                         Ok::<_, anyhow::Error>((diff, commits, workdir))
                     })
@@ -620,9 +618,9 @@ impl PullRequestDetailView {
                 return div().into_any_element();
             };
             (
-                activity_subject(root),
+                root.activity_subject(),
                 store.status_of(root),
-                branch_name_of(root),
+                root.branch_name(),
                 root.pubkey,
             )
         };

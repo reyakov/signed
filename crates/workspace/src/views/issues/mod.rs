@@ -16,7 +16,7 @@ use gpui_component::{
     ActiveTheme, Icon, VirtualListScrollHandle, WindowExt, h_flex, v_flex, v_virtual_list,
 };
 use nostr::prelude::EventId;
-use signed_core::{RepoStatus, activity_subject};
+use signed_core::{GitEvent, RepoStatus};
 use signed_state::{ProfileStore, RepoStore};
 use signed_ui::{Avatar, SegmentButton, placeholder, status_badge};
 use utils::relative_time;
@@ -146,7 +146,7 @@ impl IssuesView {
 
     fn render_row(&self, ix: usize, issue_ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let issue = &self.store.read(cx).issues[issue_ix];
-        let title = activity_subject(issue);
+        let title = issue.activity_subject();
         let id_hex = issue.id.to_hex();
         let profile = ProfileStore::global(cx).read(cx).get(&issue.pubkey);
         let author = profile.name();

@@ -1,10 +1,8 @@
 use nostr_sdk::prelude::*;
 
-/// A lightweight change notification for the UI.
 #[derive(Debug, Clone)]
 pub struct Update {
     pub kind: Kind,
-    /// First `a` tag value of the event, if any, for example the repository coordinate.
     pub coordinate: Option<Coordinate>,
     pub author: PublicKey,
 }

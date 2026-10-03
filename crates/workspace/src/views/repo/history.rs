@@ -8,7 +8,7 @@ use gpui::{Context, Entity, Pixels, Render, Size, Task, WeakEntity, Window, div,
 use gpui_component::scroll::Scrollbar;
 use gpui_component::spinner::Spinner;
 use gpui_component::{ActiveTheme, Sizable, VirtualListScrollHandle, v_flex, v_virtual_list};
-use signed_git::CommitList;
+use signed_git::{CommitList, Repo};
 use signed_state::RepoStore;
 use signed_ui::placeholder;
 
@@ -69,7 +69,9 @@ impl RepoHistoryView {
 
         let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { signed_git::worktree_all_commits(&worktree) })
+                .background_spawn(async move {
+                    Repo::open_cached(&worktree).and_then(|repo| repo.all_commits())
+                })
                 .await;
 
             this.update(cx, |this, cx| {

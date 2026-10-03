@@ -8,7 +8,6 @@ use nostr_connect::client::AuthUrlHandler;
 use nostr_sdk::error::Error as SignerError;
 use nostr_sdk::prelude::*;
 
-/// A type-erased signer whose inner signer can be swapped in-place.
 #[derive(Clone, Debug)]
 pub struct UniversalSigner {
     inner: Arc<RwLock<Arc<dyn InnerSigner>>>,
@@ -27,7 +26,6 @@ impl UniversalSigner {
         }
     }
 
-    /// Swap the inner signer in-place. All clones see the new signer.
     pub fn swap_inner<T>(&self, new_signer: T)
     where
         T: AsyncGetPublicKey + AsyncSignEvent + AsyncNip44 + 'static,
@@ -160,7 +158,6 @@ impl AsyncNip44 for UniversalSigner {
     }
 }
 
-/// Opens the NIP-46 auth URL in the default browser.
 #[derive(Debug, Clone)]
 pub struct SignedAuthUrlHandler;
 

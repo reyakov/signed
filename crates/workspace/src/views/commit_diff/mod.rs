@@ -17,7 +17,9 @@ use gpui_component::tree::{TreeEntry, TreeItem, TreeState, tree};
 use gpui_component::{
     ActiveTheme, Sizable, StyledExt, VirtualListScrollHandle, h_flex, v_flex, v_virtual_list,
 };
-use signed_git::{CommitDiff, DiffHunk, DiffLine, DiffLineKind, DiffStatus, FileCommit, FileDiff};
+use signed_git::{
+    CommitDiff, DiffHunk, DiffLine, DiffLineKind, DiffStatus, FileCommit, FileDiff, Repo,
+};
 use signed_state::RepoStore;
 use signed_ui::{placeholder, tree_row};
 use utils::relative_time_secs;
@@ -355,14 +357,14 @@ impl CommitDiffView {
                     .background_spawn({
                         let worktree = worktree.clone();
                         let id = id.clone();
-                        async move { signed_git::worktree_commit(&worktree, &id) }
+                        async move { Repo::open(&worktree).and_then(|repo| repo.commit(&id)) }
                     })
                     .await;
                 let diff = cx
                     .background_spawn({
                         let worktree = worktree.clone();
                         let id = id.clone();
-                        async move { signed_git::worktree_commit_diff(&worktree, &id) }
+                        async move { Repo::open(&worktree).and_then(|repo| repo.commit_diff(&id)) }
                     })
                     .await;
 

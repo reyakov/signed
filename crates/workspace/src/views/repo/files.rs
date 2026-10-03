@@ -11,7 +11,7 @@ use gpui_component::spinner::Spinner;
 use gpui_component::text::{TextView, TextViewState};
 use gpui_component::tree::{TreeEntry, TreeState, tree};
 use gpui_component::{ActiveTheme, Sizable, StyledExt, h_flex, v_flex};
-use signed_git::{FileCommit, WorktreeSnapshot};
+use signed_git::{FileCommit, Repo, WorktreeSnapshot};
 use signed_ui::{placeholder, tree_row};
 
 use crate::views::tree::{TreeItemSeed, tree_items};
@@ -611,9 +611,9 @@ impl RepoFilesView {
         let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let rels: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
             let result = cx
-                .background_spawn(
-                    async move { signed_git::worktree_last_commits(&worktree, &rels) },
-                )
+                .background_spawn(async move {
+                    Repo::open_cached(&worktree).and_then(|repo| repo.last_commits(&rels))
+                })
                 .await;
 
             this.update(cx, |this, cx| {

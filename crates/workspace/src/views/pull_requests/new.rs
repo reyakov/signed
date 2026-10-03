@@ -21,15 +21,11 @@ use gpui_component::{
     v_virtual_list,
 };
 use nostr::prelude::*;
-use signed_core::{Announcement, RepoAddr, fork_candidates};
-use signed_git::{
-    delete_refs_with_prefix, fetch_repo_refs, fork_namespace, merge_base, refs_with_prefix,
-    worktree_commit_range_commits, worktree_commit_range_diff,
-};
-use signed_state::{
-    Backend, CheckoutsStore, RepoListStore, RepoStore, ensure_repo_mirror, repo_mirror_path,
-};
+use signed_core::{Announcement, RepoAddr};
+use signed_git::{GitCache, Repo};
+use signed_state::{Backend, CheckoutsStore, Mirrors, RepoListStore, RepoStore};
 use signed_ui::{CountBadge, placeholder, ref_selector_trigger};
+use utils::middle_truncate;
 
 use crate::views::commit_diff::{COMMIT_ROW_HEIGHT, CommitDiffView, DiffPane, commit_row};
 use crate::views::{repo_tab_avatar, tab_title};
@@ -104,17 +100,8 @@ fn shorten_owner(owner: &PublicKey) -> String {
     hex.chars().take(10).collect()
 }
 
-/// Truncate a label for the fixed-width controls of the compare bar.
 fn truncate_label(label: &str) -> SharedString {
-    const MAX: usize = 18;
-    let mut chars = label.chars();
-    let (prefix, rest) = (chars.by_ref().take(MAX).collect::<String>(), chars.next());
-    let label = if rest.is_some() {
-        format!("{}…", &prefix[..prefix.len().saturating_sub(1)])
-    } else {
-        prefix
-    };
-    SharedString::from(label)
+    SharedString::from(middle_truncate(label, 18, 0))
 }
 
 fn checkout_source_item(
@@ -407,10 +394,12 @@ impl NewPullRequestView {
                     .background_spawn({
                         let path = path.clone();
                         async move {
-                            let repo = gix::open(Path::new(&path)).ok()?;
-                            let branches =
-                                signed_git::worktree_branches(Path::new(&path)).unwrap_or_default();
-                            let current = signed_git::current_branch(&repo).ok().flatten();
+                            let repo = Repo::try_open(Path::new(&path));
+                            let branches = repo
+                                .as_ref()
+                                .and_then(|repo| repo.branches().ok())
+                                .unwrap_or_default();
+                            let current = repo.as_ref().and_then(|repo| repo.current_branch());
                             Some((branches, current))
                         }
                     })
@@ -520,7 +509,7 @@ impl NewPullRequestView {
         };
         let user = Backend::global(cx).read(cx).current_user();
         let announcements = RepoListStore::global(cx).read(cx).announcements.clone();
-        fork_candidates(&announcements, &base, euc.as_deref(), user)
+        Announcement::forks_in(&announcements, &base, euc.as_deref(), user)
             .into_iter()
             .cloned()
             .collect()
@@ -540,8 +529,8 @@ impl NewPullRequestView {
         let Some((base, _euc)) = self.base_repo(cx) else {
             return;
         };
-        let mirror_path = repo_mirror_path(&base);
-        let namespace = fork_namespace(&announcement);
+        let mirror_path = Mirrors::path(&base);
+        let namespace = GitCache::fork_namespace(&announcement);
         let clone_urls = announcement.clone.clone();
 
         let base_clone_urls: Vec<Url> = self
@@ -575,14 +564,14 @@ impl NewPullRequestView {
                         let clone_urls = clone_urls.clone();
                         let mirror_path = mirror_path.clone();
                         async move {
-                            ensure_repo_mirror(&base, &base_clone_urls)?;
+                            Mirrors::ensure(&base, &base_clone_urls)?;
+                            let repo = Repo::open(&mirror_path)?;
 
                             // Prune stale imports of any fork. Then import this fork's heads under its namespace.
-                            delete_refs_with_prefix(&mirror_path, "refs/fork")?;
+                            repo.delete_refs_with_prefix("refs/fork")?;
 
                             // Fetch the fork's refs and import them under the fork's namespace.
-                            fetch_repo_refs(
-                                &mirror_path,
+                            repo.fetch_refs(
                                 &clone_urls,
                                 &format!("+refs/heads/*:refs/fork/{namespace}/*"),
                             )?;
@@ -602,12 +591,12 @@ impl NewPullRequestView {
                             };
 
                             let base_branches = strip(
-                                refs_with_prefix(&mirror_path, "refs/remotes/origin")?,
+                                repo.refs_with_prefix("refs/remotes/origin")?,
                                 "refs/remotes/origin",
                             );
 
                             let compare_branches = strip(
-                                refs_with_prefix(&mirror_path, &format!("refs/fork/{namespace}"))?,
+                                repo.refs_with_prefix(&format!("refs/fork/{namespace}"))?,
                                 &format!("refs/fork/{namespace}"),
                             );
 
@@ -781,24 +770,17 @@ impl NewPullRequestView {
                         let base_name = base_name.clone();
                         let compare_name = compare_name.clone();
                         async move {
-                            let merge_base = merge_base(Path::new(&repo_path), &base, &compare)?
-                                .ok_or_else(|| {
+                            let repo = Repo::open(Path::new(&repo_path))?;
+                            let merge_base =
+                                repo.merge_base(&base, &compare)?.ok_or_else(|| {
                                     anyhow::anyhow!(
                                         "{base_name} and {compare_name} share no common ancestor"
                                     )
                                 })?;
 
-                            let commits = worktree_commit_range_commits(
-                                Path::new(&repo_path),
-                                &merge_base,
-                                &compare,
-                            )?;
+                            let commits = repo.commit_range(&merge_base, &compare)?;
 
-                            let diff = worktree_commit_range_diff(
-                                Path::new(&repo_path),
-                                &merge_base,
-                                &compare,
-                            )?;
+                            let diff = repo.range_diff(&merge_base, &compare)?;
 
                             Ok::<_, anyhow::Error>((merge_base, commits, diff))
                         }

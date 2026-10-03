@@ -23,7 +23,7 @@ static CURRENT_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// On Windows, this is `%APPDATA%\Signed`.
 static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-pub fn home_dir() -> PathBuf {
+fn home_dir() -> PathBuf {
     dirs::home_dir().expect("failed to determine home directory")
 }
 
@@ -41,7 +41,7 @@ pub fn documents_dir() -> PathBuf {
     dirs::document_dir().unwrap_or_else(|| dirs::home_dir().unwrap_or_default())
 }
 
-pub fn config_dir() -> &'static PathBuf {
+fn config_dir() -> &'static PathBuf {
     CONFIG_DIR.get_or_init(|| {
         if cfg!(target_os = "windows") {
             dirs::config_dir()
@@ -60,7 +60,7 @@ pub fn config_dir() -> &'static PathBuf {
     })
 }
 
-pub fn data_dir() -> &'static PathBuf {
+fn data_dir() -> &'static PathBuf {
     CURRENT_DATA_DIR.get_or_init(|| {
         if cfg!(target_os = "macos") {
             home_dir()

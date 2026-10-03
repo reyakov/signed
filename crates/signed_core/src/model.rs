@@ -2,44 +2,30 @@ use std::collections::HashSet;
 
 use nostr::prelude::*;
 
-use crate::{RepoAddr, repo_addr};
+use crate::RepoAddr;
 
-/// Parsed NIP-34 repository announcement, plain data ready for the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Announcement {
-    /// ID of the announcement event itself.
     pub event_id: EventId,
-    /// Repository ID, the `d` tag.
     pub id: String,
-    /// Author of the announcement event.
     pub owner: PublicKey,
-    /// When the announcement was published, used for latest-wins resolution.
     pub created_at: Timestamp,
     pub name: Option<String>,
     pub description: Option<String>,
-    /// Webpage URLs for browsing.
     pub web: Vec<Url>,
-    /// URLs for `git clone`.
     pub clone: Vec<Url>,
-    /// Relays the repository monitors for patches and issues.
     pub relays: Vec<RelayUrl>,
-    /// Earliest unique commit ID, the `r` tag with `euc` marker.
     pub euc: Option<String>,
-    /// Other recognized maintainers.
     pub maintainers: Vec<PublicKey>,
-    /// Marks the repository as a subordinate fork of the upstream, per NIP-34.
     pub upstream: Option<Upstream>,
-    /// Hashtags labelling the repository, the `t` tags.
     pub hashtags: Vec<String>,
 }
 
-/// The `u` tag of a fork announcement, per NIP-34.
+// The `u` tag of a fork announcement, per NIP-34.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upstream {
-    /// Raw first value of the `u` tag, a coordinate or git URL.
     pub raw: String,
-    /// Upstream repository coordinate when the `u` tag names a NIP-34 repository.
-    /// `None` for the git-URL form.
+    // `None` for the git-URL form.
     pub addr: Option<RepoAddr>,
 }
 
@@ -49,7 +35,8 @@ impl Upstream {
         let addr = coordinate
             .parse::<Coordinate>()
             .ok()
-            .filter(|c| c.kind == Kind::GitRepoAnnouncement);
+            .filter(|coordinate| coordinate.kind == Kind::GitRepoAnnouncement)
+            .map(RepoAddr::from);
         Self {
             raw: raw.to_owned(),
             addr,
@@ -64,216 +51,266 @@ impl Upstream {
     }
 }
 
-/// Subject of a NIP-34 issue or pull request event.
-/// Taken from the `subject` tag, else the first non-empty line of the content.
-pub fn activity_subject(event: &Event) -> String {
-    let subject = event
-        .tags
-        .iter()
-        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
-            Ok(Nip34Tag::Subject(subject)) => Some(subject),
-            _ => None,
-        });
+pub trait GitEvent {
+    fn activity_subject(&self) -> String;
 
-    subject
-        .or_else(|| {
-            event
-                .content
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .map(|value| value.to_string())
-        })
-        .unwrap_or("Untitled".to_string())
+    fn current_commit(&self) -> Option<String>;
+
+    fn merge_base(&self) -> Option<String>;
+
+    fn clone_urls(&self) -> Option<Vec<Url>>;
+
+    fn branch_name(&self) -> Option<String>;
+
+    fn is_git_activity(&self) -> bool;
+
+    // Matches both NIP-10 lowercase `e` and NIP-22 uppercase `E` root pointers.
+    fn references_root(&self, root: &EventId) -> bool;
 }
 
-/// The patch set of a pull request.
-///
-/// Returns an empty list when no patch event can be linked to the PR.
-pub fn pull_request_patches<'a>(
-    pr: &Event,
-    patches: impl IntoIterator<Item = &'a Event>,
-) -> Vec<&'a Event> {
-    let patches: Vec<&'a Event> = patches.into_iter().collect();
+impl GitEvent for Event {
+    fn activity_subject(&self) -> String {
+        let subject = self
+            .tags
+            .iter()
+            .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
+                Ok(Nip34Tag::Subject(subject)) => Some(subject),
+                _ => None,
+            });
+
+        subject
+            .or_else(|| {
+                self.content
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .map(|value| value.to_string())
+            })
+            .unwrap_or("Untitled".to_string())
+    }
+
+    fn current_commit(&self) -> Option<String> {
+        self.tags
+            .iter()
+            .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
+                Ok(Nip34Tag::CurrentCommit(commit)) => Some(commit.to_string()),
+                _ => None,
+            })
+    }
+
+    fn merge_base(&self) -> Option<String> {
+        self.tags
+            .iter()
+            .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
+                Ok(Nip34Tag::MergeBase(commit)) => Some(commit.to_string()),
+                _ => None,
+            })
+    }
+
+    fn clone_urls(&self) -> Option<Vec<Url>> {
+        self.tags
+            .iter()
+            .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
+                Ok(Nip34Tag::Clone(urls)) => Some(urls),
+                _ => None,
+            })
+    }
+
+    fn branch_name(&self) -> Option<String> {
+        self.tags
+            .iter()
+            .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
+                Ok(Nip34Tag::BranchName(name)) => Some(name),
+                _ => None,
+            })
+    }
+
+    fn is_git_activity(&self) -> bool {
+        match self.kind {
+            Kind::GitIssue | Kind::GitPatch | Kind::GitPullRequest => true,
+            Kind::Comment => crate::filters::is_git_comment(self),
+            Kind::GitStatusOpen
+            | Kind::GitStatusApplied
+            | Kind::GitStatusClosed
+            | Kind::GitStatusDraft => crate::filters::is_git_status(self),
+            _ => false,
+        }
+    }
+
+    fn references_root(&self, root: &EventId) -> bool {
+        let root = root.to_hex();
+        self.tags
+            .iter()
+            .any(|tag| matches!(tag.kind(), "e" | "E") && tag.content() == Some(root.as_str()))
+    }
+}
+
+impl<T: GitEvent + ?Sized> GitEvent for &T {
+    fn activity_subject(&self) -> String {
+        (*self).activity_subject()
+    }
+
+    fn current_commit(&self) -> Option<String> {
+        (*self).current_commit()
+    }
+
+    fn merge_base(&self) -> Option<String> {
+        (*self).merge_base()
+    }
+
+    fn clone_urls(&self) -> Option<Vec<Url>> {
+        (*self).clone_urls()
+    }
+
+    fn branch_name(&self) -> Option<String> {
+        (*self).branch_name()
+    }
+
+    fn is_git_activity(&self) -> bool {
+        (*self).is_git_activity()
+    }
+
+    fn references_root(&self, root: &EventId) -> bool {
+        (*self).references_root(root)
+    }
+}
+
+pub struct PullRequest<'a>(pub &'a Event);
+
+impl<'a> PullRequest<'a> {
+    pub fn new(event: &'a Event) -> Self {
+        Self(event)
+    }
 
     // The PR references its root patch via an `e` tag.
-    // Follow the NIP-10 reply chain forward from there.
-    // Each patch replies to the previous one, and among several replies the newest wins.
-    if let Some(root_id) = pr.tags.event_ids().next()
-        && let Some(root) = patches.iter().find(|patch| patch.id == root_id)
-    {
-        return forward_series(root, &patches);
-    }
+    pub fn patches(&self, patches: impl IntoIterator<Item = &'a Event>) -> Vec<&'a Event> {
+        let pr = self.0;
+        let patches: Vec<&'a Event> = patches.into_iter().collect();
 
-    // The PR has no `e` tag.
-    // The last patch of the set carries the tip commit in its `commit` or `r` tag.
-    // Walk the reply chain backward to the root.
-    let Some(tip) = current_commit_of(pr) else {
-        return Vec::new();
-    };
-    let Some(last) = patches
-        .iter()
-        .filter(|patch| patch_produces_commit(patch, &tip))
-        .max_by_key(|patch| patch.created_at)
-        .copied()
-    else {
-        return Vec::new();
-    };
+        if let Some(root_id) = pr.tags.event_ids().next()
+            && let Some(root) = patches.iter().find(|patch| patch.id == root_id)
+        {
+            return Self::forward_series(root, &patches);
+        }
 
-    let mut series = vec![last];
-    loop {
-        let Some(prev_id) = series.last().unwrap().tags.event_ids().next() else {
-            break;
+        let Some(tip) = pr.current_commit() else {
+            return Vec::new();
         };
-        let Some(prev) = patches
+        let Some(last) = patches
             .iter()
-            .find(|patch| patch.id == prev_id && !series.contains(patch))
+            .filter(|patch| Self::patch_produces_commit(patch, &tip))
+            .max_by_key(|patch| patch.created_at)
             .copied()
         else {
-            break;
+            return Vec::new();
         };
-        series.push(prev);
-    }
-    series.reverse();
-    series
-}
 
-pub fn pull_request_patch<'a>(pr: &Event, patches: impl IntoIterator<Item = &'a Event>) -> String {
-    let patches: Vec<&'a Event> = patches.into_iter().collect();
-    let series = pull_request_patches(pr, patches.iter().copied());
-    if series.is_empty() {
-        return pr.content.clone();
-    }
-    series
-        .iter()
-        .map(|patch| patch.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The chain of patches replying to `root` via NIP-10 `e` tags, oldest first.
-fn forward_series<'a>(root: &'a Event, patches: &[&'a Event]) -> Vec<&'a Event> {
-    let mut series = vec![root];
-    loop {
-        let next = patches
-            .iter()
-            .filter(|patch| !series.contains(patch))
-            .filter(|patch| {
-                patch
-                    .tags
-                    .event_ids()
-                    .any(|id| id == series.last().unwrap().id)
-            })
-            .max_by_key(|patch| patch.created_at);
-        let Some(next) = next else {
-            break;
-        };
-        series.push(next);
-    }
-    series
-}
-
-/// The `c` tag of an event, the tip of the proposed branch, as hex.
-pub fn current_commit_of(event: &Event) -> Option<String> {
-    event
-        .tags
-        .iter()
-        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
-            Ok(Nip34Tag::CurrentCommit(commit)) => Some(commit.to_string()),
-            _ => None,
-        })
-}
-
-/// The `merge-base` tag of an event, the base commit a pull request diffs against.
-pub fn merge_base_of(event: &Event) -> Option<String> {
-    event
-        .tags
-        .iter()
-        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
-            Ok(Nip34Tag::MergeBase(commit)) => Some(commit.to_string()),
-            _ => None,
-        })
-}
-
-/// The `clone` tag of an event, URLs the tip commit can be fetched from.
-pub fn clone_urls_of(event: &Event) -> Option<Vec<Url>> {
-    event
-        .tags
-        .iter()
-        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
-            Ok(Nip34Tag::Clone(urls)) => Some(urls),
-            _ => None,
-        })
-}
-
-/// The `branch-name` tag of an event, the proposed branch's name.
-pub fn branch_name_of(event: &Event) -> Option<String> {
-    event
-        .tags
-        .iter()
-        .find_map(|tag| match Nip34Tag::parse(tag.as_slice()) {
-            Ok(Nip34Tag::BranchName(name)) => Some(name),
-            _ => None,
-        })
-}
-
-/// The newest `GitPullRequestUpdate` revising `root`, from the root's own author.
-///
-/// A pull request's tip is only mutable by its author, per NIP-34; updates
-/// from anyone else are ignored even if they are newer.
-pub fn latest_update<'a>(
-    events: impl Iterator<Item = &'a Event>,
-    root: &Event,
-) -> Option<&'a Event> {
-    let root_hex = root.id.to_hex();
-    events
-        .filter(|e| e.kind == Kind::GitPullRequestUpdate)
-        .filter(|e| e.pubkey == root.pubkey)
-        .filter(|e| {
-            e.tags
+        let mut series = vec![last];
+        loop {
+            let Some(prev_id) = series.last().unwrap().tags.event_ids().next() else {
+                break;
+            };
+            let Some(prev) = patches
                 .iter()
-                .any(|t| t.kind() == "E" && t.content() == Some(root_hex.as_str()))
-        })
-        .max_by_key(|e| e.created_at)
-}
-
-/// The announced forks of `base` a new pull request compare can be built from.
-///
-/// The user's own forks are listed first.
-pub fn fork_candidates<'a>(
-    announcements: &'a [Announcement],
-    base: &RepoAddr,
-    base_euc: Option<&str>,
-    user: Option<PublicKey>,
-) -> Vec<&'a Announcement> {
-    let (mut own, mut others) = (Vec::new(), Vec::new());
-    for announcement in announcements {
-        if announcement.clone.is_empty() || !announcement.is_fork_of(base, base_euc) {
-            continue;
+                .find(|patch| patch.id == prev_id && !series.contains(patch))
+                .copied()
+            else {
+                break;
+            };
+            series.push(prev);
         }
-        if Some(announcement.owner) == user {
-            own.push(announcement);
-        } else {
-            others.push(announcement);
-        }
+        series.reverse();
+        series
     }
-    own.into_iter().chain(others).collect()
-}
 
-/// Whether `patch` produces `commit`, found via its `commit` or `r` tag.
-///
-/// It lets clients find existing patches for a specific commit.
-fn patch_produces_commit(patch: &Event, commit: &str) -> bool {
-    patch
-        .tags
-        .iter()
-        .any(|tag| match Nip34Tag::parse(tag.as_slice()) {
-            Ok(Nip34Tag::Commit(c) | Nip34Tag::Reference(c)) => c.to_string() == commit,
-            _ => false,
-        })
+    // Falls back to the root event's content when no patch set is found.
+    pub fn patch(&self, patches: impl IntoIterator<Item = &'a Event>) -> String {
+        let pr = self.0;
+        let patches: Vec<&'a Event> = patches.into_iter().collect();
+        let series = self.patches(patches.iter().copied());
+        if series.is_empty() {
+            return pr.content.clone();
+        }
+        series
+            .iter()
+            .map(|patch| patch.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    // A pull request's tip is only mutable by its author per NIP-34,
+    // updates from anyone else are ignored even if they are newer.
+    pub fn latest_update(
+        events: impl Iterator<Item = &'a Event>,
+        root: &Event,
+    ) -> Option<&'a Event> {
+        let root_hex = root.id.to_hex();
+        events
+            .filter(|e| e.kind == Kind::GitPullRequestUpdate)
+            .filter(|e| e.pubkey == root.pubkey)
+            .filter(|e| {
+                e.tags
+                    .iter()
+                    .any(|t| t.kind() == "E" && t.content() == Some(root_hex.as_str()))
+            })
+            .max_by_key(|e| e.created_at)
+    }
+
+    fn forward_series(root: &'a Event, patches: &[&'a Event]) -> Vec<&'a Event> {
+        let mut series = vec![root];
+        loop {
+            let next = patches
+                .iter()
+                .filter(|patch| !series.contains(patch))
+                .filter(|patch| {
+                    patch
+                        .tags
+                        .event_ids()
+                        .any(|id| id == series.last().unwrap().id)
+                })
+                .max_by_key(|patch| patch.created_at);
+            let Some(next) = next else {
+                break;
+            };
+            series.push(next);
+        }
+        series
+    }
+
+    // Lets clients find existing patches for a specific commit.
+    fn patch_produces_commit(patch: &Event, commit: &str) -> bool {
+        patch
+            .tags
+            .iter()
+            .any(|tag| match Nip34Tag::parse(tag.as_slice()) {
+                Ok(Nip34Tag::Commit(c) | Nip34Tag::Reference(c)) => c.to_string() == commit,
+                _ => false,
+            })
+    }
 }
 
 impl Announcement {
+    // The user's own forks are listed first.
+    pub fn forks_in<'a>(
+        announcements: &'a [Announcement],
+        base: &RepoAddr,
+        base_euc: Option<&str>,
+        user: Option<PublicKey>,
+    ) -> Vec<&'a Announcement> {
+        let (mut own, mut others) = (Vec::new(), Vec::new());
+        for announcement in announcements {
+            if announcement.clone.is_empty() || !announcement.is_fork_of(base, base_euc) {
+                continue;
+            }
+            if Some(announcement.owner) == user {
+                own.push(announcement);
+            } else {
+                others.push(announcement);
+            }
+        }
+        own.into_iter().chain(others).collect()
+    }
+
     /// Parse a kind `30617` event.
     ///
     /// Returns `None` when the kind is wrong or the `d` tag is missing.
@@ -337,18 +374,14 @@ impl Announcement {
     }
 
     pub fn addr(&self) -> RepoAddr {
-        repo_addr(self.owner, self.id.clone())
+        RepoAddr::new(self.owner, self.id.clone())
     }
 
-    /// The name of the repository, or a default if none is provided.
     pub fn name(&self) -> String {
         self.name.clone().unwrap_or("Untitled".into())
     }
 
-    /// Whether this announcement is a fork of the repository at `base`.
-    /// Its `u` tag points at `base`, which also covers permanent forks whose EUC diverged.
-    ///
-    /// Or it shares `base`'s earliest unique commit and is not the base itself.
+    // The `u` tag pointing at `base` also covers permanent forks whose EUC diverged.
     pub fn is_fork_of(&self, base: &RepoAddr, base_euc: Option<&str>) -> bool {
         if self.addr() == *base {
             return false;
@@ -359,17 +392,14 @@ impl Announcement {
         base_euc.is_some_and(|euc| self.euc.as_deref() == Some(euc))
     }
 
-    /// The description of the repository, or a default if none is provided.
     pub fn description(&self) -> String {
         self.description
             .clone()
             .unwrap_or("No description".to_string())
     }
 
-    /// The effective maintainers of this repository,
-    /// the announced `maintainers` plus the announcement author.
-    ///
-    /// A `u` tag that marks the repository as a subordinate fork excludes them, per NIP-34.
+    // A `u` tag marking the repository as a subordinate fork excludes the
+    // announcement author from the maintainers, per NIP-34.
     pub fn effective_maintainers(&self) -> Vec<PublicKey> {
         let mut maintainers = self.maintainers.clone();
         if self.upstream.is_none() && !maintainers.contains(&self.owner) {
@@ -378,7 +408,6 @@ impl Announcement {
         maintainers
     }
 
-    /// The `git clone` URLs for this repository, deduplicated.
     pub fn clone_urls(&self) -> Vec<String> {
         let mut seen = HashSet::new();
         self.clone
@@ -472,7 +501,6 @@ mod tests {
 
         let announcement = Announcement::from_event(&event).expect("parses");
 
-        // An invalid URL keeps the whole clone tag from being parsed.
         assert!(announcement.clone.is_empty());
         assert_eq!(
             announcement.relays,
@@ -495,11 +523,9 @@ mod tests {
         let announcement = Announcement::from_event(&event).expect("parses");
         let upstream = announcement.upstream.expect("parses the u tag");
 
-        // The coordinate part resolves to a repository address.
-        // The raw value keeps the `|git-url` suffix.
         assert_eq!(
             upstream.addr,
-            Some(crate::repo_addr(
+            Some(RepoAddr::new(
                 PublicKey::from_hex(MAINTAINER_HEX).expect("valid pubkey"),
                 "upstream"
             ))
@@ -516,34 +542,27 @@ mod tests {
 
     #[test]
     fn is_fork_of_matches_the_u_tag_coordinate() {
-        // The base repository, announced by the `u` tag's owner.
-        let base = crate::repo_addr(
+        let base = RepoAddr::new(
             PublicKey::from_hex(MAINTAINER_HEX).expect("valid pubkey"),
             "upstream",
         );
         let event = announcement_event(&[&["d", "my-fork"], &["u", &base.to_string()]]);
         let fork = Announcement::from_event(&event).expect("parses");
 
-        // A `u` tag pointing at the base address marks a fork.
-        // This holds even when neither side announces an EUC.
         assert!(fork.is_fork_of(&base, None));
     }
 
     #[test]
     fn is_fork_of_matches_a_shared_euc() {
         let euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
-        // The base repo has no `u` tag. It announces the family EUC.
         let base_event = announcement_event(&[&["d", "upstream"], &["r", euc, "euc"]]);
         let base = Announcement::from_event(&base_event).expect("parses");
         let base_addr = base.addr();
 
-        // A fork with no `u` tag, a pure mirror or cross-hosted clone, shares the EUC.
-        // Clients of the family can then find it.
         let fork_event = announcement_event(&[&["d", "mirror"], &["r", euc, "euc"]]);
         let fork = Announcement::from_event(&fork_event).expect("parses");
         assert!(fork.is_fork_of(&base_addr, base.euc.as_deref()));
 
-        // An unrelated repository with a different EUC is not a fork.
         let other_event = announcement_event(&[
             &["d", "other"],
             &["r", "bb231c4c6a5777dc89b42207b499891a344add5c", "euc"],
@@ -551,15 +570,12 @@ mod tests {
         let other = Announcement::from_event(&other_event).expect("parses");
         assert!(!other.is_fork_of(&base_addr, base.euc.as_deref()));
 
-        // Without a base EUC there is nothing to compare against.
         assert!(!fork.is_fork_of(&base_addr, None));
     }
 
     #[test]
     fn is_fork_of_matches_permanent_forks_with_a_diverged_euc() {
-        // A permanent fork re-announces its EUC, the first commit after the fork.
-        // Only the `u` tag still relates it to the base.
-        let base = crate::repo_addr(
+        let base = RepoAddr::new(
             PublicKey::from_hex(MAINTAINER_HEX).expect("valid pubkey"),
             "upstream",
         );
@@ -581,8 +597,6 @@ mod tests {
         let announcement = Announcement::from_event(&event).expect("parses");
         let maintainers = announcement.effective_maintainers();
 
-        // The owner asserts themselves as a maintainer of the primary project, per NIP-34.
-        // Announced co-maintainers are included too.
         assert_eq!(maintainers.len(), 2);
         assert!(maintainers.contains(&announcement.owner));
         assert!(maintainers.contains(&PublicKey::from_hex(MAINTAINER_HEX).expect("valid pubkey")));
@@ -599,8 +613,6 @@ mod tests {
         let announcement = Announcement::from_event(&event).expect("parses");
         let maintainers = announcement.effective_maintainers();
 
-        // A `u` tag marks the repository as a subordinate fork.
-        // The author is then not a maintainer of the primary project, per NIP-34.
         assert!(!maintainers.contains(&announcement.owner));
         assert_eq!(
             maintainers,
@@ -625,18 +637,16 @@ mod tests {
 
     #[test]
     fn pull_request_patch_joins_the_whole_patch_set() {
-        // A PR references the root patch, per NIP-34.
-        // Later patches of the set reply to the previous one via NIP-10 `e` tags.
         let root = patch_event("patch-one", vec![], 100);
         let second = patch_event("patch-two", vec![Tag::event(root.id)], 200);
         let pr = pr_event("description", vec![Tag::event(root.id)]);
 
         assert_eq!(
-            pull_request_patch(&pr, [&root, &second]),
+            PullRequest::new(&pr).patch([&root, &second]),
             "patch-one\npatch-two"
         );
         assert_eq!(
-            pull_request_patches(&pr, [&root, &second]),
+            PullRequest::new(&pr).patches([&root, &second]),
             vec![&root, &second]
         );
     }
@@ -648,7 +658,7 @@ mod tests {
         let third = patch_event("patch-three", vec![Tag::event(second.id)], 300);
         let pr = pr_event("description", vec![Tag::event(root.id)]);
 
-        let series = pull_request_patches(&pr, [&third, &root, &second]);
+        let series = PullRequest::new(&pr).patches([&third, &root, &second]);
         assert_eq!(
             series
                 .iter()
@@ -660,8 +670,6 @@ mod tests {
 
     #[test]
     fn pull_request_patches_finds_the_set_via_the_tip_commit() {
-        // PRs without an `e` tag fall back to the patch producing the tip commit.
-        // Walk the reply chain backward to the root.
         let root = patch_event("patch-one", vec![], 100);
         let tip = "1111111111111111111111111111111111111111";
         let last = patch_event(
@@ -677,7 +685,7 @@ mod tests {
             vec![Tag::parse(["c", tip]).expect("valid tag")],
         );
 
-        let series = pull_request_patches(&pr, [&root, &last]);
+        let series = PullRequest::new(&pr).patches([&root, &last]);
         assert_eq!(
             series
                 .iter()
@@ -721,7 +729,6 @@ mod tests {
                 created_at,
             )
         };
-        // An update revising a different PR must be ignored even though it is newer.
         let unrelated = signed_at(
             Kind::GitPullRequestUpdate,
             vec![Tag::parse(["E", OTHER_ROOT_HEX]).expect("valid tag")],
@@ -729,7 +736,7 @@ mod tests {
         );
 
         let events = [unrelated, revision(200), root.clone(), revision(300)];
-        let latest = latest_update(events.iter(), &root).expect("an update");
+        let latest = PullRequest::latest_update(events.iter(), &root).expect("an update");
 
         assert_eq!(latest.created_at.as_secs(), 300);
         assert_eq!(latest.kind, Kind::GitPullRequestUpdate);
@@ -749,9 +756,7 @@ mod tests {
             .finalize(&other)
             .expect("signed event");
 
-        // The tip of a PR is only mutable by its author.
-        // A newer update from anyone else must not win.
-        assert!(latest_update([&stranger, &root].into_iter(), &root).is_none());
+        assert!(PullRequest::latest_update([&stranger, &root].into_iter(), &root).is_none());
     }
 
     const OWNER_KEYS: [&str; 3] = [
@@ -784,12 +789,10 @@ mod tests {
         let euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
         let clone = "https://grasp.example/npub1x/my-fork.git";
 
-        let base_addr = crate::repo_addr(
+        let base_addr = RepoAddr::new(
             PublicKey::from_hex(OWNER_KEYS[0]).expect("pubkey"),
             "upstream",
         );
-        // Newest first, as RepoListStore keeps them.
-        // Unrelated repo, the user's fork with the shared EUC, another fork with a `u` tag.
         let all = vec![
             owned_announcements(
                 2,
@@ -819,7 +822,7 @@ mod tests {
         ];
 
         let user = PublicKey::from_hex(OWNER_KEYS[1]).expect("pubkey");
-        let forks = fork_candidates(&all, &base_addr, Some(euc), Some(user));
+        let forks = Announcement::forks_in(&all, &base_addr, Some(euc), Some(user));
 
         let ids: Vec<&str> = forks.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, vec!["my-fork", "their-fork"]);
@@ -829,7 +832,7 @@ mod tests {
     fn fork_candidates_excludes_base_unrelated_and_unfetchable() {
         let euc = "aa231c4c6a5777dc89b42207b499891a344add5c";
         let base_owner = PublicKey::from_hex(OWNER_KEYS[0]).expect("pubkey");
-        let base_addr = crate::repo_addr(base_owner, "upstream");
+        let base_addr = RepoAddr::new(base_owner, "upstream");
 
         let mut all = vec![
             owned_announcements(0, &[&["d", "upstream"], &["r", euc, "euc"]])
@@ -859,11 +862,10 @@ mod tests {
             .unwrap(),
         ];
 
-        let forks = fork_candidates(&all, &base_addr, Some(euc), Some(base_owner));
+        let forks = Announcement::forks_in(&all, &base_addr, Some(euc), Some(base_owner));
         assert_eq!(forks.len(), 1);
         assert_eq!(forks[0].id, "mirror");
 
-        // Without a base EUC only `u`-tag forks match.
         all.push(
             owned_announcements(
                 2,
@@ -876,7 +878,7 @@ mod tests {
             .pop()
             .unwrap(),
         );
-        let forks = fork_candidates(&all, &base_addr, None, Some(base_owner));
+        let forks = Announcement::forks_in(&all, &base_addr, None, Some(base_owner));
         let ids: Vec<&str> = forks.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, vec!["u-fork"]);
     }

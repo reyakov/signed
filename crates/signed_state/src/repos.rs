@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::Error;
 use gpui::{App, AppContext, Context, Entity, Global, Subscription};
 use nostr_sdk::prelude::*;
-use signed_core::{Announcement, Deletions, RepoAddr, filters, repo_addr};
+use signed_core::{Announcement, Deletions, Filters, RepoAddr, filters};
 
 use crate::backend::{Backend, BackendEvent};
 use crate::refresh::{RefreshGate, RefreshRequest};
@@ -17,37 +17,27 @@ struct GlobalRepoListStore(Entity<RepoListStore>);
 
 impl Global for GlobalRepoListStore {}
 
-/// NIP-34 activity event counts per repository, ranking the explore list by popularity.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RepoActivityCounts {
-    /// Root `30611` issue events addressed to the repository.
     pub issues: u32,
-    /// Root `3063` pull request events addressed to the repository.
-    ///
-    /// PR updates are not new PRs and do not count.
+    // PR updates are not new PRs and do not count.
     pub pull_requests: u32,
-    /// `1617` patch events addressed to the repository.
     pub commits: u32,
 }
 
 impl RepoActivityCounts {
-    /// Total issues, pull requests and commits, the popularity ranking key.
+    // The popularity ranking key.
     pub fn score(self) -> u32 {
         self.issues + self.pull_requests + self.commits
     }
 }
 
-/// Store listing the discovered repository announcements, newest first.
 pub struct RepoListStore {
-    /// Shared so views can clone the list per frame without a deep copy.
+    // Shared so views can clone the list per frame without a deep copy.
     pub announcements: Arc<Vec<Announcement>>,
-    /// Latest known activity timestamp per repository.
     pub last_activity: Arc<HashMap<RepoAddr, Timestamp>>,
-    /// Issues, pull requests and commits per repository.
-    ///
-    /// Used for the Popular ranking of the explore list.
+    // For the Popular ranking of the explore list.
     pub counts: Arc<HashMap<RepoAddr, RepoActivityCounts>>,
-    /// Own repositories whose state events were fetched from their announced relays.
     state_synced_repos: HashSet<RepoAddr>,
     refresh: RefreshGate,
     _subscription: Subscription,
@@ -100,7 +90,6 @@ impl RepoListStore {
         }
     }
 
-    /// The announcements of `user`, newest first.
     pub fn announcements_of(&self, user: &PublicKey) -> Vec<Announcement> {
         self.announcements
             .iter()
@@ -115,17 +104,16 @@ impl RepoListStore {
         backend.update(cx, |backend, cx| {
             backend.sync_bootstraps(
                 vec![
-                    filters::all_announcements(),
-                    filters::all_states(),
+                    Filters::all_announcements(),
+                    Filters::all_states(),
                     // Deletion requests, NIP-09/62, must be known before any announcement is shown.
-                    filters::deletions(),
+                    Filters::deletions(),
                 ],
                 cx,
             );
         });
     }
 
-    /// Fetch the state events of the user's own repositories.
     fn sync_own_repo_states(&mut self, cx: &mut Context<Self>) {
         let backend = Backend::global(cx);
         let Some(me) = backend.read(cx).current_user() else {
@@ -144,15 +132,13 @@ impl RepoListStore {
             self.state_synced_repos.insert(addr.clone());
 
             backend.update(cx, |backend, cx| {
-                backend.connect_repo_relays(relays, vec![filters::state(&addr)], cx);
+                backend.connect_repo_relays(relays, vec![addr.state_filter()], cx);
             });
         }
     }
 
-    /// Re-query the local database.
-    ///
-    /// Runs immediately. The backend pump already batches the relay events that
-    /// trigger a refresh, so no per-store debounce is needed.
+    // Runs immediately: the backend pump already batches the relay events
+    // that trigger a refresh, so no per-store debounce is needed.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.refresh.request() != RefreshRequest::Schedule {
             return;
@@ -168,14 +154,14 @@ impl RepoListStore {
         let client = backend.read(cx).client();
 
         let work = cx.background_spawn(async move {
-            let filter = filters::all_announcements();
+            let filter = Filters::all_announcements();
             let events = client.database().query(filter).await?;
 
-            let deletion_events = client.database().query(filters::deletions()).await?;
+            let deletion_events = client.database().query(Filters::deletions()).await?;
             let deletions = Deletions::from_events(deletion_events);
 
-            // Dedup and sort off the main thread.
-            // Only the final list crosses back into the entity.
+            // Dedup and sort off the main thread; only the final list crosses
+            // back into the entity.
             let mut by_repo: HashMap<RepoAddr, Announcement> = HashMap::new();
 
             for event in events {
@@ -213,14 +199,13 @@ impl RepoListStore {
                 let Some(id) = event.tags.identifier() else {
                     continue;
                 };
-                let addr = repo_addr(event.pubkey, id);
+                let addr = RepoAddr::new(event.pubkey, id);
                 let Some(entry) = last_activity.get_mut(&addr) else {
                     continue;
                 };
                 *entry = (*entry).max(event.created_at);
             }
 
-            // Bound the activity query to a recent window.
             // Older repos fall back to their announcement or state timestamps.
             let activity_filter = Filter::new()
                 .kinds(filters::ACTIVITY_KINDS)
@@ -230,10 +215,11 @@ impl RepoListStore {
                 if deletions.is_deleted(&event) {
                     continue;
                 }
-                for addr in event.tags.coordinates() {
-                    if addr.kind != Kind::GitRepoAnnouncement {
+                for coordinate in event.tags.coordinates() {
+                    if coordinate.kind != Kind::GitRepoAnnouncement {
                         continue;
                     }
+                    let addr = RepoAddr::from(coordinate.clone());
                     let Some(entry) = last_activity.get_mut(&addr) else {
                         continue;
                     };
@@ -241,8 +227,8 @@ impl RepoListStore {
                 }
             }
 
-            // Popularity counts per repository, issues, pull requests and patches.
-            // Unbounded, unlike the windowed activity query above, so totals are exact.
+            // Unbounded, unlike the windowed activity query above, so totals
+            // are exact.
             let mut counts: HashMap<RepoAddr, RepoActivityCounts> = HashMap::new();
             let count_filter =
                 Filter::new().kinds([Kind::GitIssue, Kind::GitPullRequest, Kind::GitPatch]);
@@ -251,12 +237,13 @@ impl RepoListStore {
                 if deletions.is_deleted(&event) {
                     continue;
                 }
-                for addr in event.tags.coordinates() {
-                    if addr.kind != Kind::GitRepoAnnouncement || !last_activity.contains_key(&addr)
+                for coordinate in event.tags.coordinates() {
+                    if coordinate.kind != Kind::GitRepoAnnouncement
+                        || !last_activity.contains_key(&RepoAddr::from(coordinate.clone()))
                     {
                         continue;
                     }
-                    let entry = counts.entry(addr).or_default();
+                    let entry = counts.entry(RepoAddr::from(coordinate)).or_default();
                     match event.kind {
                         Kind::GitIssue => entry.issues += 1,
                         Kind::GitPullRequest => entry.pull_requests += 1,
@@ -272,7 +259,6 @@ impl RepoListStore {
         cx.spawn(async move |this, cx| {
             let (announcements, last_activity, counts) = match work.await {
                 Ok(results) => results,
-                // Database errors are transient, keep the last list.
                 Err(_) => {
                     return this.update(cx, |this, _cx| {
                         this.refresh.abort();
@@ -290,8 +276,6 @@ impl RepoListStore {
                 this.refresh.finish()
             })?;
 
-            // Requests that arrived while the refresh was running.
-            // They are coalesced into one follow-up refresh.
             if again {
                 this.update(cx, |this, cx| this.refresh(cx))?;
             }

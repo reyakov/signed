@@ -882,12 +882,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "btreecap"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6160c957d8aa33d0a8ba1dbab98e3cb57023ad9374c501441e88559f99e6c4c9"
-
-[[package]]
 name = "built"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5742,17 +5736,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nostr-memory"
-version = "0.45.2"
-source = "git+https://github.com/rust-nostr/nostr#01f1950c671b35f3d1186ca907373dd86ee3b336"
-dependencies = [
- "btreecap",
- "nostr",
- "nostr-database",
- "tokio",
-]
-
-[[package]]
 name = "nostr-sdk"
 version = "0.45.4"
 source = "git+https://github.com/rust-nostr/nostr#01f1950c671b35f3d1186ca907373dd86ee3b336"
@@ -8151,6 +8134,7 @@ version = "0.2.0-alpha"
 dependencies = [
  "nostr",
  "serde",
+ "utils",
 ]
 
 [[package]]
@@ -8178,7 +8162,6 @@ dependencies = [
  "nostr-connect",
  "nostr-gossip-memory",
  "nostr-lmdb",
- "nostr-memory",
  "nostr-sdk",
  "webbrowser",
 ]
