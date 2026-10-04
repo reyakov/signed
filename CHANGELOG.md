@@ -6,8 +6,11 @@
 
 ### Added
 
+- Add an identity import dialog, importing an existing identity by pasting its `nsec` secret key (encrypted with a new passphrase), NIP-49 `ncryptsec` (unlocked with its passphrase), or `bunker://` NIP-46 URI
+
 ### Changed
 
+- Increase the default theme corner radii from 2 to 4 and large radii from 6 to 8
 - Surface backend errors as error notifications in the workspace instead of silently dropping them
 - Break ties in repository activity lists by event id, so same-second events order deterministically
 - Restructure the backend around domain types: git operations behind a `Repo` type, the grasp push pipeline behind `GraspPush`, nostr connectivity behind `NostrBackend`, and shared helpers consolidated into `utils`
