@@ -28,7 +28,6 @@ pub enum EventFetchingStrategy {
     Uncensored,
 }
 
-/// Fields mirror the gpui-component `Theme` surface customized at startup.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeSettings {
@@ -46,6 +45,7 @@ pub struct ThemeSettings {
     pub radius_lg: f32,
     /// Whether focused controls draw a ring outside their border.
     pub focus_ring: bool,
+    /// Whether to apply a shadow to elements.
     pub shadow: bool,
 }
 
@@ -56,8 +56,8 @@ impl Default for ThemeSettings {
             dark_theme: "Signed Dark".into(),
             font_size: 16.0,
             mono_font_size: 13.0,
-            radius: 2.0,
-            radius_lg: 6.0,
+            radius: 4.0,
+            radius_lg: 8.0,
             focus_ring: false,
             shadow: false,
         }
@@ -102,7 +102,10 @@ impl Default for GraspServersSettings {
 #[serde(default)]
 pub struct LocalReposSettings {
     /// The directories scanned for local git repositories,
-    /// defaults to the user's Desktop and Documents folders.
+    /// Defaults:
+    ///
+    /// - `~/Desktop`
+    /// - `~/Documents`
     pub scan_paths: Vec<PathBuf>,
 }
 

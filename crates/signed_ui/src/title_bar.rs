@@ -9,11 +9,6 @@ struct WindowDragState {
 }
 
 /// Make an element behave like a window title bar.
-/// Dragging it moves the window.
-/// Double-clicking zooms the window.
-/// On macOS it runs the platform's default title-bar double-click action.
-/// Only the bar's non-interactive areas should get this.
-/// Tabs are draggable to reorder panels and must not move the window.
 pub fn title_bar_drag_handlers(
     this: Stateful<Div>,
     window: &mut Window,

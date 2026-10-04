@@ -4,8 +4,6 @@ use gpui_base::{Button as BaseButton, StyledExt};
 use gpui_component::ActiveTheme;
 
 /// A small count badge shown after a label.
-/// Used on segmented filter buttons, like `All 12`, and on tabs.
-/// Rendered from theme tokens and sized for the compact header buttons it lives on.
 #[derive(IntoElement)]
 pub struct CountBadge {
     count: usize,

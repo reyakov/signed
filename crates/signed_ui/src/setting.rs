@@ -4,8 +4,6 @@ use gpui_component::searchable_list::SearchableListItem;
 use gpui_component::{ActiveTheme, StyledExt, h_flex, v_flex};
 
 /// A dropdown option with a display label and a stored value.
-/// The trigger and menu render the `label`.
-/// The `value` is what [`gpui_component::select::SelectState`] reports as the selection.
 #[derive(Clone)]
 pub struct SelectOption {
     value: SharedString,
@@ -80,7 +78,6 @@ pub fn setting_row(
 }
 
 /// A full-width settings block with title and subtitle in one header.
-/// `gap_3` separates the header from the control below.
 pub fn setting_block(
     cx: &App,
     title: impl Into<SharedString>,
