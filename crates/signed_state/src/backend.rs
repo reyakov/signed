@@ -250,6 +250,119 @@ impl Backend {
         })
     }
 
+    /// Import an `nsec1...` secret key, storing it NIP-49 encrypted with `password`.
+    pub fn import_nsec(
+        &mut self,
+        nsec: &str,
+        password: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<PublicKey, Error>> {
+        let keys = match SecretKey::parse(nsec.trim()) {
+            Ok(secret) => Keys::new(secret),
+            Err(e) => return Task::ready(Err(anyhow!(e))),
+        };
+
+        if password.is_empty() {
+            return Task::ready(Err(anyhow!("Passphrase must not be empty")));
+        }
+
+        let password = password.to_owned();
+
+        cx.spawn(async move |this, cx| {
+            let job = cx.background_spawn(async move {
+                let encrypted =
+                    EncryptedSecretKey::new(keys.secret_key(), &password, 16, KeySecurity::Medium)?;
+                let ncryptsec = encrypted.to_bech32()?;
+                Ok::<_, Error>((keys, ncryptsec))
+            });
+
+            let (keys, ncryptsec) = job.await?;
+            let public_key = keys.public_key();
+
+            let write = cx.update(|cx| {
+                cx.write_credentials(USER_KEYRING, &public_key.to_hex(), ncryptsec.as_bytes())
+            });
+            write.await?;
+
+            this.update(cx, |this, cx| this.set_signer(keys, cx))?;
+
+            Ok(public_key)
+        })
+    }
+
+    /// Import an NIP-49 encrypted secret key (`ncryptsec1...`), decrypting it with `password`.
+    pub fn import_ncryptsec(
+        &mut self,
+        ncryptsec: &str,
+        password: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<PublicKey, Error>> {
+        let ncryptsec = ncryptsec.trim().to_owned();
+
+        if password.is_empty() {
+            return Task::ready(Err(anyhow!("Passphrase must not be empty")));
+        }
+
+        let password = password.to_owned();
+
+        cx.spawn(async move |this, cx| {
+            let stored = ncryptsec.clone();
+            let decrypt_task = cx.background_spawn(async move {
+                let encrypted = EncryptedSecretKey::from_bech32(&ncryptsec)?;
+                let secret = encrypted.decrypt(&password)?;
+                Ok::<_, Error>(Keys::new(secret))
+            });
+
+            let keys = decrypt_task.await?;
+            let public_key = keys.public_key();
+
+            let write = cx.update(|cx| {
+                cx.write_credentials(USER_KEYRING, &public_key.to_hex(), stored.as_bytes())
+            });
+            write.await?;
+
+            this.update(cx, |this, cx| this.set_signer(keys, cx))?;
+
+            Ok(public_key)
+        })
+    }
+
+    /// Import a `bunker://...` URI (NIP-46), connecting to the remote signer.
+    pub fn import_bunker(
+        &mut self,
+        uri: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<PublicKey, Error>> {
+        let uri_string = uri.trim().to_owned();
+
+        let connect_uri = match NostrConnectUri::parse(&uri_string) {
+            Ok(uri) => uri,
+            Err(e) => return Task::ready(Err(anyhow!(e))),
+        };
+
+        let keys = Keys::generate();
+        let credential = with_master_key(&uri_string, &keys);
+        let write = cx.write_credentials(USER_KEYRING, "bunker", credential.as_bytes());
+
+        cx.spawn(async move |this, cx| {
+            let mut signer = NostrConnect::new(
+                connect_uri,
+                keys,
+                Duration::from_secs(NOSTR_CONNECT_TIMEOUT),
+                None,
+            )?;
+            signer.auth_url_handler(SignedAuthUrlHandler);
+
+            // Verify the bunker responds before persisting the credential.
+            let public_key = signer.get_public_key_async().await?;
+            write.await?;
+
+            this.update(cx, |this, cx| this.set_signer(signer, cx))?;
+
+            Ok(public_key)
+        })
+    }
+
     pub fn create_identity(
         &mut self,
         name: &str,
@@ -568,8 +681,7 @@ impl Backend {
         })
     }
 
-    // Errors when no grasp server accepted the push; the outcome reports
-    // which servers did when only some accepted it.
+    // Errors when no grasp server accepted the push.
     pub fn push_repository(
         &mut self,
         announcement: Announcement,
@@ -614,8 +726,6 @@ impl Backend {
         let relays = announcement.relays.clone();
 
         cx.spawn(async move |this, cx| {
-            // Runs on completion, on error and on cancellation alike; the
-            // guard would be dropped with the task if not held.
             let _guard = cx.on_drop(&this, {
                 let addr = addr.clone();
                 move |backend, cx| {
@@ -634,8 +744,7 @@ impl Backend {
                 work.await?
             };
 
-            // Keep the announced default branch in `HEAD` when it is among
-            // the pushed refs; otherwise `HEAD` stays the checkout's branch.
+            // Keep the announced default branch in `HEAD` when it is among the pushed refs.
             let heads: Vec<&str> = state
                 .refs
                 .iter()
@@ -648,8 +757,7 @@ impl Backend {
                 state.head = Some(head);
             }
 
-            // Grasp servers authorize a push by the state event they hold in
-            // purgatory: stage it on each server's relay before the git push.
+            // Grasp servers authorize a push by the state event they hold in purgatory.
             let refs = state.refs.clone();
             let head = state.head.clone();
 
@@ -960,8 +1068,7 @@ impl Backend {
         .detach();
     }
 
-    // Each target gets its own deletion event: a relay rejecting or dropping
-    // one does not affect the others.
+    // Each target gets its own deletion event.
     fn retract_events(&mut self, events: &[Event], cx: &mut Context<Self>) {
         let pusher = GraspPush::new(self.client.clone(), self.signer.clone());
 
@@ -1001,10 +1108,7 @@ fn repository_announcement(
     }
 }
 
-// Announce the repository, then stage the state event and push: the state
-// event is the push authorization, so it must be accepted before the push.
-// Connect to all servers first — the nostr client queues events until each
-// relay is connected.
+// Announce the repository, then stage the state event and push.
 #[allow(clippy::too_many_arguments)]
 async fn announce_repository_and_push(
     backend: &WeakEntity<Backend>,
@@ -1031,10 +1135,7 @@ async fn announce_repository_and_push(
         GraspPush::require_relay_accepted(output, event)?
     };
 
-    // The state event is the push authorization. Stage it on each grasp
-    // server's relay, then push the git data. The push fails only when no
-    // server accepted it. The announcement is then retracted so the
-    // repository is not left announced without content.
+    // The state event is the push authorization.
     let outcome = if refs.is_empty() {
         PushOutcome::default()
     } else {
@@ -1063,8 +1164,7 @@ async fn announce_repository_and_push(
     };
 
     if outcome.accepted() == 0 {
-        // Retract the announcement so the repository is not left announced
-        // without content.
+        // Retract the announcement so the repository is not left announced without content.
         backend
             .update(cx, |backend, cx| {
                 backend.retract_events(std::slice::from_ref(&event), cx);
@@ -1134,4 +1234,10 @@ fn extract_master_key(credential: &str) -> (&str, Keys) {
         }
         None => (credential, Keys::generate()),
     }
+}
+
+fn with_master_key(uri: &str, keys: &Keys) -> String {
+    let separator = if uri.contains('?') { '&' } else { '?' };
+    let nsec = keys.secret_key().to_bech32().expect("infallible");
+    format!("{uri}{separator}master={nsec}")
 }

@@ -610,7 +610,7 @@ impl SidebarPanel {
                                     })),
                             )
                             .child(
-                                BaseButton::new("onboarding")
+                                BaseButton::new("import")
                                     .h_flex()
                                     .h_8()
                                     .px_2()
