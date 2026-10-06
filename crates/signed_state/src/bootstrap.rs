@@ -10,7 +10,7 @@ use signed_core::Filters;
 pub const BOOTSTRAP_RELAYS: [&str; 2] = ["wss://relay.ditto.pub", "wss://index.ngit.dev"];
 pub const INDEXER_RELAYS: [&str; 2] = ["wss://indexer.coracle.social", "wss://user.kindpag.es"];
 
-async fn ensure_bootstrap_relays(client: &Client) -> Result<(), Error> {
+pub(crate) async fn ensure_bootstrap_relays(client: &Client) -> Result<(), Error> {
     for url in BOOTSTRAP_RELAYS {
         client.add_relay(url).and_connect().await?;
     }

@@ -14,6 +14,8 @@
 - Surface backend errors as error notifications in the workspace instead of silently dropping them
 - Break ties in repository activity lists by event id, so same-second events order deterministically
 - Restructure the backend around domain types: git operations behind a `Repo` type, the grasp push pipeline behind `GraspPush`, nostr connectivity behind `NostrBackend`, and shared helpers consolidated into `utils`
+- Fetch the logged-in user's grasp list, code follows, followed repositories, contacts, profile metadata, mute list, and blossom servers via gossip at login instead of the bootstrap relays
+- Connect to grasp relays and load the inbox only after the user's grasp list event arrives
 
 ### Fixed
 

@@ -14,7 +14,9 @@ use signed_core::{Announcement, Filters, RepoAddr, filters};
 use signed_git::{GitCache, Repo};
 use signed_nostr::{SignedAuthUrlHandler, UniversalSigner, Update};
 
-use crate::bootstrap::{subscribe_bootstrap_only, sync_bootstrap_only, user_grasp_list_servers};
+use crate::bootstrap::{
+    ensure_bootstrap_relays, subscribe_bootstrap_only, sync_bootstrap_only, user_grasp_list_servers,
+};
 use crate::git_store::Mirrors;
 use crate::inbox::Inbox;
 use crate::push::{GraspPush, PushOutcome, grasp_base_url, grasp_clone_url};
@@ -76,6 +78,7 @@ impl Backend {
         let pump: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let mut notifications = pump_client.notifications();
             let mut pending_profiles: HashSet<PublicKey> = HashSet::new();
+            let mut pending_grasps: HashSet<PublicKey> = HashSet::new();
             let mut pending_repos: Vec<Update> = Vec::new();
             let mut seen: HashSet<EventId> = HashSet::new();
 
@@ -83,6 +86,9 @@ impl Backend {
                 match UpdateEvent::next(&mut notifications, &mut seen).await {
                     Some(UpdateEvent::Profile(author)) => {
                         pending_profiles.insert(author);
+                    }
+                    Some(UpdateEvent::Grasp(author)) => {
+                        pending_grasps.insert(author);
                     }
                     Some(UpdateEvent::Repo(update)) => pending_repos.push(update),
                     None => break,
@@ -107,6 +113,9 @@ impl Backend {
                         futures::future::Either::Left((Some(UpdateEvent::Profile(author)), _)) => {
                             pending_profiles.insert(author);
                         }
+                        futures::future::Either::Left((Some(UpdateEvent::Grasp(author)), _)) => {
+                            pending_grasps.insert(author);
+                        }
                         futures::future::Either::Left((Some(UpdateEvent::Repo(update)), _)) => {
                             pending_repos.push(update);
                         }
@@ -116,18 +125,25 @@ impl Backend {
                 }
 
                 let profiles: Vec<PublicKey> = pending_profiles.drain().collect();
+                let grasps: Vec<PublicKey> = pending_grasps.drain().collect();
                 let repos = std::mem::take(&mut pending_repos);
 
-                if let Err(e) = this.update(cx, |_this, cx| {
+                this.update(cx, |this, cx| {
                     if !profiles.is_empty() {
                         cx.emit(BackendEvent::ProfileUpdates(profiles));
                     }
+
                     if !repos.is_empty() {
                         cx.emit(BackendEvent::RepoUpdates(repos));
                     }
-                }) {
-                    log::warn!("failed to emit backend update: {e}");
-                }
+
+                    for author in grasps {
+                        if this.current_user == Some(author) {
+                            this.connect_grasp_relays(author, cx);
+                        }
+                    }
+                })
+                .ok();
             }
 
             Ok(())
@@ -402,8 +418,6 @@ impl Backend {
                 this.bootstrap_user(public_key, cx);
 
                 cx.emit(BackendEvent::SignerChanged);
-                this.sync_inbox(cx);
-
                 cx.notify();
 
                 let relays: Vec<(RelayUrl, Option<RelayMetadata>)> = [
@@ -444,8 +458,10 @@ impl Backend {
                     GitUserGraspList { grasp_servers }.into_event_builder(),
                 ] {
                     let pusher = pusher.clone();
-                    cx.spawn(async move |_this, _cx| pusher.publish_best_effort(builder).await)
-                        .detach();
+                    cx.background_spawn(async move {
+                        pusher.publish_best_effort(builder).await;
+                    })
+                    .detach();
                 }
             })?;
 
@@ -856,30 +872,56 @@ impl Backend {
     fn bootstrap_user(&mut self, public_key: PublicKey, cx: &mut Context<Self>) {
         let client = self.client.clone();
 
-        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
-            let result = async {
-                sync_bootstrap_only(
-                    &client,
-                    Filters::grasp_list(public_key),
-                    SyncOptions::default(),
-                )
-                .await?;
+        cx.spawn(async move |this, cx| {
+            let result: Result<(), anyhow::Error> = cx
+                .background_spawn(async move {
+                    ensure_bootstrap_relays(&client).await?;
 
-                for url in user_grasp_list_servers(&client, public_key).await? {
-                    client.add_relay(url).and_connect().await.ok();
-                }
+                    for filter in Filters::user_metadata(public_key) {
+                        client.sync(filter).await?;
+                    }
 
-                Ok::<_, Error>(())
-            }
-            .await;
+                    Ok(())
+                })
+                .await;
 
             if let Err(e) = result {
-                this.update(cx, |_this, cx| cx.emit(BackendEvent::error(e.to_string())))?;
+                this.update(cx, |_this, cx| {
+                    cx.emit(BackendEvent::error(e.to_string()));
+                })?;
             }
 
-            Ok(())
-        });
-        task.detach();
+            Ok::<(), Error>(())
+        })
+        .detach();
+    }
+
+    /// Runs when the pump sees the user's grasp list event arrive.
+    fn connect_grasp_relays(&mut self, public_key: PublicKey, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+
+        cx.spawn(async move |this, cx| {
+            match user_grasp_list_servers(&client, public_key).await {
+                Ok(servers) => {
+                    for url in servers {
+                        if let Err(e) = client.add_relay(&url).and_connect().await {
+                            log::warn!("failed to connect grasp relay {url}: {e}");
+                        }
+                    }
+                    this.update(cx, |this, cx| {
+                        this.sync_inbox(cx);
+                    })?;
+                }
+                Err(e) => {
+                    this.update(cx, |_this, cx| {
+                        cx.emit(BackendEvent::error(e.to_string()));
+                    })?;
+                }
+            }
+
+            Ok::<(), Error>(())
+        })
+        .detach();
     }
 
     pub fn client(&self) -> Client {
@@ -947,7 +989,6 @@ impl Backend {
                         this.passphrase_required = false;
 
                         this.bootstrap_user(public_key, cx);
-                        this.sync_inbox(cx);
 
                         cx.emit(BackendEvent::SignerChanged);
                         cx.notify();
@@ -1193,6 +1234,7 @@ async fn announce_repository_and_push(
 
 enum UpdateEvent {
     Profile(PublicKey),
+    Grasp(PublicKey),
     Repo(Update),
 }
 
@@ -1210,6 +1252,7 @@ impl UpdateEvent {
 
                     let update = match event.kind {
                         Kind::Metadata => UpdateEvent::Profile(event.pubkey),
+                        Kind::GitUserGraspList => UpdateEvent::Grasp(event.pubkey),
                         kind if filters::is_repo_kind(kind) => {
                             UpdateEvent::Repo(Update::from_event(&event))
                         }

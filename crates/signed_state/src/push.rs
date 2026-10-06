@@ -14,8 +14,7 @@ pub(crate) const GRASP_PUSH_ATTEMPTS: usize = 3;
 
 const GRASP_RETRY_DELAY: Duration = Duration::from_secs(1);
 
-// `ws://` grasp servers, like ngit, use `http://<host>`; secure relays map to
-// `https://<host>`.
+/// `ws://` grasp servers, like ngit, use `http(s)://<host>`.
 pub(crate) fn grasp_base_url(relay: &RelayUrl) -> Option<String> {
     let parsed = Url::parse(relay.as_str()).ok()?;
     let host = parsed.host_str()?;
@@ -34,12 +33,12 @@ pub(crate) fn grasp_clone_url(relay: &RelayUrl, owner: &str, repo_id: &str) -> O
     Url::parse(&format!("{base}/{owner}/{repo_id}.git")).ok()
 }
 
-// GRASP-06 contributor namespace URL of a pull request tip.
+/// GRASP-06 contributor namespace URL of a pull request tip.
 pub(crate) fn grasp06_prs_url(base_url: &str, npub: &str, repo_id: &str) -> String {
     format!("{base_url}/prs/{npub}/{repo_id}.git")
 }
 
-// The author's GRASP-06 `/prs/` URLs come first.
+/// The author's GRASP-06 `/prs/` URLs come first.
 pub(crate) fn pr_clone_urls(prs_urls: Vec<Url>, base_clone_urls: Vec<Url>) -> Vec<Url> {
     let mut seen = std::collections::HashSet::new();
     let mut urls = Vec::new();
@@ -84,8 +83,7 @@ impl GraspServer {
 #[derive(Debug, Clone, Default)]
 pub struct PushOutcome {
     pub servers: Vec<GraspServer>,
-    // The newest state event a grasp relay accepted for this push; broadcast
-    // to the other relays once a git server holds the data.
+    /// The newest state event a grasp relay accepted for this push.
     pub state_event: Option<Event>,
 }
 
@@ -178,8 +176,6 @@ fn keep_newest(state_event: &mut Option<Event>, event: Event) {
     }
 }
 
-// The grasp push pipeline: stage a signed state event on each server's
-// relay, then push the git data, retrying transient denials.
 #[derive(Clone)]
 pub(crate) struct GraspPush {
     client: Client,

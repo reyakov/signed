@@ -71,6 +71,41 @@ impl Filters {
             .author(public_key)
     }
 
+    /// NIP-51: code (people who produce NIP-34 events) follow list
+    pub fn git_authors(public_key: PublicKey) -> Filter {
+        Filter::new().kind(Kind::Custom(10017)).author(public_key)
+    }
+
+    /// NIP-51: NIP-34 followed repositories
+    pub fn git_repos(public_key: PublicKey) -> Filter {
+        Filter::new().kind(Kind::Custom(10018)).author(public_key)
+    }
+
+    // Replaceable events, so the latest of each kind is all we need.
+    pub fn user_metadata(public_key: PublicKey) -> Vec<Filter> {
+        vec![
+            Self::grasp_list(public_key).limit(1),
+            Self::git_authors(public_key).limit(1),
+            Self::git_repos(public_key).limit(1),
+            Filter::new()
+                .kind(Kind::ContactList)
+                .author(public_key)
+                .limit(1),
+            Filter::new()
+                .kind(Kind::Metadata)
+                .author(public_key)
+                .limit(1),
+            Filter::new()
+                .kind(Kind::MuteList)
+                .author(public_key)
+                .limit(1),
+            Filter::new()
+                .kind(Kind::BlossomServerList)
+                .author(public_key)
+                .limit(1),
+        ]
+    }
+
     // Two filters: combining `#E` and `#e` would AND the conditions.
     pub fn comments_for(roots: impl IntoIterator<Item = EventId>) -> Vec<Filter> {
         let roots: Vec<String> = roots.into_iter().map(|id| id.to_hex()).collect();
