@@ -7,6 +7,8 @@ use gpui_component::{Theme, ThemeMode, ThemeRegistry, theme};
 use gpui_platform::application;
 use settings::{AppearanceMode, SettingsStore};
 
+actions!(signed, [Quit]);
+
 fn main() {
     tracing_subscriber::fmt::init();
 
@@ -16,6 +18,9 @@ fn main() {
         .run(move |cx| {
             gpui_component::init(cx);
             theme::init(cx);
+
+            cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
+            cx.on_action(|_: &Quit, cx| cx.quit());
 
             // The persisted settings must load before the theme is applied.
             let store = cx.new(|cx| SettingsStore::new(paths::settings_file(), cx));
