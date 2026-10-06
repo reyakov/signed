@@ -9,6 +9,7 @@
 - Add an identity import dialog, importing an existing identity by pasting its `nsec` secret key (encrypted with a new passphrase), NIP-49 `ncryptsec` (unlocked with its passphrase), or `bunker://` NIP-46 URI
 - Add a dropdown menu on the signed-in user button in the sidebar
 - Add sign-out feature, confirmed by an alert dialog before deleting the stored session credential
+- Add a quit action, bound to `secondary-q` (cmd on macOS, ctrl on others)
 
 ### Changed
 

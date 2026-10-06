@@ -4,21 +4,51 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use gix::progress::Discard;
 
+use crate::GixResultExt as _;
 use crate::history::FileCommit;
 use crate::repo::Repo;
 
+pub struct WorktreeSnapshot {
+    pub entries: Vec<PathBuf>,
+    pub readme_path: Option<PathBuf>,
+    pub readme: Option<Vec<u8>>,
+    // `None` when detached, for example on a tag.
+    pub current_branch: Option<String>,
+    pub head_commit: Option<FileCommit>,
+    pub branches: Vec<String>,
+    pub tags: Vec<String>,
+}
+
+impl WorktreeSnapshot {
+    fn new(
+        entries: Vec<PathBuf>,
+        readme_path: Option<PathBuf>,
+        readme: Option<Vec<u8>>,
+        current_branch: Option<String>,
+        head_commit: Option<FileCommit>,
+        branches: Vec<String>,
+        tags: Vec<String>,
+    ) -> Self {
+        Self {
+            entries,
+            readme_path,
+            readme,
+            current_branch,
+            head_commit,
+            branches,
+            tags,
+        }
+    }
+}
+
 impl Repo {
-    // Best-effort: any read failure is reported as clean.
     pub fn is_dirty(&self) -> bool {
-        // Tracked files, staged or not; untracked files are handled below.
         match self.inner.is_dirty() {
             Ok(true) => return true,
             Ok(false) => {}
             Err(_) => return false,
         }
 
-        // Untracked files surface as `DirectoryContents` items of the
-        // index-vs-worktree walk; tracked files only appear there when modified.
         let Ok(platform) = self.inner.status(Discard) else {
             return false;
         };
@@ -39,7 +69,6 @@ impl Repo {
         false
     }
 
-    // Best-effort: 0 when the range cannot be computed.
     pub fn commits_ahead(&self, base: &str, branch: &str) -> u32 {
         let (Some(base), Some(branch)) = (self.resolve_commit(base), self.resolve_commit(branch))
         else {
@@ -53,13 +82,10 @@ impl Repo {
         walk.filter_map(Result::ok).count().min(u32::MAX as usize) as u32
     }
 
-    // Accepts full refs or the bare branch names callers pass; `gix`'s
-    // revision parser already applies git's ref DWIM.
     fn resolve_commit<'a>(&'a self, rev: &str) -> Option<gix::Id<'a>> {
         self.inner.rev_parse_single(rev.as_bytes()).ok()
     }
 
-    // The `.git` directory is skipped.
     pub fn entries(&self) -> Result<Vec<PathBuf>> {
         let workdir = self.inner.workdir().context("repository has no worktree")?;
 
@@ -74,7 +100,6 @@ impl Repo {
         Ok(entries.into_iter().map(|(path, _)| path).collect())
     }
 
-    // `Ok(None)` when the path is missing or not a regular file.
     pub fn read(&self, rel: &Path) -> Result<Option<Vec<u8>>> {
         let workdir = self.inner.workdir().context("repository has no worktree")?;
         let path = workdir.join(rel);
@@ -87,7 +112,6 @@ impl Repo {
         }
     }
 
-    // Falls back to any other file whose name starts with `readme`.
     pub fn find_readme(&self) -> Result<Option<PathBuf>> {
         let Some(workdir) = self.inner.workdir() else {
             return Ok(None);
@@ -129,18 +153,17 @@ impl Repo {
             Some(path) => self.read(path)?,
             None => None,
         };
-        Ok(WorktreeSnapshot {
-            entries: self.entries()?,
+        Ok(WorktreeSnapshot::new(
+            self.entries()?,
             readme_path,
             readme,
-            current_branch: self.current_branch(),
-            head_commit: self.head_commit().unwrap_or(None),
-            branches: self.branches().unwrap_or_default(),
-            tags: self.tags().unwrap_or_default(),
-        })
+            self.current_branch(),
+            self.head_commit().unwrap_or(None),
+            self.branches().unwrap_or_default(),
+            self.tags().unwrap_or_default(),
+        ))
     }
 
-    // HEAD stays attached to the branch.
     pub fn checkout_branch(&self, name: &str) -> Result<()> {
         let full = format!("refs/heads/{name}");
 
@@ -164,7 +187,6 @@ impl Repo {
         Ok(())
     }
 
-    // HEAD becomes detached at the tagged commit.
     pub fn checkout_tag(&self, name: &str) -> Result<()> {
         let full = format!("refs/tags/{name}");
 
@@ -196,8 +218,6 @@ impl Repo {
 
         let mut index = self.inner.index_from_tree(tree)?;
 
-        // Files the previous index tracked but `tree` no longer contains are
-        // removed, like git deleting files that vanish between branches.
         if let Ok(previous) = self.inner.index_or_empty() {
             let keep: HashSet<PathBuf> = index
                 .entries()
@@ -244,9 +264,12 @@ impl Repo {
             &bytes,
             &gix::interrupt::IS_INTERRUPTED,
             options,
-        )?;
+        )
+        .into_anyhow()?;
 
-        index.write(gix::index::write::Options::default())?;
+        index
+            .write(gix::index::write::Options::default())
+            .into_anyhow()?;
 
         Ok(())
     }
@@ -300,15 +323,4 @@ impl Repo {
         }
         Ok(())
     }
-}
-
-pub struct WorktreeSnapshot {
-    pub entries: Vec<PathBuf>,
-    pub readme_path: Option<PathBuf>,
-    pub readme: Option<Vec<u8>>,
-    // `None` when detached, for example on a tag.
-    pub current_branch: Option<String>,
-    pub head_commit: Option<FileCommit>,
-    pub branches: Vec<String>,
-    pub tags: Vec<String>,
 }

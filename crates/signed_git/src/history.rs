@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::GixResultExt as _;
 use crate::repo::Repo;
 
 #[derive(Debug, Clone)]
@@ -29,8 +30,8 @@ impl FileCommit {
         commit: &gix::Commit<'_>,
         include_description: bool,
     ) -> Result<FileCommit> {
-        let author = commit.author()?;
-        let message = commit.message()?;
+        let author = commit.author().into_anyhow()?;
+        let message = commit.message().into_anyhow()?;
 
         Ok(FileCommit {
             id: commit.id().shorten_or_id().to_string(),
@@ -44,7 +45,7 @@ impl FileCommit {
                 None
             },
             author: String::from_utf8_lossy(author.name).trim().to_string(),
-            time: author.time()?.seconds,
+            time: author.time().into_anyhow()?.seconds,
         })
     }
 }

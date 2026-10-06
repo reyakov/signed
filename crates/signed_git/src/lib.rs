@@ -20,6 +20,19 @@ pub use repo::{Repo, RepoRefState};
 pub use scan::{LocalRepo, find_git_repos};
 pub use worktree::WorktreeSnapshot;
 
+pub(crate) trait GixResultExt<T> {
+    fn into_anyhow(self) -> anyhow::Result<T>;
+}
+
+impl<T, E> GixResultExt<T> for Result<T, gix::Exn<E>>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    fn into_anyhow(self) -> anyhow::Result<T> {
+        self.map_err(|exn| anyhow::Error::from(exn.into_error()))
+    }
+}
+
 #[cfg(test)]
 fn git_in(dir: &std::path::Path, args: &[&str]) -> anyhow::Result<String> {
     let output = Repo::run_git(dir, args, "git")?;

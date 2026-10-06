@@ -29,8 +29,8 @@ impl GitCache {
         let path = self.repo_path(addr);
         match gix::open(&path) {
             Ok(repo) => Ok(Some(Repo { inner: repo })),
-            Err(gix::open::Error::NotARepository { .. }) => Ok(None),
-            Err(gix::open::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            // A missing path and a directory that is no repository are both classified `NotFound`.
+            Err(e) if e.is_not_found() => Ok(None),
             Err(e) => Err(e.into()),
         }
     }

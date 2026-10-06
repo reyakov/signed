@@ -2,7 +2,7 @@ use dock::{DockArea, DockEvent, DockLayout, DockPlacement, SignedDockSkin, panel
 use gpui::prelude::*;
 use gpui::{Context, Entity, Render, Subscription, Window, div, px};
 use gpui_component::notification::NotificationType;
-use gpui_component::{Root, StyledExt, Theme, WindowExt};
+use gpui_component::{StyledExt, Theme, WindowExt};
 use settings::{AppearanceMode, SettingsStore};
 use signed_state::{Backend, BackendEvent};
 
@@ -106,17 +106,12 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let dialog_layer = Root::render_dialog_layer(window, cx);
-        let notification_layer = Root::render_notification_layer(window, cx);
-
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("workspace")
             .v_flex()
             .size_full()
             .relative()
             .child(self.dock.clone())
-            .children(notification_layer)
-            .children(dialog_layer)
     }
 }

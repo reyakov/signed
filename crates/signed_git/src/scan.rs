@@ -5,7 +5,7 @@ use ignore::WalkBuilder;
 use crate::nip34::Nip34Binding;
 use crate::repo::Repo;
 
-// Caps nesting so pathological trees can't stall the scan.
+/// Caps nesting so pathological trees can't stall the scan.
 const SCAN_MAX_DEPTH: usize = 12;
 
 #[derive(Debug, Clone)]

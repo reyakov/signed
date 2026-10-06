@@ -2,11 +2,23 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-// History walks re-decode the same commit objects without one; sized
-// generously, a walk can cover a large portion of the history.
+use crate::GixResultExt as _;
+
 const OBJECT_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
-// One `open` per operation instead of every helper re-opening by path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoRefState {
+    pub refs: Vec<(String, String)>,
+    pub head: Option<String>,
+}
+
+impl RepoRefState {
+    fn new(refs: Vec<(String, String)>, head: Option<String>) -> Self {
+        Self { refs, head }
+    }
+}
+
+/// One `open` per operation instead of every helper re-opening by path.
 pub struct Repo {
     pub(crate) inner: gix::Repository,
 }
@@ -22,8 +34,6 @@ impl Repo {
         Self::open(workdir).ok()
     }
 
-    // Only history walks benefit from the object cache, they re-decode the
-    // same commit objects repeatedly; single-object reads open plain.
     pub fn open_cached(workdir: &Path) -> Result<Self> {
         let mut repo = gix::open(workdir)?;
         repo.object_cache_size_if_unset(OBJECT_CACHE_BYTES);
@@ -41,8 +51,6 @@ impl Repo {
         let (signature, mut time_buf) = Self::repository_signature();
         let signature = signature.to_ref(&mut time_buf);
 
-        // The initial branch is `main` regardless of `init.defaultBranch`:
-        // point the unborn HEAD there.
         let head = gix::refs::FullName::try_from("HEAD")
             .map_err(|e| anyhow::anyhow!("invalid ref name: {e}"))?;
 
@@ -98,12 +106,14 @@ impl Repo {
         // Populate the index so the fresh repository is clean, as `git add`
         // and `git commit` would leave it.
         let mut index = repo.index_from_tree(&tree)?;
-        index.write(gix::index::write::Options::default())?;
+        index
+            .write(gix::index::write::Options::default())
+            .into_anyhow()?;
 
         Ok(commit.to_string())
     }
 
-    // Not kept in any cache, unlike `GitCache::ensure_clone`.
+    /// Not kept in any cache, unlike `GitCache::ensure_clone`.
     pub fn clone<U: AsRef<str>>(clone_urls: &[U], path: &Path) -> Result<Self> {
         if path.exists() {
             anyhow::bail!("destination {} already exists", path.display());
@@ -130,7 +140,9 @@ impl Repo {
 
     fn clone_from(url: &str, path: &Path) -> Result<Self> {
         let url = Self::transport_url(url);
-        let url = gix::url::parse(url).context("invalid clone URL")?;
+        let url = gix::url::parse(url)
+            .into_anyhow()
+            .context("invalid clone URL")?;
 
         let mut prepare = gix::prepare_clone(url, path)?;
         let (mut checkout, _fetch) =
@@ -149,24 +161,20 @@ impl Repo {
         self.inner.workdir()
     }
 
-    // `None` for an unborn HEAD.
+    /// `None` for an unborn HEAD.
     pub fn head(&self) -> Option<String> {
         self.inner.head_id().ok().map(|id| id.to_string())
     }
 
-    // `Ok(None)` when the revisions share no common ancestor — a valid
-    // outcome for a proposal; unresolvable revisions are errors.
     pub fn merge_base(&self, a: &str, b: &str) -> Result<Option<String>> {
         let a = self.inner.rev_parse_single(a.as_bytes())?;
         let b = self.inner.rev_parse_single(b.as_bytes())?;
-        match self.inner.merge_base(a, b) {
-            Ok(id) => Ok(Some(id.to_string())),
-            Err(gix::repository::merge_base::Error::NotFound { .. }) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        // `merge_base` reports a missing base as an unclassified error, while the
+        // many-bases variant keeps the distinction as an empty result.
+        let bases = self.inner.merge_bases_many(a.detach(), &[b.detach()])?;
+        Ok(bases.first().map(|id| id.to_string()))
     }
 
-    // Oldest first: the order `git am` creates them.
     pub fn commits_since(&self, base: Option<&str>) -> Result<Vec<String>> {
         let head = match self.inner.head_id() {
             Ok(head) => head,
@@ -198,7 +206,6 @@ impl Repo {
         Ok(commits)
     }
 
-    // The NIP-34 announcement's `euc` marker; `None` without commits.
     pub fn root_commit(&self) -> Result<Option<String>> {
         let Ok(head) = self.inner.head_id() else {
             return Ok(None);
@@ -331,11 +338,9 @@ impl Repo {
             Err(_) => None,
         };
 
-        Ok(RepoRefState { refs, head })
+        Ok(RepoRefState::new(refs, head))
     }
 
-    // Fast-forward only: local-only commits or diverged history must never
-    // be rewritten by a refresh. Returns whether any branch moved.
     pub fn fast_forward_branches(&self) -> Result<bool> {
         use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 
@@ -437,8 +442,6 @@ impl Repo {
         Ok(moved)
     }
 
-    // Like `git -c user.name=… -c user.email=…` per invocation: the repository
-    // works without a global git identity, and `gix` runs no hooks and never signs.
     pub(crate) fn repository_signature() -> (gix::actor::Signature, gix::date::parse::TimeBuf) {
         let seconds = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -454,17 +457,9 @@ impl Repo {
         (signature, gix::date::parse::TimeBuf::default())
     }
 
-    // GRASP servers announce `grasp://` clone URLs but the transport is git
-    // smart HTTP, so the scheme is rewritten for gix.
     pub(crate) fn transport_url(url: &str) -> String {
         url.strip_prefix("grasp://")
             .map(|rest| format!("https://{rest}"))
             .unwrap_or_else(|| url.to_owned())
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepoRefState {
-    pub refs: Vec<(String, String)>,
-    pub head: Option<String>,
 }

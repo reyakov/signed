@@ -12,7 +12,6 @@ use crate::repo::Repo;
 pub struct PatchParser;
 
 impl PatchParser {
-    // A malformed input yields one element covering it.
     pub fn split_patch_series(patch: &str) -> Vec<&str> {
         Self::envelopes(patch)
             .into_iter()
@@ -20,8 +19,6 @@ impl PatchParser {
             .collect()
     }
 
-    // Backed by `diffy::patch_set`, which implements git's extended diff format:
-    // rename and copy detection, binary detection, quoted/escaped paths.
     pub fn patch_diffs(patch: &str) -> Result<CommitDiff> {
         if !patch.lines().any(|line| line.starts_with("diff --git ")) {
             return Ok(CommitDiff { files: Vec::new() });
@@ -36,8 +33,6 @@ impl PatchParser {
         Ok(CommitDiff { files })
     }
 
-    // Entries appear in patch order, oldest first as `git format-patch`
-    // produces them.
     pub fn patch_commits(patch: &str) -> Vec<FileCommit> {
         Self::envelopes(patch)
             .into_iter()
@@ -62,8 +57,6 @@ impl PatchParser {
             .collect()
     }
 
-    // The one parser `split_patch_series` and `patch_commits` share.
-    // A malformed input yields one message covering the whole input.
     fn envelopes(patch: &str) -> Vec<Envelope<'_>> {
         let mut messages: Vec<Envelope<'_>> = Vec::new();
         let mut current: Option<(usize, &str, Vec<&str>)> = None;
@@ -136,7 +129,7 @@ impl PatchParser {
         }
     }
 
-    // Matches `[PATCH]`, `[PATCH 1/2]`, `[RFC PATCH]`, etc.
+    /// Matches `[PATCH]`, `[PATCH 1/2]`, `[RFC PATCH]`, etc.
     fn strip_patch_prefix(subject: &str) -> String {
         let trimmed = subject.trim();
         let Some(rest) = trimmed.strip_prefix('[') else {
@@ -153,9 +146,6 @@ impl PatchParser {
     }
 
     fn file_diff(file: FilePatch<'_, str>) -> Result<FileDiff> {
-        // The `---`/`+++` paths carry the `a/`/`b/` prefix, dropped the same way
-        // `git apply -p1` does; rename and copy paths come from their own
-        // headers, unprefixed.
         let stripped;
         let operation = match file.operation() {
             operation @ (FileOperation::Rename { .. } | FileOperation::Copy { .. }) => operation,
@@ -213,8 +203,6 @@ impl PatchParser {
         })
     }
 
-    // `diffy` reports only the hunk header ranges; the per-line numbers are
-    // counted from them the way the header encodes them.
     fn hunk_diff(hunk: &Hunk<'_, str>) -> DiffHunk {
         let old_range = hunk.old_range();
         let new_range = hunk.new_range();
@@ -272,7 +260,7 @@ impl PatchParser {
     }
 }
 
-// A `git format-patch` mbox message, split on its `From <40-hex> <date>` envelope.
+/// A `git format-patch` mbox message, split on its `From <40-hex> <date>` envelope.
 struct Envelope<'a> {
     text: &'a str,
     id: &'a str,
@@ -290,8 +278,6 @@ impl Envelope<'_> {
 }
 
 impl Repo {
-    // The git CLI handles the mbox format natively.
-    // TODO: replace with a pure-Rust implementation later without changing callers.
     pub fn apply_patch(&self, patch: &str) -> Result<()> {
         let workdir = self
             .inner

@@ -13,8 +13,8 @@ use gpui_base::dock::{
     DockArea, DockAreaRenderer, DockContext, DockEvent, DockPlacement, NodeId, PanelState,
     PanelView, TabGroupRenderer,
 };
-use gpui_base::resize_handle;
-use gpui_component::{ActiveTheme as _, Side};
+use gpui_base::{HandleEdge, resize_handle};
+use gpui_component::ActiveTheme as _;
 
 use crate::invalid_panel::InvalidPanel;
 use crate::panel_handle;
@@ -164,7 +164,12 @@ impl SignedDockSkin {
         let shared = self.shared().clone();
 
         resize_handle("resize-handle", placement.axis())
-            .when(placement.is_left(), |this| this.placement(Side::Left))
+            .when(placement.is_left(), |this| {
+                this.inside(HandleEdge::Trailing)
+            })
+            .when(placement.is_right() || placement.is_bottom(), |this| {
+                this.inside(HandleEdge::Leading)
+            })
             .on_drag(ResizePanel, move |info, _, _, cx| {
                 cx.stop_propagation();
                 shared.resizing_dock().set(Some(placement));

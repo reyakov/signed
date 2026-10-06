@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use gix::interrupt::IS_INTERRUPTED;
 use gix::progress::Discard;
 
+use crate::GixResultExt as _;
 use crate::repo::Repo;
 
 impl Repo {
@@ -15,7 +16,8 @@ impl Repo {
                 gix::refspec::parse(
                     gix::bstr::BStr::new("+refs/nostr/*:refs/nostr/*"),
                     gix::refspec::parse::Operation::Fetch,
-                )?
+                )
+                .into_anyhow()?
                 .to_owned(),
             ],
             ..Default::default()
@@ -87,10 +89,6 @@ impl Repo {
         Ok(())
     }
 
-    // The convergence probe for a push that lost the compare-and-swap race to
-    // the grasp server's own background ref alignment. Extra advertised refs
-    // are ignored: the question is whether the pushed data is already there,
-    // not whether the remote is an exact mirror.
     pub fn remote_has_refs(&self, url: &str, expected: &[(String, String)]) -> Result<bool> {
         if expected.is_empty() {
             return Ok(true);
@@ -98,8 +96,6 @@ impl Repo {
 
         let url = Self::transport_url(url);
 
-        // A URL-created remote has no configured fetch refspecs, and `ref_map`
-        // only keeps refs matching one; match each expected ref by exact name.
         let refspecs = expected
             .iter()
             .map(|(name, _)| {
@@ -110,6 +106,7 @@ impl Repo {
                 .map(|spec| spec.to_owned())
             })
             .collect::<Result<Vec<_>, _>>()
+            .into_anyhow()
             .context("invalid refspec")?;
 
         let options = gix::remote::ref_map::Options {
@@ -126,8 +123,8 @@ impl Repo {
             .ref_map(Discard, options)
             .with_context(|| format!("listing refs of {url} failed"))?;
 
-        // Peeled tag entries carry the tag object in their direct oid, matching
-        // `git ls-remote` while skipping the duplicated `^{}` lines.
+        // Peeled tag entries carry the tag object in their direct oid,
+        // matching `git ls-remote` while skipping the duplicated `^{}` lines.
         let advertised: HashMap<String, String> = refs
             .remote_refs
             .iter()
@@ -149,23 +146,30 @@ impl Repo {
 
         // `git remote add` also configures the default fetch refspec.
         self.edit_local_config(|config| {
-            config.set_raw_value("remote.origin.url", url)?;
-            config.set_raw_value("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")?;
+            config
+                .set_raw_value("remote.origin.url", url)
+                .into_anyhow()?;
+            config
+                .set_raw_value("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+                .into_anyhow()?;
             Ok(())
         })
     }
 
-    // A working copy cloned from a local mirror is re-targeted at the
-    // grasp server; a pre-existing fetch refspec is left untouched.
+    // A working copy cloned from a local mirror is re-targeted at the grasp server,
+    // a pre-existing fetch refspec is left untouched.
     pub fn set_origin(&self, url: &str) -> Result<()> {
         let had_origin = self.inner.find_remote("origin").is_ok();
 
         self.edit_local_config(|config| {
-            config.set_raw_value("remote.origin.url", url)?;
+            config
+                .set_raw_value("remote.origin.url", url)
+                .into_anyhow()?;
 
             if !had_origin {
                 config
-                    .set_raw_value("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")?;
+                    .set_raw_value("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+                    .into_anyhow()?;
             }
 
             Ok(())
@@ -182,13 +186,12 @@ impl Repo {
             .map(|url| url.to_string()))
     }
 
-    // Never touches the checked-out refs or the worktree. The last error is
-    // returned when no URL works.
     pub fn fetch_refs<U: AsRef<str>>(&self, urls: &[U], refspec: &str) -> Result<()> {
         let refspec = gix::refspec::parse(
             gix::bstr::BStr::new(refspec),
             gix::refspec::parse::Operation::Fetch,
         )
+        .into_anyhow()
         .context("invalid fetch refspec")?
         .to_owned();
 
@@ -236,18 +239,19 @@ impl Repo {
             gix::lock::acquire::Fail::Immediately,
             None,
         )
+        .into_anyhow()
         .context("failed to lock repository config")?;
 
         let mut config =
             match gix::config::File::from_path_no_includes(config_path, gix::config::Source::Local)
             {
                 Ok(config) => config,
-                Err(gix::config::file::init::from_paths::Error::Io { source, .. })
-                    if source.kind() == std::io::ErrorKind::NotFound =>
-                {
-                    gix::config::File::default()
+                Err(error) if error.is_not_found() => gix::config::File::default(),
+                Err(error) => {
+                    return Err(error)
+                        .into_anyhow()
+                        .context("failed to read repository config");
                 }
-                Err(error) => return Err(error).context("failed to read repository config"),
             };
 
         edit(&mut config)?;

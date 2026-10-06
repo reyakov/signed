@@ -2,6 +2,7 @@ use anyhow::Result;
 use gix::bstr::ByteSlice;
 use nostr::prelude::*;
 
+use crate::GixResultExt as _;
 use crate::repo::Repo;
 
 /// The kind of NIP-34 relationship a local repository has on disk.
@@ -186,7 +187,7 @@ impl Repo {
 
     pub fn set_nostr_repo(&self, naddr: &str) -> Result<()> {
         self.edit_local_config(|config| {
-            config.set_raw_value("nostr.repo", naddr)?;
+            config.set_raw_value("nostr.repo", naddr).into_anyhow()?;
             Ok(())
         })
     }

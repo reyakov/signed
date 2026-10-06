@@ -1,6 +1,7 @@
 use anyhow::Result;
 use gix::diff::blob::unified_diff::{ConsumeHunk, DiffLineKind as GixLineKind, HunkHeader};
 
+use crate::GixResultExt as _;
 use crate::repo::Repo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,7 +165,7 @@ impl Repo {
                 .resource_cache
                 .options
                 .skip_internal_diff_if_external_is_configured = true;
-            let outcome = platform.resource_cache.prepare_diff()?;
+            let outcome = platform.resource_cache.prepare_diff().into_anyhow()?;
 
             let (binary, hunks, insertions, deletions) = match outcome.operation {
                 Operation::InternalDiff { algorithm } => {

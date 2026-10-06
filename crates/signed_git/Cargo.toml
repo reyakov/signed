@@ -11,8 +11,8 @@ nostr.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 gix = { workspace = true, features = ["revision", "blob-diff"] }
-gix-worktree = "0.56"
-gix-worktree-state = "0.34"
+gix-worktree = "0.57"
+gix-worktree-state = "0.35"
 anyhow.workspace = true
 diffy = "0.5"
 ignore = "0.4"
