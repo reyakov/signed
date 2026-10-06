@@ -169,21 +169,6 @@ impl RepoListView {
         cx.notify();
     }
 
-    fn open_repo(
-        &mut self,
-        announcement: &Announcement,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        open_repo_panel(
-            &self.dock_area,
-            &announcement.addr(),
-            Some(announcement),
-            window,
-            cx,
-        );
-    }
-
     fn render_card(
         &self,
         ix: usize,
@@ -311,7 +296,13 @@ impl RepoListView {
             .on_click(cx.listener({
                 let announcement = announcement.clone();
                 move |this, _ev, window, cx| {
-                    this.open_repo(&announcement, window, cx);
+                    open_repo_panel(
+                        &this.dock_area,
+                        &announcement.addr(),
+                        Some(&announcement),
+                        window,
+                        cx,
+                    );
                 }
             }))
             .into_any_element()

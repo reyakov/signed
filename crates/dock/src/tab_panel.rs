@@ -71,11 +71,6 @@ impl Render for DragPanelPreview {
     }
 }
 
-/// The zoom affordance for the group's displayed panel, if it offers one.
-fn zoom_control(group: &TabGroupContext, cx: &App) -> Option<PanelControl> {
-    panel_zoom_control(group.active_panel()?, cx)
-}
-
 /// The zoom affordance `panel` offers, if any.
 ///
 /// The panel must offer a control and be zoomable, base refuses a zoom otherwise.
@@ -542,7 +537,9 @@ impl SignedTabGroupSkin {
 
 impl TabGroupRenderer for SignedTabGroupSkin {
     fn frame(&self, group: &TabGroupContext, _: &mut Window, cx: &mut App) -> Stateful<Div> {
-        let control = zoom_control(group, cx);
+        let control = group
+            .active_panel()
+            .and_then(|panel| panel_zoom_control(panel, cx));
         // An emptied group draws nothing, so no bare tab bar is left behind.
         if group.panels().is_empty() {
             return div().id("tab-panel");

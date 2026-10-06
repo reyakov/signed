@@ -253,7 +253,12 @@ impl PatchParser {
                 kind,
                 old: old_no,
                 new: new_no,
-                text: Self::line_text(text),
+                text: text
+                    .strip_suffix('\n')
+                    .unwrap_or(text)
+                    .strip_suffix('\r')
+                    .unwrap_or(text)
+                    .to_owned(),
             });
         }
 
@@ -264,11 +269,6 @@ impl PatchParser {
             new_lines: new_range.len() as u32,
             lines,
         }
-    }
-
-    fn line_text(text: &str) -> String {
-        let text = text.strip_suffix('\n').unwrap_or(text);
-        text.strip_suffix('\r').unwrap_or(text).to_owned()
     }
 }
 

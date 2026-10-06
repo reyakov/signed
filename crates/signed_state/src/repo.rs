@@ -405,7 +405,7 @@ impl RepoStore {
             utils::sort_newest_first(&mut issues);
             utils::sort_newest_first(&mut patches);
             utils::sort_newest_first(&mut pull_requests);
-            utils::sort_oldest_first(&mut comments);
+            comments.sort_by_key(|comment| comment.created_at);
 
             let maintainers = announcement
                 .as_ref()

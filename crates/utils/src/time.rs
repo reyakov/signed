@@ -8,10 +8,6 @@ pub fn sort_newest_first(events: &mut [Event]) {
     });
 }
 
-pub fn sort_oldest_first(events: &mut [Event]) {
-    events.sort_by_key(|e| e.created_at);
-}
-
 pub fn latest<I>(events: I) -> Option<Event>
 where
     I: IntoIterator<Item = Event>,

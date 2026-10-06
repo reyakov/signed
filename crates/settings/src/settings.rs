@@ -109,14 +109,10 @@ pub struct LocalReposSettings {
     pub scan_paths: Vec<PathBuf>,
 }
 
-fn default_scan_paths() -> Vec<PathBuf> {
-    vec![paths::desktop_dir(), paths::documents_dir()]
-}
-
 impl Default for LocalReposSettings {
     fn default() -> Self {
         Self {
-            scan_paths: default_scan_paths(),
+            scan_paths: vec![paths::desktop_dir(), paths::documents_dir()],
         }
     }
 }

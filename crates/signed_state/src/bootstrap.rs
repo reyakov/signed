@@ -72,14 +72,6 @@ fn grasp_list_servers(event: &Event) -> Vec<RelayUrl> {
         .collect()
 }
 
-fn latest_grasp_list_servers(events: Vec<Event>) -> Vec<RelayUrl> {
-    events
-        .into_iter()
-        .max_by_key(|event| event.created_at)
-        .map(|event| grasp_list_servers(&event))
-        .unwrap_or_default()
-}
-
 pub async fn user_grasp_list_servers(
     client: &Client,
     user: PublicKey,
@@ -90,5 +82,12 @@ pub async fn user_grasp_list_servers(
         .await?
         .into_iter()
         .collect();
-    Ok(latest_grasp_list_servers(events))
+
+    let latest = events
+        .into_iter()
+        .max_by_key(|event| event.created_at)
+        .map(|event| grasp_list_servers(&event))
+        .unwrap_or_default();
+
+    Ok(latest)
 }

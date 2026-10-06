@@ -903,6 +903,7 @@ impl Backend {
     }
 
     fn sync_inbox(&mut self, cx: &mut Context<Self>) {
+        let repo_store = RepoListStore::global(cx);
         let client = self.client.clone();
         let me = self.current_user;
 
@@ -910,7 +911,7 @@ impl Backend {
             self.subscribe_bootstrap(Filters::notifications(me), cx);
             self.subscribe_bootstrap(vec![Filters::authored_activity(me)], cx);
 
-            let relays: HashSet<RelayUrl> = RepoListStore::global(cx)
+            let relays: HashSet<RelayUrl> = repo_store
                 .read(cx)
                 .announcements_of(&me)
                 .into_iter()
@@ -944,9 +945,11 @@ impl Backend {
                         this.signer.swap_inner(new_signer);
                         this.current_user = Some(public_key);
                         this.passphrase_required = false;
+
                         this.bootstrap_user(public_key, cx);
-                        cx.emit(BackendEvent::SignerChanged);
                         this.sync_inbox(cx);
+
+                        cx.emit(BackendEvent::SignerChanged);
                         cx.notify();
                     })?;
                 }
@@ -974,7 +977,7 @@ impl Backend {
 
         let client = self.client.clone();
 
-        cx.spawn(async move |_this, _cx| {
+        cx.background_spawn(async move {
             let connected: Result<(), Error> = async {
                 for url in relays.iter() {
                     client.add_relay(url).and_connect().await?;

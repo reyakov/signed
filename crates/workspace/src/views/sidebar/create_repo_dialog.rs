@@ -10,7 +10,6 @@ use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputState, Textarea};
 use gpui_component::{Disableable, IconName, WindowExt, h_flex};
 use settings::SettingsStore;
-use signed_core::Announcement;
 use signed_state::{Backend, CheckoutsStore};
 
 use super::super::open_repo_panel;
@@ -232,7 +231,13 @@ fn create_repository(
                     store.record(local_path.clone(), announcement.addr(), cx);
                 });
                 cx.open_with_system(&local_path);
-                open_repo(dock_area, announcement, window, cx);
+                open_repo_panel(
+                    &dock_area,
+                    &announcement.addr(),
+                    Some(&announcement),
+                    window,
+                    cx,
+                );
             })
             .ok();
         }
@@ -244,19 +249,4 @@ fn create_repository(
         }
     })
     .detach();
-}
-
-fn open_repo(
-    dock_area: WeakEntity<DockArea>,
-    announcement: Announcement,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    open_repo_panel(
-        &dock_area,
-        &announcement.addr(),
-        Some(&announcement),
-        window,
-        cx,
-    );
 }

@@ -40,11 +40,6 @@ impl SkinShared {
     pub(crate) fn resizing_dock(&self) -> &Cell<Option<DockPlacement>> {
         &self.resizing_dock
     }
-
-    /// Redraw the area after a setting changed. The skin is not an entity, so nothing else would.
-    pub(crate) fn notify(&self, cx: &mut App) {
-        _ = self.area.update(cx, |_, cx| cx.notify());
-    }
 }
 
 /// The Signed appearance for a [`DockArea`].
@@ -73,16 +68,6 @@ impl SignedDockSkin {
 
     pub(crate) fn shared(&self) -> &Rc<SkinShared> {
         &self.shared
-    }
-
-    /// Whether tab bars offer the affordance that collapses a neighbouring dock.
-    pub fn is_toggle_button_visible(&self) -> bool {
-        self.shared.is_toggle_button_visible()
-    }
-
-    pub fn set_toggle_button_visible(&self, visible: bool, cx: &mut App) {
-        self.shared.toggle_button_visible.set(visible);
-        self.shared.notify(cx);
     }
 }
 

@@ -238,25 +238,6 @@ impl SidebarPanel {
         onboarding_dialog::open(name_input, pass_input, repass_input, state, window, cx);
     }
 
-    fn open_create_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        create_repo_dialog::open(self.dock_area.clone(), window, cx);
-    }
-
-    fn open_repo(
-        &mut self,
-        announcement: &Announcement,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        open_repo_panel(
-            &self.dock_area,
-            &announcement.addr(),
-            Some(announcement),
-            window,
-            &mut *cx,
-        );
-    }
-
     /// The detail view offers to publish it to NIP-34.
     fn open_local_repo(
         &mut self,
@@ -370,7 +351,11 @@ impl SidebarPanel {
                                     .small()
                                     .ghost()
                                     .on_click(cx.listener(|this, _ev, window, cx| {
-                                        this.open_create_repo(window, cx);
+                                        create_repo_dialog::open(
+                                            this.dock_area.clone(),
+                                            window,
+                                            cx,
+                                        );
                                     })),
                             ),
                     ),
@@ -470,9 +455,15 @@ impl SidebarPanel {
             );
         }
 
-        row.on_click(
-            cx.listener(move |this, _ev, window, cx| this.open_repo(&announcement, window, cx)),
-        )
+        row.on_click(cx.listener(move |this, _ev, window, cx| {
+            open_repo_panel(
+                &this.dock_area,
+                &announcement.addr(),
+                Some(&announcement),
+                window,
+                &mut *cx,
+            );
+        }))
     }
 
     fn render_local_row(
@@ -522,10 +513,6 @@ impl SidebarPanel {
             .on_click(cx.listener(move |this, _ev, window, cx| {
                 this.open_local_entry(entry.clone(), window, cx);
             }))
-    }
-
-    fn open_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        import_dialog::open(window, cx);
     }
 
     /// The user avatar and name, wired into the titlebar drag area.
@@ -619,8 +606,8 @@ impl SidebarPanel {
                                     .hover(|this| this.bg(gpui::white().opacity(0.2)))
                                     .active(|this| this.bg(gpui::white().opacity(0.4)))
                                     .child(div().text_sm().child("Import identity"))
-                                    .on_click(cx.listener(|this, _ev, window, cx| {
-                                        this.open_import(window, cx)
+                                    .on_click(cx.listener(|_this, _ev, window, cx| {
+                                        import_dialog::open(window, cx)
                                     })),
                             ),
                     ),

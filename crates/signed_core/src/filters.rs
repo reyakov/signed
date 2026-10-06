@@ -40,16 +40,13 @@ pub fn is_repo_kind(kind: Kind) -> bool {
         || ACTIVITY_KINDS.contains(&kind)
 }
 
-fn tag_value<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
+fn tag_kind(event: &Event, name: &str) -> Option<Kind> {
     event
         .tags
         .iter()
         .find(|tag| tag.kind() == name)
         .and_then(|tag| tag.content())
-}
-
-fn tag_kind(event: &Event, name: &str) -> Option<Kind> {
-    tag_value(event, name)?.parse::<Kind>().ok()
+        .and_then(|value| value.parse::<Kind>().ok())
 }
 
 pub struct Filters;
