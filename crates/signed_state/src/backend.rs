@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Error, anyhow, bail};
 use bitcoin_hashes::sha1::Hash as Sha1Hash;
-use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Global, Task, WeakEntity};
+use gpui::{
+    App, AppContext, AsyncApp, Context, Entity, EventEmitter, Global, Task, TaskExt, WeakEntity,
+};
 use nostr::event::IntoEventBuilder;
 use nostr::nips::nip19::Nip19Coordinate;
 use nostr_connect::prelude::*;
@@ -942,6 +944,20 @@ impl Backend {
 
     pub fn passphrase_required(&self) -> bool {
         self.passphrase_required
+    }
+
+    pub fn sign_out(&mut self, cx: &mut Context<Self>) {
+        self.current_user = None;
+        self.passphrase_required = false;
+
+        self.inbox.update(cx, |inbox, cx| {
+            inbox.reset(cx);
+        });
+
+        cx.delete_credentials(USER_KEYRING).detach_and_log_err(cx);
+        cx.emit(BackendEvent::SignerChanged);
+        cx.emit(BackendEvent::SignerRequired);
+        cx.notify();
     }
 
     fn sync_inbox(&mut self, cx: &mut Context<Self>) {

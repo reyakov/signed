@@ -14,9 +14,11 @@ use gpui::{
     SharedString, Subscription, WeakEntity, Window, div, img, px, relative, uniform_list, white,
 };
 use gpui_base::Button as BaseButton;
-use gpui_component::button::{Button, ButtonVariants};
+use gpui_component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_component::dialog::DialogButtonProps;
 use gpui_component::input::InputState;
-use gpui_component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, h_flex, v_flex};
+use gpui_component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
 use nostr::prelude::RelayUrl;
 use signed_core::{Announcement, RepoAddr};
 use signed_state::{
@@ -25,7 +27,7 @@ use signed_state::{
 };
 use signed_ui::{Avatar, NavItem, PixelAvatar, title_bar_drag_handlers};
 
-use super::{InboxView, RepoDetailView, RepoListView, open_repo_panel};
+use super::{InboxView, PlaceholderPanel, RepoDetailView, RepoListView, open_repo_panel};
 
 mod create_repo_dialog;
 pub(crate) mod grasp_servers;
@@ -54,6 +56,8 @@ pub struct SidebarPanel {
     dock_area: WeakEntity<DockArea>,
     inbox: Option<WeakEntity<InboxView>>,
     explore: Option<WeakEntity<RepoListView>>,
+    profile: Option<WeakEntity<PlaceholderPanel>>,
+    relays: Option<WeakEntity<PlaceholderPanel>>,
     banner: SharedString,
     /// User's announced repositories.
     announcements: Arc<Vec<Announcement>>,
@@ -113,6 +117,8 @@ impl SidebarPanel {
             dock_area,
             inbox: None,
             explore: None,
+            profile: None,
+            relays: None,
             banner: pick_banner(),
             announcements: Arc::new(Vec::new()),
             local_repos: Arc::new(Vec::new()),
@@ -215,6 +221,51 @@ impl SidebarPanel {
         self.explore = Some(panel.downgrade());
 
         self.dock_area
+            .update(cx, |dock_area, cx| {
+                add_center_panel(dock_area, panel_handle(panel), window, cx);
+            })
+            .ok();
+    }
+
+    fn open_profile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        Self::open_placeholder_panel(
+            &self.dock_area,
+            &mut self.profile,
+            "profile",
+            "Profile",
+            window,
+            cx,
+        );
+    }
+
+    fn open_relays(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        Self::open_placeholder_panel(
+            &self.dock_area,
+            &mut self.relays,
+            "relays",
+            "Relays",
+            window,
+            cx,
+        );
+    }
+
+    /// Opens one of the not-yet-built panels, reusing the already-open one.
+    fn open_placeholder_panel(
+        dock_area: &WeakEntity<DockArea>,
+        slot: &mut Option<WeakEntity<PlaceholderPanel>>,
+        name: &'static str,
+        title: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if slot.as_ref().and_then(WeakEntity::upgrade).is_some() {
+            return;
+        }
+
+        let panel = cx.new(|cx| PlaceholderPanel::new(name, title, cx));
+        *slot = Some(panel.downgrade());
+
+        dock_area
             .update(cx, |dock_area, cx| {
                 add_center_panel(dock_area, panel_handle(panel), window, cx);
             })
@@ -524,6 +575,7 @@ impl SidebarPanel {
     ) -> impl IntoElement {
         let name = profile.name();
         let picture = profile.picture();
+        let panel = cx.entity().downgrade();
 
         title_bar_drag_handlers(
             h_flex()
@@ -532,12 +584,44 @@ impl SidebarPanel {
                 .when(cfg!(target_os = "macos"), |this| this.pl(px(80.)))
                 .child(
                     div().child(
-                        Button::new("user").text().dropdown_caret(true).child(
-                            h_flex()
-                                .gap_1()
-                                .child(Avatar::new(name.clone()).picture(picture))
-                                .child(div().text_xs().font_semibold().child(name)),
-                        ),
+                        Button::new("user")
+                            .text()
+                            .dropdown_caret(true)
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(Avatar::new(name.clone()).picture(picture))
+                                    .child(div().text_xs().font_semibold().child(name)),
+                            )
+                            .dropdown_menu(move |menu, _, _| {
+                                menu.item(PopupMenuItem::new("View Profile").on_click({
+                                    let panel = panel.clone();
+                                    move |_, window, cx| {
+                                        let _ = panel.update(cx, |this, cx| {
+                                            this.open_profile(window, cx);
+                                        });
+                                    }
+                                }))
+                                .item(PopupMenuItem::new("View Relays").on_click({
+                                    let panel = panel.clone();
+                                    move |_, window, cx| {
+                                        let _ = panel.update(cx, |this, cx| {
+                                            this.open_relays(window, cx);
+                                        });
+                                    }
+                                }))
+                                .separator()
+                                .item(
+                                    PopupMenuItem::element(|_, cx| {
+                                        div().text_color(cx.theme().danger).child("Exit")
+                                    })
+                                    .on_click(
+                                        |_, window, cx| {
+                                            open_exit_dialog(window, cx);
+                                        },
+                                    ),
+                                )
+                            }),
                     ),
                 ),
             window,
@@ -780,4 +864,27 @@ impl Render for SidebarPanel {
                     ),
             )
     }
+}
+
+fn open_exit_dialog(window: &mut Window, cx: &mut App) {
+    window.open_alert_dialog(cx, |alert, _, _| {
+        alert
+            .title("Exit Signed?")
+            .description(
+                "You will be signed out on this device and will need to sign in again on the next session.",
+            )
+            .button_props(
+                DialogButtonProps::default()
+                    .ok_text("Exit")
+                    .ok_variant(ButtonVariant::Danger)
+                    .show_cancel(true),
+            )
+            .on_ok(|_, _, cx| {
+                let backend = Backend::global(cx);
+                backend.update(cx, |backend, cx| {
+                    backend.sign_out(cx);
+                });
+                true
+            })
+    });
 }
