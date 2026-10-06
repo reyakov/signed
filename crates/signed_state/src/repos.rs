@@ -20,23 +20,19 @@ impl Global for GlobalRepoListStore {}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RepoActivityCounts {
     pub issues: u32,
-    // PR updates are not new PRs and do not count.
     pub pull_requests: u32,
     pub commits: u32,
 }
 
 impl RepoActivityCounts {
-    // The popularity ranking key.
     pub fn score(self) -> u32 {
         self.issues + self.pull_requests + self.commits
     }
 }
 
 pub struct RepoListStore {
-    // Shared so views can clone the list per frame without a deep copy.
     pub announcements: Arc<Vec<Announcement>>,
     pub last_activity: Arc<HashMap<RepoAddr, Timestamp>>,
-    // For the Popular ranking of the explore list.
     pub counts: Arc<HashMap<RepoAddr, RepoActivityCounts>>,
     state_synced_repos: HashSet<RepoAddr>,
     refresh: RefreshGate,

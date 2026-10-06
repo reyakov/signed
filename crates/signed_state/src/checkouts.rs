@@ -5,7 +5,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::Error;
 use gpui::{App, AppContext, Context, Entity, Global, Subscription};
 use nostr::prelude::*;
-use settings::{CheckoutRecord, SettingsStore};
+use settings::{CheckoutRecord, CheckoutsSettings, SettingsStore};
 use signed_core::{Announcement, RepoAddr};
 use signed_git::Repo;
 use utils::same_repo_url;
@@ -17,12 +17,10 @@ use crate::refresh::{RefreshGate, RefreshRequest};
 use crate::repos::RepoListStore;
 
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
-
+const MAX_STATUS_CHECKOUTS: usize = 8;
 const LOCAL_POLL: Duration = Duration::from_secs(2);
 const STATUS_POLL: Duration = Duration::from_secs(15);
 const PUSH_POLL: Duration = Duration::from_secs(60);
-
-const MAX_STATUS_CHECKOUTS: usize = 8;
 
 struct GlobalCheckoutsStore(Entity<CheckoutsStore>);
 
@@ -31,13 +29,13 @@ impl Global for GlobalCheckoutsStore {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckoutStatus {
     pub path: PathBuf,
-    // A detached checkout is idle and yields no status.
+    /// A detached checkout is idle and yields no status.
     pub branch: String,
-    // For tip-based PR dedupe.
+    /// For tip-based PR dedupe.
     pub head: String,
-    // `refs/remotes/origin/<branch>`, else `origin/HEAD` for new branches.
+    /// `refs/remotes/origin/<branch>`, else `origin/HEAD` for new branches.
     pub base: String,
-    // Zero-ahead checkouts are dropped, so always above zero.
+    /// Zero-ahead checkouts are dropped, so always above zero.
     pub ahead: u32,
 }
 
@@ -57,9 +55,8 @@ pub struct CheckoutsStore {
     refresh: RefreshGate,
     debounce_pending: bool,
     local_pending: bool,
-    // The local pass runs a full pass again once this is older than the
-    // reconciliation cadence, so remote moves still land.
     last_full_sync: Option<Instant>,
+    checkouts_settings: CheckoutsSettings,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -74,6 +71,7 @@ impl CheckoutsStore {
 
     pub fn new(cx: &mut Context<Self>) -> Self {
         let mut subscriptions = Vec::new();
+        let mut checkouts_settings = CheckoutsSettings::default();
 
         if !cfg!(target_arch = "wasm32") {
             let settings = SettingsStore::global(cx);
@@ -81,7 +79,15 @@ impl CheckoutsStore {
             let repos = RepoListStore::global(cx);
             let backend = Backend::global(cx);
 
-            subscriptions.push(cx.observe(&settings, |this, _settings, cx| {
+            checkouts_settings = settings.read(cx).settings().checkouts.clone();
+
+            subscriptions.push(cx.observe(&settings, |this, settings, cx| {
+                let checkouts = settings.read(cx).settings().checkouts.clone();
+                if this.checkouts_settings == checkouts {
+                    return;
+                }
+                // Only edits to the checkouts section affect the derived state
+                this.checkouts_settings = checkouts;
                 this.refresh(cx);
             }));
 
@@ -128,6 +134,7 @@ impl CheckoutsStore {
             debounce_pending: false,
             local_pending: false,
             last_full_sync: None,
+            checkouts_settings,
             _subscriptions: subscriptions,
         }
     }
@@ -186,9 +193,6 @@ impl CheckoutsStore {
         self.refresh(cx);
     }
 
-    // Drop the stale ready-to-push status and notify observers right away, so
-    // the sidebar badge updates immediately instead of waiting for the next
-    // background pass. The debounced refresh reconciles the remaining checkouts.
     pub fn checkout_pushed(&mut self, addr: &RepoAddr, path: &Path, cx: &mut Context<Self>) {
         let mut removed = false;
 
@@ -206,8 +210,6 @@ impl CheckoutsStore {
             cx.notify();
         }
 
-        // The other checkouts of this repository still need re-deriving
-        // against the remote, now that the pushed refs landed there.
         self.request_push_statuses(addr, cx);
     }
 
@@ -231,7 +233,9 @@ impl CheckoutsStore {
 
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(REFRESH_DEBOUNCE).await;
-            this.update(cx, |this, cx| this.run_refresh(cx))
+            this.update(cx, |this, cx| {
+                this.run_refresh(cx);
+            })
         })
         .detach();
     }
@@ -287,14 +291,17 @@ impl CheckoutsStore {
                 {
                     continue;
                 }
+
                 let origin = Repo::open(path)
                     .and_then(|repo| repo.origin_url())
                     .ok()
                     .flatten();
+
                 let root = Repo::open(path)
                     .and_then(|repo| repo.root_commit())
                     .ok()
                     .flatten();
+
                 facts.push((path.clone(), origin, root));
             }
 
@@ -344,7 +351,9 @@ impl CheckoutsStore {
             })?;
 
             if again {
-                this.update(cx, |this, cx| this.refresh(cx))?;
+                this.update(cx, |this, cx| {
+                    this.refresh(cx);
+                })?;
             }
 
             this.update(cx, |this, cx| {
@@ -375,7 +384,6 @@ impl CheckoutsStore {
     }
 
     fn local_tick(&mut self, cx: &mut Context<Self>) {
-        // Nothing watched: the pass idles until a new request restarts it.
         if self.status_requested.is_empty() && self.push_requested.is_empty() {
             return;
         }
@@ -433,8 +441,6 @@ impl CheckoutsStore {
             };
 
             this.update(cx, |this, cx| {
-                // The tracking refs move only when a full pass fetches; a full
-                // pass or a fresh request will apply fresher data.
                 if this.refresh.running() || this.debounce_pending {
                     return;
                 }
