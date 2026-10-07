@@ -7,17 +7,19 @@ pub struct RepoState {
 }
 
 impl RepoState {
-    // The `d` tag matches the repository id.
     pub fn build(id: &str, refs: &[(String, String)], head: Option<&str>) -> EventBuilder {
         let mut tags: Vec<Tag> = vec![Tag::identifier(id.to_owned())];
+
         for (name, commit) in refs {
             tags.push(Tag::parse([name.as_str(), commit.as_str()]).expect("valid ref tag"));
         }
+
         if let Some(head) = head {
             tags.push(
                 Tag::parse(["HEAD", &format!("ref: refs/heads/{head}")]).expect("valid HEAD tag"),
             );
         }
+
         EventBuilder::new(Kind::RepoState, "").tags(tags)
     }
 

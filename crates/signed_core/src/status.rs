@@ -28,7 +28,6 @@ impl RepoStatus {
         }
     }
 
-    // Defaults to Open when no authorized status event exists.
     pub fn resolve<'a, I>(
         status_events: I,
         root_author: &PublicKey,

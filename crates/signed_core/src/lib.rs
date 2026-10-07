@@ -1,15 +1,21 @@
 pub mod addr;
+pub mod announcement;
 pub mod deletions;
 pub mod filters;
+pub mod git_event;
 pub mod inbox;
-pub mod model;
+pub mod pull_request;
 pub mod state;
 pub mod status;
+pub mod upstream;
 
 pub use addr::RepoAddr;
+pub use announcement::Announcement;
 pub use deletions::Deletions;
 pub use filters::Filters;
+pub use git_event::GitEvent;
 pub use inbox::{InboxItem, InboxReadState, ThreadResolver};
-pub use model::{Announcement, GitEvent, PullRequest};
+pub use pull_request::PullRequest;
 pub use state::RepoState;
 pub use status::RepoStatus;
+pub use upstream::Upstream;

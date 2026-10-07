@@ -4,13 +4,16 @@ use nostr::prelude::*;
 
 pub struct Deletions {
     ids: HashSet<(EventId, PublicKey)>,
-    // All versions of the addressable event up to `cutoff` are deleted.
     coords: Vec<(Coordinate, PublicKey, Timestamp)>,
     vanished: Vec<(PublicKey, Timestamp)>,
 }
 
 impl Deletions {
-    pub fn from_events(events: impl IntoIterator<Item = Event>) -> Self {
+    /// Builds a [`Deletions`] instance from a collection of events.
+    pub fn from_events<E>(events: E) -> Self
+    where
+        E: IntoIterator<Item = Event>,
+    {
         let mut ids = HashSet::new();
         let mut coords = Vec::new();
         let mut vanished = Vec::new();
@@ -38,8 +41,7 @@ impl Deletions {
         }
     }
 
-    // A request is valid when its author matches the deleted event's author,
-    // per NIP-09. Addressable events are deleted up to the request's `created_at`.
+    /// Returns whether the given event is deleted.
     pub fn is_deleted(&self, event: &Event) -> bool {
         if self
             .vanished

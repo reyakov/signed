@@ -81,7 +81,7 @@ impl Filters {
         Filter::new().kind(Kind::Custom(10018)).author(public_key)
     }
 
-    // Replaceable events, so the latest of each kind is all we need.
+    /// Replaceable events, so the latest of each kind is all we need.
     pub fn user_metadata(public_key: PublicKey) -> Vec<Filter> {
         vec![
             Self::grasp_list(public_key).limit(1),
@@ -106,12 +106,13 @@ impl Filters {
         ]
     }
 
-    // Two filters: combining `#E` and `#e` would AND the conditions.
     pub fn comments_for(roots: impl IntoIterator<Item = EventId>) -> Vec<Filter> {
         let roots: Vec<String> = roots.into_iter().map(|id| id.to_hex()).collect();
+
         if roots.is_empty() {
             return Vec::new();
         }
+
         vec![
             Filter::new()
                 .kind(Kind::Comment)
@@ -129,7 +130,6 @@ impl Filters {
             .custom_tags(SingleLetterTag::UPPERCASE_K, ["1621", "1617", "1618"])
     }
 
-    // `Filter::pubkey` matches the git events' lowercase `p` tag.
     pub fn notifications(me: PublicKey) -> Vec<Filter> {
         vec![
             Self::notification_comments(me),
@@ -137,8 +137,6 @@ impl Filters {
         ]
     }
 
-    // A comment on an unrelated kind matches too, so results must be filtered
-    // through `GitEvent::is_git_activity` before display.
     pub fn authored_activity(me: PublicKey) -> Filter {
         Filter::new().kinds(ACTIVITY_KINDS).author(me)
     }
@@ -151,13 +149,11 @@ impl Filters {
         Filter::new().kind(Kind::RepoState)
     }
 
-    // Quantized to whole days so identical filters hash the same.
     fn deletions_since() -> Timestamp {
         let now = Timestamp::now().as_secs();
         Timestamp::from_secs(now - now % 86_400) - Self::DELETIONS_LOOKBACK
     }
 
-    // Deletion requests must be known before any other event is shown.
     pub fn deletions() -> Filter {
         Filter::new()
             .kinds([Kind::EventDeletion, Kind::RequestToVanish])

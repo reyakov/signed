@@ -55,7 +55,6 @@ impl RepoAddr {
             .identifier(self.identifier())
     }
 
-    // Statuses may omit the `a` tag per NIP-34; those are not matched here.
     pub fn activity_filter(&self) -> Filter {
         Filter::new()
             .kinds(crate::filters::ACTIVITY_KINDS)
