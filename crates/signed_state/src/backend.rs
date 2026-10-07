@@ -515,6 +515,7 @@ impl Backend {
         let owner = public_key.to_bech32().unwrap();
         let servers = grasp_servers.clone();
         let client = self.client.clone();
+        let signer = self.signer.clone();
 
         let destination = {
             let dir_name = GitCache::sanitize_path_component(&name);
@@ -554,9 +555,7 @@ impl Backend {
             let commit = work.await?;
             let commit_sha = Sha1Hash::from_str(&commit).map_err(|_| anyhow!("invalid id"))?;
 
-            let signer = this.update(cx, |this, _cx| this.signer.clone())?;
-
-            let announcement = repository_announcement(
+            let announcement = build_announcement(
                 &repo_id,
                 &name,
                 &description,
@@ -594,6 +593,7 @@ impl Backend {
         name: &str,
         description: &str,
         grasp_servers: Vec<RelayUrl>,
+        default_branch: Option<String>,
         cx: &mut Context<Self>,
     ) -> Task<Result<Announcement, Error>> {
         let name = name.trim().to_owned();
@@ -627,31 +627,43 @@ impl Backend {
 
         let owner = public_key.to_bech32().unwrap();
         let servers = grasp_servers.clone();
+
         let client = self.client.clone();
+        let signer = self.signer.clone();
 
         cx.spawn(async move |this, cx| {
-            let work = cx.background_spawn({
-                let path = path.clone();
-                async move {
-                    let repo = Repo::open(&path)?;
-                    let state = repo.ref_state()?;
-                    let euc = repo.root_commit()?;
-                    Ok::<_, Error>((state, euc))
-                }
-            });
-            let (state, euc) = work.await?;
+            let (mut state, euc) = cx
+                .background_spawn({
+                    let path = path.clone();
+                    async move {
+                        let repo = Repo::open(&path)?;
+                        let state = repo.ref_state()?;
+                        let euc = repo.root_commit()?;
+                        Ok::<_, Error>((state, euc))
+                    }
+                })
+                .await?;
 
-            let signer = this.update(cx, |this, _cx| this.signer.clone())?;
+            let chosen = default_branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|branch| !branch.is_empty());
+
+            if let Some(branch) = chosen {
+                let wanted = format!("refs/heads/{branch}");
+                if state.refs.iter().any(|(name, _)| name == &wanted) {
+                    state.head = Some(branch.to_owned());
+                }
+            }
 
             let euc = euc.and_then(|commit| Sha1Hash::from_str(&commit).ok());
-            let announcement =
-                repository_announcement(&repo_id, &name, &description, &owner, &servers, euc);
+            let ann = build_announcement(&repo_id, &name, &description, &owner, &servers, euc);
 
             let event = announce_repository_and_push(
                 &this,
                 &client,
                 &signer,
-                announcement,
+                ann,
                 &repo_id,
                 &owner,
                 &servers,
@@ -667,9 +679,9 @@ impl Backend {
                 let url = format!("{base}/{owner}/{repo_id}.git");
                 let path = path.clone();
                 cx.background_spawn(async move {
-                    Repo::open(&path)
-                        .and_then(|repo| repo.ensure_origin(&url))
-                        .ok();
+                    if let Err(e) = Repo::open(&path).and_then(|r| r.ensure_origin(&url)) {
+                        log::warn!("failed to ensure origin: {e}");
+                    }
                 })
                 .await;
             }
@@ -681,13 +693,8 @@ impl Backend {
                 Ok(naddr) => {
                     let path = path.clone();
                     cx.background_spawn(async move {
-                        if let Err(error) =
-                            Repo::open(&path).and_then(|repo| repo.set_nostr_repo(&naddr))
-                        {
-                            log::warn!(
-                                "failed to record the NIP-34 marker for {}: {error}",
-                                path.display()
-                            );
+                        if let Err(e) = Repo::open(&path).and_then(|r| r.set_nostr_repo(&naddr)) {
+                            log::warn!("failed to record the NIP-34 marker: {e}");
                         }
                     })
                     .await;
@@ -742,6 +749,8 @@ impl Backend {
         let owner = announcement.owner.to_bech32().unwrap();
         let repo_id = announcement.id.clone();
         let relays = announcement.relays.clone();
+        let client = self.client.clone();
+        let signer = self.signer.clone();
 
         cx.spawn(async move |this, cx| {
             let _guard = cx.on_drop(&this, {
@@ -778,9 +787,6 @@ impl Backend {
             // Grasp servers authorize a push by the state event they hold in purgatory.
             let refs = state.refs.clone();
             let head = state.head.clone();
-
-            let (client, signer) =
-                this.update(cx, |this, _cx| (this.client.clone(), this.signer.clone()))?;
 
             let outcome = if refs.is_empty() {
                 PushOutcome::default()
@@ -1145,7 +1151,7 @@ impl Backend {
     }
 }
 
-fn repository_announcement(
+fn build_announcement(
     repo_id: &str,
     name: &str,
     description: &str,

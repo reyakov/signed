@@ -828,10 +828,6 @@ impl RepoDetailView {
     }
 
     /// Open the upstream repository, the `u` tag of this fork's announcement.
-    ///
-    /// The announcement may not be in the local database yet. The panel opens
-    /// from the address and fills in when the store loads it; the store's
-    /// `subscribe_remote` fetches it from the bootstrap relays.
     pub(super) fn open_upstream(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(addr) = self
             .announcement(cx)
@@ -1788,6 +1784,12 @@ impl RepoDetailView {
     /// The Files tab body, or the clone/initial-load spinner.
     fn render_files_tab(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.loading {
+            let label = if self.store.read(cx).path.is_some() {
+                "Loading repository..."
+            } else {
+                "Cloning repository..."
+            };
+
             return v_flex()
                 .flex_1()
                 .size_full()
@@ -1799,7 +1801,7 @@ impl RepoDetailView {
                     div()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child("Cloning repository..."),
+                        .child(label),
                 )
                 .into_any_element();
         }
