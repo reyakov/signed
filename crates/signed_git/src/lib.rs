@@ -3,7 +3,6 @@ mod diff;
 mod history;
 mod nip34;
 mod patch;
-mod remote;
 mod repo;
 mod scan;
 mod worktree;
@@ -21,6 +20,7 @@ pub use scan::{LocalRepo, find_git_repos};
 pub use worktree::WorktreeSnapshot;
 
 pub(crate) trait GixResultExt<T> {
+    /// Converts a gix exception result into an `anyhow` result.
     fn into_anyhow(self) -> anyhow::Result<T>;
 }
 

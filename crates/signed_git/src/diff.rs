@@ -1,8 +1,4 @@
-use anyhow::Result;
 use gix::diff::blob::unified_diff::{ConsumeHunk, DiffLineKind as GixLineKind, HunkHeader};
-
-use crate::GixResultExt as _;
-use crate::repo::Repo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffLineKind {
@@ -19,6 +15,18 @@ pub struct DiffLine {
     pub text: String,
 }
 
+impl DiffLine {
+    /// Creates a diff line with its kind, optional line numbers, and text.
+    pub fn new(kind: DiffLineKind, old: Option<u32>, new: Option<u32>, text: String) -> Self {
+        Self {
+            kind,
+            old,
+            new,
+            text,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DiffHunk {
     pub old_start: u32,
@@ -26,6 +34,25 @@ pub struct DiffHunk {
     pub new_start: u32,
     pub new_lines: u32,
     pub lines: Vec<DiffLine>,
+}
+
+impl DiffHunk {
+    /// Creates a hunk spanning the given old and new ranges.
+    pub fn new(
+        old_start: u32,
+        old_lines: u32,
+        new_start: u32,
+        new_lines: u32,
+        lines: Vec<DiffLine>,
+    ) -> Self {
+        Self {
+            old_start,
+            old_lines,
+            new_start,
+            new_lines,
+            lines,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,15 +66,36 @@ pub enum DiffStatus {
 
 #[derive(Debug, Clone)]
 pub struct FileDiff {
-    // For renames and copies, the destination path.
     pub path: String,
     pub old_path: Option<String>,
     pub status: DiffStatus,
     pub insertions: usize,
     pub deletions: usize,
-    // Binary files have empty `hunks`.
     pub binary: bool,
     pub hunks: Vec<DiffHunk>,
+}
+
+impl FileDiff {
+    /// Creates a file diff; `old_path` is the rename or copy source and `binary` files have no hunks.
+    pub fn new(
+        path: String,
+        old_path: Option<String>,
+        status: DiffStatus,
+        insertions: usize,
+        deletions: usize,
+        binary: bool,
+        hunks: Vec<DiffHunk>,
+    ) -> Self {
+        Self {
+            path,
+            old_path,
+            status,
+            insertions,
+            deletions,
+            binary,
+            hunks,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -55,226 +103,135 @@ pub struct CommitDiff {
     pub files: Vec<FileDiff>,
 }
 
-impl Repo {
-    // Compared against the first parent; the empty tree for the root commit.
-    pub fn commit_diff(&self, id: &str) -> Result<CommitDiff> {
-        let commit_id = self.inner.rev_parse_single(id.as_bytes())?;
-        let commit = commit_id.object()?.into_commit();
-        let new_tree = commit.tree()?;
-        let old_tree = match commit.parent_ids().next() {
-            Some(parent) => Some(parent.object()?.into_commit().tree()?),
-            None => None,
-        };
-        Self::tree_diff(self, old_tree.as_ref(), &new_tree)
-    }
-
-    // Directories and submodules are skipped, files are sorted by path.
-    pub fn range_diff(&self, base: &str, tip: &str) -> Result<CommitDiff> {
-        let base_tree = self
-            .inner
-            .rev_parse_single(base.as_bytes())?
-            .object()?
-            .into_commit()
-            .tree()?;
-        let tip_tree = self
-            .inner
-            .rev_parse_single(tip.as_bytes())?
-            .object()?
-            .into_commit()
-            .tree()?;
-        Self::tree_diff(self, Some(&base_tree), &tip_tree)
-    }
-
-    fn tree_diff(
-        repo: &Repo,
-        old_tree: Option<&gix::Tree<'_>>,
-        new_tree: &gix::Tree<'_>,
-    ) -> Result<CommitDiff> {
-        use gix::diff::blob::platform::prepare_diff::Operation;
-        use gix::object::tree::diff::Change;
-        use gix::objs::tree::EntryKind;
-
-        let changes = repo
-            .inner
-            .diff_tree_to_tree(old_tree, Some(new_tree), None)?;
-
-        let mut cache = repo.inner.diff_resource_cache_for_tree_diff()?;
-        let mut files = Vec::new();
-
-        for change in changes {
-            let attached = Change::from_change_ref(change.to_ref(), &repo.inner, &repo.inner);
-
-            let (path, old_path, status) = match attached {
-                Change::Addition {
-                    location,
-                    entry_mode,
-                    ..
-                } if !matches!(entry_mode.kind(), EntryKind::Tree | EntryKind::Commit) => {
-                    (location.to_owned(), None, DiffStatus::Added)
-                }
-                Change::Deletion {
-                    location,
-                    entry_mode,
-                    ..
-                } if !matches!(entry_mode.kind(), EntryKind::Tree | EntryKind::Commit) => {
-                    (location.to_owned(), None, DiffStatus::Deleted)
-                }
-                Change::Modification {
-                    location,
-                    previous_entry_mode,
-                    entry_mode,
-                    ..
-                } if !matches!(entry_mode.kind(), EntryKind::Tree | EntryKind::Commit)
-                    && !matches!(
-                        previous_entry_mode.kind(),
-                        EntryKind::Tree | EntryKind::Commit
-                    ) =>
-                {
-                    (location.to_owned(), None, DiffStatus::Modified)
-                }
-                Change::Rewrite {
-                    location,
-                    source_location,
-                    source_entry_mode,
-                    entry_mode,
-                    copy,
-                    ..
-                } if !matches!(entry_mode.kind(), EntryKind::Tree | EntryKind::Commit)
-                    && !matches!(
-                        source_entry_mode.kind(),
-                        EntryKind::Tree | EntryKind::Commit
-                    ) =>
-                {
-                    let status = if copy {
-                        DiffStatus::Copied
-                    } else {
-                        DiffStatus::Renamed
-                    };
-                    (
-                        location.to_owned(),
-                        Some(source_location.to_owned()),
-                        status,
-                    )
-                }
-                _ => continue,
-            };
-
-            // External diff drivers would shell out, out of scope for a read-only viewer.
-            let platform = attached.diff(&mut cache)?;
-            platform
-                .resource_cache
-                .options
-                .skip_internal_diff_if_external_is_configured = true;
-            let outcome = platform.resource_cache.prepare_diff().into_anyhow()?;
-
-            let (binary, hunks, insertions, deletions) = match outcome.operation {
-                Operation::InternalDiff { algorithm } => {
-                    let input = outcome.interned_input();
-                    let diff = gix::diff::blob::diff_with_slider_heuristics(algorithm, &input);
-
-                    let mut hunks = Vec::new();
-                    let mut insertions = 0usize;
-                    let mut deletions = 0usize;
-                    let collector = HunkCollector {
-                        hunks: &mut hunks,
-                        insertions: &mut insertions,
-                        deletions: &mut deletions,
-                    };
-                    gix::diff::blob::UnifiedDiff::new(&diff, &input, collector, Default::default())
-                        .consume()?;
-                    (false, hunks, insertions, deletions)
-                }
-                Operation::SourceOrDestinationIsBinary => (true, Vec::new(), 0, 0),
-                Operation::ExternalCommand { .. } => {
-                    unreachable!("external diff drivers are disabled")
-                }
-            };
-
-            files.push(FileDiff {
-                path: String::from_utf8_lossy(&path).into_owned(),
-                old_path: old_path.map(|p| String::from_utf8_lossy(&p).into_owned()),
-                status,
-                insertions,
-                deletions,
-                binary,
-                hunks,
-            });
-        }
-
-        files.sort_by(|a, b| a.path.cmp(&b.path));
-
-        Ok(CommitDiff { files })
+impl CommitDiff {
+    /// Creates a commit diff from its files.
+    pub fn new(files: Vec<FileDiff>) -> Self {
+        Self { files }
     }
 }
 
-struct HunkCollector<'a> {
+pub(crate) struct HunkBuilder {
+    old_start: u32,
+    old_lines: u32,
+    new_start: u32,
+    new_lines: u32,
+    old: u32,
+    new: u32,
+    lines: Vec<DiffLine>,
+    insertions: usize,
+    deletions: usize,
+}
+
+impl HunkBuilder {
+    /// Starts a hunk spanning the given old and new ranges.
+    pub(crate) fn new(old_start: u32, old_lines: u32, new_start: u32, new_lines: u32) -> Self {
+        Self {
+            old_start,
+            old_lines,
+            new_start,
+            new_lines,
+            old: old_start,
+            new: new_start,
+            lines: Vec::new(),
+            insertions: 0,
+            deletions: 0,
+        }
+    }
+
+    /// Appends a line, numbering it and counting insertions and deletions.
+    pub(crate) fn push(&mut self, kind: DiffLineKind, text: impl Into<String>) {
+        let (old_no, new_no) = match kind {
+            DiffLineKind::Context => {
+                let numbers = (Some(self.old), Some(self.new));
+                self.old += 1;
+                self.new += 1;
+                numbers
+            }
+            DiffLineKind::Addition => {
+                self.insertions += 1;
+                let number = Some(self.new);
+                self.new += 1;
+                (None, number)
+            }
+            DiffLineKind::Deletion => {
+                self.deletions += 1;
+                let number = Some(self.old);
+                self.old += 1;
+                (number, None)
+            }
+        };
+
+        self.lines
+            .push(DiffLine::new(kind, old_no, new_no, text.into()));
+    }
+
+    /// Finishes the hunk and returns it with its insertion and deletion counts.
+    pub(crate) fn finish(self) -> (DiffHunk, usize, usize) {
+        let hunk = DiffHunk::new(
+            self.old_start,
+            self.old_lines,
+            self.new_start,
+            self.new_lines,
+            self.lines,
+        );
+        (hunk, self.insertions, self.deletions)
+    }
+}
+
+pub(crate) struct HunkCollector<'a> {
     hunks: &'a mut Vec<DiffHunk>,
     insertions: &'a mut usize,
     deletions: &'a mut usize,
 }
 
+impl<'a> HunkCollector<'a> {
+    /// Collects hunks into `hunks` while counting `insertions` and `deletions`.
+    pub(crate) fn new(
+        hunks: &'a mut Vec<DiffHunk>,
+        insertions: &'a mut usize,
+        deletions: &'a mut usize,
+    ) -> Self {
+        Self {
+            hunks,
+            insertions,
+            deletions,
+        }
+    }
+}
+
 impl ConsumeHunk for HunkCollector<'_> {
     type Out = ();
 
+    /// Consumes one hunk, tracking line numbers and insertion/deletion counts.
     fn consume_hunk(
         &mut self,
         header: HunkHeader,
         lines: &[(GixLineKind, &[u8])],
     ) -> std::io::Result<()> {
-        let mut old_ln = header.before_hunk_start;
-        let mut new_ln = header.after_hunk_start;
-        let mut out = Vec::with_capacity(lines.len());
+        let mut builder = HunkBuilder::new(
+            header.before_hunk_start,
+            header.before_hunk_len,
+            header.after_hunk_start,
+            header.after_hunk_len,
+        );
 
         for (kind, content) in lines {
-            let text = String::from_utf8_lossy(content).into_owned();
-            let line = match kind {
-                GixLineKind::Context => {
-                    let line = DiffLine {
-                        kind: DiffLineKind::Context,
-                        old: Some(old_ln),
-                        new: Some(new_ln),
-                        text,
-                    };
-                    old_ln += 1;
-                    new_ln += 1;
-                    line
-                }
-                GixLineKind::Remove => {
-                    *self.deletions += 1;
-                    let line = DiffLine {
-                        kind: DiffLineKind::Deletion,
-                        old: Some(old_ln),
-                        new: None,
-                        text,
-                    };
-                    old_ln += 1;
-                    line
-                }
-                GixLineKind::Add => {
-                    *self.insertions += 1;
-                    let line = DiffLine {
-                        kind: DiffLineKind::Addition,
-                        old: None,
-                        new: Some(new_ln),
-                        text,
-                    };
-                    new_ln += 1;
-                    line
-                }
+            let kind = match kind {
+                GixLineKind::Context => DiffLineKind::Context,
+                GixLineKind::Remove => DiffLineKind::Deletion,
+                GixLineKind::Add => DiffLineKind::Addition,
             };
-            out.push(line);
+            builder.push(kind, String::from_utf8_lossy(content).into_owned());
         }
 
-        self.hunks.push(DiffHunk {
-            old_start: header.before_hunk_start,
-            old_lines: header.before_hunk_len,
-            new_start: header.after_hunk_start,
-            new_lines: header.after_hunk_len,
-            lines: out,
-        });
+        let (hunk, insertions, deletions) = builder.finish();
+        *self.insertions += insertions;
+        *self.deletions += deletions;
+        self.hunks.push(hunk);
 
         Ok(())
     }
 
+    /// Marks the end of the unified diff stream.
     fn finish(self) {}
 }

@@ -130,6 +130,7 @@ fn repo_ref_state_lists_branches_tags_and_head() {
     assert_eq!(state.refs.len(), 3);
 }
 
+/// Creates a repository fixture with the given files.
 fn fixture(files: &[(&str, &[u8])]) -> (tempfile::TempDir, Repo) {
     let dir = tempfile::tempdir().expect("tempdir");
     gix::init(&dir).expect("init");
@@ -144,6 +145,7 @@ fn fixture(files: &[(&str, &[u8])]) -> (tempfile::TempDir, Repo) {
     (dir, repo)
 }
 
+/// Stages and commits every change in the repository.
 fn commit_all(repo: &Repo, message: &str) {
     git_run(repo.workdir().expect("workdir"), &["add", "-A"]);
     git_run(repo.workdir().expect("workdir"), &["commit", "-m", message]);
@@ -415,6 +417,7 @@ fn fetch_repo_refs_imports_heads_under_a_prefix() {
     );
 }
 
+/// Runs `git` in `dir`, failing the test on a non-zero exit.
 fn git_run(dir: &Path, args: &[&str]) -> std::process::Output {
     let output = Command::new("git")
         .current_dir(dir)
@@ -430,6 +433,52 @@ fn git_run(dir: &Path, args: &[&str]) -> std::process::Output {
     output
 }
 
+#[test]
+fn find_git_repos_reports_the_outermost_repository() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let repo_dir = root.path().join("project").join("sub");
+    std::fs::create_dir_all(&repo_dir).expect("mkdir");
+    git_run(&repo_dir, &["init", "-q"]);
+
+    let plain_dir = root.path().join("plain").join("deep");
+    std::fs::create_dir_all(&plain_dir).expect("mkdir");
+
+    let repos = find_git_repos(root.path());
+
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0].path, repo_dir.canonicalize().expect("canonical"));
+    assert!(repos[0].nip34.is_none());
+}
+
+#[test]
+fn find_git_repos_skips_repositories_nested_in_repositories() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let outer = root.path().join("outer");
+    std::fs::create_dir_all(&outer).expect("mkdir");
+    git_run(&outer, &["init", "-q"]);
+
+    let nested = outer.join("nested");
+    std::fs::create_dir_all(&nested).expect("mkdir");
+    git_run(&nested, &["init", "-q"]);
+
+    let repos = find_git_repos(root.path());
+
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0].path, outer.canonicalize().expect("canonical"));
+}
+
+#[test]
+fn find_git_repos_ignores_a_repository_above_the_scan_root() {
+    let outer = tempfile::tempdir().expect("tempdir");
+    git_run(outer.path(), &["init", "-q"]);
+
+    let root = outer.path().join("scan");
+    std::fs::create_dir_all(&root).expect("mkdir");
+
+    assert!(find_git_repos(&root).is_empty());
+}
+
+/// Creates an empty bare server repository for push tests.
 fn bare_server(base: &Path, owner: &str, name: &str) -> PathBuf {
     let repo = base.join(owner).join(format!("{name}.git"));
     std::fs::create_dir_all(repo.parent().expect("parent")).expect("mkdir");

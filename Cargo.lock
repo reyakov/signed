@@ -8143,6 +8143,7 @@ dependencies = [
  "gix-worktree",
  "gix-worktree-state",
  "ignore",
+ "log",
  "nostr",
  "serde",
  "serde_json",

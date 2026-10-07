@@ -11,35 +11,41 @@ pub struct GitCache {
 }
 
 impl GitCache {
+    /// Creates a cache rooted at `root`.
     pub fn new(root: PathBuf) -> Self {
         Self { root }
     }
 
+    /// Returns the cache root directory.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
+    /// Returns the cache path for a repository address.
     pub fn repo_path(&self, addr: &RepoAddr) -> PathBuf {
         self.root
             .join(addr.public_key().to_hex())
             .join(Self::sanitize_path_component(addr.identifier()))
     }
 
+    /// Opens the cached repository, or `None` when it is not cloned yet.
     pub fn open(&self, addr: &RepoAddr) -> Result<Option<Repo>> {
         let path = self.repo_path(addr);
         match gix::open(&path) {
-            Ok(repo) => Ok(Some(Repo { inner: repo })),
-            // A missing path and a directory that is no repository are both classified `NotFound`.
+            Ok(repo) => Ok(Some(Repo::new(repo))),
             Err(e) if e.is_not_found() => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
 
+    /// Returns the cached repository, cloning from one of `clone_urls` on first use.
     pub fn ensure_clone<U: AsRef<str>>(&self, addr: &RepoAddr, clone_urls: &[U]) -> Result<Repo> {
         let path = self.repo_path(addr);
 
         if let Some(repo) = self.open(addr)? {
-            repo.fetch().ok();
+            if let Err(error) = repo.fetch() {
+                log::warn!("failed to refresh the cached repository: {error:#}");
+            }
             return Ok(repo);
         }
 
@@ -51,8 +57,7 @@ impl GitCache {
         Repo::clone(clone_urls, &path)
     }
 
-    // `id` is untrusted relay content: it must never escape the cache root as
-    // a single path component.
+    /// Maps untrusted relay content onto a safe single path component.
     pub fn sanitize_path_component(id: &str) -> String {
         let sanitized: String = id
             .chars()
@@ -72,6 +77,7 @@ impl GitCache {
         sanitized
     }
 
+    /// Returns the `owner/identifier` namespace used for fork checkouts.
     pub fn fork_namespace(announcement: &Announcement) -> String {
         format!(
             "{}/{}",
