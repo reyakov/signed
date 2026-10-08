@@ -10,8 +10,9 @@ use dock::{
 };
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, ObjectFit, Render,
-    SharedString, Subscription, WeakEntity, Window, div, img, px, relative, uniform_list, white,
+    AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, Hsla, ObjectFit,
+    Render, SharedString, Subscription, WeakEntity, Window, div, img, px, relative, uniform_list,
+    white,
 };
 use gpui_base::Button as BaseButton;
 use gpui_component::button::{Button, ButtonVariant, ButtonVariants};
@@ -23,7 +24,7 @@ use nostr::prelude::RelayUrl;
 use signed_core::{Announcement, RepoAddr};
 use signed_state::{
     Backend, BackendEvent, CheckoutsStore, LocalReposStore, Nip34Binding, Nip34Kind, Profile,
-    ProfileStore, RepoListStore, ResolvedLocalRepo,
+    ProfileStore, RepoListStore, ResolvedLocalRepo, SyncStatusStore,
 };
 use signed_ui::{Avatar, NavItem, PixelAvatar, title_bar_drag_handlers};
 
@@ -59,13 +60,15 @@ pub struct SidebarPanel {
     profile: Option<WeakEntity<PlaceholderPanel>>,
     relays: Option<WeakEntity<PlaceholderPanel>>,
     banner: SharedString,
+    scanning: bool,
     /// User's announced repositories.
     announcements: Arc<Vec<Announcement>>,
     /// Local repositories found by the scan that are not announced yet.
     local_repos: Arc<Vec<ResolvedLocalRepo>>,
-    scanning: bool,
     /// Unpushed commit counts per announced repository.
     unpushed: HashMap<RepoAddr, usize>,
+    /// Commits not on Nostr per announced repository.
+    unsynced: HashMap<RepoAddr, usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -75,6 +78,7 @@ impl SidebarPanel {
         let repos = RepoListStore::global(cx);
         let local = LocalReposStore::global(cx);
         let checkouts = CheckoutsStore::global(cx);
+        let sync_status = SyncStatusStore::global(cx);
 
         let mut subscriptions = Vec::new();
 
@@ -112,6 +116,12 @@ impl SidebarPanel {
             }
         }));
 
+        subscriptions.push(cx.observe(&sync_status, |this, _sync, cx| {
+            if this.refresh_unsynced(cx) {
+                cx.notify();
+            }
+        }));
+
         Self {
             focus_handle: cx.focus_handle(),
             dock_area,
@@ -124,6 +134,7 @@ impl SidebarPanel {
             local_repos: Arc::new(Vec::new()),
             scanning: false,
             unpushed: HashMap::new(),
+            unsynced: HashMap::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -158,6 +169,7 @@ impl SidebarPanel {
         if announcements_changed {
             self.request_push_watches(cx);
             self.unpushed.clear();
+            self.unsynced.clear();
         }
 
         announcements_changed || local_changed || scanning_changed
@@ -180,6 +192,26 @@ impl SidebarPanel {
         }
 
         self.unpushed = unpushed;
+        true
+    }
+
+    fn refresh_unsynced(&mut self, cx: &mut Context<Self>) -> bool {
+        let sync_status = SyncStatusStore::global(cx);
+        let mut unsynced = HashMap::with_capacity(self.announcements.len());
+
+        for announcement in self.announcements.iter() {
+            let addr = announcement.addr();
+            let count = sync_status.read(cx).unsynced(&addr);
+            if count > 0 {
+                unsynced.insert(addr, count);
+            }
+        }
+
+        if unsynced == self.unsynced {
+            return false;
+        }
+
+        self.unsynced = unsynced;
         true
     }
 
@@ -482,28 +514,28 @@ impl SidebarPanel {
             PixelAvatar::new(format!("{}:{}", announcement.owner, announcement.id)).xsmall();
         let announcement = announcement.clone();
 
-        let unpushed = self
-            .unpushed
-            .get(&announcement.addr())
-            .copied()
-            .unwrap_or(0);
+        let addr = announcement.addr();
+        let unpushed = self.unpushed.get(&addr).copied().unwrap_or(0);
+        let unsynced = self.unsynced.get(&addr).copied().unwrap_or(0);
 
         let mut row = NavItem::new(format!("repo:{}", announcement.id), name, avatar);
 
-        if unpushed > 0 {
-            row = row.suffix(
-                v_flex()
-                    .flex_shrink_0()
-                    .size_4()
-                    .items_center()
-                    .justify_center()
-                    .rounded_full()
-                    .line_height(relative(1.))
-                    .bg(cx.theme().red_light)
-                    .text_color(white())
-                    .text_size(px(8.))
-                    .child(SharedString::from(unpushed.to_string())),
-            );
+        if unpushed > 0 || unsynced > 0 {
+            let badges = h_flex().gap_0p5().flex_shrink_0();
+
+            let badges = if unpushed > 0 {
+                badges.child(Self::count_badge(unpushed, cx.theme().red_light))
+            } else {
+                badges
+            };
+
+            let badges = if unsynced > 0 {
+                badges.child(Self::count_badge(unsynced, cx.theme().info))
+            } else {
+                badges
+            };
+
+            row = row.suffix(badges);
         }
 
         row.on_click(cx.listener(move |this, _ev, window, cx| {
@@ -515,6 +547,20 @@ impl SidebarPanel {
                 &mut *cx,
             );
         }))
+    }
+
+    fn count_badge(count: usize, color: Hsla) -> Div {
+        v_flex()
+            .flex_shrink_0()
+            .size_4()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .line_height(relative(1.))
+            .bg(color)
+            .text_color(white())
+            .text_size(px(8.))
+            .child(SharedString::from(count.to_string()))
     }
 
     fn render_local_row(

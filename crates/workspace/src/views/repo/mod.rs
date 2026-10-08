@@ -23,10 +23,10 @@ use gpui_component::{
 use nostr::nips::nip19::Nip19Coordinate;
 use nostr::prelude::{RelayUrl, ToBech32, Url};
 use signed_core::{Announcement, RepoAddr, RepoStatus};
-use signed_git::{FileCommit, GitCache, Repo};
+use signed_git::{FileCommit, GitCache, RefSync, Repo};
 use signed_state::{
-    Backend, CheckoutStatus, CheckoutsStore, LocalReposStore, Mirrors, Nip34Binding, Nip34Kind,
-    ProfileStore, RepoListStore, RepoStore,
+    Backend, CheckoutStatus, CheckoutSyncStatus, CheckoutsStore, LocalReposStore, Mirrors,
+    Nip34Binding, Nip34Kind, ProfileStore, RepoListStore, RepoStore, SyncStatusStore,
 };
 use signed_ui::{
     Avatar, CountBadge, DropdownButton, PixelAvatar, copy_row, menu_copy_row, ref_selector_trigger,
@@ -153,6 +153,7 @@ impl RepoDetailView {
         cx: &mut Context<Self>,
     ) -> Self {
         let checkouts = CheckoutsStore::global(cx);
+        let sync_status = SyncStatusStore::global(cx);
         let files = cx.new(RepoFilesView::new);
         let history = cx.new(|_cx| RepoHistoryView::new(store.clone(), dock_area.clone()));
         let refs = RefSwitcher::new(window, cx);
@@ -187,6 +188,11 @@ impl RepoDetailView {
             if this.refresh_statuses(cx) {
                 cx.notify();
             }
+        }));
+
+        // The sync-to-Nostr banner reads the global sync store directly.
+        subscriptions.push(cx.observe(&sync_status, |_this, _sync, cx| {
+            cx.notify();
         }));
 
         // Defer loading the repository until the window is ready.
@@ -1535,6 +1541,26 @@ impl RepoDetailView {
             .find(|status| !self.banners.dismissal(status))
     }
 
+    /// The first checkout of this owned repository with commits not on Nostr.
+    ///
+    /// Not dismissed in this panel.
+    fn sync_suggestion(&self, cx: &App) -> Option<CheckoutSyncStatus> {
+        let store = self.store.read(cx);
+        let addr = store.addr()?;
+        let user = Backend::global(cx).read(cx).current_user()?;
+
+        if !store.is_author(&user) {
+            return None;
+        }
+
+        let sync_status = SyncStatusStore::global(cx);
+        let statuses = sync_status.read(cx).statuses_of(addr);
+
+        statuses.into_iter().find(|checkout| {
+            checkout.status.ahead_total > 0 && !self.banners.sync_dismissal(checkout)
+        })
+    }
+
     pub(super) fn render_push_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let status = self.push_suggestion(cx)?;
         let path = status.path.clone();
@@ -1612,6 +1638,102 @@ impl RepoDetailView {
                                 .disabled(pushing)
                                 .on_click(cx.listener(move |this, _ev, _window, cx| {
                                     this.banners.dismiss(&status);
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    pub(super) fn render_sync_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let checkout = self.sync_suggestion(cx)?;
+        let path = checkout.path.clone();
+        // The push busy flag lives on the store; it disables the banner's triggers.
+        let pushing = self.store.read(cx).pushing;
+
+        let (branch, ahead) = checkout
+            .status
+            .refs
+            .iter()
+            .filter_map(|(name, sync)| match sync {
+                RefSync::LocalAhead { ahead } => Some((name, *ahead)),
+                RefSync::Diverged { ahead, .. } => Some((name, *ahead)),
+                _ => None,
+            })
+            .max_by_key(|(_, ahead)| *ahead)?;
+
+        let branch = SharedString::from(branch.clone());
+        let commits = if ahead == 1 {
+            SharedString::from("1 commit")
+        } else {
+            SharedString::from(format!("{} commits", ahead))
+        };
+
+        Some(
+            h_flex()
+                .p_4()
+                .gap_2()
+                .w_full()
+                .items_center()
+                .justify_between()
+                .bg(cx.theme().muted)
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(cx.theme().info)
+                        .child(
+                            h_flex()
+                                .px_1()
+                                .rounded(cx.theme().radius)
+                                .border_1()
+                                .border_color(cx.theme().info)
+                                .bg(cx.theme().info.mix_oklab(transparent_white(), 0.04))
+                                .text_xs()
+                                .font_semibold()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(branch),
+                        )
+                        .child("is")
+                        .child(
+                            h_flex()
+                                .px_1()
+                                .rounded(cx.theme().radius)
+                                .border_1()
+                                .border_color(cx.theme().info)
+                                .bg(cx.theme().info.mix_oklab(transparent_white(), 0.04))
+                                .text_xs()
+                                .font_semibold()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(commits),
+                        )
+                        .child("ahead of Nostr"),
+                )
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Button::new("sync-banner")
+                                .icon(CustomIconName::Refresh)
+                                .label("Sync now")
+                                .small()
+                                .info()
+                                .loading(pushing)
+                                .disabled(pushing)
+                                .on_click(cx.listener(move |this, _event, window, cx| {
+                                    this.push_unpushed_checkout(path.clone(), window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("sync-banner-dismiss")
+                                .icon(IconName::Close)
+                                .tooltip("Dismiss")
+                                .small()
+                                .ghost()
+                                .disabled(pushing)
+                                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                    this.banners.sync_dismiss(&checkout);
                                     cx.notify();
                                 })),
                         ),
@@ -2046,7 +2168,8 @@ impl Render for RepoDetailView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let banner = self
             .render_ready_banner(cx)
-            .or_else(|| self.render_push_banner(cx));
+            .or_else(|| self.render_push_banner(cx))
+            .or_else(|| self.render_sync_banner(cx));
 
         let error = self.error.clone().or_else(|| {
             self.store

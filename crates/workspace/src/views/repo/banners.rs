@@ -1,13 +1,13 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use signed_state::CheckoutStatus;
+use signed_state::{CheckoutStatus, CheckoutSyncStatus};
 
 #[derive(Default)]
 pub(super) struct Banners {
     dismissed: HashSet<(PathBuf, String)>,
+    sync_dismissed: HashSet<PathBuf>,
     ready_requested: bool,
-    /// Re-requested only when the announced HEAD or the base default changes.
     ready_head: Option<String>,
     ready_statuses: Vec<CheckoutStatus>,
     push_statuses: Vec<CheckoutStatus>,
@@ -22,6 +22,14 @@ impl Banners {
     pub(super) fn dismiss(&mut self, status: &CheckoutStatus) {
         self.dismissed
             .insert((status.path.clone(), status.branch.clone()));
+    }
+
+    pub(super) fn sync_dismissal(&self, checkout: &CheckoutSyncStatus) -> bool {
+        self.sync_dismissed.contains(&checkout.path)
+    }
+
+    pub(super) fn sync_dismiss(&mut self, checkout: &CheckoutSyncStatus) {
+        self.sync_dismissed.insert(checkout.path.clone());
     }
 
     pub(super) fn ready_requested_at(&self) -> (bool, &Option<String>) {

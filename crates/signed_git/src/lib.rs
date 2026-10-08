@@ -5,6 +5,7 @@ mod nip34;
 mod patch;
 mod repo;
 mod scan;
+mod sync;
 mod worktree;
 
 #[cfg(test)]
@@ -17,6 +18,7 @@ pub use nip34::{GraspSignals, Nip34Binding, Nip34Kind};
 pub use patch::PatchParser;
 pub use repo::{Repo, RepoRefState};
 pub use scan::{LocalRepo, find_git_repos};
+pub use sync::{RefSync, RepoSyncStatus};
 pub use worktree::WorktreeSnapshot;
 
 pub(crate) trait GixResultExt<T> {

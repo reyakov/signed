@@ -2,7 +2,10 @@
 
 * Prioritize code correctness and clarity. Speed and efficiency are secondary priorities unless otherwise specified.
 * Do not write organizational or comments that summarize the code. Comments should only be written in order to explain "why" the code is written in some way in the case there is a reason that is tricky / non-obvious.
+* Keep doc comments and comments simple, one line, straightforward, and unbloated.
 * Prefer implementing functionality in existing files unless it is a new logical component. Avoid creating many small files.
+* Prefer `impl` blocks over standalone functions: place functionality as methods or associated functions on the relevant type, extending the type's existing `impl` block instead of creating a duplicate one in another file.
+* Bind a global store handle to a local before using it (`let state = GlobalState::global(cx);` then `state.update(...)`) instead of chaining on `CheckoutsStore::global(cx)` inline.
 * Avoid using functions that panic like `unwrap()`, instead use mechanisms like `?` to propagate errors.
 * Be careful with operations like indexing which may panic if the indexes are out of bounds.
 * Never silently discard errors with `let _ =` on fallible operations. Always handle errors appropriately:

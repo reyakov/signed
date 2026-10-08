@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -13,6 +13,7 @@ use crate::GixResultExt as _;
 use crate::diff::{CommitDiff, DiffStatus, FileDiff, HunkCollector};
 use crate::history::{CommitList, FileCommit, MAX_LISTED_COMMITS};
 use crate::nip34::{GraspSignals, Nip34Binding, Nip34Json, Nip34Kind};
+use crate::sync::{RefSync, RepoSyncStatus};
 use crate::worktree::WorktreeSnapshot;
 
 const OBJECT_CACHE_BYTES: usize = 64 * 1024 * 1024;
@@ -795,6 +796,86 @@ impl Repo {
     /// Resolves a revision to a gix id.
     fn resolve_commit<'a>(&'a self, rev: &str) -> Option<gix::Id<'a>> {
         self.inner.rev_parse_single(rev.as_bytes()).ok()
+    }
+
+    /// Classifies every local branch against the Nostr state refs, ignoring tags.
+    pub fn sync_status(&self, remote_refs: &[(String, String)]) -> Result<RepoSyncStatus> {
+        let local_refs = self.ref_state()?;
+        let local = RepoSyncStatus::branches(&local_refs.refs);
+        let remote = RepoSyncStatus::branches(remote_refs);
+        let names: BTreeSet<&str> = local.keys().chain(remote.keys()).copied().collect();
+
+        let mut refs = Vec::new();
+        let mut ahead_total = 0;
+        let mut behind_total = 0;
+
+        for name in names {
+            let sync = match (local.get(name), remote.get(name)) {
+                (Some(local_commit), Some(remote_commit)) => {
+                    self.branch_sync(local_commit, remote_commit)
+                }
+                (Some(_), None) => RefSync::LocalOnly,
+                (None, Some(_)) => RefSync::RemoteOnly,
+                (None, None) => continue,
+            };
+
+            match &sync {
+                RefSync::LocalAhead { ahead } => ahead_total += ahead,
+                RefSync::RemoteAhead { behind } => behind_total += behind,
+                RefSync::Diverged { ahead, behind } => {
+                    ahead_total += ahead;
+                    behind_total += behind;
+                }
+                RefSync::InSync | RefSync::LocalOnly | RefSync::RemoteOnly => {}
+            }
+
+            refs.push((name.to_owned(), sync));
+        }
+
+        Ok(RepoSyncStatus {
+            refs,
+            ahead_total,
+            behind_total,
+        })
+    }
+
+    /// Classifies a branch present on both sides.
+    fn branch_sync(&self, local_commit: &str, remote_commit: &str) -> RefSync {
+        if local_commit == remote_commit {
+            return RefSync::InSync;
+        }
+
+        match self.merge_base(local_commit, remote_commit) {
+            Ok(Some(base)) if base == remote_commit => RefSync::LocalAhead {
+                ahead: self.commits_ahead(&base, local_commit) as usize,
+            },
+            Ok(Some(base)) if base == local_commit => RefSync::RemoteAhead {
+                behind: self.commits_ahead(&base, remote_commit) as usize,
+            },
+            Ok(Some(base)) => RefSync::Diverged {
+                ahead: self.commits_ahead(&base, local_commit) as usize,
+                behind: self.commits_ahead(&base, remote_commit) as usize,
+            },
+            // Unrelated histories share no base, so every commit counts.
+            Ok(None) => RefSync::Diverged {
+                ahead: self.count_reachable(local_commit),
+                behind: self.count_reachable(remote_commit),
+            },
+            // Nostr tip missing locally, so at least that commit differs.
+            Err(_) => RefSync::RemoteAhead { behind: 1 },
+        }
+    }
+
+    /// Counts commits reachable from a commit id.
+    fn count_reachable(&self, commit: &str) -> usize {
+        let Ok(commit_id) = self.inner.rev_parse_single(commit.as_bytes()) else {
+            return 0;
+        };
+
+        match self.inner.rev_walk([commit_id]).all() {
+            Ok(walk) => walk.filter_map(Result::ok).count(),
+            Err(_) => 0,
+        }
     }
 
     /// Lists every worktree path relative to the root, directories first.

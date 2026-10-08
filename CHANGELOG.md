@@ -10,6 +10,8 @@
 - Add a dropdown menu on the signed-in user button in the sidebar
 - Add sign-out feature, confirmed by an alert dialog before deleting the stored session credential
 - Add a quit action, bound to `secondary-q` (cmd on macOS, ctrl on others)
+- Allow choosing the default branch when publishing a repository
+- Detect when local commits are not on Nostr yet, showing an unsynced count badge on sidebar repository rows and a Sync now banner on the repository view
 
 ### Changed
 
@@ -20,6 +22,7 @@
 - Fetch the logged-in user's grasp list, code follows, followed repositories, contacts, profile metadata, mute list, and blossom servers via gossip at login instead of the bootstrap relays
 - Connect to grasp relays and load the inbox only after the user's grasp list event arrives
 - Refresh the checkouts store only when the checkouts settings change
+- Restructure the core crate into focused modules for announcements, pull requests, git events, inbox, and upstream state
 
 ### Fixed
 

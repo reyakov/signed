@@ -20,6 +20,7 @@ use crate::bootstrap::user_grasp_list_servers;
 use crate::checkouts::CheckoutsStore;
 use crate::push::{GraspPush, PushOutcome, grasp_base_url, grasp06_prs_url, pr_clone_urls};
 use crate::repos::RepoListStore;
+use crate::sync_status::SyncStatusStore;
 
 // NIP-34 suggests patches when each event is under 60kb.
 const MAX_PATCH_EVENT_BYTES: usize = 60 * 1024;
@@ -36,6 +37,9 @@ pub struct RepoStore {
     // Views distinguish "no data yet" from a genuinely empty repository with it.
     pub loaded: bool,
     pub head: Option<String>,
+    // Refs and timestamp of the latest state event, for sync detection.
+    pub state_refs: Vec<(String, String)>,
+    pub state_at: Option<Timestamp>,
     pub issues: Vec<Event>,
     pub patches: Vec<Event>,
     pub pull_requests: Vec<Event>,
@@ -88,6 +92,8 @@ impl RepoStore {
             nip34: None,
             loaded: false,
             head: None,
+            state_refs: Vec::new(),
+            state_at: None,
             issues: Vec::new(),
             patches: Vec::new(),
             pull_requests: Vec::new(),
@@ -116,6 +122,8 @@ impl RepoStore {
             nip34,
             loaded: true,
             head: None,
+            state_refs: Vec::new(),
+            state_at: None,
             issues: Vec::new(),
             patches: Vec::new(),
             pull_requests: Vec::new(),
@@ -349,7 +357,8 @@ impl RepoStore {
                 .and_then(Announcement::from_event);
 
             let all_states = states.into_iter().filter(|e| !deletions.is_deleted(e));
-            let state = utils::latest(all_states).map(|state| RepoState::parse(&state));
+            let state =
+                utils::latest(all_states).map(|event| (RepoState::parse(&event), event.created_at));
 
             let (mut issues, mut patches, mut pull_requests, mut statuses, mut comments) =
                 (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -466,13 +475,13 @@ impl RepoStore {
                 let keep_hint = announcement.is_none() && !this.loaded;
                 let first_pass = !this.loaded;
 
-                let head_changed = state
-                    .as_ref()
-                    .is_some_and(|state| this.head.as_deref() != state.head.as_deref());
+                let state_changed = state.as_ref().is_some_and(|(state, _)| {
+                    this.head.as_deref() != state.head.as_deref() || this.state_refs != state.refs
+                });
 
                 let changed = first_pass
                     || (!keep_hint && this.announcement != announcement)
-                    || head_changed
+                    || state_changed
                     || this.issues != issues
                     || this.patches != patches
                     || this.pull_requests != pull_requests
@@ -499,8 +508,10 @@ impl RepoStore {
 
                 this.sync_maintainer_relays(&maintainers, cx);
 
-                if let Some(state) = state {
+                if let Some((state, created_at)) = state {
                     this.head = state.head;
+                    this.state_refs = state.refs;
+                    this.state_at = Some(created_at);
                 }
 
                 this.issues = issues;
@@ -1169,10 +1180,14 @@ impl RepoStore {
                         this.last_error = None;
                         this.last_push_warning = outcome.partial_warning();
                         if let Some((addr, path)) = &pushed_checkout {
-                            CheckoutsStore::global(cx).update(cx, |store, cx| {
+                            let checkouts = CheckoutsStore::global(cx);
+                            checkouts.update(cx, |store, cx| {
                                 store.checkout_pushed(addr, path, cx);
                             });
                         }
+
+                        let sync_status = SyncStatusStore::global(cx);
+                        sync_status.update(cx, |store, cx| store.refresh(cx));
                     }
                     Err(e) => {
                         this.last_error = Some(format!("Push failed: {e}"));

@@ -9,6 +9,7 @@ mod push;
 mod refresh;
 mod repo;
 mod repos;
+mod sync_status;
 
 use std::path::{Path, PathBuf};
 
@@ -27,6 +28,7 @@ pub use repo::RepoStore;
 pub use repos::RepoListStore;
 pub use signed_git::{Nip34Binding, Nip34Kind};
 use signed_nostr::NostrBackend;
+pub use sync_status::{CheckoutSyncStatus, SyncStatusStore};
 
 pub fn init(
     db_path: impl AsRef<Path>,
@@ -50,4 +52,5 @@ pub fn init(
     RepoListStore::set_global(cx.new(RepoListStore::new), cx);
     LocalReposStore::set_global(cx.new(|cx| LocalReposStore::new(scan_paths, cx)), cx);
     CheckoutsStore::set_global(cx.new(CheckoutsStore::new), cx);
+    SyncStatusStore::set_global(cx.new(SyncStatusStore::new), cx);
 }
