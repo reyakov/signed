@@ -321,9 +321,6 @@ impl RepoDetailView {
             (store.announcement.clone(), store.path.clone())
         };
 
-        // A repository with a local worktree shows it directly. An announced one
-        // still loads its announcement and activity from the store, which is
-        // subscribed to the relays independently.
         if let Some(local_path) = local_path {
             self.repo_started = true;
 
@@ -358,6 +355,7 @@ impl RepoDetailView {
 
         self.repo_started = true;
 
+        let store = self.store.downgrade();
         let addr = announcement.addr();
         let clone_urls: Vec<Url> = announcement.clone.clone();
 
@@ -399,64 +397,71 @@ impl RepoDetailView {
             })?;
 
             // Refresh the clone from the network in the background.
-            // When it completes, update the refs and commit list.
             if !had_clone {
                 return Ok(());
             }
 
-            let refresh = {
-                let addr = addr.clone();
+            // Whether a push is in progress
+            let pushing = store.read_with(cx, |this, _| this.pushing)?;
 
-                cx.background_spawn(async move {
-                    let Some(repo) = Mirrors::open(&addr)? else {
-                        return Ok::<_, Error>(None);
-                    };
+            if !pushing {
+                let refresh = {
+                    let addr = addr.clone();
 
-                    // Best-effort, a fetch failure, e.g. offline, keeps the cached state.
-                    repo.fetch().ok();
+                    cx.background_spawn(async move {
+                        let Some(repo) = Mirrors::open(&addr)? else {
+                            return Ok::<_, Error>(None);
+                        };
 
-                    let moved = repo.fast_forward_branches().unwrap_or(false);
+                        // Best-effort, a fetch failure, e.g. offline, keeps the cached state.
+                        repo.fetch().ok();
 
-                    Ok::<_, Error>(Some((moved, repo.snapshot()?)))
-                })
-            }
-            .await;
+                        let moved = repo.fast_forward_branches().unwrap_or(false);
 
-            this.update_in(cx, |this, window, cx| {
-                if let Ok(Some((moved, snapshot))) = refresh {
-                    let branches: Vec<SharedString> =
-                        snapshot.branches.iter().map(Into::into).collect();
-                    let tags: Vec<SharedString> = snapshot.tags.iter().map(Into::into).collect();
-                    let current_branch = snapshot.current_branch.clone();
-                    let head_commit = snapshot.head_commit.clone();
-
-                    let branches_changed = this.refs.set_branches(
-                        branches,
-                        current_branch.map(Into::into),
-                        window,
-                        cx,
-                    );
-
-                    let tags_changed = this.refs.set_tags(tags, window, cx);
-                    let new_head_commit = head_commit.as_ref().map(|c| &c.id);
-                    let current_head_commit = this.head_commit.as_ref().map(|c| &c.id);
-
-                    let head_changed = new_head_commit != current_head_commit;
-                    this.head_commit = head_commit;
-
-                    if head_changed {
-                        this.history.update(cx, |history, cx| history.reload(cx));
-                    }
-
-                    if moved {
-                        this.catch_up_worktree(cx);
-                    }
-
-                    if branches_changed || tags_changed || head_changed {
-                        cx.notify();
-                    }
+                        Ok::<_, Error>(Some((moved, repo.snapshot()?)))
+                    })
                 }
-            })?;
+                .await;
+
+                this.update_in(cx, |this, window, cx| {
+                    if let Ok(Some((moved, snapshot))) = refresh {
+                        let branches: Vec<SharedString> =
+                            snapshot.branches.iter().map(Into::into).collect();
+
+                        let tags: Vec<SharedString> =
+                            snapshot.tags.iter().map(Into::into).collect();
+
+                        let current_branch = snapshot.current_branch.clone();
+                        let head_commit = snapshot.head_commit.clone();
+
+                        let branches_changed = this.refs.set_branches(
+                            branches,
+                            current_branch.map(Into::into),
+                            window,
+                            cx,
+                        );
+
+                        let tags_changed = this.refs.set_tags(tags, window, cx);
+                        let new_head_commit = head_commit.as_ref().map(|c| &c.id);
+                        let current_head_commit = this.head_commit.as_ref().map(|c| &c.id);
+
+                        let head_changed = new_head_commit != current_head_commit;
+                        this.head_commit = head_commit;
+
+                        if head_changed {
+                            this.history.update(cx, |history, cx| history.reload(cx));
+                        }
+
+                        if moved {
+                            this.catch_up_worktree(cx);
+                        }
+
+                        if branches_changed || tags_changed || head_changed {
+                            cx.notify();
+                        }
+                    }
+                })?;
+            }
 
             Ok(())
         });

@@ -28,8 +28,6 @@ impl Deletions {
                         .map(|c| (c, event.pubkey, event.created_at)),
                 );
             } else if event.kind == Kind::RequestToVanish {
-                // We can't verify which relay the request targeted, so any
-                // vanish request is honored for the author's events.
                 vanished.push((event.pubkey, event.created_at));
             }
         }

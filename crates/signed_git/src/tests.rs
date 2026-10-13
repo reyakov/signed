@@ -56,39 +56,61 @@ fn push_all_mirrors_branches_and_tags() {
 }
 
 #[test]
-fn remote_has_refs_reports_whether_pushed_refs_landed() {
-    let server = tempfile::tempdir().unwrap();
-    bare_server(server.path(), "npub1test", "my-repo");
+fn ref_state_matches_the_git_cli_ref_listing() {
     let (dir, repo) = fixture(&[("a.txt", b"one")]);
     commit_all(&repo, "initial");
     let dir = dir.path();
-    let main = git_in(dir, &["rev-parse", "refs/heads/main"]).expect("main oid");
-    let url = format!("file://{}/npub1test/my-repo.git", server.path().display());
-    let expected = vec![("refs/heads/main".to_owned(), main.clone())];
-    let repo = Repo::open(dir).expect("open");
 
-    assert!(!repo.remote_has_refs(&url, &expected).expect("probe"));
+    git_run(dir, &["branch", "browse-group"]);
+    git_run(dir, &["checkout", "-q", "-b", "new-search"]);
+    std::fs::write(dir.join("b.txt"), b"two").expect("write");
+    commit_all(&repo, "search work");
+    git_run(dir, &["checkout", "-q", "-"]);
+    git_run(dir, &["tag", "v1"]);
 
-    repo.push_all(
-        &format!("file://{}", server.path().display()),
-        "npub1test",
-        "my-repo",
-    )
-    .expect("push");
+    let listing = |repo: &Repo| {
+        let mut refs = repo.ref_state().expect("ref state").refs;
+        refs.sort();
+        refs
+    };
 
-    assert!(repo.remote_has_refs(&url, &expected).expect("probe"));
+    // Loose refs.
+    let loose = listing(&Repo::open(dir).expect("open"));
 
-    let stale = vec![("refs/heads/main".to_owned(), "0".repeat(40))];
-    assert!(!repo.remote_has_refs(&url, &stale).expect("probe"));
+    // Packed refs.
+    git_run(dir, &["pack-refs", "--all"]);
+    let packed = listing(&Repo::open(dir).expect("open"));
 
-    git_run(dir, &["tag", "v1.0"]);
-    repo.push_all(
-        &format!("file://{}", server.path().display()),
-        "npub1test",
-        "my-repo",
-    )
-    .expect("push");
-    assert!(repo.remote_has_refs(&url, &expected).expect("probe"));
+    let output = git_run(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/heads",
+            "refs/tags",
+        ],
+    );
+    let mut cli = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| {
+            let (name, oid) = line.split_once(' ').expect("for-each-ref format");
+            (name.to_owned(), oid.to_owned())
+        })
+        .collect::<Vec<_>>();
+    cli.sort();
+
+    assert_eq!(loose, cli);
+    assert_eq!(packed, cli);
+    assert!(
+        loose
+            .iter()
+            .any(|(name, _)| name == "refs/heads/new-search")
+    );
+    assert!(
+        loose
+            .iter()
+            .any(|(name, _)| name == "refs/heads/browse-group")
+    );
 }
 
 #[test]

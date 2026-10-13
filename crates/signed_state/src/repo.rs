@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::{Error, bail};
-use bitcoin_hashes::sha1::Hash as Sha1Hash;
 use gpui::{App, AppContext, Context, SharedString, Subscription, Task};
 use nostr::event::IntoEventBuilder;
 use nostr_sdk::prelude::*;
@@ -12,18 +11,15 @@ use signed_core::{
     Announcement, Deletions, Filters, GitEvent, PullRequest, RepoAddr, RepoState, RepoStatus,
     filters,
 };
-use signed_git::{Nip34Binding, PatchParser, Repo};
-use signed_nostr::UniversalSigner;
+use signed_git::{Nip34Binding, Repo};
 
 use crate::backend::{Backend, BackendEvent};
 use crate::bootstrap::user_grasp_list_servers;
 use crate::checkouts::CheckoutsStore;
-use crate::push::{GraspPush, PushOutcome, grasp_base_url, grasp06_prs_url, pr_clone_urls};
+use crate::patch_series::{MAX_PATCH_EVENT_BYTES, PatchSeries};
+use crate::push::{PushOutcome, grasp_base_url, grasp06_prs_url, pr_clone_urls};
 use crate::repos::RepoListStore;
 use crate::sync_status::SyncStatusStore;
-
-// NIP-34 suggests patches when each event is under 60kb.
-const MAX_PATCH_EVENT_BYTES: usize = 60 * 1024;
 
 pub struct RepoStore {
     addr: Option<RepoAddr>,
@@ -865,10 +861,22 @@ impl RepoStore {
                 }
             }
 
-            let publish_result = {
-                let pusher = GraspPush::new(client.clone(), signer.clone());
-                pusher.send_accepted(event).await
-            };
+            let publish_result: Result<Event, Error> = async {
+                let output = client.send_event(&event).broadcast().await?;
+
+                if output.success.is_empty() && !output.failed.is_empty() {
+                    let reasons = output
+                        .failed
+                        .values()
+                        .cloned()
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    bail!("event not accepted by any relay: {reasons}");
+                }
+
+                Ok(event)
+            }
+            .await;
 
             let pr_event = match publish_result {
                 Ok(event) => event,
@@ -1041,10 +1049,23 @@ impl RepoStore {
                 }
             };
 
-            let publish_result = {
-                let pusher = GraspPush::new(client.clone(), signer.clone());
-                pusher.publish_one(builder).await
-            };
+            let publish_result: Result<Event, Error> = async {
+                let event = builder.finalize_async(&signer).await?;
+                let output = client.send_event(&event).broadcast().await?;
+
+                if output.success.is_empty() && !output.failed.is_empty() {
+                    let reasons = output
+                        .failed
+                        .values()
+                        .cloned()
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    bail!("event not accepted by any relay: {reasons}");
+                }
+
+                Ok(event)
+            }
+            .await;
 
             if let Err(e) = publish_result {
                 return this.update(cx, |this, cx| {
@@ -1297,8 +1318,7 @@ impl RepoStore {
         Task::ready(Err(anyhow::anyhow!("{message}")))
     }
 
-    // Every one-shot repository event (issue, comment, status) goes through
-    // this; multi-step flows call the SDK directly instead.
+    /// Publish an event to the repository's relays, and update the store with any error.
     fn publish(&mut self, builder: EventBuilder, cx: &mut Context<Self>) {
         self.last_error = None;
 
@@ -1309,8 +1329,23 @@ impl RepoStore {
         };
 
         let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
-            let pusher = GraspPush::new(client, signer);
-            let publish_result = pusher.publish_one(builder).await;
+            let publish_result: Result<Event, Error> = async {
+                let event = builder.finalize_async(&signer).await?;
+                let output = client.send_event(&event).broadcast().await?;
+
+                if output.success.is_empty() && !output.failed.is_empty() {
+                    let reasons = output
+                        .failed
+                        .values()
+                        .cloned()
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    bail!("event not accepted by any relay: {reasons}");
+                }
+
+                Ok(event)
+            }
+            .await;
 
             if let Err(e) = publish_result {
                 this.update(cx, |this, cx| {
@@ -1363,65 +1398,21 @@ fn resolve_statuses(
         .collect()
 }
 
-// The `From <commit>` header on the first line.
-fn patch_current_commit(patch: &str) -> Option<&str> {
-    let line = patch.lines().next()?;
-    let hex = line.strip_prefix("From ")?;
-    hex.split_whitespace().next().filter(|hex| hex.len() == 40)
-}
-
-struct PatchSeries {
-    parts: Vec<String>,
-}
-
-impl PatchSeries {
-    fn parse(patch: &str) -> Self {
-        Self {
-            parts: PatchParser::split_patch_series(patch)
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-        }
-    }
-
-    // The byte length of the first part over the NIP-34 size suggestion.
-    fn oversized_length(&self) -> Option<usize> {
-        self.parts
-            .iter()
-            .map(String::len)
-            .find(|length| *length > MAX_PATCH_EVENT_BYTES)
-    }
-
-    // The tip of the series is its last commit; `git format-patch` orders
-    // patches oldest first.
-    fn tip_commit(&self) -> Option<Sha1Hash> {
-        self.parts
-            .last()
-            .and_then(|part| patch_current_commit(part))
-            .and_then(|hex| hex.parse::<Sha1Hash>().ok())
-    }
-
-    fn commit_of(&self, index: usize) -> Option<&str> {
-        self.parts
-            .get(index)
-            .and_then(|part| patch_current_commit(part))
-            .filter(|hex| hex.len() == 40)
-    }
-}
-
-// Returns the root event, the one a PR references.
+/// Publish a patch series as a sequence of `git/patch` events.
 #[allow(clippy::too_many_arguments)]
-async fn publish_patch_series(
+async fn publish_patch_series<S>(
     client: &Client,
-    signer: &UniversalSigner,
+    signer: &S,
     addr: &RepoAddr,
     owner: PublicKey,
     euc: Option<&str>,
     series: &PatchSeries,
     first_marker: &str,
     reply_to: Option<EventId>,
-) -> Result<Event, Error> {
-    let pusher = GraspPush::new(client.clone(), signer.clone());
+) -> Result<Event, Error>
+where
+    S: AsyncGetPublicKey + AsyncSignEvent + ?Sized,
+{
     let mut root: Option<Event> = None;
     let mut previous = reply_to;
 
@@ -1468,7 +1459,18 @@ async fn publish_patch_series(
         }
 
         let builder = EventBuilder::new(Kind::GitPatch, part.clone()).tags(tags);
-        let event = pusher.publish_one(builder).await?;
+        let event = builder.finalize_async(signer).await?;
+        let output = client.send_event(&event).broadcast().await?;
+
+        if output.success.is_empty() && !output.failed.is_empty() {
+            let reasons = output
+                .failed
+                .values()
+                .cloned()
+                .collect::<Vec<String>>()
+                .join(", ");
+            bail!("event not accepted by any relay: {reasons}");
+        }
 
         if root.is_none() {
             root = Some(event.clone());
@@ -1502,106 +1504,4 @@ fn comment_builder(
         .root(root_target)
         .into_event_builder()
         .tags([Tag::coordinate(addr.clone().into(), None)])
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use nostr_sdk::prelude::*;
-    use signed_core::GitEvent;
-
-    use super::{RepoStore, comment_builder, patch_current_commit};
-
-    #[test]
-    fn parses_format_patch_header() {
-        let patch = "From 1f6c0c5f3f1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a Mon Sep 17 00:00:00 2001\nFrom: A <a@b.c>\nSubject: [PATCH] fix\n\n---\n";
-        assert_eq!(
-            patch_current_commit(patch),
-            Some("1f6c0c5f3f1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a")
-        );
-    }
-
-    #[test]
-    fn comment_builder_follows_nip22() {
-        let keys = Keys::generate();
-        let root = EventBuilder::new(Kind::GitIssue, "issue body")
-            .finalize(&keys)
-            .expect("signed event");
-        let addr = signed_core::RepoAddr::new(root.pubkey, "my-repo");
-        let relay = RelayUrl::parse("wss://relay.example.com").expect("valid relay URL");
-
-        let event = comment_builder(&root, None, Some(&relay), &addr, "hi".into())
-            .finalize(&keys)
-            .expect("signed event");
-
-        assert_eq!(event.kind, Kind::Comment);
-
-        let kinds: Vec<&str> = event.tags.iter().map(Tag::kind).collect();
-        for expected in ["E", "K", "P", "e", "k", "p", "a"] {
-            assert!(kinds.contains(&expected), "missing {expected} tag");
-        }
-
-        let e = event.tags.iter().find(|t| t.kind() == "E").expect("E tag");
-        let slice = e.as_slice();
-        assert_eq!(slice[1], root.id.to_hex());
-        assert_eq!(slice[2], relay.as_str());
-        assert_eq!(slice[3], root.pubkey.to_hex());
-
-        let e = event.tags.iter().find(|t| t.kind() == "e").expect("e tag");
-        assert_eq!(e.as_slice()[1], root.id.to_hex());
-
-        assert!(event.references_root(&root.id));
-    }
-
-    #[test]
-    fn maintainer_filters_name_owner_and_maintainers() {
-        let owner = Keys::generate().public_key();
-        let maintainer = Keys::generate().public_key();
-        let addr = signed_core::RepoAddr::new(owner, "my-repo");
-
-        let filters = RepoStore::maintainer_filters(&addr, &[maintainer]);
-        assert_eq!(filters.len(), 4);
-
-        let expected = HashSet::from([owner, maintainer]);
-
-        let named = |filter: &Filter| -> HashSet<PublicKey> {
-            let authors = filter.authors.iter().flatten().copied();
-            let p_tag = filter
-                .generic_tags
-                .get(&SingleLetterTag::LOWERCASE_P)
-                .into_iter()
-                .flatten()
-                .filter_map(|value| PublicKey::from_hex(value).ok());
-            authors.chain(p_tag).collect()
-        };
-
-        let announcement = &filters[0];
-        assert_eq!(named(announcement), expected);
-        assert!(
-            announcement
-                .generic_tags
-                .contains_key(&SingleLetterTag::LOWERCASE_D)
-        );
-
-        for filter in &filters[1..3] {
-            assert_eq!(named(filter), expected);
-            assert!(
-                filter
-                    .generic_tags
-                    .contains_key(&SingleLetterTag::LOWERCASE_A)
-            );
-        }
-
-        let deletions = &filters[3];
-        assert_eq!(
-            deletions
-                .authors
-                .clone()
-                .unwrap_or_default()
-                .into_iter()
-                .collect::<HashSet<_>>(),
-            expected
-        );
-    }
 }

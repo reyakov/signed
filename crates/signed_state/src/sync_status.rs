@@ -13,8 +13,7 @@ use crate::checkouts::CheckoutsStore;
 use crate::refresh::{RefreshGate, RefreshRequest};
 use crate::repos::RepoListStore;
 
-// Nostr state changes rarely, so drift detection runs on a slow poll.
-const SYNC_POLL: Duration = Duration::from_secs(60);
+const SYNC_POLL: Duration = Duration::from_secs(180);
 const MAX_SYNC_CHECKOUTS: usize = 8;
 
 struct GlobalSyncStatusStore(Entity<SyncStatusStore>);
@@ -229,7 +228,9 @@ impl SyncStatusStore {
             })?;
 
             if again {
-                this.update(cx, |this, cx| this.refresh(cx))?;
+                this.update(cx, |this, cx| {
+                    this.refresh(cx);
+                })?;
             }
 
             Ok::<_, Error>(())

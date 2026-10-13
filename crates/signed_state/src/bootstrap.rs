@@ -78,16 +78,10 @@ pub async fn user_grasp_list_servers(
 ) -> Result<Vec<RelayUrl>, Error> {
     let events: Vec<Event> = client
         .database()
-        .query(Filters::grasp_list(user))
+        .query(Filters::grasp_list(user).limit(1))
         .await?
         .into_iter()
         .collect();
 
-    let latest = events
-        .into_iter()
-        .max_by_key(|event| event.created_at)
-        .map(|event| grasp_list_servers(&event))
-        .unwrap_or_default();
-
-    Ok(latest)
+    Ok(events.first().map(grasp_list_servers).unwrap_or_default())
 }

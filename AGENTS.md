@@ -5,6 +5,7 @@
 * Keep doc comments and comments simple, one line, straightforward, and unbloated.
 * Prefer implementing functionality in existing files unless it is a new logical component. Avoid creating many small files.
 * Prefer `impl` blocks over standalone functions: place functionality as methods or associated functions on the relevant type, extending the type's existing `impl` block instead of creating a duplicate one in another file.
+* Do not wrap clients or SDK dependencies in project structs or pass-through helper functions, call their methods directly where needed. Extract a helper only when it holds real logic that is used in more than one place.
 * Bind a global store handle to a local before using it (`let state = GlobalState::global(cx);` then `state.update(...)`) instead of chaining on `CheckoutsStore::global(cx)` inline.
 * Avoid using functions that panic like `unwrap()`, instead use mechanisms like `?` to propagate errors.
 * Be careful with operations like indexing which may panic if the indexes are out of bounds.

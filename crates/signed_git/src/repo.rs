@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -62,16 +62,13 @@ impl Repo {
     pub fn init(path: &Path, name: &str, description: &str) -> Result<String> {
         use gix::refs::transaction::{Change, LogChange, PreviousValue, RefEdit, RefLog};
 
-        std::fs::create_dir_all(path)
-            .with_context(|| format!("failed to create {}", path.display()))?;
-
+        std::fs::create_dir_all(path)?;
         let repo = gix::init(path)?;
 
         let (signature, mut time_buf) = Self::repository_signature();
-        let signature = signature.to_ref(&mut time_buf);
 
-        let head = gix::refs::FullName::try_from("HEAD")
-            .map_err(|e| anyhow::anyhow!("invalid ref name: {e}"))?;
+        let signature = signature.to_ref(&mut time_buf);
+        let head = gix::refs::FullName::try_from("HEAD")?;
 
         repo.edit_references_as(
             [RefEdit {
@@ -99,7 +96,7 @@ impl Repo {
             format!("# {name}\n\n{description}\n")
         };
 
-        std::fs::write(path.join("README.md"), &readme).context("failed to write README.md")?;
+        std::fs::write(path.join("README.md"), &readme)?;
 
         let blob = repo.write_object(gix::objs::Blob {
             data: readme.into_bytes(),
@@ -1192,11 +1189,13 @@ impl Repo {
             ],
             ..Default::default()
         };
+
         self.inner
             .find_remote("origin")?
             .connect(gix::remote::Direction::Fetch)?
             .prepare_fetch(Discard, options)?
             .receive(Discard, &IS_INTERRUPTED)?;
+
         Ok(())
     }
 
@@ -1261,55 +1260,6 @@ impl Repo {
             );
         }
         Ok(())
-    }
-
-    /// Checks that `url` advertises exactly the expected ref oids.
-    pub fn remote_has_refs(&self, url: &str, expected: &[(String, String)]) -> Result<bool> {
-        if expected.is_empty() {
-            return Ok(true);
-        }
-
-        let url = Self::transport_url(url);
-
-        let refspecs = expected
-            .iter()
-            .map(|(name, _)| {
-                gix::refspec::parse(
-                    gix::bstr::BStr::new(format!("+{name}:{name}").as_bytes()),
-                    gix::refspec::parse::Operation::Fetch,
-                )
-                .map(|spec| spec.to_owned())
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .into_anyhow()
-            .context("invalid refspec")?;
-
-        let options = gix::remote::ref_map::Options {
-            extra_refspecs: refspecs,
-            ..Default::default()
-        };
-
-        let (refs, _) = self
-            .inner
-            .remote_at(url.as_str())
-            .with_context(|| format!("cannot use remote {url}"))?
-            .connect(gix::remote::Direction::Fetch)
-            .with_context(|| format!("cannot connect to {url}"))?
-            .ref_map(Discard, options)
-            .with_context(|| format!("listing refs of {url} failed"))?;
-
-        let advertised: HashMap<String, String> = refs
-            .remote_refs
-            .iter()
-            .filter_map(|reference| {
-                let (name, object, _peeled) = reference.unpack();
-                object.map(|oid| (String::from_utf8_lossy(name).into_owned(), oid.to_string()))
-            })
-            .collect();
-
-        Ok(expected
-            .iter()
-            .all(|(name, oid)| advertised.get(name.as_str()) == Some(oid)))
     }
 
     /// Sets the `origin` URL when the repository has no remote yet.

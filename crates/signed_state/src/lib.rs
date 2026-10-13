@@ -4,6 +4,7 @@ mod checkouts;
 mod git_store;
 mod inbox;
 mod local_repos;
+mod patch_series;
 mod profile;
 mod push;
 mod refresh;

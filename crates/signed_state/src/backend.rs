@@ -5,9 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Error, anyhow, bail};
 use bitcoin_hashes::sha1::Hash as Sha1Hash;
-use gpui::{
-    App, AppContext, AsyncApp, Context, Entity, EventEmitter, Global, Task, TaskExt, WeakEntity,
-};
+use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Global, Task, TaskExt};
 use nostr::event::IntoEventBuilder;
 use nostr::nips::nip19::Nip19Coordinate;
 use nostr_connect::prelude::*;
@@ -21,7 +19,7 @@ use crate::bootstrap::{
 };
 use crate::git_store::Mirrors;
 use crate::inbox::Inbox;
-use crate::push::{GraspPush, PushOutcome, grasp_base_url, grasp_clone_url};
+use crate::push::{PushOutcome, grasp_base_url, grasp_clone_url, push_staged_to_grasps};
 use crate::repos::RepoListStore;
 
 pub const USER_KEYRING: &str = "Signed Safe Storage";
@@ -194,7 +192,7 @@ impl Backend {
                         this.set_signer(keys, cx);
                     })?;
                 } else if content.starts_with("bunker://") {
-                    let (base, keys) = extract_master_key(&content);
+                    let (base, keys) = extract_master_key(&content)?;
                     let uri = NostrConnectUri::parse(base)?;
                     let mut signer = NostrConnect::new(
                         uri,
@@ -452,16 +450,28 @@ impl Backend {
                     .map(|url| RelayUrl::parse(url).expect("valid relay URL"))
                     .collect();
 
-                let pusher = GraspPush::new(this.client.clone(), this.signer.clone());
-
                 for builder in [
                     RelayList::new(relays).into_event_builder(),
                     metadata,
                     GitUserGraspList { grasp_servers }.into_event_builder(),
                 ] {
-                    let pusher = pusher.clone();
+                    let client = this.client.clone();
+                    let signer = this.signer.clone();
                     cx.background_spawn(async move {
-                        pusher.publish_best_effort(builder).await;
+                        let event = builder.finalize_async(&signer).await?;
+                        let output = client.send_event(&event).broadcast().await?;
+
+                        if output.success.is_empty() {
+                            let reasons = output
+                                .failed
+                                .values()
+                                .cloned()
+                                .collect::<Vec<String>>()
+                                .join(", ");
+                            bail!("event not accepted by any relay: {reasons}");
+                        }
+
+                        Ok::<(), anyhow::Error>(())
                     })
                     .detach();
                 }
@@ -527,7 +537,7 @@ impl Backend {
             folder.join(dir_name)
         };
 
-        cx.spawn(async move |this, cx| {
+        cx.spawn(async move |_this, cx| {
             let work = cx.background_spawn({
                 let destination = destination.clone();
                 let name = name.clone();
@@ -565,7 +575,6 @@ impl Backend {
             );
 
             let event = announce_repository_and_push(
-                &this,
                 &client,
                 &signer,
                 announcement,
@@ -631,7 +640,7 @@ impl Backend {
         let client = self.client.clone();
         let signer = self.signer.clone();
 
-        cx.spawn(async move |this, cx| {
+        cx.spawn(async move |_this, cx| {
             let (mut state, euc) = cx
                 .background_spawn({
                     let path = path.clone();
@@ -660,7 +669,6 @@ impl Backend {
             let ann = build_announcement(&repo_id, &name, &description, &owner, &servers, euc);
 
             let event = announce_repository_and_push(
-                &this,
                 &client,
                 &signer,
                 ann,
@@ -792,29 +800,29 @@ impl Backend {
                 PushOutcome::default()
             } else {
                 let push = cx.background_spawn({
-                    let pusher = GraspPush::new(client.clone(), signer.clone());
+                    let client = client.clone();
+                    let signer = signer.clone();
                     let path = path.clone();
                     let owner = owner.clone();
                     let repo_id = repo_id.clone();
                     let relays = relays.clone();
                     let refs = refs.clone();
                     let head = head.clone();
-                    let executor = cx.background_executor().clone();
                     async move {
-                        pusher
-                            .push_staged_to_grasps(
-                                &repo_id,
-                                &refs,
-                                head.as_deref(),
-                                &path,
-                                &owner,
-                                &relays,
-                                &executor,
-                                |path, base, owner, repo_id| {
-                                    Repo::open(path)?.push_all(base, owner, repo_id)
-                                },
-                            )
-                            .await
+                        push_staged_to_grasps(
+                            &client,
+                            &signer,
+                            &repo_id,
+                            &refs,
+                            head.as_deref(),
+                            &path,
+                            &owner,
+                            &relays,
+                            |path, base, owner, repo_id| {
+                                Repo::open(path)?.push_all(base, owner, repo_id)
+                            },
+                        )
+                        .await
                     }
                 });
                 push.await
@@ -1136,17 +1144,22 @@ impl Backend {
 
     // Each target gets its own deletion event.
     fn retract_events(&mut self, events: &[Event], cx: &mut Context<Self>) {
-        let pusher = GraspPush::new(self.client.clone(), self.signer.clone());
-
         for event in events.iter().cloned() {
-            let pusher = pusher.clone();
+            let client = self.client.clone();
+            let signer = self.signer.clone();
 
-            cx.spawn(async move |_this, _cx| {
-                if let Err(e) = pusher.retract_event(&event).await {
-                    log::warn!("failed to retract event {}: {e}", event.id);
+            cx.background_spawn(async move {
+                let builder = EventDeletionRequest::new().id(event.id);
+                let deletion = builder.finalize_async(&signer).await?;
+                let output = client.send_event(&deletion).broadcast().await?;
+
+                if output.success.is_empty() {
+                    bail!("deletion event not accepted by any relay");
                 }
+
+                Ok::<(), Error>(())
             })
-            .detach();
+            .detach_and_log_err(cx);
         }
     }
 }
@@ -1176,10 +1189,9 @@ fn build_announcement(
 
 // Announce the repository, then stage the state event and push.
 #[allow(clippy::too_many_arguments)]
-async fn announce_repository_and_push(
-    backend: &WeakEntity<Backend>,
+async fn announce_repository_and_push<S>(
     client: &Client,
-    signer: &UniversalSigner,
+    signer: &S,
     announcement: GitRepositoryAnnouncement,
     repo_id: &str,
     owner: &str,
@@ -1189,59 +1201,89 @@ async fn announce_repository_and_push(
     path: &Path,
     cx: &mut AsyncApp,
     push: impl Fn(&Path, &str, &str, &str) -> Result<(), Error> + Send + 'static,
-) -> Result<Event, Error> {
+) -> Result<Event, Error>
+where
+    S: AsyncGetPublicKey + AsyncSignEvent + Clone,
+{
     for url in servers {
-        client.add_relay(url).and_connect().await.ok();
+        if let Err(e) = client.add_relay(url).and_connect().await {
+            log::warn!("failed to connect grasp relay {url}: {e}");
+        }
     }
 
-    let event = {
-        let builder = announcement.into_event_builder();
-        let event = builder.finalize_async(signer).await?;
-        let output = client.send_event(&event).broadcast().await?;
-        GraspPush::require_relay_accepted(output, event)?
-    };
+    let event = announcement.finalize_async(signer).await?;
+    let output = client.send_event(&event).broadcast().await?;
+
+    if output.success.is_empty() {
+        let reasons = output
+            .failed
+            .values()
+            .cloned()
+            .collect::<Vec<String>>()
+            .join(", ");
+        bail!("event not accepted by any relay: {reasons}");
+    }
 
     // The state event is the push authorization.
     let outcome = if refs.is_empty() {
         PushOutcome::default()
     } else {
-        let pusher = GraspPush::new(client.clone(), signer.clone());
-        let repo_id = repo_id.to_owned();
-        let owner = owner.to_owned();
-        let servers = servers.to_vec();
-        let head = head.clone();
-        let path = path.to_path_buf();
-        let executor = cx.background_executor().clone();
-        cx.background_spawn(async move {
-            pusher
-                .push_staged_to_grasps(
+        let push = {
+            let client = client.clone();
+            let signer = S::clone(signer);
+            let repo_id = repo_id.to_owned();
+            let owner = owner.to_owned();
+            let servers = servers.to_vec();
+            let head = head.clone();
+            let path = path.to_path_buf();
+            cx.background_spawn(async move {
+                push_staged_to_grasps(
+                    &client,
+                    &signer,
                     &repo_id,
                     &refs,
                     head.as_deref(),
                     &path,
                     &owner,
                     &servers,
-                    &executor,
                     push,
                 )
                 .await
-        })
-        .await
+            })
+        };
+        push.await
     };
 
     if outcome.accepted() == 0 {
         // Retract the announcement so the repository is not left announced without content.
-        backend
-            .update(cx, |backend, cx| {
-                backend.retract_events(std::slice::from_ref(&event), cx);
-            })
-            .ok();
+        let retracted = async {
+            let deletion = EventDeletionRequest::new()
+                .id(event.id)
+                .finalize_async(signer)
+                .await?;
+            let output = client.send_event(&deletion).broadcast().await?;
 
-        return Err(anyhow!(
-            "The repository was announced, but the push to every grasp server failed: {}. \
-             The announcement has been retracted",
-            outcome.failure_summary()
-        ));
+            // Without relay acceptance the deletion request stays live.
+            if output.success.is_empty() {
+                bail!("deletion event not accepted by any relay");
+            }
+
+            Ok::<(), Error>(())
+        }
+        .await;
+
+        return Err(match retracted {
+            Ok(()) => anyhow!(
+                "The repository was announced, but the push to every grasp server failed: {}. \
+                 The announcement has been retracted",
+                outcome.failure_summary()
+            ),
+            Err(e) => anyhow!(
+                "The repository was announced, but the push to every grasp server failed: {}. \
+                 Retracting the announcement failed: {e}; delete the repository to clean it up",
+                outcome.failure_summary()
+            ),
+        });
     }
 
     // Fan the state out to the relays once a git server holds the objects.
@@ -1292,15 +1334,13 @@ impl UpdateEvent {
     }
 }
 
-fn extract_master_key(credential: &str) -> (&str, Keys) {
+fn extract_master_key(credential: &str) -> Result<(&str, Keys), Error> {
     match credential.split_once("master=") {
         Some((base, nsec)) => {
-            let keys = SecretKey::parse(nsec)
-                .map(Keys::new)
-                .unwrap_or_else(|_| Keys::generate());
-            (base.trim_end_matches(['?', '&']), keys)
+            let keys = Keys::new(SecretKey::parse(nsec)?);
+            Ok((base.trim_end_matches(['?', '&']), keys))
         }
-        None => (credential, Keys::generate()),
+        None => Ok((credential, Keys::generate())),
     }
 }
 

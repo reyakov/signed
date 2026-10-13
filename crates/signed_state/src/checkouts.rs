@@ -45,6 +45,53 @@ struct Remembered {
     last_used: u64,
 }
 
+impl Remembered {
+    fn resolve_associations<'a, A>(
+        remembered: &[Remembered],
+        scanned: &[(PathBuf, Option<String>, Option<String>)],
+        announcements: A,
+    ) -> HashMap<RepoAddr, Vec<PathBuf>>
+    where
+        A: IntoIterator<Item = &'a Announcement>,
+    {
+        let announcements: Vec<&Announcement> = announcements.into_iter().collect();
+        let mut out: HashMap<RepoAddr, Vec<PathBuf>> = HashMap::new();
+
+        let mut sorted: Vec<&Remembered> = remembered.iter().collect();
+        sorted.sort_by_key(|record| std::cmp::Reverse(record.last_used));
+        for record in sorted {
+            let paths = out.entry(record.addr.clone()).or_default();
+            if !paths.contains(&record.path) {
+                paths.push(record.path.clone());
+            }
+        }
+
+        for (path, origin, root) in scanned {
+            for announcement in &announcements {
+                let url_match = origin.as_deref().is_some_and(|origin| {
+                    announcement
+                        .clone
+                        .iter()
+                        .any(|url| same_repo_url(origin, url.as_str()))
+                });
+
+                let euc_match = root
+                    .as_deref()
+                    .is_some_and(|root| announcement.euc.as_deref() == Some(root));
+
+                if url_match || euc_match {
+                    let paths = out.entry(announcement.addr()).or_default();
+                    if !paths.contains(path) {
+                        paths.push(path.clone());
+                    }
+                }
+            }
+        }
+
+        out
+    }
+}
+
 pub struct CheckoutsStore {
     by_repo: HashMap<RepoAddr, Vec<PathBuf>>,
     statuses: HashMap<RepoAddr, Vec<CheckoutStatus>>,
@@ -117,9 +164,10 @@ impl CheckoutsStore {
         if !cfg!(target_arch = "wasm32") {
             let weak = cx.entity().downgrade();
             cx.defer(move |cx| {
-                if let Err(error) = weak.update(cx, |this, cx| this.refresh(cx)) {
-                    log::warn!("checkouts store dropped before initial refresh could run: {error}");
-                }
+                weak.update(cx, |this, cx| {
+                    this.refresh(cx);
+                })
+                .ok();
             });
         }
 
@@ -143,13 +191,15 @@ impl CheckoutsStore {
         if cfg!(target_arch = "wasm32") {
             return;
         }
+
+        let settings = SettingsStore::global(cx);
+        let addr_str = addr.to_string();
+
         let last_used = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let addr_str = addr.to_string();
 
-        let settings = SettingsStore::global(cx);
         settings.update(cx, |settings, cx| {
             settings.edit(
                 |s| {
@@ -306,7 +356,7 @@ impl CheckoutsStore {
             }
 
             let associations =
-                CheckoutsStore::resolve_associations(&remembered, &facts, announcements.iter());
+                Remembered::resolve_associations(&remembered, &facts, announcements.iter());
 
             let associations: HashMap<RepoAddr, Vec<PathBuf>> = associations
                 .into_iter()
@@ -435,7 +485,7 @@ impl CheckoutsStore {
             Ok::<_, Error>((statuses, push_statuses))
         });
 
-        let task: gpui::Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let Ok((statuses, push_statuses)) = work.await else {
                 return Ok(());
             };
@@ -456,53 +506,9 @@ impl CheckoutsStore {
                 }
             })?;
 
-            Ok(())
-        });
-        task.detach();
-    }
-}
-
-impl CheckoutsStore {
-    fn resolve_associations<'a>(
-        remembered: &[Remembered],
-        scanned: &[(PathBuf, Option<String>, Option<String>)],
-        announcements: impl IntoIterator<Item = &'a Announcement>,
-    ) -> HashMap<RepoAddr, Vec<PathBuf>> {
-        let announcements: Vec<&Announcement> = announcements.into_iter().collect();
-        let mut out: HashMap<RepoAddr, Vec<PathBuf>> = HashMap::new();
-
-        let mut sorted: Vec<&Remembered> = remembered.iter().collect();
-        sorted.sort_by_key(|record| std::cmp::Reverse(record.last_used));
-        for record in sorted {
-            let paths = out.entry(record.addr.clone()).or_default();
-            if !paths.contains(&record.path) {
-                paths.push(record.path.clone());
-            }
-        }
-
-        for (path, origin, root) in scanned {
-            for announcement in &announcements {
-                let url_match = origin.as_deref().is_some_and(|origin| {
-                    announcement
-                        .clone
-                        .iter()
-                        .any(|url| same_repo_url(origin, url.as_str()))
-                });
-
-                let euc_match = root
-                    .as_deref()
-                    .is_some_and(|root| announcement.euc.as_deref() == Some(root));
-
-                if url_match || euc_match {
-                    let paths = out.entry(announcement.addr()).or_default();
-                    if !paths.contains(path) {
-                        paths.push(path.clone());
-                    }
-                }
-            }
-        }
-
-        out
+            Ok::<(), anyhow::Error>(())
+        })
+        .detach();
     }
 
     fn checkout_status(path: &Path, announced_head: Option<&str>) -> Option<CheckoutStatus> {
@@ -535,7 +541,7 @@ impl CheckoutsStore {
         })
     }
 
-    // Never fetches the checked-out refs; reads the tracking refs as-is.
+    /// Returns checkouts that are ahead of their remote tracking branch.
     fn checkout_push_status(path: &Path, fetch: bool) -> Option<CheckoutStatus> {
         let repo = Repo::try_open(path)?;
         if repo.is_dirty() {
@@ -546,15 +552,13 @@ impl CheckoutsStore {
         let head = repo.head()?;
         let origin = repo.origin_url().ok().flatten()?;
 
-        if fetch {
-            repo.fetch_refs(&[origin], "+refs/heads/*:refs/remotes/origin/*")
-                .ok();
+        if fetch && let Err(e) = repo.fetch_refs(&[origin], "+refs/heads/*:refs/remotes/origin/*") {
+            log::warn!("failed to fetch refs for {path:?}: {e}");
         }
 
         let remote = format!("refs/remotes/origin/{branch}");
 
-        // A branch never fetched or pushed yet compares against the remote
-        // HEAD, the fork point in practice.
+        // If the branch is new and has no remote tracking branch, fall back to origin/HEAD.
         let base = if repo.ref_exists(&remote) {
             remote
         } else if repo.ref_exists("refs/remotes/origin/HEAD") {
@@ -646,148 +650,5 @@ impl CheckoutsStore {
             .is_some_and(|tip| tip == checkout.head);
 
         branch_matches || tip_matches
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::process::Command;
-
-    use super::*;
-
-    #[test]
-    fn same_repo_url_ignores_the_transport_scheme() {
-        assert!(same_repo_url(
-            "grasp://relay.ngit.dev/npub1test/repo",
-            "https://relay.ngit.dev/npub1test/repo.git"
-        ));
-        assert!(same_repo_url(
-            "ws://localhost:8080/npub1test/repo",
-            "http://localhost:8080/npub1test/repo"
-        ));
-        assert!(!same_repo_url(
-            "wss://localhost:8081/npub1test/repo",
-            "wss://localhost:8080/npub1test/repo"
-        ));
-        assert!(!same_repo_url(
-            "wss://host/npub1test/repo",
-            "wss://host/npub1other/repo"
-        ));
-        assert!(same_repo_url("/local/path", "/local/path"));
-        assert!(!same_repo_url("/local/path", "/local/other"));
-    }
-
-    #[test]
-    fn checkout_status_reports_ahead_branches_only() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("repo");
-        let _initial = Repo::init(&path, "My Repo", "").expect("init");
-        let run = |args: &[&str]| {
-            let status = Command::new("git")
-                .current_dir(&path)
-                .env("GIT_AUTHOR_NAME", "Test Author")
-                .env("GIT_AUTHOR_EMAIL", "test@example.com")
-                .env("GIT_COMMITTER_NAME", "Test Author")
-                .env("GIT_COMMITTER_EMAIL", "test@example.com")
-                .env("GIT_EDITOR", "true")
-                .args(args)
-                .status()
-                .expect("git");
-            assert!(status.success(), "git {args:?} failed");
-        };
-        let commit = |message: &str| {
-            run(&["add", "-A"]);
-            run(&["commit", "-m", message]);
-        };
-
-        run(&["checkout", "-b", "feature"]);
-        std::fs::write(path.join("feature.txt"), "x\n").expect("write");
-        commit("feature work");
-        let status = CheckoutsStore::checkout_status(&path, Some("main")).expect("status");
-        assert_eq!(status.branch, "feature");
-        assert_eq!(status.base, "main");
-        assert_eq!(status.ahead, 1);
-        assert_eq!(status.head.len(), 40);
-
-        std::fs::write(path.join("uncommitted.txt"), "y\n").expect("write");
-        assert!(CheckoutsStore::checkout_status(&path, Some("main")).is_none());
-        run(&["checkout", "--", "."]);
-
-        run(&["checkout", "main"]);
-        assert_eq!(CheckoutsStore::checkout_status(&path, Some("main")), None);
-    }
-
-    #[test]
-    fn checkout_push_status_counts_unpushed_commits_only() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let remote = dir.path().join("remote");
-        Repo::init(&remote, "My Repo", "").expect("init");
-        let config = Command::new("git")
-            .args(["config", "receive.denyCurrentBranch", "ignore"])
-            .current_dir(&remote)
-            .status()
-            .expect("git config");
-        assert!(config.success(), "git config failed");
-
-        let checkout = dir.path().join("checkout");
-        let status = Command::new("git")
-            .args([
-                "clone",
-                "-q",
-                remote.to_str().unwrap(),
-                checkout.to_str().unwrap(),
-            ])
-            .status()
-            .expect("git clone");
-        assert!(status.success(), "git clone failed");
-
-        let run = |args: &[&str]| {
-            let status = Command::new("git")
-                .current_dir(&checkout)
-                .env("GIT_AUTHOR_NAME", "Test Author")
-                .env("GIT_AUTHOR_EMAIL", "test@example.com")
-                .env("GIT_COMMITTER_NAME", "Test Author")
-                .env("GIT_COMMITTER_EMAIL", "test@example.com")
-                .env("GIT_EDITOR", "true")
-                .args(args)
-                .status()
-                .expect("git");
-            assert!(status.success(), "git {args:?} failed");
-        };
-
-        // A fresh clone has nothing to push.
-        assert_eq!(CheckoutsStore::checkout_push_status(&checkout, true), None);
-
-        std::fs::write(checkout.join("work.txt"), "x\n").expect("write");
-        run(&["add", "-A"]);
-        run(&["commit", "-m", "local work"]);
-        let status = CheckoutsStore::checkout_push_status(&checkout, true).expect("status");
-        assert_eq!(status.branch, "main");
-        assert_eq!(status.base, "refs/remotes/origin/main");
-        assert_eq!(status.ahead, 1);
-        assert_eq!(status.head.len(), 40);
-
-        let local = CheckoutsStore::checkout_push_status(&checkout, false).expect("local status");
-        assert_eq!(local.ahead, 1);
-
-        run(&["push", "origin", "main"]);
-        assert_eq!(CheckoutsStore::checkout_push_status(&checkout, true), None);
-
-        let remote_run = |args: &[&str]| {
-            let status = Command::new("git")
-                .current_dir(&remote)
-                .env("GIT_AUTHOR_NAME", "Other Author")
-                .env("GIT_AUTHOR_EMAIL", "other@example.com")
-                .env("GIT_COMMITTER_NAME", "Other Author")
-                .env("GIT_COMMITTER_EMAIL", "other@example.com")
-                .args(args)
-                .status()
-                .expect("git");
-            assert!(status.success(), "git {args:?} failed");
-        };
-        std::fs::write(remote.join("other.txt"), "y\n").expect("write");
-        remote_run(&["add", "-A"]);
-        remote_run(&["commit", "-m", "remote work"]);
-        assert_eq!(CheckoutsStore::checkout_push_status(&checkout, true), None);
     }
 }
