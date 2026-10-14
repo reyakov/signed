@@ -12,6 +12,7 @@
 - Add a quit action, bound to `secondary-q` (cmd on macOS, ctrl on others)
 - Allow choosing the default branch when publishing a repository
 - Detect when local commits are not on Nostr yet, showing an unsynced count badge on sidebar repository rows and a Sync now banner on the repository view
+- Add a step-by-step push checklist while publishing and syncing a repository
 
 ### Changed
 
@@ -23,8 +24,13 @@
 - Connect to grasp relays and load the inbox only after the user's grasp list event arrives
 - Refresh the checkouts store only when the checkouts settings change
 - Restructure the core crate into focused modules for announcements, pull requests, git events, inbox, and upstream state
+- Publish nostr events directly through the client with relay acceptance required, removing the grasp push helper and its per-server retry loop so failures surface immediately
+- Poll the repository sync drift check every 180 seconds instead of 60
 
 ### Fixed
+
+- Fix the repository view refreshing its mirror from the network while a push is in progress, so the refresh no longer races the push
+- Fix signing in with a `bunker://` URI silently generating a new identity instead of erroring when its master key cannot be parsed
 
 ### Removed
 
