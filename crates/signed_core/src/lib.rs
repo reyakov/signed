@@ -5,7 +5,6 @@ pub mod filters;
 pub mod git_event;
 pub mod inbox;
 pub mod pull_request;
-pub mod state;
 pub mod status;
 pub mod upstream;
 
@@ -16,6 +15,5 @@ pub use filters::Filters;
 pub use git_event::GitEvent;
 pub use inbox::{InboxItem, InboxReadState, ThreadResolver};
 pub use pull_request::PullRequest;
-pub use state::RepoState;
 pub use status::RepoStatus;
 pub use upstream::Upstream;

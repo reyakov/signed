@@ -1,9 +1,5 @@
-use std::path::Path;
-
-use anyhow::Error;
 use nostr::prelude::Url;
 use nostr_sdk::prelude::*;
-use signed_core::RepoState;
 
 /// `ws://` grasp servers, like ngit, use `http(s)://<host>`.
 pub(crate) fn grasp_base_url(relay: &RelayUrl) -> Option<String> {
@@ -50,16 +46,16 @@ pub struct GraspServer {
 }
 
 impl GraspServer {
-    fn ok(relay: RelayUrl) -> Self {
+    pub(crate) fn ok(relay: RelayUrl) -> Self {
         Self {
             relay,
             reason: None,
         }
     }
 
-    fn failed(relay: RelayUrl, reason: impl Into<String>) -> Self {
+    pub(crate) fn failed(relay: &RelayUrl, reason: impl Into<String>) -> Self {
         Self {
-            relay,
+            relay: relay.to_owned(),
             reason: Some(reason.into()),
         }
     }
@@ -115,93 +111,4 @@ impl PushOutcome {
             self.failure_summary()
         ))
     }
-
-    /// All staged events carry the same refs; the newest timestamp wins on the relays.
-    fn keep_newest(&mut self, event: Event) {
-        if self
-            .state_event
-            .as_ref()
-            .is_none_or(|current| event.created_at > current.created_at)
-        {
-            self.state_event = Some(event);
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn push_staged_to_grasps<S>(
-    client: &Client,
-    signer: &S,
-    repo_id: &str,
-    refs: &[(String, String)],
-    head: Option<&str>,
-    path: &Path,
-    owner: &str,
-    servers: &[RelayUrl],
-    push: impl Fn(&Path, &str, &str, &str) -> Result<(), Error>,
-) -> PushOutcome
-where
-    S: AsyncGetPublicKey + AsyncSignEvent + ?Sized,
-{
-    let mut outcome = PushOutcome::default();
-
-    for relay in servers {
-        let Some(base) = grasp_base_url(relay) else {
-            outcome
-                .servers
-                .push(GraspServer::failed(relay.clone(), "no domain"));
-            continue;
-        };
-
-        let event = match RepoState::build(repo_id, refs, head)
-            .finalize_async(signer)
-            .await
-        {
-            Ok(event) => event,
-            Err(e) => {
-                let reason = format!("could not sign the state event: {e}");
-                outcome
-                    .servers
-                    .push(GraspServer::failed(relay.clone(), reason));
-                continue;
-            }
-        };
-
-        // The relay parks the accepted event in purgatory, authorizing the paired git push.
-        let staging = match client.add_relay(relay).and_connect().await {
-            Ok(_) => match client.send_event(&event).to([relay.clone()]).await {
-                Ok(output) if output.success.contains_key(relay) => Ok(()),
-                Ok(output) => Err(output
-                    .failed
-                    .get(relay)
-                    .cloned()
-                    .unwrap_or_else(|| "relay did not confirm the event".to_owned())),
-                Err(e) => Err(format!("could not send the state event to {relay}: {e}")),
-            },
-            Err(e) => Err(format!("could not add relay {relay}: {e}")),
-        };
-
-        if let Err(reason) = staging {
-            log::warn!("grasp push failed: {relay}: {reason}");
-            outcome
-                .servers
-                .push(GraspServer::failed(relay.clone(), reason));
-            continue;
-        }
-
-        match push(path, &base, owner, repo_id) {
-            Ok(()) => {
-                outcome.keep_newest(event);
-                outcome.servers.push(GraspServer::ok(relay.clone()));
-            }
-            Err(e) => {
-                log::warn!("grasp push failed: {relay}: {e}");
-                outcome
-                    .servers
-                    .push(GraspServer::failed(relay.clone(), e.to_string()));
-            }
-        }
-    }
-
-    outcome
 }

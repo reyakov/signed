@@ -10,6 +10,7 @@ mod push;
 mod refresh;
 mod repo;
 mod repos;
+mod state;
 mod sync_status;
 
 use std::path::{Path, PathBuf};
@@ -29,6 +30,7 @@ pub use repo::RepoStore;
 pub use repos::RepoListStore;
 pub use signed_git::{Nip34Binding, Nip34Kind};
 use signed_nostr::NostrBackend;
+pub use state::{GitPushMode, GitRef, PushStep, PushStepStatus, SyncState};
 pub use sync_status::{CheckoutSyncStatus, SyncStatusStore};
 
 pub fn init(

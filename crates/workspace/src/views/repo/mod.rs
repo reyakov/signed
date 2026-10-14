@@ -26,7 +26,8 @@ use signed_core::{Announcement, RepoAddr, RepoStatus};
 use signed_git::{FileCommit, GitCache, RefSync, Repo};
 use signed_state::{
     Backend, CheckoutStatus, CheckoutSyncStatus, CheckoutsStore, LocalReposStore, Mirrors,
-    Nip34Binding, Nip34Kind, ProfileStore, RepoListStore, RepoStore, SyncStatusStore,
+    Nip34Binding, Nip34Kind, ProfileStore, PushStepStatus, RepoListStore, RepoStore,
+    SyncStatusStore,
 };
 use signed_ui::{
     Avatar, CountBadge, DropdownButton, PixelAvatar, copy_row, menu_copy_row, ref_selector_trigger,
@@ -1747,6 +1748,59 @@ impl RepoDetailView {
         )
     }
 
+    pub(super) fn render_push_progress_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let store = self.store.read(cx);
+        if !store.pushing || store.push_steps.is_empty() {
+            return None;
+        }
+
+        let steps = store
+            .push_steps
+            .iter()
+            .map(|status| {
+                let label = SharedString::from(status.step().label());
+
+                match status {
+                    PushStepStatus::Running(_) => h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(Spinner::new().small())
+                        .child(label)
+                        .into_any_element(),
+                    PushStepStatus::Done(_) => h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(Icon::new(IconName::CircleCheck).small())
+                        .child(label)
+                        .into_any_element(),
+                    PushStepStatus::Failed(_, reason) => h_flex()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(Icon::new(IconName::Close).small())
+                        .child(SharedString::from(format!(
+                            "{}: {reason}",
+                            status.step().label()
+                        )))
+                        .into_any_element(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        Some(
+            v_flex()
+                .p_4()
+                .gap_1()
+                .w_full()
+                .bg(cx.theme().muted)
+                .child(div().text_sm().child("Pushing"))
+                .children(steps)
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn render_push_warning_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let store = self.store.read(cx);
         let warning = store.last_push_warning.clone()?;
@@ -2189,6 +2243,9 @@ impl Render for RepoDetailView {
             .id("repo")
             .size_full()
             .when_some(banner, |this, banner| this.child(banner))
+            .when_some(self.render_push_progress_banner(cx), |this, banner| {
+                this.child(banner)
+            })
             .when_some(self.render_push_warning_banner(cx), |this, banner| {
                 this.child(banner)
             })

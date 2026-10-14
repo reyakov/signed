@@ -8,8 +8,7 @@ use nostr::event::IntoEventBuilder;
 use nostr_sdk::prelude::*;
 use settings::{EventFetchingStrategy, SettingsStore};
 use signed_core::{
-    Announcement, Deletions, Filters, GitEvent, PullRequest, RepoAddr, RepoState, RepoStatus,
-    filters,
+    Announcement, Deletions, Filters, GitEvent, PullRequest, RepoAddr, RepoStatus, filters,
 };
 use signed_git::{Nip34Binding, Repo};
 
@@ -19,6 +18,7 @@ use crate::checkouts::CheckoutsStore;
 use crate::patch_series::{MAX_PATCH_EVENT_BYTES, PatchSeries};
 use crate::push::{PushOutcome, grasp_base_url, grasp06_prs_url, pr_clone_urls};
 use crate::repos::RepoListStore;
+use crate::state::{GitRef, PushStepStatus, SyncState};
 use crate::sync_status::SyncStatusStore;
 
 pub struct RepoStore {
@@ -34,7 +34,7 @@ pub struct RepoStore {
     pub loaded: bool,
     pub head: Option<String>,
     // Refs and timestamp of the latest state event, for sync detection.
-    pub state_refs: Vec<(String, String)>,
+    pub state_refs: Vec<GitRef>,
     pub state_at: Option<Timestamp>,
     pub issues: Vec<Event>,
     pub patches: Vec<Event>,
@@ -48,6 +48,7 @@ pub struct RepoStore {
     // The repository is out of sync on the rejected servers until republished.
     pub last_push_warning: Option<String>,
     pub pushing: bool,
+    pub push_steps: Vec<PushStepStatus>,
     pub cloning: bool,
     // Avoids re-subscribing and re-fetching on every refresh.
     repo_relays: HashSet<RelayUrl>,
@@ -101,6 +102,7 @@ impl RepoStore {
             last_warning: None,
             last_push_warning: None,
             pushing: false,
+            push_steps: Vec::new(),
             cloning: false,
             repo_relays: HashSet::new(),
             root_fetches: HashSet::new(),
@@ -131,6 +133,7 @@ impl RepoStore {
             last_warning: None,
             last_push_warning: None,
             pushing: false,
+            push_steps: Vec::new(),
             cloning: false,
             repo_relays: HashSet::new(),
             root_fetches: HashSet::new(),
@@ -169,6 +172,14 @@ impl RepoStore {
         let backend = Backend::global(cx);
 
         cx.subscribe(&backend, |this, _backend, event, cx| {
+            if let BackendEvent::PushProgress { addr, status } = event {
+                if this.addr.as_ref() == Some(addr) {
+                    this.apply_push_step(status.clone(), cx);
+                }
+
+                return;
+            }
+
             let Some(addr) = this.addr.as_ref() else {
                 return;
             };
@@ -201,6 +212,19 @@ impl RepoStore {
 
     pub fn addr(&self) -> Option<&RepoAddr> {
         self.addr.as_ref()
+    }
+
+    fn apply_push_step(&mut self, status: PushStepStatus, cx: &mut Context<Self>) {
+        match self
+            .push_steps
+            .iter_mut()
+            .find(|entry| entry.step() == status.step())
+        {
+            Some(entry) => *entry = status,
+            None => self.push_steps.push(status),
+        }
+
+        cx.notify();
     }
 
     pub fn name(&self) -> SharedString {
@@ -354,7 +378,7 @@ impl RepoStore {
 
             let all_states = states.into_iter().filter(|e| !deletions.is_deleted(e));
             let state =
-                utils::latest(all_states).map(|event| (RepoState::parse(&event), event.created_at));
+                utils::latest(all_states).map(|event| (SyncState::parse(&event), event.created_at));
 
             let (mut issues, mut patches, mut pull_requests, mut statuses, mut comments) =
                 (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -1186,6 +1210,7 @@ impl RepoStore {
         cx: &mut Context<Self>,
     ) -> Task<Result<(), Error>> {
         self.pushing = true;
+        self.push_steps.clear();
         self.last_error = None;
         self.last_push_warning = None;
         cx.notify();
@@ -1195,6 +1220,7 @@ impl RepoStore {
 
             this.update(cx, |this, cx| {
                 this.pushing = false;
+                this.push_steps.clear();
 
                 match &result {
                     Ok(outcome) => {

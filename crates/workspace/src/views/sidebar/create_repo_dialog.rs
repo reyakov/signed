@@ -10,11 +10,12 @@ use gpui_component::form::{field, v_form};
 use gpui_component::input::{Input, InputState, Textarea};
 use gpui_component::{Disableable, IconName, WindowExt, h_flex};
 use settings::SettingsStore;
+use signed_core::RepoAddr;
 use signed_state::{Backend, CheckoutsStore};
 
 use super::super::open_repo_panel;
 use super::grasp_servers::{GraspServersState, grasp_servers_field, load_user_grasp_servers};
-use crate::views::dialog_state::{DialogProgress, error_row};
+use crate::views::dialog_state::{DialogProgress, error_row, push_steps_row};
 
 /// Progress of the create-repository flow, so async results can be rendered.
 pub type CreateRepoState = DialogProgress;
@@ -112,6 +113,7 @@ pub fn open(dock_area: WeakEntity<DockArea>, window: &mut Window, cx: &mut App) 
                             )
                             .child(grasp_servers_field(&grasp_state, &relay_input, cx)),
                     )
+                    .children(push_steps_row(&state.read(cx).push_steps, cx))
                     .children(error_row(&error, cx))
                     .child(
                         DialogFooter::new().justify_end().child(
@@ -209,9 +211,15 @@ fn create_repository(
         return;
     }
 
-    state.update(cx, |state, _| state.begin());
-
     let backend = Backend::global(cx);
+    let Some(user) = backend.read(cx).current_user() else {
+        state.update(cx, |state, _| state.fail("Sign in to create a repository"));
+        return;
+    };
+
+    let addr = RepoAddr::new(user, RepoAddr::identifier_from_name(&name));
+    state.update(cx, |state, cx| state.begin_push(addr, cx));
+
     let task = backend.update(cx, |backend, cx| {
         backend.create_repository(&name, &description, folder, servers, cx)
     });

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
@@ -19,8 +19,9 @@ use crate::bootstrap::{
 };
 use crate::git_store::Mirrors;
 use crate::inbox::Inbox;
-use crate::push::{PushOutcome, grasp_base_url, grasp_clone_url, push_staged_to_grasps};
+use crate::push::{PushOutcome, grasp_base_url, grasp_clone_url};
 use crate::repos::RepoListStore;
+use crate::state::{GitPushMode, GitRef, PushStepStatus, SyncState};
 
 pub const USER_KEYRING: &str = "Signed Safe Storage";
 pub const NOSTR_CONNECT_TIMEOUT: u64 = 60;
@@ -35,6 +36,10 @@ pub enum BackendEvent {
     ProfileUpdates(Vec<PublicKey>),
     RepoUpdates(Vec<Update>),
     Synced,
+    PushProgress {
+        addr: RepoAddr,
+        status: PushStepStatus,
+    },
     Error(String),
 }
 
@@ -523,6 +528,7 @@ impl Backend {
         }
 
         let owner = public_key.to_bech32().unwrap();
+        let addr = RepoAddr::new(public_key, repo_id.clone());
         let servers = grasp_servers.clone();
         let client = self.client.clone();
         let signer = self.signer.clone();
@@ -537,7 +543,7 @@ impl Backend {
             folder.join(dir_name)
         };
 
-        cx.spawn(async move |_this, cx| {
+        cx.spawn(async move |this, cx| {
             let work = cx.background_spawn({
                 let destination = destination.clone();
                 let name = name.clone();
@@ -574,20 +580,29 @@ impl Backend {
                 Some(commit_sha),
             );
 
-            let event = announce_repository_and_push(
-                &client,
-                &signer,
-                announcement,
-                &repo_id,
-                &owner,
-                &servers,
-                vec![("refs/heads/main".to_owned(), commit)],
-                Some("main".to_owned()),
-                &destination,
-                cx,
-                |path, base, owner, repo_id| Repo::open(path)?.push_main(base, owner, repo_id),
-            )
-            .await?;
+            let state = SyncState {
+                refs: vec![GitRef {
+                    name: "refs/heads/main".to_owned(),
+                    commit: commit_sha,
+                }],
+                head: Some("main".to_owned()),
+                path: Some(destination.clone()),
+                mode: GitPushMode::Main,
+            };
+
+            let on_step = &mut |status: PushStepStatus, cx: &mut AsyncApp| {
+                this.update(cx, |_, cx| {
+                    cx.emit(BackendEvent::PushProgress {
+                        addr: addr.clone(),
+                        status,
+                    });
+                })?;
+                Ok::<(), Error>(())
+            };
+
+            let event =
+                announce_and_push_or_retract(&client, &signer, &state, announcement, cx, on_step)
+                    .await?;
 
             let announcement = Announcement::from_event(&event)
                 .ok_or_else(|| anyhow!("failed to parse announcement"))?;
@@ -635,19 +650,20 @@ impl Backend {
         }
 
         let owner = public_key.to_bech32().unwrap();
+        let addr = RepoAddr::new(public_key, repo_id.clone());
         let servers = grasp_servers.clone();
 
         let client = self.client.clone();
         let signer = self.signer.clone();
 
-        cx.spawn(async move |_this, cx| {
+        cx.spawn(async move |this, cx| {
             let (mut state, euc) = cx
                 .background_spawn({
                     let path = path.clone();
                     async move {
                         let repo = Repo::open(&path)?;
-                        let state = repo.ref_state()?;
                         let euc = repo.root_commit()?;
+                        let state = SyncState::from_repo(&path)?;
                         Ok::<_, Error>((state, euc))
                     }
                 })
@@ -660,28 +676,26 @@ impl Backend {
 
             if let Some(branch) = chosen {
                 let wanted = format!("refs/heads/{branch}");
-                if state.refs.iter().any(|(name, _)| name == &wanted) {
+                if state.refs.iter().any(|git_ref| git_ref.name == wanted) {
                     state.head = Some(branch.to_owned());
                 }
             }
 
-            let euc = euc.and_then(|commit| Sha1Hash::from_str(&commit).ok());
+            let euc = euc.and_then(|commit: String| Sha1Hash::from_str(&commit).ok());
             let ann = build_announcement(&repo_id, &name, &description, &owner, &servers, euc);
 
-            let event = announce_repository_and_push(
-                &client,
-                &signer,
-                ann,
-                &repo_id,
-                &owner,
-                &servers,
-                state.refs.clone(),
-                state.head.clone(),
-                &path,
-                cx,
-                |path, base, owner, repo_id| Repo::open(path)?.push_all(base, owner, repo_id),
-            )
-            .await?;
+            let on_step = &mut |status: PushStepStatus, cx: &mut AsyncApp| {
+                this.update(cx, |_, cx| {
+                    cx.emit(BackendEvent::PushProgress {
+                        addr: addr.clone(),
+                        status,
+                    });
+                })?;
+                Ok::<(), Error>(())
+            };
+
+            let event =
+                announce_and_push_or_retract(&client, &signer, &state, ann, cx, on_step).await?;
 
             if let Some(base) = servers.first().and_then(grasp_base_url) {
                 let url = format!("{base}/{owner}/{repo_id}.git");
@@ -754,9 +768,6 @@ impl Backend {
             cx.notify();
         });
 
-        let owner = announcement.owner.to_bech32().unwrap();
-        let repo_id = announcement.id.clone();
-        let relays = announcement.relays.clone();
         let client = self.client.clone();
         let signer = self.signer.clone();
 
@@ -774,72 +785,48 @@ impl Backend {
             let mut state = {
                 let work = cx.background_spawn({
                     let path = path.clone();
-                    async move { Repo::open(&path).and_then(|repo| repo.ref_state()) }
+                    async move { SyncState::from_repo(&path) }
                 });
                 work.await?
             };
 
             // Keep the announced default branch in `HEAD` when it is among the pushed refs.
-            let heads: Vec<&str> = state
-                .refs
-                .iter()
-                .filter_map(|(name, _)| name.strip_prefix("refs/heads/"))
-                .collect();
-
             if let Some(head) = announced_head
-                && heads.iter().any(|branch| *branch == head)
+                && state
+                    .refs
+                    .iter()
+                    .any(|git_ref| git_ref.name.strip_prefix("refs/heads/") == Some(head.as_str()))
             {
                 state.head = Some(head);
             }
 
-            // Grasp servers authorize a push by the state event they hold in purgatory.
-            let refs = state.refs.clone();
-            let head = state.head.clone();
-
-            let outcome = if refs.is_empty() {
+            let outcome = if state.refs.is_empty() {
                 PushOutcome::default()
             } else {
-                let push = cx.background_spawn({
-                    let client = client.clone();
-                    let signer = signer.clone();
-                    let path = path.clone();
-                    let owner = owner.clone();
-                    let repo_id = repo_id.clone();
-                    let relays = relays.clone();
-                    let refs = refs.clone();
-                    let head = head.clone();
-                    async move {
-                        push_staged_to_grasps(
-                            &client,
-                            &signer,
-                            &repo_id,
-                            &refs,
-                            head.as_deref(),
-                            &path,
-                            &owner,
-                            &relays,
-                            |path, base, owner, repo_id| {
-                                Repo::open(path)?.push_all(base, owner, repo_id)
-                            },
-                        )
-                        .await
-                    }
-                });
-                push.await
+                // Grasp servers authorize a push by the state event they hold in purgatory.
+                let builder = state.state_event(&announcement.id);
+                let event = builder.finalize_async(&signer).await?;
+
+                let on_step = &mut |status: PushStepStatus, cx: &mut AsyncApp| {
+                    this.update(cx, |_, cx| {
+                        cx.emit(BackendEvent::PushProgress {
+                            addr: addr.clone(),
+                            status,
+                        });
+                    })?;
+                    Ok::<(), Error>(())
+                };
+
+                state
+                    .push_to_grasps(&client, event, &announcement, cx, on_step)
+                    .await?
             };
 
-            if !refs.is_empty() && outcome.accepted() == 0 {
+            if !state.refs.is_empty() && outcome.accepted() == 0 {
                 bail!(
                     "could not push the repository to any grasp server: {}",
                     outcome.failure_summary()
                 );
-            }
-
-            // Fan the state out to the relays once a git server holds the objects.
-            if let Some(state_event) = &outcome.state_event
-                && let Err(e) = client.send_event(state_event).broadcast().await
-            {
-                log::warn!("failed to broadcast repository state: {e}");
             }
 
             Ok(outcome)
@@ -1187,113 +1174,44 @@ fn build_announcement(
     }
 }
 
-// Announce the repository, then stage the state event and push.
-#[allow(clippy::too_many_arguments)]
-async fn announce_repository_and_push<S>(
+/// Announces a repository and pushes its state to grasp servers,
+/// or retracts the announcement if the push fails.
+async fn announce_and_push_or_retract<S, P>(
     client: &Client,
     signer: &S,
+    state: &SyncState,
     announcement: GitRepositoryAnnouncement,
-    repo_id: &str,
-    owner: &str,
-    servers: &[RelayUrl],
-    refs: Vec<(String, String)>,
-    head: Option<String>,
-    path: &Path,
     cx: &mut AsyncApp,
-    push: impl Fn(&Path, &str, &str, &str) -> Result<(), Error> + Send + 'static,
+    on_step: &mut P,
 ) -> Result<Event, Error>
 where
-    S: AsyncGetPublicKey + AsyncSignEvent + Clone,
+    S: AsyncGetPublicKey + AsyncSignEvent + ?Sized,
+    P: FnMut(PushStepStatus, &mut AsyncApp) -> Result<(), Error>,
 {
-    for url in servers {
-        if let Err(e) = client.add_relay(url).and_connect().await {
-            log::warn!("failed to connect grasp relay {url}: {e}");
-        }
-    }
+    let state_event = state
+        .state_event(&announcement.id)
+        .finalize_async(signer)
+        .await?;
+    let announcement_event = announcement.finalize_async(signer).await?;
 
-    let event = announcement.finalize_async(signer).await?;
-    let output = client.send_event(&event).broadcast().await?;
-
-    if output.success.is_empty() {
-        let reasons = output
-            .failed
-            .values()
-            .cloned()
-            .collect::<Vec<String>>()
-            .join(", ");
-        bail!("event not accepted by any relay: {reasons}");
-    }
-
-    // The state event is the push authorization.
-    let outcome = if refs.is_empty() {
-        PushOutcome::default()
-    } else {
-        let push = {
-            let client = client.clone();
-            let signer = S::clone(signer);
-            let repo_id = repo_id.to_owned();
-            let owner = owner.to_owned();
-            let servers = servers.to_vec();
-            let head = head.clone();
-            let path = path.to_path_buf();
-            cx.background_spawn(async move {
-                push_staged_to_grasps(
-                    &client,
-                    &signer,
-                    &repo_id,
-                    &refs,
-                    head.as_deref(),
-                    &path,
-                    &owner,
-                    &servers,
-                    push,
-                )
-                .await
-            })
-        };
-        push.await
-    };
-
-    if outcome.accepted() == 0 {
-        // Retract the announcement so the repository is not left announced without content.
-        let retracted = async {
-            let deletion = EventDeletionRequest::new()
-                .id(event.id)
-                .finalize_async(signer)
-                .await?;
-            let output = client.send_event(&deletion).broadcast().await?;
-
-            // Without relay acceptance the deletion request stays live.
-            if output.success.is_empty() {
-                bail!("deletion event not accepted by any relay");
-            }
-
-            Ok::<(), Error>(())
-        }
-        .await;
-
-        return Err(match retracted {
-            Ok(()) => anyhow!(
-                "The repository was announced, but the push to every grasp server failed: {}. \
-                 The announcement has been retracted",
-                outcome.failure_summary()
-            ),
-            Err(e) => anyhow!(
-                "The repository was announced, but the push to every grasp server failed: {}. \
-                 Retracting the announcement failed: {e}; delete the repository to clean it up",
-                outcome.failure_summary()
-            ),
-        });
-    }
-
-    // Fan the state out to the relays once a git server holds the objects.
-    if let Some(state_event) = &outcome.state_event
-        && let Err(e) = client.send_event(state_event).broadcast().await
+    match state
+        .announce_and_push(client, announcement_event.clone(), state_event, cx, on_step)
+        .await
     {
-        log::warn!("failed to broadcast repository state: {e}");
-    }
+        Ok(event) => Ok(event),
+        Err(e) => {
+            let retracted =
+                SyncState::retract_announcement(client, signer, announcement_event.id).await;
+            let retraction = match retracted {
+                Ok(()) => "The announcement has been retracted".to_owned(),
+                Err(error) => format!(
+                    "Retracting the announcement failed: {error}; delete the repository to clean it up"
+                ),
+            };
 
-    Ok(event)
+            bail!("{e}. {retraction}");
+        }
+    }
 }
 
 enum UpdateEvent {

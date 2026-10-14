@@ -12,12 +12,13 @@ use gpui_component::input::{Input, InputState, Textarea};
 use gpui_component::select::{Select, SelectState};
 use gpui_component::{ActiveTheme, Disableable, WindowExt};
 use settings::SettingsStore;
+use signed_core::RepoAddr;
 use signed_git::Repo;
 use signed_state::Backend;
 use signed_ui::SelectOption;
 
 use super::RepoDetailView;
-use crate::views::dialog_state::{DialogProgress, error_row};
+use crate::views::dialog_state::{DialogProgress, error_row, push_steps_row};
 use crate::views::sidebar::grasp_servers::{
     GraspServersState, grasp_servers_field, load_user_grasp_servers,
 };
@@ -120,6 +121,7 @@ pub fn open(
                             )
                             .child(grasp_servers_field(&grasp_state, &relay_input, cx)),
                     )
+                    .children(push_steps_row(&state.read(cx).push_steps, cx))
                     .children(error_row(&error, cx))
                     .child(
                         DialogFooter::new().justify_end().child(
@@ -189,9 +191,15 @@ fn init_repository(
         return;
     }
 
-    state.update(cx, |state, _| state.begin());
-
     let backend = Backend::global(cx);
+    let Some(user) = backend.read(cx).current_user() else {
+        state.update(cx, |state, _| state.fail("Sign in to publish a repository"));
+        return;
+    };
+
+    let addr = RepoAddr::new(user, RepoAddr::identifier_from_name(&name));
+    state.update(cx, |state, cx| state.begin_push(addr, cx));
+
     let task = backend.update(cx, |backend, cx| {
         backend.publish_local_repo(
             local_path.clone(),

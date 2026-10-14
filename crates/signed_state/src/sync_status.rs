@@ -5,13 +5,14 @@ use std::time::Duration;
 use anyhow::Error;
 use gpui::{App, AppContext, Context, Entity, Global, Subscription};
 use nostr_sdk::prelude::*;
-use signed_core::{Deletions, Filters, RepoAddr, RepoState};
+use signed_core::{Deletions, Filters, RepoAddr};
 use signed_git::{Repo, RepoSyncStatus};
 
 use crate::backend::{Backend, BackendEvent};
 use crate::checkouts::CheckoutsStore;
 use crate::refresh::{RefreshGate, RefreshRequest};
 use crate::repos::RepoListStore;
+use crate::state::{GitRef, SyncState};
 
 const SYNC_POLL: Duration = Duration::from_secs(180);
 const MAX_SYNC_CHECKOUTS: usize = 8;
@@ -167,7 +168,7 @@ impl SyncStatusStore {
             let deletion_events = db.query(Filters::deletions()).await?;
             let deletions = Deletions::from_events(deletion_events);
 
-            let mut states: HashMap<RepoAddr, Vec<(String, String)>> = HashMap::new();
+            let mut states: HashMap<RepoAddr, Vec<GitRef>> = HashMap::new();
             for (addr, _) in &targets {
                 let events = db.query(addr.state_filter()).await?;
                 let latest = utils::latest(
@@ -178,7 +179,7 @@ impl SyncStatusStore {
                 let Some(event) = latest else {
                     continue;
                 };
-                states.insert(addr.clone(), RepoState::parse(&event).refs);
+                states.insert(addr.clone(), SyncState::parse(&event).refs);
             }
 
             let mut statuses: HashMap<RepoAddr, Vec<CheckoutSyncStatus>> = HashMap::new();
@@ -187,10 +188,15 @@ impl SyncStatusStore {
                     continue;
                 };
 
+                let remote_refs: Vec<(String, String)> = nostr_refs
+                    .iter()
+                    .map(|git_ref| (git_ref.name.clone(), git_ref.commit.to_string()))
+                    .collect();
+
                 let mut list = Vec::new();
                 for path in paths.iter().take(MAX_SYNC_CHECKOUTS) {
                     let synced =
-                        Repo::try_open(path).and_then(|repo| repo.sync_status(nostr_refs).ok());
+                        Repo::try_open(path).and_then(|repo| repo.sync_status(&remote_refs).ok());
 
                     if let Some(status) = synced {
                         list.push(CheckoutSyncStatus {
