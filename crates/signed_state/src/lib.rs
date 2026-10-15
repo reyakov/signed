@@ -5,7 +5,6 @@ mod git_store;
 mod inbox;
 mod local_repos;
 mod patch_series;
-mod profile;
 mod push;
 mod refresh;
 mod repo;
@@ -16,14 +15,13 @@ mod sync_status;
 use std::path::{Path, PathBuf};
 
 pub use backend::{Backend, BackendEvent};
-pub use bootstrap::user_grasp_list_servers;
+pub use bootstrap::{sync_bootstrap_only, user_grasp_list_servers};
 pub use checkouts::{CheckoutStatus, CheckoutsStore};
 pub use git_store::Mirrors;
 use gpui::{App, AppContext};
 pub use inbox::Inbox;
 pub use local_repos::{LocalReposStore, ResolvedLocalRepo};
 pub use nostr_sdk::prelude::Timestamp;
-pub use profile::{Profile, ProfileStore};
 pub use push::{GraspServer, PushOutcome};
 pub use refresh::{RefreshGate, RefreshRequest};
 pub use repo::RepoStore;
@@ -51,7 +49,6 @@ pub fn init(
     Mirrors::install(repos_root);
 
     Backend::set_global(cx.new(|cx| Backend::new(client, signer, cx)), cx);
-    ProfileStore::set_global(cx.new(ProfileStore::new), cx);
     RepoListStore::set_global(cx.new(RepoListStore::new), cx);
     LocalReposStore::set_global(cx.new(|cx| LocalReposStore::new(scan_paths, cx)), cx);
     CheckoutsStore::set_global(cx.new(CheckoutsStore::new), cx);

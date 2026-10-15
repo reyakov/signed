@@ -13,9 +13,10 @@ use gpui_component::scroll::Scrollbar;
 use gpui_component::{
     ActiveTheme, Icon, IconName, VirtualListScrollHandle, h_flex, v_flex, v_virtual_list,
 };
-use nostr::prelude::{EventId, Kind};
+use metadata::ProfileDirectory;
+use nostr::prelude::{EventId, Kind, PublicKey};
 use signed_core::{GitEvent, RepoStatus};
-use signed_state::{ProfileStore, RepoStore};
+use signed_state::RepoStore;
 use signed_ui::{Avatar, DropdownButton, SegmentButton, placeholder, status_badge};
 use utils::relative_time;
 
@@ -66,6 +67,8 @@ pub struct PullRequestsView {
     // e.g. switching between two empty filters.
     synced_filter: PullRequestFilter,
     scroll_handle: VirtualListScrollHandle,
+    /// Profiles for PR authors and the repository owner.
+    directory: Entity<ProfileDirectory>,
     _subscription: Subscription,
 }
 
@@ -97,11 +100,13 @@ impl PullRequestsView {
             counts: StatusCounts::default(),
             synced_filter: PullRequestFilter::Open,
             scroll_handle: VirtualListScrollHandle::new(),
+            directory: ProfileDirectory::new(cx),
             _subscription: subscription,
         }
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
         let filter = self.filter;
 
         let (visible_prs, counts) = {
@@ -116,6 +121,25 @@ impl PullRequestsView {
                 |status| filter.matches(status),
             )
         };
+
+        let mut keys: Vec<PublicKey> = store
+            .pull_requests
+            .iter()
+            .filter(|pr| pr.kind == Kind::GitPullRequest)
+            .map(|pr| pr.pubkey)
+            .collect();
+
+        if let Some(owner) = store
+            .announcement
+            .as_ref()
+            .map(|announcement| announcement.owner)
+        {
+            keys.push(owner);
+        }
+
+        self.directory.update(cx, |directory, cx| {
+            directory.track(keys, cx);
+        });
 
         let filter_changed = self.synced_filter != filter;
 
@@ -165,7 +189,7 @@ impl PullRequestsView {
         let age = relative_time(pr.created_at);
         let status = self.store.read(cx).status_of(pr);
 
-        let profile = ProfileStore::global(cx).read(cx).get(&pr.pubkey);
+        let profile = self.directory.read(cx).profile(&pr.pubkey, cx);
         let author = profile.name();
         let picture = profile.picture();
 
@@ -339,7 +363,7 @@ impl BasePanel for PullRequestsView {
 
 impl Panel for PullRequestsView {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let avatar = repo_tab_avatar(self.store.read(cx), &self.directory, cx);
         let label = SharedString::from(format!("{}/pulls", self.repo_name));
 
         tab_title(avatar, label)

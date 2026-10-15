@@ -46,7 +46,7 @@ pub(crate) async fn subscribe_bootstrap_only(
     Ok(())
 }
 
-pub(crate) async fn sync_bootstrap_only(
+pub async fn sync_bootstrap_only(
     client: &Client,
     filter: Filter,
     opts: SyncOptions,

@@ -20,6 +20,7 @@ use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, VirtualListScrollHandle, h_flex, v_flex,
     v_virtual_list,
 };
+use metadata::ProfileDirectory;
 use nostr::prelude::*;
 use signed_core::{Announcement, RepoAddr};
 use signed_git::{GitCache, Repo};
@@ -65,6 +66,8 @@ pub struct NewPullRequestView {
     scroll_handle: VirtualListScrollHandle,
     item_sizes: Rc<Vec<Size<Pixels>>>,
     tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
+    /// Profile for the repository owner in the tab title.
+    directory: Entity<ProfileDirectory>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -222,6 +225,7 @@ impl NewPullRequestView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let directory = ProfileDirectory::new(cx);
         let repo_name = store.read(cx).name();
         let pane = cx.new(DiffPane::new);
         let subject = cx.new(|cx| InputState::new(window, cx).placeholder("Title"));
@@ -270,6 +274,12 @@ impl NewPullRequestView {
             ),
         ];
 
+        if let Some(owner) = store.read(cx).announcement.as_ref().map(|a| a.owner) {
+            directory.update(cx, |directory, cx| {
+                directory.track([owner], cx);
+            });
+        }
+
         cx.defer_in(window, |this, window, cx| {
             let Some(addr) = this.store.read(cx).addr().cloned() else {
                 return;
@@ -312,6 +322,7 @@ impl NewPullRequestView {
             scroll_handle: VirtualListScrollHandle::new(),
             item_sizes: Rc::new(Vec::new()),
             tasks: Vec::new(),
+            directory,
             _subscriptions: subscriptions,
         }
     }
@@ -1313,7 +1324,7 @@ impl BasePanel for NewPullRequestView {
 
 impl Panel for NewPullRequestView {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let avatar = repo_tab_avatar(self.store.read(cx), &self.directory, cx);
         let label = SharedString::from(format!("{}/new-pull-request", self.repo_name));
 
         tab_title(avatar, label)

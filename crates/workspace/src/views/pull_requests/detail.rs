@@ -20,10 +20,11 @@ use gpui_component::{
     ActiveTheme, Sizable, StyledExt, VirtualListScrollHandle, WindowExt, h_flex, v_flex,
     v_virtual_list,
 };
-use nostr::prelude::{Event, EventId, Kind, Url};
+use metadata::ProfileDirectory;
+use nostr::prelude::{Event, EventId, Kind, PublicKey, Url};
 use signed_core::{GitEvent, PullRequest, RepoAddr};
 use signed_git::{FileCommit, PatchParser};
-use signed_state::{Backend, Mirrors, ProfileStore, RepoStore};
+use signed_state::{Backend, Mirrors, RepoStore};
 use signed_ui::{Avatar, CountBadge, placeholder, status_badge};
 use utils::{relative_time, relative_time_secs};
 
@@ -77,6 +78,8 @@ pub struct PullRequestDetailView {
     commit_item_sizes: Rc<Vec<Size<Pixels>>>,
     commit_scroll_handle: VirtualListScrollHandle,
     tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
+    /// Profiles for the author, commenters and the repository owner.
+    directory: Entity<ProfileDirectory>,
     _subscription: Subscription,
 }
 
@@ -121,16 +124,37 @@ impl PullRequestDetailView {
             commit_item_sizes: Rc::new(Vec::new()),
             commit_scroll_handle: VirtualListScrollHandle::new(),
             tasks: Vec::new(),
+            directory: ProfileDirectory::new(cx),
             _subscription: subscription,
         }
     }
 
+    /// Track the PR author, everyone who commented and the repository owner.
+    fn track_participants(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+
+        let mut keys: Vec<PublicKey> = store
+            .pull_requests
+            .iter()
+            .find(|pr| pr.id == self.pr_id && pr.kind == Kind::GitPullRequest)
+            .map(|root| vec![root.pubkey])
+            .unwrap_or_default();
+
+        keys.extend(store.comments_of(&self.pr_id).map(|comment| comment.pubkey));
+
+        if let Some(owner) = store.announcement.as_ref().map(|a| a.owner) {
+            keys.push(owner);
+        }
+
+        self.directory.update(cx, |directory, cx| {
+            directory.track(keys, cx);
+        });
+    }
+
     /// Snapshot the root PR from the store and reload the diff when it changed.
-    ///
-    /// Re-runs on construction and on every store refresh. Item panels are
-    /// cached by the dock, so this is the only way a panel opened before the
-    /// store's first pass learns about its PR.
     fn sync(&mut self, cx: &mut Context<Self>) {
+        self.track_participants(cx);
+
         let loaded = self.store.read(cx).loaded;
 
         let binding = {
@@ -416,7 +440,7 @@ impl PullRequestDetailView {
             else {
                 return placeholder("Pull request not found", cx);
             };
-            let profile = ProfileStore::global(cx).read(cx).get(&root.pubkey);
+            let profile = self.directory.read(cx).profile(&root.pubkey, cx);
             (
                 profile.name(),
                 profile.picture(),
@@ -469,7 +493,7 @@ impl PullRequestDetailView {
                                         this.child(div().text_sm().child(self.description.clone()))
                                     }),
                             )
-                            .child(comments_section(&self.store, root_id, cx))
+                            .child(comments_section(&self.store, root_id, &self.directory, cx))
                             .child(comment_form(
                                 &self.store,
                                 root_id,
@@ -480,7 +504,14 @@ impl PullRequestDetailView {
                             )),
                     ),
             )
-            .child(sidebar_section(&self.store, root_id, pr_roots, true, cx))
+            .child(sidebar_section(
+                &self.store,
+                root_id,
+                pr_roots,
+                true,
+                &self.directory,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -791,7 +822,7 @@ impl BasePanel for PullRequestDetailView {
 
 impl Panel for PullRequestDetailView {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let avatar = repo_tab_avatar(self.store.read(cx), &self.directory, cx);
         let hex = self.pr_id.to_hex();
         let id = SharedString::from(&hex[..8]);
         let label = if self.repo_name.is_empty() {

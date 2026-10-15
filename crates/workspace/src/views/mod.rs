@@ -15,15 +15,16 @@ pub(crate) mod tree;
 use std::fmt::Display;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, App, div};
+use gpui::{AnyElement, App, Entity, div};
 use gpui_component::{Sizable as _, h_flex};
 pub use inbox::InboxView;
+use metadata::ProfileDirectory;
 pub(crate) use placeholder_panel::PlaceholderPanel;
 pub use repo::RepoDetailView;
 pub(crate) use repo::{RepoItem, open_repo_item, open_repo_panel};
 pub use repo_list::RepoListView;
 pub use sidebar::SidebarPanel;
-use signed_state::{ProfileStore, RepoStore};
+use signed_state::RepoStore;
 use signed_ui::Avatar;
 
 pub(crate) fn tab_title(avatar: AnyElement, label: impl IntoElement) -> impl IntoElement {
@@ -38,7 +39,11 @@ pub(crate) fn panel_avatar(seed: impl Display) -> AnyElement {
     Avatar::new(seed).xsmall().into_any_element()
 }
 
-pub(crate) fn repo_tab_avatar(store: &RepoStore, cx: &App) -> AnyElement {
+pub(crate) fn repo_tab_avatar(
+    store: &RepoStore,
+    directory: &Entity<ProfileDirectory>,
+    cx: &App,
+) -> AnyElement {
     let seed = store
         .announcement
         .as_ref()
@@ -55,7 +60,7 @@ pub(crate) fn repo_tab_avatar(store: &RepoStore, cx: &App) -> AnyElement {
     let owner = store
         .announcement
         .as_ref()
-        .map(|announcement| ProfileStore::global(cx).read(cx).get(&announcement.owner));
+        .map(|announcement| directory.read(cx).profile(&announcement.owner, cx));
 
     let (name, picture) = owner
         .map(|profile| (Some(profile.name()), profile.picture()))

@@ -1,14 +1,19 @@
 use gpui::prelude::*;
-use gpui::{AnyElement, App, SharedString, Window, div, px};
+use gpui::{AnyElement, App, Entity, SharedString, Window, div, px};
 use gpui_component::clipboard::Clipboard;
 use gpui_component::{ActiveTheme, StyledExt, WindowExt, h_flex, v_flex};
+use metadata::ProfileDirectory;
 use nostr::prelude::PublicKey;
 use signed_core::Announcement;
-use signed_state::ProfileStore;
 use signed_ui::Avatar;
 use utils::middle_truncate;
 
-pub(super) fn open_about_dialog(announcement: Announcement, window: &mut Window, cx: &mut App) {
+pub(super) fn open_about_dialog(
+    announcement: Announcement,
+    directory: Entity<ProfileDirectory>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     window.open_dialog(cx, move |dialog, _window, cx| {
         let announcement = announcement.clone();
         dialog
@@ -17,11 +22,15 @@ pub(super) fn open_about_dialog(announcement: Announcement, window: &mut Window,
             .keyboard(true)
             .close_button(true)
             .title("About")
-            .child(announcement_rows(&announcement, cx))
+            .child(announcement_rows(&announcement, &directory, cx))
     });
 }
 
-fn announcement_rows(announcement: &Announcement, cx: &App) -> AnyElement {
+fn announcement_rows(
+    announcement: &Announcement,
+    directory: &Entity<ProfileDirectory>,
+    cx: &App,
+) -> AnyElement {
     let mut rows: Vec<AnyElement> = Vec::new();
 
     rows.push(row(
@@ -107,7 +116,7 @@ fn announcement_rows(announcement: &Announcement, cx: &App) -> AnyElement {
     if !announcement.maintainers.is_empty() {
         rows.push(row(
             "Maintainers",
-            maintainers(&announcement.maintainers, cx),
+            maintainers(&announcement.maintainers, directory, cx),
             cx,
         ));
     }
@@ -160,13 +169,16 @@ fn copy_value(id: &'static str, value: String, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-fn maintainers(maintainers: &[PublicKey], cx: &App) -> AnyElement {
-    let profile_store = ProfileStore::global(cx);
+fn maintainers(
+    maintainers: &[PublicKey],
+    directory: &Entity<ProfileDirectory>,
+    cx: &App,
+) -> AnyElement {
     v_flex()
         .gap_2()
         .min_w_0()
         .children(maintainers.iter().map(|pubkey| {
-            let profile = profile_store.read(cx).get(pubkey);
+            let profile = directory.read(cx).profile(pubkey, cx);
             let name = profile.name();
             let picture = profile.picture();
 

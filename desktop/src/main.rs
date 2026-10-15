@@ -82,6 +82,7 @@ fn main() {
                 settings.local_repos.scan_paths,
                 cx,
             );
+            metadata::init(cx);
 
             cx.set_app_identity("info.reya.signed", "Signed");
 

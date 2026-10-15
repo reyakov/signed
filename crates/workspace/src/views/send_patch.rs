@@ -9,6 +9,7 @@ use gpui_component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::spinner::Spinner;
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, h_flex, v_flex};
+use metadata::ProfileDirectory;
 use signed_state::RepoStore;
 
 use crate::views::{repo_tab_avatar, tab_title};
@@ -24,6 +25,8 @@ pub struct SendPatchView {
     submitting: bool,
     /// Error of the last submit attempt, it keeps the panel open.
     error: Option<SharedString>,
+    /// Profile for the repository owner in the tab title.
+    directory: Entity<ProfileDirectory>,
 }
 
 impl SendPatchView {
@@ -34,11 +37,17 @@ impl SendPatchView {
         cx: &mut Context<Self>,
     ) -> Self {
         let repo_name = store.read(cx).name();
+        let directory = ProfileDirectory::new(cx);
+
+        if let Some(owner) = store.read(cx).announcement.as_ref().map(|a| a.owner) {
+            directory.update(cx, |directory, cx| {
+                directory.track([owner], cx);
+            });
+        }
+
         let subject = cx.new(|cx| InputState::new(window, cx).placeholder("Title"));
-
-        let description = cx
-            .new(|cx| TextareaState::new(window, cx).placeholder("Describe the change (optional)"));
-
+        let description =
+            cx.new(|cx| TextareaState::new(window, cx).placeholder("Describe the change"));
         let patch = cx.new(|cx| {
             TextareaState::new(window, cx).placeholder("diff --git a/file.txt b/file.txt\nindex 1234567..abcdefg 100644\n--- a/file.txt\n+++ b/file.txt")
         });
@@ -53,6 +62,7 @@ impl SendPatchView {
             patch,
             submitting: false,
             error: None,
+            directory,
         }
     }
 
@@ -208,7 +218,7 @@ impl BasePanel for SendPatchView {
 
 impl Panel for SendPatchView {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let avatar = repo_tab_avatar(self.store.read(cx), &self.directory, cx);
         let label = SharedString::from(format!("{}/send-patch", self.repo_name));
 
         tab_title(avatar, label)

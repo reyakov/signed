@@ -5,8 +5,9 @@ use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::input::{Textarea, TextareaState};
 use gpui_component::tag::Tag;
 use gpui_component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, v_flex};
+use metadata::ProfileDirectory;
 use nostr::prelude::{Event, EventId, PublicKey};
-use signed_state::{ProfileStore, RepoStore};
+use signed_state::RepoStore;
 use signed_ui::Avatar;
 use utils::relative_time;
 
@@ -32,6 +33,7 @@ pub(crate) fn sidebar_section(
     id: EventId,
     roots: fn(&RepoStore) -> &[Event],
     top_gap: bool,
+    directory: &Entity<ProfileDirectory>,
     cx: &App,
 ) -> AnyElement {
     let store = store.read(cx);
@@ -39,7 +41,6 @@ pub(crate) fn sidebar_section(
         // The caller bails out when the root is missing.
         return div().into_any_element();
     };
-    let profile_store = ProfileStore::global(cx);
 
     // Participants, the root author plus everyone who commented.
     let mut participants: Vec<PublicKey> = vec![root.pubkey];
@@ -64,7 +65,7 @@ pub(crate) fn sidebar_section(
                 .gap_2()
                 .child(sidebar_title("Participants", cx))
                 .children(participants.iter().map(|pubkey| {
-                    let profile = profile_store.read(cx).get(pubkey);
+                    let profile = directory.read(cx).profile(pubkey, cx);
                     let name = profile.name();
                     let picture = profile.picture();
 
@@ -109,7 +110,12 @@ pub(crate) fn sidebar_section(
         .into_any_element()
 }
 
-pub(crate) fn comments_section(store: &Entity<RepoStore>, root: EventId, cx: &App) -> AnyElement {
+pub(crate) fn comments_section(
+    store: &Entity<RepoStore>,
+    root: EventId,
+    directory: &Entity<ProfileDirectory>,
+    cx: &App,
+) -> AnyElement {
     let store = store.read(cx);
     let comments: Vec<&Event> = store.comments_of(&root).collect();
     let title = SharedString::from(format!("Discussions {}", comments.len()));
@@ -118,7 +124,7 @@ pub(crate) fn comments_section(store: &Entity<RepoStore>, root: EventId, cx: &Ap
         .gap_4()
         .child(div().text_xs().font_semibold().child(title))
         .children(comments.iter().map(|comment| {
-            let profile = ProfileStore::global(cx).read(cx).get(&comment.pubkey);
+            let profile = directory.read(cx).profile(&comment.pubkey, cx);
             let author = profile.name();
             let picture = profile.picture();
             let age = relative_time(comment.created_at);

@@ -5458,6 +5458,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "metadata"
+version = "0.2.0-alpha"
+dependencies = [
+ "anyhow",
+ "flume 0.11.1",
+ "futures",
+ "gpui-pre",
+ "log",
+ "nostr-sdk",
+ "signed_state",
+ "utils",
+]
+
+[[package]]
 name = "metal"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8116,6 +8130,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "gpui-pre-reqwest-client",
+ "metadata",
  "paths",
  "settings",
  "signed_state",
@@ -11031,6 +11046,7 @@ dependencies = [
  "gpui-component",
  "gpui-pre",
  "log",
+ "metadata",
  "nostr",
  "paths",
  "settings",

@@ -7,9 +7,10 @@ use gpui::{
 use gpui_component::input::TextareaState;
 use gpui_component::scroll::ScrollableElement;
 use gpui_component::{ActiveTheme, StyledExt, h_flex, v_flex};
-use nostr::prelude::EventId;
+use metadata::ProfileDirectory;
+use nostr::prelude::{EventId, PublicKey};
 use signed_core::GitEvent;
-use signed_state::{ProfileStore, RepoStore};
+use signed_state::RepoStore;
 use signed_ui::{Avatar, placeholder, status_badge};
 use utils::relative_time;
 
@@ -21,6 +22,8 @@ pub struct IssueDetailView {
     store: Entity<RepoStore>,
     issue_id: EventId,
     comment_input: Entity<TextareaState>,
+    /// Profiles for the author, commenters and the repository owner.
+    directory: Entity<ProfileDirectory>,
     _subscription: Subscription,
 }
 
@@ -34,15 +37,47 @@ impl IssueDetailView {
         let comment_input =
             cx.new(|cx| TextareaState::new(window, cx).placeholder("Leave a comment..."));
 
-        let subscription = cx.observe(&store, |_this, _store, cx| cx.notify());
+        let subscription = cx.observe(&store, |this, _store, cx| {
+            this.track_participants(cx);
+            cx.notify();
+        });
+
+        let directory = ProfileDirectory::new(cx);
 
         Self {
             focus_handle: cx.focus_handle(),
             store,
             issue_id,
             comment_input,
+            directory,
             _subscription: subscription,
         }
+    }
+
+    /// Track the issue author, everyone who commented and the repository owner.
+    fn track_participants(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+        let mut keys: Vec<PublicKey> = store
+            .issues
+            .iter()
+            .find(|issue| issue.id == self.issue_id)
+            .map(|issue| issue.pubkey)
+            .into_iter()
+            .collect();
+
+        keys.extend(
+            store
+                .comments_of(&self.issue_id)
+                .map(|comment| comment.pubkey),
+        );
+
+        if let Some(owner) = store.announcement.as_ref().map(|a| a.owner) {
+            keys.push(owner);
+        }
+
+        self.directory.update(cx, |directory, cx| {
+            directory.track(keys, cx);
+        });
     }
 }
 
@@ -66,7 +101,7 @@ impl Panel for IssueDetailView {
             })
             .unwrap_or_else(|| SharedString::from("Issue"));
 
-        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let avatar = repo_tab_avatar(self.store.read(cx), &self.directory, cx);
 
         tab_title(avatar, short_id)
     }
@@ -94,8 +129,7 @@ impl Render for IssueDetailView {
         };
 
         let (title, author, picture, status, age, issue_id, content, pubkey) = {
-            let profile_store = ProfileStore::global(cx);
-            let profile = profile_store.read(cx).get(&issue.pubkey);
+            let profile = self.directory.read(cx).profile(&issue.pubkey, cx);
             let content = if issue.content.is_empty() {
                 SharedString::from("No description provided.")
             } else {
@@ -154,7 +188,11 @@ impl Render for IssueDetailView {
                                             .child(
                                                 h_flex()
                                                     .gap_1()
-                                                    .child(Avatar::new(pubkey).name(author.clone()).picture(picture))
+                                                    .child(
+                                                        Avatar::new(pubkey)
+                                                            .name(author.clone())
+                                                            .picture(picture),
+                                                    )
                                                     .child(author),
                                             )
                                             .child(
@@ -170,7 +208,7 @@ impl Render for IssueDetailView {
                                     )
                                     .child(div().text_sm().child(content)),
                             )
-                            .child(comments_section(&self.store, issue_id, cx))
+                            .child(comments_section(&self.store, issue_id, &self.directory, cx))
                             .child(comment_form(
                                 &self.store,
                                 issue_id,
@@ -186,6 +224,7 @@ impl Render for IssueDetailView {
                 issue_id,
                 issue_roots,
                 false,
+                &self.directory,
                 cx,
             ))
             .into_any_element()

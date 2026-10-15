@@ -14,8 +14,10 @@ use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, StyledExt, VirtualListScrollHandle, h_flex, v_flex,
     v_virtual_list,
 };
+use metadata::ProfileDirectory;
+use nostr::prelude::PublicKey;
 use signed_core::Announcement;
-use signed_state::{ProfileStore, RepoListStore, Timestamp};
+use signed_state::{RepoListStore, Timestamp};
 use signed_ui::{Avatar, SegmentButton};
 use utils::relative_time;
 
@@ -107,6 +109,8 @@ pub struct RepoListView {
     /// Indices matching [`Self::filter`] into the store's `announcements`.
     visible: Vec<usize>,
     search: Entity<InputState>,
+    /// Profiles for the card owners.
+    directory: Entity<ProfileDirectory>,
     _search_subscription: Subscription,
     _subscription: Subscription,
 }
@@ -118,6 +122,7 @@ impl RepoListView {
         cx: &mut Context<Self>,
     ) -> Self {
         let store = RepoListStore::global(cx);
+        let directory = ProfileDirectory::new(cx);
 
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search..."));
         let search_subscription = cx.subscribe(&search, |this, _search, event, cx| {
@@ -126,8 +131,7 @@ impl RepoListView {
             }
         });
 
-        // Keep the visible slice and row sizes in sync with the store.
-        // Newly announced repositories appear without waiting for a click.
+        // Rebuild the rows when the store changes.
         let subscription = cx.observe(&store, |this, _store, cx| {
             this.rebuild_rows(cx);
         });
@@ -146,6 +150,7 @@ impl RepoListView {
             repo_len: 0,
             visible: Vec::new(),
             search,
+            directory,
             _search_subscription: search_subscription,
             _subscription: subscription,
         }
@@ -157,6 +162,17 @@ impl RepoListView {
         let store = self.store.read(cx);
 
         self.visible = filter.visible(store, &query);
+
+        let owners: Vec<PublicKey> = self
+            .visible
+            .iter()
+            .filter_map(|ix| store.announcements.get(*ix))
+            .map(|announcement| announcement.owner)
+            .collect();
+
+        self.directory.update(cx, |directory, cx| {
+            directory.track(owners, cx);
+        });
 
         // Each virtual list row holds `COLUMNS` repo cards.
         let rows = self.visible.len().div_ceil(COLUMNS);
@@ -176,8 +192,7 @@ impl RepoListView {
         last_activity: Option<Timestamp>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let profile_store = ProfileStore::global(cx);
-        let owner = profile_store.read(cx).get(&announcement.owner);
+        let owner = self.directory.read(cx).profile(&announcement.owner, cx);
 
         let name = announcement
             .name

@@ -20,11 +20,12 @@ use gpui_component::dialog::DialogButtonProps;
 use gpui_component::input::InputState;
 use gpui_component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_component::{ActiveTheme, Icon, IconName, Sizable, StyledExt, WindowExt, h_flex, v_flex};
-use nostr::prelude::RelayUrl;
+use metadata::{Profile, ProfileDirectory};
+use nostr::prelude::{PublicKey, RelayUrl};
 use signed_core::{Announcement, RepoAddr};
 use signed_state::{
-    Backend, BackendEvent, CheckoutsStore, LocalReposStore, Nip34Binding, Nip34Kind, Profile,
-    ProfileStore, RepoListStore, ResolvedLocalRepo, SyncStatusStore,
+    Backend, BackendEvent, CheckoutsStore, LocalReposStore, Nip34Binding, Nip34Kind, RepoListStore,
+    ResolvedLocalRepo, SyncStatusStore,
 };
 use signed_ui::{Avatar, NavItem, title_bar_drag_handlers};
 
@@ -69,6 +70,8 @@ pub struct SidebarPanel {
     unpushed: HashMap<RepoAddr, usize>,
     /// Commits not on Nostr per announced repository.
     unsynced: HashMap<RepoAddr, usize>,
+    /// Profiles rendered by the sidebar.
+    directory: Entity<ProfileDirectory>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -135,6 +138,7 @@ impl SidebarPanel {
             scanning: false,
             unpushed: HashMap::new(),
             unsynced: HashMap::new(),
+            directory: ProfileDirectory::new(cx),
             _subscriptions: subscriptions,
         }
     }
@@ -165,6 +169,25 @@ impl SidebarPanel {
         self.announcements = Arc::new(announcements);
         self.local_repos = Arc::new(local_repos);
         self.scanning = scanning;
+
+        let mut profiles: Vec<PublicKey> = user.into_iter().collect();
+        let owners: Vec<PublicKey> = self
+            .local_repos
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .nip34
+                    .as_ref()
+                    .and_then(|binding| binding.owner)
+                    .filter(|owner| !profiles.contains(owner))
+            })
+            .collect();
+
+        profiles.extend(owners);
+
+        self.directory.update(cx, |directory, cx| {
+            directory.track(profiles, cx);
+        });
 
         if announcements_changed {
             self.request_push_watches(cx);
@@ -568,7 +591,7 @@ impl SidebarPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let name = entry.name();
-        let avatar = local_avatar(entry, cx);
+        let avatar = local_avatar(entry, &self.directory, cx);
 
         let id = format!("local-repo:{}", entry.path.display());
         let entry = entry.clone();
@@ -769,7 +792,11 @@ pub(super) fn server_host(relay: &RelayUrl) -> SharedString {
 }
 
 /// The repository's pixel avatar, with the bound owner's avatar at its bottom right.
-fn local_avatar(entry: &ResolvedLocalRepo, cx: &App) -> AnyElement {
+fn local_avatar(
+    entry: &ResolvedLocalRepo,
+    directory: &Entity<ProfileDirectory>,
+    cx: &App,
+) -> AnyElement {
     // Matches the other sidebar rows, and the badge below sits at its corner.
     let avatar = Avatar::new(entry.path.to_string_lossy()).xsmall();
 
@@ -777,8 +804,7 @@ fn local_avatar(entry: &ResolvedLocalRepo, cx: &App) -> AnyElement {
         return avatar.into_any_element();
     };
 
-    let store = ProfileStore::global(cx);
-    let profile = store.read(cx).get(&owner);
+    let profile = directory.read(cx).profile(&owner, cx);
 
     div()
         .relative()
@@ -831,12 +857,11 @@ impl Focusable for SidebarPanel {
 impl Render for SidebarPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let backend = Backend::global(cx);
-        let profile_store = ProfileStore::global(cx);
 
         let profile = backend
             .read(cx)
             .current_user()
-            .map(|public_key| profile_store.read(cx).get(&public_key));
+            .map(|public_key| self.directory.read(cx).profile(&public_key, cx));
 
         if profile.is_none() {
             return self.render_sign_in(window, cx);

@@ -20,14 +20,14 @@ use gpui_component::spinner::Spinner;
 use gpui_component::{
     ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, ThemeStyled, h_flex, v_flex,
 };
+use metadata::ProfileDirectory;
 use nostr::nips::nip19::Nip19Coordinate;
-use nostr::prelude::{RelayUrl, ToBech32, Url};
+use nostr::prelude::{PublicKey, RelayUrl, ToBech32, Url};
 use signed_core::{Announcement, RepoAddr, RepoStatus};
 use signed_git::{FileCommit, GitCache, RefSync, Repo};
 use signed_state::{
     Backend, CheckoutStatus, CheckoutSyncStatus, CheckoutsStore, LocalReposStore, Mirrors,
-    Nip34Binding, Nip34Kind, ProfileStore, PushStepStatus, RepoListStore, RepoStore,
-    SyncStatusStore,
+    Nip34Binding, Nip34Kind, PushStepStatus, RepoListStore, RepoStore, SyncStatusStore,
 };
 use signed_ui::{
     Avatar, CountBadge, DropdownButton, copy_row, menu_copy_row, ref_selector_trigger,
@@ -94,6 +94,8 @@ pub struct RepoDetailView {
     refs: RefSwitcher,
     banners: Banners,
     tasks: Vec<Task<Result<(), Error>>>,
+    /// Profiles rendered by the header, maintainers and tab title.
+    directory: Entity<ProfileDirectory>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -216,6 +218,7 @@ impl RepoDetailView {
             tasks: Vec::new(),
             banners: Banners::default(),
             focus_handle: cx.focus_handle(),
+            directory: ProfileDirectory::new(cx),
             _subscriptions: subscriptions,
         };
 
@@ -251,12 +254,42 @@ impl RepoDetailView {
         self._subscriptions
             .push(cx.observe_in(store, window, |this, store, window, cx| {
                 this.refresh_ready_statuses(cx);
+                this.track_profiles(cx);
                 if !this.repo_started && store.read(cx).announcement.is_some() {
                     this.load_repo(window, cx);
                 }
                 cx.notify();
             }));
         self.refresh_ready_statuses(cx);
+    }
+
+    /// Track the repository owner, maintainers and the local binding owner.
+    fn track_profiles(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+
+        let mut keys: Vec<PublicKey> = store
+            .announcement
+            .as_ref()
+            .map(|announcement| {
+                let mut keys = vec![announcement.owner];
+                keys.extend(
+                    announcement
+                        .maintainers
+                        .iter()
+                        .copied()
+                        .filter(|key| *key != announcement.owner),
+                );
+                keys
+            })
+            .unwrap_or_default();
+
+        if let Some(owner) = store.nip34.as_ref().and_then(|binding| binding.owner) {
+            keys.push(owner);
+        }
+
+        self.directory.update(cx, |directory, cx| {
+            directory.track(keys, cx);
+        });
     }
 
     fn refresh_ready_statuses(&mut self, cx: &mut Context<Self>) {
@@ -315,6 +348,7 @@ impl RepoDetailView {
     pub(super) fn load_repo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
+        self.track_profiles(cx);
         cx.notify();
 
         let (announcement, local_path) = {
@@ -878,9 +912,10 @@ impl RepoDetailView {
             return div().into_any_element();
         };
 
-        let nip05 = ProfileStore::global(cx)
+        let nip05 = self
+            .directory
             .read(cx)
-            .get(&source.owner)
+            .profile(&source.owner, cx)
             .metadata()
             .nip05
             .clone()
@@ -917,7 +952,12 @@ impl RepoDetailView {
                     }
                     RepoAction::About => {
                         if let Some(announcement) = this.announcement(cx) {
-                            open_about_dialog(announcement.clone(), window, cx);
+                            open_about_dialog(
+                                announcement.clone(),
+                                this.directory.clone(),
+                                window,
+                                cx,
+                            );
                         }
                     }
                     RepoAction::Push => this.push_repository(window, cx),
@@ -1261,7 +1301,7 @@ impl RepoDetailView {
             .as_ref()
             .filter(|binding| binding.kind == Nip34Kind::Initialized)
         {
-            Some(binding) => bound_repo_label(binding, cx),
+            Some(binding) => bound_repo_label(binding, &self.directory, cx),
             None => Button::new("init")
                 .icon(CustomIconName::Init)
                 .label("Initialize on Nostr")
@@ -1457,7 +1497,6 @@ impl RepoDetailView {
         let Some(announcement) = self.announcement(cx) else {
             return div().into_any_element();
         };
-        let profile_store = ProfileStore::global(cx);
 
         let mut seen = HashSet::new();
         let rest: Vec<_> = announcement
@@ -1467,7 +1506,7 @@ impl RepoDetailView {
             .filter(|key| key != &announcement.owner && seen.insert(*key))
             .collect();
 
-        let owner = profile_store.read(cx).get(&announcement.owner);
+        let owner = self.directory.read(cx).profile(&announcement.owner, cx);
         let owner_name = owner.name();
         let owner_picture = owner.picture();
 
@@ -1481,9 +1520,11 @@ impl RepoDetailView {
                         .child(
                             h_flex()
                                 .gap_1()
-                                .child(Avatar::new(announcement.owner)
-                                    .name(owner_name.clone())
-                                    .picture(owner_picture))
+                                .child(
+                                    Avatar::new(announcement.owner)
+                                        .name(owner_name.clone())
+                                        .picture(owner_picture),
+                                )
                                 .child(div().text_xs().whitespace_nowrap().child(owner_name)),
                         )
                         .when(!rest.is_empty(), |this| {
@@ -2171,9 +2212,12 @@ pub(super) fn repo_display_name(store: &RepoStore) -> SharedString {
 }
 
 /// The owner and identifier a local repository is already bound to.
-fn bound_repo_label(binding: &Nip34Binding, cx: &App) -> AnyElement {
-    let store = ProfileStore::global(cx);
-    let profile = binding.owner.map(|pk| store.read(cx).get(&pk));
+fn bound_repo_label(
+    binding: &Nip34Binding,
+    directory: &Entity<ProfileDirectory>,
+    cx: &App,
+) -> AnyElement {
+    let profile = binding.owner.map(|pk| directory.read(cx).profile(&pk, cx));
 
     h_flex()
         .flex_shrink_0()
@@ -2216,7 +2260,7 @@ impl Panel for RepoDetailView {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let store = self.store.read(cx);
         let name = repo_display_name(store);
-        let avatar = repo_tab_avatar(store, cx);
+        let avatar = repo_tab_avatar(store, &self.directory, cx);
 
         tab_title(avatar, name)
     }

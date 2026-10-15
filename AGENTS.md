@@ -129,6 +129,12 @@ Action handlers can be registered on an element via the event handler `.on_actio
 
 When a view's state has changed in a way that may affect its rendering, it should call `cx.notify()`. This will cause the view to be rerendered. It will also cause any observe callbacks registered for the entity with `cx.observe` to be called.
 
+GPUI also tracks the entities a window reads while rendering. When an entity notifies, every view that read that entity during the previous frame is rerendered automatically.
+
+* A view that reads an entity in render (e.g. `state.read(cx).profile(...)`) does not need `cx.observe(&entity, ...)` to pick up its changes - the read itself is the dependency. Reserve `cx.observe` and `cx.subscribe` for when the view must run logic in response to a change (rebuild derived state, re-query, dedupe), not to trigger a re-render.
+* Notify the narrowest entity holding the change. Notifying a global store rerenders every view that ever read it; notifying a per-panel entity rerenders only the panels reading it.
+* This works with cached panels (`panel.cached(...)`): a cached subtree repaints when the view it belongs to is invalidated.
+
 ## Entity events
 
 While updating an entity (`cx: Context<T>`), it can emit an event using `cx.emit(event)`. Entities register which events they can emit by declaring `impl EventEmitter<EventType> for EntityType {}`.

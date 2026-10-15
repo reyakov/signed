@@ -17,6 +17,7 @@ use gpui_component::tree::{TreeEntry, TreeItem, TreeState, tree};
 use gpui_component::{
     ActiveTheme, Sizable, StyledExt, VirtualListScrollHandle, h_flex, v_flex, v_virtual_list,
 };
+use metadata::ProfileDirectory;
 use signed_git::{
     CommitDiff, DiffHunk, DiffLine, DiffLineKind, DiffStatus, FileCommit, FileDiff, Repo,
 };
@@ -305,6 +306,8 @@ pub struct CommitDiffView {
     loading: bool,
     error: Option<SharedString>,
     pane: Entity<DiffPane>,
+    /// Profile for the repository owner in the tab title.
+    directory: Entity<ProfileDirectory>,
     tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
 }
 
@@ -318,6 +321,13 @@ impl CommitDiffView {
         cx: &mut Context<Self>,
     ) -> Self {
         let pane = cx.new(DiffPane::new);
+        let directory = ProfileDirectory::new(cx);
+
+        if let Some(owner) = store.read(cx).announcement.as_ref().map(|a| a.owner) {
+            directory.update(cx, |directory, cx| {
+                directory.track([owner], cx);
+            });
+        }
 
         // Defer until the window is ready, like the repository detail view.
         cx.defer_in(window, |this, window, cx| {
@@ -339,6 +349,7 @@ impl CommitDiffView {
             loading: true,
             error: None,
             pane,
+            directory,
             tasks: Vec::new(),
         }
     }
@@ -475,7 +486,7 @@ impl BasePanel for CommitDiffView {
 
 impl Panel for CommitDiffView {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let avatar = repo_tab_avatar(self.store.read(cx), &self.directory, cx);
         let label = SharedString::from(format!("{}/{}", self.repo_name, self.commit.id));
 
         tab_title(avatar, label)

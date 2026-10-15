@@ -15,9 +15,10 @@ use gpui_component::scroll::Scrollbar;
 use gpui_component::{
     ActiveTheme, Icon, VirtualListScrollHandle, WindowExt, h_flex, v_flex, v_virtual_list,
 };
-use nostr::prelude::EventId;
+use metadata::ProfileDirectory;
+use nostr::prelude::{EventId, PublicKey};
 use signed_core::{GitEvent, RepoStatus};
-use signed_state::{ProfileStore, RepoStore};
+use signed_state::RepoStore;
 use signed_ui::{Avatar, SegmentButton, placeholder, status_badge};
 use utils::relative_time;
 
@@ -59,6 +60,8 @@ pub struct IssuesView {
     // e.g. switching between two empty filters.
     synced_filter: IssueFilter,
     scroll_handle: VirtualListScrollHandle,
+    /// Profiles for issue authors and the repository owner.
+    directory: Entity<ProfileDirectory>,
     _subscription: Subscription,
 }
 
@@ -90,6 +93,7 @@ impl IssuesView {
             counts: StatusCounts::default(),
             synced_filter: IssueFilter::Open,
             scroll_handle: VirtualListScrollHandle::new(),
+            directory: ProfileDirectory::new(cx),
             _subscription: subscription,
         }
     }
@@ -105,6 +109,21 @@ impl IssuesView {
                 |status| filter.matches(status),
             )
         };
+
+        let store = self.store.read(cx);
+        let mut keys: Vec<PublicKey> = store.issues.iter().map(|issue| issue.pubkey).collect();
+
+        if let Some(owner) = store
+            .announcement
+            .as_ref()
+            .map(|announcement| announcement.owner)
+        {
+            keys.push(owner);
+        }
+
+        self.directory.update(cx, |directory, cx| {
+            directory.track(keys, cx);
+        });
 
         let filter_changed = self.synced_filter != filter;
         let visible_issues_changed = self.visible_issues != visible_issues;
@@ -148,7 +167,7 @@ impl IssuesView {
         let issue = &self.store.read(cx).issues[issue_ix];
         let title = issue.activity_subject();
         let id_hex = issue.id.to_hex();
-        let profile = ProfileStore::global(cx).read(cx).get(&issue.pubkey);
+        let profile = self.directory.read(cx).profile(&issue.pubkey, cx);
         let author = profile.name();
         let picture = profile.picture();
         let age = relative_time(issue.created_at);
@@ -339,7 +358,7 @@ impl BasePanel for IssuesView {
 
 impl Panel for IssuesView {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let avatar = repo_tab_avatar(self.store.read(cx), cx);
+        let avatar = repo_tab_avatar(self.store.read(cx), &self.directory, cx);
         let label = SharedString::from(format!("{}/issues", self.repo_name));
 
         tab_title(avatar, label)

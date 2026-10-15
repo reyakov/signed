@@ -5,16 +5,16 @@ use anyhow::Error;
 use dock::{BasePanel, DockArea, Panel, PanelEvent};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, Div, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState,
-    Pixels, Render, SharedString, Stateful, Subscription, Task, WeakEntity, Window, div, list, px,
+    AnyElement, App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment,
+    ListState, Pixels, Render, SharedString, Stateful, Subscription, Task, WeakEntity, Window, div,
+    list, px,
 };
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::{ActiveTheme, Icon, IconName, IconNamed, Sizable, StyledExt, h_flex, v_flex};
+use metadata::ProfileDirectory;
 use nostr::prelude::{Event, EventId, Kind, PublicKey, Timestamp};
 use signed_core::{InboxItem, InboxReadState, RepoAddr};
-use signed_state::{
-    Backend, BackendEvent, Inbox, ProfileStore, RefreshGate, RefreshRequest, RepoListStore,
-};
+use signed_state::{Backend, BackendEvent, Inbox, RefreshGate, RefreshRequest, RepoListStore};
 use signed_ui::{Avatar, CountBadge};
 use utils::relative_time;
 
@@ -54,6 +54,8 @@ pub struct InboxView {
     refresh: RefreshGate,
     list: ListState,
     tasks: Vec<Task<Result<(), Error>>>,
+    /// Profiles for activity authors.
+    directory: Entity<ProfileDirectory>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -101,6 +103,7 @@ impl InboxView {
             refresh: RefreshGate::default(),
             list,
             tasks: vec![],
+            directory: ProfileDirectory::new(cx),
             _subscriptions: subscriptions,
         }
     }
@@ -272,6 +275,19 @@ impl InboxView {
         let rows = self.flatten_rows(&sections);
         self.sections = Arc::new(sections);
         self.rows = Arc::new(rows);
+
+        let mut keys: Vec<PublicKey> = self
+            .threads
+            .iter()
+            .flat_map(|item| item.events.iter().map(|event| event.pubkey))
+            .collect();
+
+        keys.sort_by_key(PublicKey::to_hex);
+        keys.dedup();
+
+        self.directory.update(cx, |directory, cx| {
+            directory.track(keys, cx);
+        });
     }
 
     fn group_sections(&self) -> Vec<InboxSection> {
@@ -397,8 +413,9 @@ impl InboxView {
                 let address = section.address.clone();
                 let first = entry_ix == 0;
                 let last = entry_ix + 1 == section.entries.len();
+                let directory = self.directory.clone();
 
-                thread("inbox-row", ix, item, first, last, cx)
+                thread("inbox-row", ix, item, first, last, &directory, cx)
                     .on_click(cx.listener(move |this, _ev, window, cx| {
                         this.open(root, kind, address.clone(), window, cx)
                     }))
@@ -461,6 +478,7 @@ fn thread(
     item: &InboxItem,
     first: bool,
     last: bool,
+    directory: &Entity<ProfileDirectory>,
     cx: &App,
 ) -> Stateful<Div> {
     let title = SharedString::from(item.title());
@@ -472,7 +490,7 @@ fn thread(
     let mut timeline = v_flex().gap_2().w_full();
 
     for event in item.timeline(MAX_SUB_ACTIVITIES) {
-        timeline = timeline.child(sub_activity(&event, me, cx));
+        timeline = timeline.child(sub_activity(&event, me, directory, cx));
     }
 
     v_flex()
@@ -521,9 +539,13 @@ fn thread(
         .child(timeline)
 }
 
-fn sub_activity(event: &Event, me: Option<PublicKey>, cx: &App) -> AnyElement {
-    let profile_store = ProfileStore::global(cx).read(cx);
-    let profile = profile_store.get(&event.pubkey);
+fn sub_activity(
+    event: &Event,
+    me: Option<PublicKey>,
+    directory: &Entity<ProfileDirectory>,
+    cx: &App,
+) -> AnyElement {
+    let profile = directory.read(cx).profile(&event.pubkey, cx);
 
     let name = if Some(event.pubkey) == me {
         SharedString::from("You")
