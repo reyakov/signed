@@ -26,7 +26,7 @@ use signed_state::{
     Backend, BackendEvent, CheckoutsStore, LocalReposStore, Nip34Binding, Nip34Kind, Profile,
     ProfileStore, RepoListStore, ResolvedLocalRepo, SyncStatusStore,
 };
-use signed_ui::{Avatar, NavItem, PixelAvatar, title_bar_drag_handlers};
+use signed_ui::{Avatar, NavItem, title_bar_drag_handlers};
 
 use super::{InboxView, PlaceholderPanel, RepoDetailView, RepoListView, open_repo_panel};
 
@@ -510,8 +510,7 @@ impl SidebarPanel {
     ) -> impl IntoElement {
         let name = announcement.name().map(SharedString::from);
         // The sidebar rows are compact, so the avatar matches the 16px nav icons.
-        let avatar =
-            PixelAvatar::new(format!("{}:{}", announcement.owner, announcement.id)).xsmall();
+        let avatar = Avatar::new(format!("{}:{}", announcement.owner, announcement.id)).xsmall();
         let announcement = announcement.clone();
 
         let addr = announcement.addr();
@@ -636,7 +635,11 @@ impl SidebarPanel {
                             .child(
                                 h_flex()
                                     .gap_1()
-                                    .child(Avatar::new(name.clone()).picture(picture))
+                                    .child(
+                                        Avatar::new(profile.public_key())
+                                            .name(name.clone())
+                                            .picture(picture),
+                                    )
                                     .child(div().text_xs().font_semibold().child(name)),
                             )
                             .dropdown_menu(move |menu, _, _| {
@@ -768,7 +771,7 @@ pub(super) fn server_host(relay: &RelayUrl) -> SharedString {
 /// The repository's pixel avatar, with the bound owner's avatar at its bottom right.
 fn local_avatar(entry: &ResolvedLocalRepo, cx: &App) -> AnyElement {
     // Matches the other sidebar rows, and the badge below sits at its corner.
-    let avatar = PixelAvatar::new(entry.path.to_string_lossy()).xsmall();
+    let avatar = Avatar::new(entry.path.to_string_lossy()).xsmall();
 
     let Some(owner) = entry.nip34.as_ref().and_then(|binding| binding.owner) else {
         return avatar.into_any_element();
@@ -782,7 +785,8 @@ fn local_avatar(entry: &ResolvedLocalRepo, cx: &App) -> AnyElement {
         .child(avatar)
         .child(
             div().absolute().bottom_neg_0p5().right_neg_0p5().child(
-                Avatar::new(profile.name())
+                Avatar::new(owner)
+                    .name(profile.name())
                     .picture(profile.picture())
                     .size(px(14.)),
             ),

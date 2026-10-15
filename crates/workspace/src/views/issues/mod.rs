@@ -189,7 +189,11 @@ impl IssuesView {
                             .child(
                                 h_flex()
                                     .gap_1()
-                                    .child(Avatar::new(author.clone()).picture(picture))
+                                    .child(
+                                        Avatar::new(issue.pubkey)
+                                            .name(author.clone())
+                                            .picture(picture),
+                                    )
                                     .child(div().child(author)),
                             )
                             .child(SharedString::from("opened"))

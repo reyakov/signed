@@ -174,7 +174,7 @@ fn maintainers(maintainers: &[PublicKey], cx: &App) -> AnyElement {
                 .gap_2()
                 .items_center()
                 .min_w_0()
-                .child(Avatar::new(name.clone()).picture(picture))
+                .child(Avatar::new(*pubkey).name(name.clone()).picture(picture))
                 .child(
                     div()
                         .flex_1()

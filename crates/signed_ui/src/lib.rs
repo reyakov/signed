@@ -1,7 +1,6 @@
 mod avatar;
 mod dropdown_button;
 mod nav_item;
-mod pixel_avatar;
 mod placeholder;
 mod ref_selector;
 mod segment_button;
@@ -16,7 +15,6 @@ pub use avatar::Avatar;
 pub use copy_row::{copy_row, menu_copy_row};
 pub use dropdown_button::DropdownButton;
 pub use nav_item::NavItem;
-pub use pixel_avatar::PixelAvatar;
 pub use placeholder::placeholder;
 pub use ref_selector::ref_selector_trigger;
 pub use segment_button::{CountBadge, SegmentButton};

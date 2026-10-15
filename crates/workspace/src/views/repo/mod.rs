@@ -30,7 +30,7 @@ use signed_state::{
     SyncStatusStore,
 };
 use signed_ui::{
-    Avatar, CountBadge, DropdownButton, PixelAvatar, copy_row, menu_copy_row, ref_selector_trigger,
+    Avatar, CountBadge, DropdownButton, copy_row, menu_copy_row, ref_selector_trigger,
 };
 use utils::middle_truncate;
 
@@ -896,7 +896,7 @@ impl RepoDetailView {
 
         let name = repo_display_name(self.store.read(cx));
         let description = announcement.description();
-        let avatar = PixelAvatar::new(format!("{}:{}", announcement.owner, announcement.id));
+        let avatar = Avatar::new(format!("{}:{}", announcement.owner, announcement.id));
 
         v_flex()
             .on_action(
@@ -1253,7 +1253,7 @@ impl RepoDetailView {
             .as_ref()
             .map(|path| path.display().to_string())
             .unwrap_or_default();
-        let avatar = PixelAvatar::new(path.clone());
+        let avatar = Avatar::new(path.clone());
 
         // A repository already bound to a coordinate is not offered for publishing again.
         let bound = self.store.read(cx).nip34.clone();
@@ -1481,7 +1481,9 @@ impl RepoDetailView {
                         .child(
                             h_flex()
                                 .gap_1()
-                                .child(Avatar::new(owner_name.clone()).picture(owner_picture))
+                                .child(Avatar::new(announcement.owner)
+                                    .name(owner_name.clone())
+                                    .picture(owner_picture))
                                 .child(div().text_xs().whitespace_nowrap().child(owner_name)),
                         )
                         .when(!rest.is_empty(), |this| {
@@ -2180,12 +2182,17 @@ fn bound_repo_label(binding: &Nip34Binding, cx: &App) -> AnyElement {
         .child("Initialized by")
         .text_color(cx.theme().muted_foreground)
         .when_some(profile, |this, profile| {
+            let name = profile.name();
             this.child(
                 h_flex()
                     .gap_1()
                     .text_color(cx.theme().foreground)
-                    .child(Avatar::new(profile.name()).picture(profile.picture()))
-                    .child(profile.name()),
+                    .child(
+                        Avatar::new(profile.public_key())
+                            .name(name.clone())
+                            .picture(profile.picture()),
+                    )
+                    .child(name),
             )
         })
         .when_some(binding.identifier.as_deref(), |this, ident| {

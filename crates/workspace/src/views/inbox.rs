@@ -544,7 +544,8 @@ fn sub_activity(event: &Event, me: Option<PublicKey>, cx: &App) -> AnyElement {
                 .items_center()
                 .text_xs()
                 .child(
-                    Avatar::new(name.clone())
+                    Avatar::new(event.pubkey)
+                        .name(name.clone())
                         .picture(profile.picture())
                         .xsmall(),
                 )

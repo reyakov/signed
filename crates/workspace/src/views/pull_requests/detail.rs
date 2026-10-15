@@ -407,7 +407,7 @@ impl PullRequestDetailView {
             return placeholder(&error, cx);
         }
 
-        let (author, picture, age, root_id) = {
+        let (author, picture, age, root_id, pubkey) = {
             let store = self.store.read(cx);
             let Some(root) = store
                 .pull_requests
@@ -422,6 +422,7 @@ impl PullRequestDetailView {
                 profile.picture(),
                 relative_time(root.created_at),
                 root.id,
+                root.pubkey,
             )
         };
 
@@ -451,7 +452,8 @@ impl PullRequestDetailView {
                                                 h_flex()
                                                     .gap_1()
                                                     .child(
-                                                        Avatar::new(author.clone())
+                                                        Avatar::new(pubkey)
+                                                            .name(author.clone())
                                                             .picture(picture),
                                                     )
                                                     .child(author),

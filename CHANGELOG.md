@@ -26,6 +26,7 @@
 - Restructure the core crate into focused modules for announcements, pull requests, git events, inbox, and upstream state
 - Publish nostr events directly through the client with relay acceptance required, removing the grasp push helper and its per-server retry loop so failures surface immediately
 - Poll the repository sync drift check every 180 seconds instead of 60
+- Merge the `PixelAvatar` into the `Avatar` component. Seed user pixel avatars from the public key instead of the display name, so avatars stay stable when a user renames
 
 ### Fixed
 

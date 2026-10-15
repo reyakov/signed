@@ -71,7 +71,7 @@ pub(crate) fn sidebar_section(
                     h_flex()
                         .gap_1()
                         .items_center()
-                        .child(Avatar::new(name.clone()).picture(picture))
+                        .child(Avatar::new(*pubkey).name(name.clone()).picture(picture))
                         .child(div().text_sm().truncate().text_ellipsis().child(name))
                         .into_any_element()
                 })),
@@ -137,7 +137,11 @@ pub(crate) fn comments_section(store: &Entity<RepoStore>, root: EventId, cx: &Ap
                         .child(
                             h_flex()
                                 .gap_1()
-                                .child(Avatar::new(author.clone()).picture(picture))
+                                .child(
+                                    Avatar::new(comment.pubkey)
+                                        .name(author.clone())
+                                        .picture(picture),
+                                )
                                 .child(author),
                         )
                         .child(

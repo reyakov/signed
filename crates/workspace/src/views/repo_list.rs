@@ -274,7 +274,11 @@ impl RepoListView {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(Avatar::new(owner.name()).picture(owner.picture()))
+                            .child(
+                                Avatar::new(announcement.owner)
+                                    .name(owner.name())
+                                    .picture(owner.picture()),
+                            )
                             .child(
                                 div()
                                     .text_xs()

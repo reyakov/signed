@@ -203,7 +203,11 @@ impl PullRequestsView {
                             .child(
                                 h_flex()
                                     .gap_1()
-                                    .child(Avatar::new(author.clone()).picture(picture))
+                                    .child(
+                                        Avatar::new(pr.pubkey)
+                                            .name(author.clone())
+                                            .picture(picture),
+                                    )
                                     .child(div().child(author)),
                             )
                             .child(SharedString::from("opened"))

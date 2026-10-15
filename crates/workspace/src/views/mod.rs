@@ -12,6 +12,8 @@ pub(crate) mod sidebar;
 mod status_list;
 pub(crate) mod tree;
 
+use std::fmt::Display;
+
 use gpui::prelude::*;
 use gpui::{AnyElement, App, div};
 use gpui_component::{Sizable as _, h_flex};
@@ -22,7 +24,7 @@ pub(crate) use repo::{RepoItem, open_repo_item, open_repo_panel};
 pub use repo_list::RepoListView;
 pub use sidebar::SidebarPanel;
 use signed_state::{ProfileStore, RepoStore};
-use signed_ui::{Avatar, PixelAvatar};
+use signed_ui::Avatar;
 
 pub(crate) fn tab_title(avatar: AnyElement, label: impl IntoElement) -> impl IntoElement {
     h_flex()
@@ -32,8 +34,8 @@ pub(crate) fn tab_title(avatar: AnyElement, label: impl IntoElement) -> impl Int
         .child(label)
 }
 
-pub(crate) fn panel_avatar(seed: impl AsRef<str>) -> AnyElement {
-    PixelAvatar::new(seed).xsmall().into_any_element()
+pub(crate) fn panel_avatar(seed: impl Display) -> AnyElement {
+    Avatar::new(seed).xsmall().into_any_element()
 }
 
 pub(crate) fn repo_tab_avatar(store: &RepoStore, cx: &App) -> AnyElement {
@@ -55,11 +57,13 @@ pub(crate) fn repo_tab_avatar(store: &RepoStore, cx: &App) -> AnyElement {
         .as_ref()
         .map(|announcement| ProfileStore::global(cx).read(cx).get(&announcement.owner));
 
-    match owner.and_then(|profile| profile.picture().map(|picture| (profile.name(), picture))) {
-        Some((name, picture)) => Avatar::new(name)
-            .picture(Some(picture))
-            .xsmall()
-            .into_any_element(),
-        None => PixelAvatar::new(seed).xsmall().into_any_element(),
-    }
+    let (name, picture) = owner
+        .map(|profile| (Some(profile.name()), profile.picture()))
+        .unwrap_or((None, None));
+
+    Avatar::new(seed)
+        .name(name)
+        .picture(picture)
+        .xsmall()
+        .into_any_element()
 }

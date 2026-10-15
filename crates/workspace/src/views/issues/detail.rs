@@ -93,7 +93,7 @@ impl Render for IssueDetailView {
             };
         };
 
-        let (title, author, picture, status, age, issue_id, content) = {
+        let (title, author, picture, status, age, issue_id, content, pubkey) = {
             let profile_store = ProfileStore::global(cx);
             let profile = profile_store.read(cx).get(&issue.pubkey);
             let content = if issue.content.is_empty() {
@@ -110,6 +110,7 @@ impl Render for IssueDetailView {
                 relative_time(issue.created_at),
                 issue.id,
                 content,
+                issue.pubkey,
             )
         };
 
@@ -153,7 +154,7 @@ impl Render for IssueDetailView {
                                             .child(
                                                 h_flex()
                                                     .gap_1()
-                                                    .child(Avatar::new(&author).picture(picture))
+                                                    .child(Avatar::new(pubkey).name(author.clone()).picture(picture))
                                                     .child(author),
                                             )
                                             .child(
