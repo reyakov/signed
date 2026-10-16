@@ -1222,22 +1222,25 @@ impl Repo {
             base_url,
             owner,
             repo_id,
-            &["refs/heads/main:refs/heads/main"],
+            &["+refs/heads/main:refs/heads/main"],
         )
     }
 
     /// Mirrors all branches and tags to the grasp repository at `base_url`.
+    ///
+    /// Force refspecs keep the server ref map following the local repository,
+    /// grasp authorizes pushes by ref map equality, not fast-forwards.
     pub fn push_all(&self, base_url: &str, owner: &str, repo_id: &str) -> Result<()> {
         self.push_refspecs(
             base_url,
             owner,
             repo_id,
-            &["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"],
+            &["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"],
         )
     }
 
     /// Pushes explicit refspecs to the grasp repository at `base_url`.
-    fn push_refspecs(
+    pub fn push_refspecs(
         &self,
         base_url: &str,
         owner: &str,
@@ -1260,6 +1263,33 @@ impl Repo {
             );
         }
         Ok(())
+    }
+
+    /// Lists branches and tags advertised by the remote at `url`.
+    pub fn ls_remote(&self, url: &str) -> Result<Vec<(String, String)>> {
+        let url = Self::transport_url(url);
+        let output = Self::run_git(self.workdir_or_dot(), &["ls-remote", &url], "git ls-remote")?;
+
+        if !output.status.success() {
+            bail!(
+                "git ls-remote on {url} failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+
+        let refs = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let (oid, name) = line.split_once('\t')?;
+                let name = name.trim();
+
+                (name.starts_with("refs/heads/") || name.starts_with("refs/tags/"))
+                    .then(|| (name.to_owned(), oid.to_owned()))
+                    .filter(|(name, _)| !name.ends_with("^{}"))
+            })
+            .collect();
+
+        Ok(refs)
     }
 
     /// Sets the `origin` URL when the repository has no remote yet.

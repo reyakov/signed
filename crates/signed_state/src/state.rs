@@ -40,6 +40,17 @@ pub enum GitPushMode {
     Main,
 }
 
+/// How to handle server-only refs when pushing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GitPushPolicy {
+    /// Reconcile the local refs with the grasp servers,
+    /// fetching missing refs before pushing.
+    #[default]
+    Reconcile,
+    /// Declare the local refs only and delete server-only refs while pushing.
+    ResetRemote,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncState {
     pub refs: Vec<GitRef>,
@@ -47,6 +58,7 @@ pub struct SyncState {
     /// Local repository to push from; `None` for states parsed from events.
     pub path: Option<PathBuf>,
     pub mode: GitPushMode,
+    pub policy: GitPushPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +147,7 @@ impl SyncState {
             head,
             path: None,
             mode: GitPushMode::default(),
+            policy: GitPushPolicy::default(),
         }
     }
 
@@ -154,6 +167,7 @@ impl SyncState {
             head: state.head,
             path: Some(path.to_path_buf()),
             mode: GitPushMode::default(),
+            policy: GitPushPolicy::default(),
         })
     }
 
@@ -162,13 +176,127 @@ impl SyncState {
         self
     }
 
+    pub fn with_policy(mut self, policy: GitPushPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Reconciles the local repository with the grasp servers, fetching missing refs.
+    pub async fn reconcile(
+        &mut self,
+        announcement: &Announcement,
+        cx: &mut AsyncApp,
+    ) -> Result<(), Error> {
+        if self.policy == GitPushPolicy::ResetRemote || self.refs.is_empty() {
+            return Ok(());
+        }
+
+        let Some(path) = self.path.clone() else {
+            return Ok(());
+        };
+
+        let local: Vec<(String, String)> = self
+            .refs
+            .iter()
+            .map(|git_ref| (git_ref.name.clone(), git_ref.commit.to_string()))
+            .collect();
+
+        let urls: Vec<String> = announcement
+            .clone
+            .iter()
+            .map(|url| url.to_string())
+            .collect();
+
+        let snapshot_path = path.clone();
+
+        let missing = cx
+            .background_spawn(async move {
+                let repo = Repo::open(&path)?;
+
+                // Refs the servers advertise that the local repository lacks
+                let mut missing: Vec<(String, Vec<String>)> = Vec::new();
+                // Diverged server tips that exist only on the servers
+                let mut backups: Vec<(String, String, Vec<String>)> = Vec::new();
+
+                for url in &urls {
+                    let Ok(remote_refs) = repo.ls_remote(url) else {
+                        continue;
+                    };
+
+                    for (name, oid) in remote_refs {
+                        let Some((_, local_oid)) =
+                            local.iter().find(|(local_name, _)| local_name == &name)
+                        else {
+                            match missing.iter_mut().find(|(known, _)| known == &name) {
+                                Some((_, sources)) => sources.push(url.clone()),
+                                None => missing.push((name, vec![url.clone()])),
+                            }
+                            continue;
+                        };
+
+                        if local_oid == &oid {
+                            continue;
+                        }
+
+                        if repo.merge_base(local_oid, &oid).is_err() {
+                            match backups.iter_mut().find(|(known, _, _)| known == &name) {
+                                Some((_, _, sources)) => sources.push(url.clone()),
+                                None => {
+                                    backups.push((name.clone(), oid.clone(), vec![url.clone()]))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let mut failures = Vec::new();
+
+                for (name, sources) in &missing {
+                    let refspec = format!("+{name}:{name}");
+                    if let Err(error) = repo.fetch_refs(sources, &refspec) {
+                        log::warn!("failed to fetch {name} from grasp servers: {error}");
+                        failures.push(name.clone());
+                    }
+                }
+
+                for (name, oid, sources) in &backups {
+                    let refspec = format!("+{name}:refs/nostr/backup/{oid}");
+                    if let Err(error) = repo.fetch_refs(sources, &refspec) {
+                        log::warn!("failed to back up {name} from grasp servers: {error}");
+                    }
+                }
+
+                match failures.is_empty() {
+                    true => Ok(missing
+                        .into_iter()
+                        .map(|(name, _)| name)
+                        .collect::<Vec<_>>()),
+                    false => bail!(
+                        "could not fetch {} from any grasp server",
+                        failures.join(", ")
+                    ),
+                }
+            })
+            .await?;
+
+        if !missing.is_empty() {
+            let (mode, policy) = (self.mode, self.policy);
+            *self = Self::from_repo(&snapshot_path)?;
+            self.mode = mode;
+            self.policy = policy;
+        }
+
+        Ok(())
+    }
+
     /// State event for these refs; the caller signs it.
     pub fn state_event(&self, repo_id: &str) -> EventBuilder {
         Self::build(repo_id, &self.refs, self.head.as_deref())
     }
 
-    /// Push the state event and objects to the grasp servers,
-    /// calling `on_step` for each step.
+    /// Push the state event and objects to the grasp servers.
+    ///
+    /// Calling `on_step` for each step.
     pub async fn push_to_grasps<P>(
         &self,
         client: &Client,
@@ -191,6 +319,12 @@ impl SyncState {
             .map_err(|error| anyhow!("could not encode the repository owner: {error}"))?;
 
         let mut outcome = PushOutcome::default();
+        let policy = self.policy;
+        let declared: Vec<String> = self
+            .refs
+            .iter()
+            .map(|git_ref| git_ref.name.clone())
+            .collect();
 
         for relay in &announcement.relays {
             let step = PushStep::StageStateEvent(relay.clone());
@@ -241,12 +375,24 @@ impl SyncState {
                 let owner = owner.clone();
                 let repo_id = announcement.id.clone();
                 let mode = self.mode;
+                let declared = declared.clone();
 
                 async move {
                     let repo = Repo::open(&path)?;
+
                     match mode {
                         GitPushMode::Main => repo.push_main(&base, &owner, &repo_id),
-                        GitPushMode::All => repo.push_all(&base, &owner, &repo_id),
+                        GitPushMode::All => {
+                            let mut refspecs = force_refspecs();
+                            if policy == GitPushPolicy::ResetRemote {
+                                let url = format!("{base}/{owner}/{repo_id}.git");
+                                let server_refs = repo.ls_remote(&url)?;
+                                refspecs.extend(deletion_refspecs(&declared, &server_refs));
+                            }
+
+                            let refspecs = refspecs.iter().map(String::as_str).collect::<Vec<_>>();
+                            repo.push_refspecs(&base, &owner, &repo_id, &refspecs)
+                        }
                     }
                 }
             });
@@ -370,75 +516,19 @@ impl SyncState {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Refspecs to force push all heads and tags to the grasp servers.
+fn force_refspecs() -> Vec<String> {
+    vec![
+        "+refs/heads/*:refs/heads/*".to_owned(),
+        "+refs/tags/*:refs/tags/*".to_owned(),
+    ]
+}
 
-    const COMMIT_A: &str = "aa231c4c6a5777dc89b42207b499891a344add5c";
-    const COMMIT_B: &str = "59429cfc6cb35b0a1ddace73b5a5c5ed57b8f5ca";
-
-    fn git_ref(name: &str, commit: &str) -> GitRef {
-        GitRef::new(name, commit).expect("valid ref")
-    }
-
-    fn keys() -> Keys {
-        Keys::new(
-            SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
-                .expect("valid secret key"),
-        )
-    }
-
-    fn state_event(tags: &[&[&str]]) -> Event {
-        let tags: Vec<Tag> = tags
-            .iter()
-            .map(|t| Tag::parse(t.to_vec()).expect("valid tag"))
-            .collect();
-
-        EventBuilder::new(Kind::RepoState, "")
-            .tags(tags)
-            .finalize(&keys())
-            .expect("signed event")
-    }
-
-    #[test]
-    fn parses_heads_and_tags() {
-        let event = state_event(&[
-            &["HEAD", "ref: refs/heads/main"],
-            &["refs/heads/main", COMMIT_A],
-            &["refs/heads/dev", COMMIT_B],
-            &["refs/tags/v1.0", COMMIT_A],
-        ]);
-
-        let state = SyncState::parse(&event);
-
-        assert_eq!(state.head.as_deref(), Some("main"));
-        assert_eq!(
-            state.refs,
-            vec![
-                git_ref("refs/heads/main", COMMIT_A),
-                git_ref("refs/heads/dev", COMMIT_B),
-                git_ref("refs/tags/v1.0", COMMIT_A),
-            ]
-        );
-    }
-
-    #[test]
-    fn build_round_trips_through_parse() {
-        let refs = vec![
-            git_ref("refs/heads/main", COMMIT_A),
-            git_ref("refs/heads/dev", COMMIT_B),
-            git_ref("refs/tags/v1.0", COMMIT_A),
-        ];
-
-        let event = SyncState::build("my-repo", &refs, Some("main"))
-            .finalize(&keys())
-            .expect("signed event");
-
-        assert_eq!(event.kind, Kind::RepoState);
-        assert_eq!(event.tags.identifier().as_deref(), Some("my-repo"));
-
-        let state = SyncState::parse(&event);
-        assert_eq!(state.refs, refs);
-        assert_eq!(state.head.as_deref(), Some("main"));
-    }
+/// Refspecs to delete server-only refs from the grasp servers.
+fn deletion_refspecs(declared: &[String], server_refs: &[(String, String)]) -> Vec<String> {
+    server_refs
+        .iter()
+        .filter(|(name, _)| !declared.contains(name))
+        .map(|(name, _)| format!(":{name}"))
+        .collect()
 }

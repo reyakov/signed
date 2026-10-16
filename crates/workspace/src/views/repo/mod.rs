@@ -15,10 +15,12 @@ use gpui_base::{Button as BaseButton, Disableable, Popover};
 use gpui_component::alert::Alert;
 use gpui_component::button::{Button, ButtonVariants};
 use gpui_component::combobox::{Combobox, ComboboxEvent};
+use gpui_component::dialog::{DialogDescription, DialogFooter, DialogHeader, DialogTitle};
 use gpui_component::menu::{DropdownMenu, PopupMenu};
 use gpui_component::spinner::Spinner;
 use gpui_component::{
-    ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, ThemeStyled, h_flex, v_flex,
+    ActiveTheme, Colorize, Icon, IconName, Sizable, StyledExt, ThemeStyled, WindowExt, h_flex,
+    v_flex,
 };
 use metadata::ProfileDirectory;
 use nostr::nips::nip19::Nip19Coordinate;
@@ -72,6 +74,7 @@ pub(crate) enum RepoAction {
     SendPatch,
     About,
     Push,
+    ResetRemote,
     Delete,
 }
 
@@ -841,6 +844,63 @@ impl RepoDetailView {
         self.tasks.push(task);
     }
 
+    pub(super) fn reset_remote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(announcement) = self.announcement(cx).cloned() else {
+            return;
+        };
+
+        let store = self.store.clone();
+        let mirror = Mirrors::path(&announcement.addr());
+
+        let urls: Vec<String> = announcement
+            .clone
+            .iter()
+            .map(|url| url.to_string())
+            .collect();
+
+        let probe = cx.background_spawn(async move {
+            let mut deleted: Vec<String> = Vec::new();
+            let repo = Repo::open(&mirror)?;
+
+            let local: HashSet<String> = repo
+                .ref_state()?
+                .refs
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+
+            for url in &urls {
+                let Ok(remote_refs) = repo.ls_remote(url) else {
+                    continue;
+                };
+                for (name, _) in remote_refs {
+                    if !local.contains(&name) && !deleted.contains(&name) {
+                        deleted.push(name);
+                    }
+                }
+            }
+
+            deleted.sort();
+
+            Ok::<_, Error>(deleted)
+        });
+
+        cx.spawn_in(window, async move |this, cx| {
+            let deleted = probe.await;
+
+            this.update_in(cx, |this, window, cx| match deleted {
+                Ok(deleted) => open_reset_remote_dialog(store, deleted, window, cx),
+                Err(error) => {
+                    this.error = Some(error.to_string().into());
+                    cx.notify();
+                }
+            })?;
+
+            Ok::<(), Error>(())
+        })
+        .detach();
+    }
+
     /// Delete the repository from nostr, announcement, state and activity.
     pub(super) fn delete_repository(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let task = self
@@ -971,6 +1031,7 @@ impl RepoDetailView {
                         }
                     }
                     RepoAction::Push => this.push_repository(window, cx),
+                    RepoAction::ResetRemote => this.reset_remote(window, cx),
                     RepoAction::Delete => this.delete_repository(window, cx),
                 }),
             )
@@ -1173,6 +1234,16 @@ impl RepoDetailView {
                                                     .child(Icon::new(CustomIconName::Init))
                                                     .child("Republish")
                                             })
+                                            .menu_element(
+                                                Box::new(RepoAction::ResetRemote),
+                                                |_, _| {
+                                                    h_flex()
+                                                        .gap_2()
+                                                        .text_sm()
+                                                        .child(Icon::new(IconName::RefreshCw))
+                                                        .child("Reset remote to local")
+                                                },
+                                            )
                                             .separator()
                                             .menu_element(Box::new(RepoAction::Delete), |_, cx| {
                                                 h_flex()
@@ -2041,6 +2112,75 @@ impl RepoDetailView {
 
         self.files.clone().into_any_element()
     }
+}
+
+/// Confirmation for the remote reset, listing the server refs it deletes.
+fn open_reset_remote_dialog(
+    store: Entity<RepoStore>,
+    deleted: Vec<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    const DESC: &str = "Grasp servers are overwritten to match the local mirror. \
+         Refs that do not exist locally are deleted from the servers. \
+         This cannot be undone.";
+
+    window.open_dialog(cx, move |dialog, _window, _cx| {
+        let deleted = deleted.clone();
+        let store = store.clone();
+
+        dialog
+            .w(px(480.))
+            .keyboard(true)
+            .close_button(true)
+            .content(move |body, _window, cx| {
+                let deleted = deleted.clone();
+                let store = store.clone();
+
+                body.child(
+                    DialogHeader::new()
+                        .child(DialogTitle::new().child("Reset remote to local"))
+                        .child(DialogDescription::new().child(DESC)),
+                )
+                .child(if deleted.is_empty() {
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("No server refs will be deleted.")
+                        .into_any_element()
+                } else {
+                    v_flex()
+                        .gap_1()
+                        .children(deleted.iter().map(|name| {
+                            div()
+                                .text_sm()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(name.clone())
+                        }))
+                        .into_any_element()
+                })
+                .child(
+                    DialogFooter::new()
+                        .justify_end()
+                        .child(Button::new("cancel-reset-remote").label("Cancel").on_click(
+                            |_, window, cx| {
+                                window.close_dialog(cx);
+                            },
+                        ))
+                        .child(
+                            Button::new("confirm-reset-remote")
+                                .danger()
+                                .label("Reset remote")
+                                .on_click(move |_, window, cx| {
+                                    store.update(cx, |store, cx| {
+                                        store.reset_repository(cx).detach_and_log_err(cx);
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+            })
+    });
 }
 
 fn nostr_clone_url(announcement: &Announcement, nip05: Option<&str>) -> SharedString {

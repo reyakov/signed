@@ -13,6 +13,7 @@
 - Allow choosing the default branch when publishing a repository
 - Detect when local commits are not on Nostr yet, showing an unsynced count badge on sidebar repository rows and a Sync now banner on the repository view
 - Add a step-by-step push checklist while publishing and syncing a repository
+- Add a `Reset remote to local` action that republishes the mirror and deletes grasp refs the mirror does not have
 
 ### Changed
 
@@ -35,6 +36,8 @@
 - Fix opening a repository failing with a `destination already exists` error when two loads raced to clone its mirror, clones are now serialized and later loads reuse the finished clone
 - Fix a repository never opening again after an interrupted clone left an unusable mirror directory behind, which is now removed and re-cloned
 - Fix signing in with a `bunker://` URI silently generating a new identity instead of erroring when its master key cannot be parsed
+- Fix repository sync failing with `state event in purgatory ... doesn't match push` when grasp servers hold branches or tags the local repository lacks
+- Fix sync failing with `could not fetch refs/tags/...^{}` on repositories with annotated tags, where the peel entries `git ls-remote` reports for annotated tags were mistaken for missing refs
 
 ### Removed
 

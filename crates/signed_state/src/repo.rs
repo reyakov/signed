@@ -1172,6 +1172,24 @@ impl RepoStore {
         self.run_push(push, None, cx)
     }
 
+    /// Republishes the mirror and deletes grasp refs the mirror does not have.
+    pub fn reset_repository(&mut self, cx: &mut Context<Self>) -> Task<Result<(), Error>> {
+        if self.pushing {
+            return Task::ready(Err(anyhow::anyhow!(
+                "A push to this repository is already in progress"
+            )));
+        }
+
+        let Some(announcement) = self.action_announcement(cx) else {
+            return self.action_error("Repository announcement is not loaded yet", cx);
+        };
+
+        let backend = Backend::global(cx);
+        let push = backend.update(cx, |backend, cx| backend.reset_repository(announcement, cx));
+
+        self.run_push(push, None, cx)
+    }
+
     pub fn push_checkout(
         &mut self,
         path: PathBuf,

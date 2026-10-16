@@ -123,6 +123,166 @@ fn push_all_mirrors_branches_and_tags() {
 }
 
 #[test]
+fn ls_remote_lists_branches_and_tags_only() {
+    let server = tempfile::tempdir().unwrap();
+    let server_repo = bare_server(server.path(), "npub1test", "my-repo");
+
+    let (dir, repo) = fixture(&[("a.txt", b"one")]);
+    commit_all(&repo, "initial");
+    let dir = dir.path();
+
+    git_run(dir, &["branch", "feature"]);
+    git_run(dir, &["tag", "v1"]);
+    git_run(dir, &["tag", "-a", "v2", "-m", "annotated"]);
+
+    let base_url = format!("file://{}", server.path().display());
+    let local = Repo::open(dir).expect("open");
+    local
+        .push_all(&base_url, "npub1test", "my-repo")
+        .expect("push");
+
+    // Refs outside heads and tags, and the HEAD symref line, are not listed.
+    let main = git_in(dir, &["rev-parse", "refs/heads/main"]).expect("main oid");
+    git_run(&server_repo, &["update-ref", "refs/nostr/abc", &main]);
+
+    let remote = local
+        .ls_remote(&format!("file://{}", server_repo.display()))
+        .expect("ls-remote");
+    let names: Vec<String> = remote.iter().map(|(name, _)| name.clone()).collect();
+
+    assert_eq!(
+        names,
+        vec![
+            "refs/heads/feature".to_owned(),
+            "refs/heads/main".to_owned(),
+            "refs/tags/v1".to_owned(),
+            "refs/tags/v2".to_owned(),
+        ]
+    );
+    assert_eq!(
+        remote
+            .iter()
+            .find(|(name, _)| name == "refs/heads/main")
+            .map(|(_, oid)| oid.as_str()),
+        Some(main.as_str())
+    );
+    // The annotated tag lists the tag object, matching the local ref state,
+    // without a peeled `^{}` duplicate.
+    let v2 = git_in(dir, &["rev-parse", "refs/tags/v2"]).expect("v2 oid");
+    assert_eq!(
+        remote
+            .iter()
+            .find(|(name, _)| name == "refs/tags/v2")
+            .map(|(_, oid)| oid.as_str()),
+        Some(v2.as_str())
+    );
+}
+
+#[test]
+fn push_all_force_updates_diverged_remote_branches() {
+    let server = tempfile::tempdir().unwrap();
+    let server_repo = bare_server(server.path(), "npub1test", "my-repo");
+
+    let (dir, repo) = fixture(&[("a.txt", b"one")]);
+    commit_all(&repo, "initial");
+    std::fs::write(dir.path().join("b.txt"), b"two").expect("write");
+    commit_all(&repo, "second");
+    let dir = dir.path();
+
+    let base_url = format!("file://{}", server.path().display());
+    let local = Repo::open(dir).expect("open");
+    local
+        .push_all(&base_url, "npub1test", "my-repo")
+        .expect("initial push");
+
+    // Diverge local main from the pushed state.
+    git_run(dir, &["reset", "-q", "--hard", "HEAD~1"]);
+    std::fs::write(dir.join("c.txt"), b"three").expect("write");
+    commit_all(&repo, "diverged");
+
+    local
+        .push_all(&base_url, "npub1test", "my-repo")
+        .expect("force push");
+
+    assert_eq!(
+        git_in(dir, &["rev-parse", "refs/heads/main"]).expect("local main"),
+        git_in(&server_repo, &["rev-parse", "refs/heads/main"]).expect("server main")
+    );
+}
+
+#[test]
+fn push_refspecs_deletes_server_refs_missing_locally() {
+    let server = tempfile::tempdir().unwrap();
+    let server_repo = bare_server(server.path(), "npub1test", "my-repo");
+
+    let (dir, repo) = fixture(&[("a.txt", b"one")]);
+    commit_all(&repo, "initial");
+    let dir = dir.path();
+
+    git_run(dir, &["branch", "feature"]);
+    git_run(dir, &["tag", "v1"]);
+
+    let base_url = format!("file://{}", server.path().display());
+    let local = Repo::open(dir).expect("open");
+    local
+        .push_all(&base_url, "npub1test", "my-repo")
+        .expect("initial push");
+
+    git_run(dir, &["branch", "-D", "feature"]);
+    git_run(dir, &["tag", "-d", "v1"]);
+
+    local
+        .push_refspecs(
+            &base_url,
+            "npub1test",
+            "my-repo",
+            &[
+                "+refs/heads/*:refs/heads/*",
+                "+refs/tags/*:refs/tags/*",
+                ":refs/heads/feature",
+                ":refs/tags/v1",
+            ],
+        )
+        .expect("push with deletions");
+
+    let refs = git_in(&server_repo, &["show-ref"]).expect("server refs");
+    assert!(refs.contains("refs/heads/main"));
+    assert!(!refs.contains("refs/heads/feature"));
+    assert!(!refs.contains("refs/tags/v1"));
+}
+
+#[test]
+fn fetch_refs_brings_server_only_branches_into_local() {
+    let server = tempfile::tempdir().unwrap();
+    bare_server(server.path(), "npub1test", "my-repo");
+
+    let (dir, repo) = fixture(&[("a.txt", b"one")]);
+    commit_all(&repo, "initial");
+    let dir = dir.path();
+    git_run(dir, &["branch", "feature"]);
+
+    let base_url = format!("file://{}", server.path().display());
+    Repo::open(dir)
+        .expect("open")
+        .push_all(&base_url, "npub1test", "my-repo")
+        .expect("push");
+    let feature = git_in(dir, &["rev-parse", "refs/heads/feature"]).expect("feature oid");
+
+    // A repository that never had the branch fetches it by name.
+    let (other_dir, _other_repo) = fixture(&[("unrelated.txt", b"x")]);
+    let other = Repo::open(other_dir.path()).expect("open other");
+    let server_url = format!("file://{}/npub1test/my-repo.git", server.path().display());
+    other
+        .fetch_refs(&[&server_url], "+refs/heads/feature:refs/heads/feature")
+        .expect("fetch ref");
+
+    assert_eq!(
+        git_in(other_dir.path(), &["rev-parse", "refs/heads/feature"]).expect("fetched feature"),
+        feature
+    );
+}
+
+#[test]
 fn ref_state_matches_the_git_cli_ref_listing() {
     let (dir, repo) = fixture(&[("a.txt", b"one")]);
     commit_all(&repo, "initial");

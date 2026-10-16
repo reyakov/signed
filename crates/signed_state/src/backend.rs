@@ -21,7 +21,7 @@ use crate::git_store::Mirrors;
 use crate::inbox::Inbox;
 use crate::push::{PushOutcome, grasp_base_url, grasp_clone_url};
 use crate::repos::RepoListStore;
-use crate::state::{GitPushMode, GitRef, PushStepStatus, SyncState};
+use crate::state::{GitPushMode, GitPushPolicy, GitRef, PushStepStatus, SyncState};
 
 pub const USER_KEYRING: &str = "Signed Safe Storage";
 pub const NOSTR_CONNECT_TIMEOUT: u64 = 60;
@@ -588,6 +588,7 @@ impl Backend {
                 head: Some("main".to_owned()),
                 path: Some(destination.clone()),
                 mode: GitPushMode::Main,
+                policy: GitPushPolicy::default(),
             };
 
             let on_step = &mut |status: PushStepStatus, cx: &mut AsyncApp| {
@@ -735,7 +736,17 @@ impl Backend {
         cx: &mut Context<Self>,
     ) -> Task<Result<PushOutcome, Error>> {
         let path = Mirrors::path(&announcement.addr());
-        self.push_repo_from(announcement, path, None, cx)
+        self.push_repo_from(announcement, path, None, GitPushPolicy::Reconcile, cx)
+    }
+
+    /// Republishes the mirror and deletes grasp refs the mirror does not have.
+    pub fn reset_repository(
+        &mut self,
+        announcement: Announcement,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<PushOutcome, Error>> {
+        let path = Mirrors::path(&announcement.addr());
+        self.push_repo_from(announcement, path, None, GitPushPolicy::ResetRemote, cx)
     }
 
     pub fn push_checkout(
@@ -745,7 +756,13 @@ impl Backend {
         announced_head: Option<String>,
         cx: &mut Context<Self>,
     ) -> Task<Result<PushOutcome, Error>> {
-        self.push_repo_from(announcement, checkout, announced_head, cx)
+        self.push_repo_from(
+            announcement,
+            checkout,
+            announced_head,
+            GitPushPolicy::Reconcile,
+            cx,
+        )
     }
 
     fn push_repo_from(
@@ -753,6 +770,7 @@ impl Backend {
         announcement: Announcement,
         path: PathBuf,
         announced_head: Option<String>,
+        policy: GitPushPolicy,
         cx: &mut Context<Self>,
     ) -> Task<Result<PushOutcome, Error>> {
         let addr = announcement.addr();
@@ -789,6 +807,11 @@ impl Backend {
                 });
                 work.await?
             };
+            state.policy = policy;
+
+            // Fetch grasp refs the local repository lacks before the state event is signed,
+            // so the servers' full ref map is declared.
+            state.reconcile(&announcement, cx).await?;
 
             // Keep the announced default branch in `HEAD` when it is among the pushed refs.
             if let Some(head) = announced_head

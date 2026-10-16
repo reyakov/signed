@@ -28,7 +28,7 @@ pub use repo::RepoStore;
 pub use repos::RepoListStore;
 pub use signed_git::{Nip34Binding, Nip34Kind};
 use signed_nostr::NostrBackend;
-pub use state::{GitPushMode, GitRef, PushStep, PushStepStatus, SyncState};
+pub use state::{GitPushMode, GitPushPolicy, GitRef, PushStep, PushStepStatus, SyncState};
 pub use sync_status::{CheckoutSyncStatus, SyncEvent, SyncStatusDirectory, SyncStatusStore};
 
 pub fn init(
