@@ -1226,6 +1226,7 @@ impl RepoStore {
                     Ok(outcome) => {
                         this.last_error = None;
                         this.last_push_warning = outcome.partial_warning();
+
                         if let Some((addr, path)) = &pushed_checkout {
                             let checkouts = CheckoutsStore::global(cx);
                             checkouts.update(cx, |store, cx| {
@@ -1233,8 +1234,13 @@ impl RepoStore {
                             });
                         }
 
+                        // Re-probe so sync badges reflect the pushed state.
                         let sync_status = SyncStatusStore::global(cx);
-                        sync_status.update(cx, |store, cx| store.refresh(cx));
+                        let addr = pushed_checkout
+                            .as_ref()
+                            .map(|(addr, _)| addr.clone())
+                            .or_else(|| this.addr.clone());
+                        sync_status.read(cx).probe(addr);
                     }
                     Err(e) => {
                         this.last_error = Some(format!("Push failed: {e}"));

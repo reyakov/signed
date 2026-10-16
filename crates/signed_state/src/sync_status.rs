@@ -1,18 +1,17 @@
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Error;
-use gpui::{App, AppContext, Context, Entity, Global, Subscription};
-use nostr_sdk::prelude::*;
+use flume::Sender;
+use gpui::{App, AppContext, Context, Entity, EventEmitter, Global, Subscription, Task};
 use signed_core::{Deletions, Filters, RepoAddr};
 use signed_git::{Repo, RepoSyncStatus};
 
 use crate::backend::{Backend, BackendEvent};
 use crate::checkouts::CheckoutsStore;
-use crate::refresh::{RefreshGate, RefreshRequest};
-use crate::repos::RepoListStore;
-use crate::state::{GitRef, SyncState};
+use crate::state::SyncState;
 
 const SYNC_POLL: Duration = Duration::from_secs(180);
 const MAX_SYNC_CHECKOUTS: usize = 8;
@@ -28,12 +27,24 @@ pub struct CheckoutSyncStatus {
     pub status: RepoSyncStatus,
 }
 
+/// Statuses for these repositories may have changed; empty on signer change.
+#[derive(Debug, Clone)]
+pub enum SyncEvent {
+    Updated(Vec<(RepoAddr, Vec<CheckoutSyncStatus>)>),
+}
+
+/// Probes tracked repositories and broadcasts results. Holds no statuses.
 pub struct SyncStatusStore {
-    statuses: HashMap<RepoAddr, Vec<CheckoutSyncStatus>>,
-    refresh: RefreshGate,
+    active: RefCell<HashSet<RepoAddr>>,
+    in_flight: bool,
+    pass_pending: bool,
     poll_pending: bool,
+    sender: Sender<()>,
+    tasks: Vec<Task<Result<(), Error>>>,
     _subscriptions: Vec<Subscription>,
 }
+
+impl EventEmitter<SyncEvent> for SyncStatusStore {}
 
 impl SyncStatusStore {
     pub fn global(cx: &App) -> Entity<Self> {
@@ -45,150 +56,131 @@ impl SyncStatusStore {
     }
 
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let (sender, receiver) = flume::unbounded::<()>();
         let mut subscriptions = Vec::new();
 
         if !cfg!(target_arch = "wasm32") {
-            let repos = RepoListStore::global(cx);
-            let checkouts = CheckoutsStore::global(cx);
             let backend = Backend::global(cx);
-
-            subscriptions.push(cx.observe(&repos, |this, _repos, cx| {
-                this.refresh(cx);
-            }));
+            let checkouts = CheckoutsStore::global(cx);
 
             // Checkout associations decide which paths get compared.
             subscriptions.push(cx.observe(&checkouts, |this, _checkouts, cx| {
-                this.refresh(cx);
+                this.run_pass(cx);
             }));
 
             subscriptions.push(
                 cx.subscribe(&backend, |this, _backend, event, cx| match event {
-                    BackendEvent::SignerChanged => {
-                        this.statuses.clear();
-                        cx.notify();
-                        this.refresh(cx);
-                    }
-                    BackendEvent::RepoUpdates(_) | BackendEvent::Synced => this.refresh(cx),
+                    BackendEvent::SignerChanged => this.clear(cx),
+                    BackendEvent::RepoUpdates(_) | BackendEvent::Synced => this.run_pass(cx),
                     _ => {}
                 }),
             );
-
-            let weak = cx.entity().downgrade();
-            cx.defer(move |cx| {
-                if let Err(error) = weak.update(cx, |this, cx| this.refresh(cx)) {
-                    log::warn!("sync status store dropped before the initial refresh: {error}");
-                }
-            });
         }
 
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                receiver.recv_async().await?;
+
+                // One pass covers every signal queued since the wake.
+                while receiver.try_recv().is_ok() {}
+
+                this.update(cx, |this, cx| {
+                    this.run_pass(cx);
+                })?;
+            }
+        });
+
         Self {
-            statuses: HashMap::new(),
-            refresh: RefreshGate::default(),
+            active: RefCell::new(HashSet::new()),
+            sender,
+            in_flight: false,
+            pass_pending: false,
             poll_pending: false,
+            tasks: vec![task],
             _subscriptions: subscriptions,
         }
     }
 
-    /// Latest sync status per associated checkout.
-    pub fn statuses_of(&self, addr: &RepoAddr) -> Vec<CheckoutSyncStatus> {
-        self.statuses.get(addr).cloned().unwrap_or_default()
+    /// Queue a probe pass; folded into any pass already in flight.
+    pub fn probe(&self, addrs: impl IntoIterator<Item = RepoAddr>) {
+        self.active.borrow_mut().extend(addrs);
+
+        if let Err(e) = self.sender.send(()) {
+            log::warn!("failed to queue sync status probe: {e}");
+        }
     }
 
-    /// Commits available locally but missing on Nostr.
-    pub fn unsynced(&self, addr: &RepoAddr) -> usize {
-        self.statuses
-            .get(addr)
-            .map(|list| {
-                list.iter()
-                    .map(|checkout| checkout.status.ahead_total)
-                    .sum()
-            })
-            .unwrap_or(0)
+    // Keeps the in-flight pass so its completion releases the slot exactly once.
+    fn clear(&mut self, cx: &mut Context<Self>) {
+        let had_addrs = !self.active.borrow().is_empty();
+        self.active.borrow_mut().clear();
+        self.pass_pending = false;
+
+        if had_addrs {
+            cx.emit(SyncEvent::Updated(Vec::new()));
+        }
     }
 
-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+    fn run_pass(&mut self, cx: &mut Context<Self>) {
         if cfg!(target_arch = "wasm32") {
             return;
         }
-        if self.refresh.request() != RefreshRequest::Schedule {
+
+        if self.in_flight {
+            self.pass_pending = true;
             return;
         }
-
-        let backend = Backend::global(cx);
-        let Some(user) = backend.read(cx).current_user() else {
-            let changed = !self.statuses.is_empty();
-            self.statuses.clear();
-            if changed {
-                cx.notify();
-            }
-            return;
-        };
-
-        self.schedule_poll(cx);
-        self.run_refresh(user, cx);
-    }
-
-    fn schedule_poll(&mut self, cx: &mut Context<Self>) {
-        if self.poll_pending {
-            return;
-        }
-        self.poll_pending = true;
-
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SYNC_POLL).await;
-            this.update(cx, |this, cx| {
-                this.poll_pending = false;
-                this.refresh(cx);
-            })
-        })
-        .detach();
-    }
-
-    fn run_refresh(&mut self, user: PublicKey, cx: &mut Context<Self>) {
-        self.refresh.begin();
 
         let backend = Backend::global(cx);
         let client = backend.read(cx).client();
 
-        let repos = RepoListStore::global(cx);
-        let announcements = repos.read(cx).announcements_of(&user);
-        let checkouts = CheckoutsStore::global(cx);
+        if backend.read(cx).current_user().is_none() {
+            self.clear(cx);
+            return;
+        }
 
-        let targets: Vec<(RepoAddr, Vec<PathBuf>)> = announcements
-            .iter()
-            .map(|announcement| {
-                let addr = announcement.addr();
-                let paths = checkouts.read(cx).associations_of(&addr);
-                (addr, paths)
-            })
-            .collect();
+        if self.active.borrow().is_empty() {
+            return;
+        }
+
+        self.in_flight = true;
+        self.schedule_poll(cx);
+
+        let targets: Vec<(RepoAddr, Vec<PathBuf>)> = {
+            let active = self.active.borrow();
+            let checkouts = CheckoutsStore::global(cx);
+
+            active
+                .iter()
+                .map(|addr| {
+                    let paths = checkouts.read(cx).associations_of(addr);
+                    (addr.clone(), paths)
+                })
+                .collect()
+        };
 
         let work = cx.background_spawn(async move {
             let db = client.database();
             let deletion_events = db.query(Filters::deletions()).await?;
             let deletions = Deletions::from_events(deletion_events);
 
-            let mut states: HashMap<RepoAddr, Vec<GitRef>> = HashMap::new();
-            for (addr, _) in &targets {
+            let mut updates: Vec<(RepoAddr, Vec<CheckoutSyncStatus>)> = Vec::new();
+
+            for (addr, paths) in &targets {
                 let events = db.query(addr.state_filter()).await?;
                 let latest = utils::latest(
                     events
                         .into_iter()
                         .filter(|event| !deletions.is_deleted(event)),
                 );
+
                 let Some(event) = latest else {
-                    continue;
-                };
-                states.insert(addr.clone(), SyncState::parse(&event).refs);
-            }
-
-            let mut statuses: HashMap<RepoAddr, Vec<CheckoutSyncStatus>> = HashMap::new();
-            for (addr, paths) in &targets {
-                let Some(nostr_refs) = states.get(addr) else {
+                    updates.push((addr.clone(), Vec::new()));
                     continue;
                 };
 
-                let remote_refs: Vec<(String, String)> = nostr_refs
+                let remote_refs: Vec<(String, String)> = SyncState::parse(&event)
+                    .refs
                     .iter()
                     .map(|git_ref| (git_ref.name.clone(), git_ref.commit.to_string()))
                     .collect();
@@ -206,41 +198,170 @@ impl SyncStatusStore {
                     }
                 }
 
-                if !list.is_empty() {
-                    statuses.insert(addr.clone(), list);
-                }
+                updates.push((addr.clone(), list));
             }
 
-            Ok::<_, Error>(statuses)
+            Ok::<_, Error>(updates)
         });
 
-        cx.spawn(async move |this, cx| {
-            let statuses = match work.await {
-                Ok(statuses) => statuses,
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            // Reset the slot even on failure, or every later pass folds forever.
+            let updates = match work.await {
+                Ok(updates) => updates,
                 Err(error) => {
                     log::warn!("failed to compute nostr sync statuses: {error}");
-                    return this.update(cx, |this, _cx| {
-                        this.refresh.abort();
-                    });
+                    Vec::new()
                 }
             };
 
-            let again = this.update(cx, |this, cx| {
-                if this.statuses != statuses {
-                    this.statuses = statuses;
-                    cx.notify();
+            let mut again = false;
+
+            this.update(cx, |this, cx| {
+                this.in_flight = false;
+                if !updates.is_empty() {
+                    cx.emit(SyncEvent::Updated(updates));
                 }
-                this.refresh.finish()
+                again = std::mem::take(&mut this.pass_pending);
             })?;
 
             if again {
                 this.update(cx, |this, cx| {
-                    this.refresh(cx);
+                    this.run_pass(cx);
                 })?;
             }
 
-            Ok::<_, Error>(())
+            Ok::<(), anyhow::Error>(())
+        }));
+    }
+
+    fn schedule_poll(&mut self, cx: &mut Context<Self>) {
+        if self.poll_pending {
+            return;
+        }
+        self.poll_pending = true;
+
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SYNC_POLL).await;
+
+            this.update(cx, |this, cx| {
+                this.poll_pending = false;
+                this.run_pass(cx);
+            })?;
+
+            Ok::<(), anyhow::Error>(())
+        }));
+    }
+}
+
+/// Sync status cache bound to one panel or screen.
+pub struct SyncStatusDirectory {
+    statuses: HashMap<RepoAddr, Vec<CheckoutSyncStatus>>,
+    pending: RefCell<HashSet<RepoAddr>>,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl SyncStatusDirectory {
+    /// Create a directory, following the sync store's events.
+    pub fn new(cx: &mut App) -> Entity<Self> {
+        let store = SyncStatusStore::global(cx);
+
+        cx.new(|cx| {
+            let subscription =
+                cx.subscribe(&store, |this: &mut Self, _store, event, cx| match event {
+                    SyncEvent::Updated(updates) => this.apply(updates.clone(), cx),
+                });
+
+            Self {
+                statuses: HashMap::new(),
+                pending: RefCell::new(HashSet::new()),
+                _subscriptions: vec![subscription],
+            }
         })
-        .detach();
+    }
+
+    /// Queue a probe for addrs this surface renders.
+    pub fn track(&mut self, addrs: impl IntoIterator<Item = RepoAddr>, cx: &mut Context<Self>) {
+        let missing: Vec<RepoAddr> = addrs
+            .into_iter()
+            .filter(|addr| {
+                !self.statuses.contains_key(addr)
+                    && !self.with_pending(|pending| pending.contains(addr))
+            })
+            .collect();
+
+        if missing.is_empty() {
+            return;
+        }
+
+        self.with_pending(|pending| pending.extend(missing.iter().cloned()));
+
+        let store = SyncStatusStore::global(cx);
+        store.read(cx).probe(missing);
+    }
+
+    /// Statuses for a repo, or empty; a miss queues a probe.
+    pub fn statuses_of(&self, addr: &RepoAddr, cx: &App) -> Vec<CheckoutSyncStatus> {
+        self.queue(addr, cx);
+        self.statuses.get(addr).cloned().unwrap_or_default()
+    }
+
+    /// Commits available locally but missing on Nostr.
+    pub fn unsynced(&self, addr: &RepoAddr, cx: &App) -> usize {
+        self.queue(addr, cx);
+
+        self.statuses
+            .get(addr)
+            .map(|list| {
+                list.iter()
+                    .map(|checkout| checkout.status.ahead_total)
+                    .sum()
+            })
+            .unwrap_or(0)
+    }
+
+    fn queue(&self, addr: &RepoAddr, cx: &App) {
+        if self.with_pending(|pending| pending.insert(addr.clone())) {
+            let store = SyncStatusStore::global(cx);
+            store.read(cx).probe([addr.clone()]);
+        }
+    }
+
+    fn apply(&mut self, updates: Vec<(RepoAddr, Vec<CheckoutSyncStatus>)>, cx: &mut Context<Self>) {
+        if updates.is_empty() {
+            let changed = !self.statuses.is_empty();
+            self.statuses.clear();
+            self.with_pending(|pending| pending.clear());
+
+            if changed {
+                cx.notify();
+            }
+
+            return;
+        }
+
+        let mut changed = false;
+
+        for (addr, list) in updates {
+            let relevant = self.statuses.contains_key(&addr)
+                || self.with_pending(|pending| pending.remove(&addr));
+
+            if !relevant {
+                continue;
+            }
+
+            if self.statuses.get(&addr) != Some(&list) {
+                self.statuses.insert(addr, list);
+                changed = true;
+            }
+        }
+
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn with_pending<R>(&self, then: impl FnOnce(&mut HashSet<RepoAddr>) -> R) -> R {
+        let mut pending = self.pending.borrow_mut();
+        then(&mut pending)
     }
 }

@@ -27,7 +27,7 @@ use signed_core::{Announcement, RepoAddr, RepoStatus};
 use signed_git::{FileCommit, GitCache, RefSync, Repo};
 use signed_state::{
     Backend, CheckoutStatus, CheckoutSyncStatus, CheckoutsStore, LocalReposStore, Mirrors,
-    Nip34Binding, Nip34Kind, PushStepStatus, RepoListStore, RepoStore, SyncStatusStore,
+    Nip34Binding, Nip34Kind, PushStepStatus, RepoListStore, RepoStore, SyncStatusDirectory,
 };
 use signed_ui::{
     Avatar, CountBadge, DropdownButton, copy_row, menu_copy_row, ref_selector_trigger,
@@ -96,6 +96,8 @@ pub struct RepoDetailView {
     tasks: Vec<Task<Result<(), Error>>>,
     /// Profiles rendered by the header, maintainers and tab title.
     directory: Entity<ProfileDirectory>,
+    /// Sync status feeding the sync-to-Nostr banner.
+    sync_directory: Entity<SyncStatusDirectory>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -156,7 +158,6 @@ impl RepoDetailView {
         cx: &mut Context<Self>,
     ) -> Self {
         let checkouts = CheckoutsStore::global(cx);
-        let sync_status = SyncStatusStore::global(cx);
         let files = cx.new(RepoFilesView::new);
         let history = cx.new(|_cx| RepoHistoryView::new(store.clone(), dock_area.clone()));
         let refs = RefSwitcher::new(window, cx);
@@ -193,11 +194,6 @@ impl RepoDetailView {
             }
         }));
 
-        // The sync-to-Nostr banner reads the global sync store directly.
-        subscriptions.push(cx.observe(&sync_status, |_this, _sync, cx| {
-            cx.notify();
-        }));
-
         // Defer loading the repository until the window is ready.
         cx.defer_in(window, |this, window, cx| {
             this.load_repo(window, cx);
@@ -219,6 +215,7 @@ impl RepoDetailView {
             banners: Banners::default(),
             focus_handle: cx.focus_handle(),
             directory: ProfileDirectory::new(cx),
+            sync_directory: SyncStatusDirectory::new(cx),
             _subscriptions: subscriptions,
         };
 
@@ -255,6 +252,7 @@ impl RepoDetailView {
             .push(cx.observe_in(store, window, |this, store, window, cx| {
                 this.refresh_ready_statuses(cx);
                 this.track_profiles(cx);
+                this.track_sync_status(cx);
                 if !this.repo_started && store.read(cx).announcement.is_some() {
                     this.load_repo(window, cx);
                 }
@@ -289,6 +287,17 @@ impl RepoDetailView {
 
         self.directory.update(cx, |directory, cx| {
             directory.track(keys, cx);
+        });
+    }
+
+    /// Track the repository address so the sync banner stays current.
+    fn track_sync_status(&mut self, cx: &mut Context<Self>) {
+        let Some(addr) = self.store.read(cx).addr().cloned() else {
+            return;
+        };
+
+        self.sync_directory.update(cx, |directory, cx| {
+            directory.track([addr], cx);
         });
     }
 
@@ -349,6 +358,7 @@ impl RepoDetailView {
         self.loading = true;
         self.error = None;
         self.track_profiles(cx);
+        self.track_sync_status(cx);
         cx.notify();
 
         let (announcement, local_path) = {
@@ -1602,8 +1612,7 @@ impl RepoDetailView {
             return None;
         }
 
-        let sync_status = SyncStatusStore::global(cx);
-        let statuses = sync_status.read(cx).statuses_of(addr);
+        let statuses = self.sync_directory.read(cx).statuses_of(addr, cx);
 
         statuses.into_iter().find(|checkout| {
             checkout.status.ahead_total > 0 && !self.banners.sync_dismissal(checkout)

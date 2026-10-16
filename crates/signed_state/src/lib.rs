@@ -29,7 +29,7 @@ pub use repos::RepoListStore;
 pub use signed_git::{Nip34Binding, Nip34Kind};
 use signed_nostr::NostrBackend;
 pub use state::{GitPushMode, GitRef, PushStep, PushStepStatus, SyncState};
-pub use sync_status::{CheckoutSyncStatus, SyncStatusStore};
+pub use sync_status::{CheckoutSyncStatus, SyncEvent, SyncStatusDirectory, SyncStatusStore};
 
 pub fn init(
     db_path: impl AsRef<Path>,

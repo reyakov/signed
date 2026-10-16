@@ -25,7 +25,7 @@ use nostr::prelude::{PublicKey, RelayUrl};
 use signed_core::{Announcement, RepoAddr};
 use signed_state::{
     Backend, BackendEvent, CheckoutsStore, LocalReposStore, Nip34Binding, Nip34Kind, RepoListStore,
-    ResolvedLocalRepo, SyncStatusStore,
+    ResolvedLocalRepo, SyncStatusDirectory,
 };
 use signed_ui::{Avatar, NavItem, title_bar_drag_handlers};
 
@@ -68,10 +68,10 @@ pub struct SidebarPanel {
     local_repos: Arc<Vec<ResolvedLocalRepo>>,
     /// Unpushed commit counts per announced repository.
     unpushed: HashMap<RepoAddr, usize>,
-    /// Commits not on Nostr per announced repository.
-    unsynced: HashMap<RepoAddr, usize>,
     /// Profiles rendered by the sidebar.
     directory: Entity<ProfileDirectory>,
+    /// Sync statuses for the announced repositories.
+    sync_directory: Entity<SyncStatusDirectory>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -81,7 +81,6 @@ impl SidebarPanel {
         let repos = RepoListStore::global(cx);
         let local = LocalReposStore::global(cx);
         let checkouts = CheckoutsStore::global(cx);
-        let sync_status = SyncStatusStore::global(cx);
 
         let mut subscriptions = Vec::new();
 
@@ -119,12 +118,6 @@ impl SidebarPanel {
             }
         }));
 
-        subscriptions.push(cx.observe(&sync_status, |this, _sync, cx| {
-            if this.refresh_unsynced(cx) {
-                cx.notify();
-            }
-        }));
-
         Self {
             focus_handle: cx.focus_handle(),
             dock_area,
@@ -137,8 +130,8 @@ impl SidebarPanel {
             local_repos: Arc::new(Vec::new()),
             scanning: false,
             unpushed: HashMap::new(),
-            unsynced: HashMap::new(),
             directory: ProfileDirectory::new(cx),
+            sync_directory: SyncStatusDirectory::new(cx),
             _subscriptions: subscriptions,
         }
     }
@@ -189,10 +182,19 @@ impl SidebarPanel {
             directory.track(profiles, cx);
         });
 
+        let addrs: Vec<RepoAddr> = self
+            .announcements
+            .iter()
+            .map(|announcement| announcement.addr())
+            .collect();
+
+        self.sync_directory.update(cx, |directory, cx| {
+            directory.track(addrs, cx);
+        });
+
         if announcements_changed {
             self.request_push_watches(cx);
             self.unpushed.clear();
-            self.unsynced.clear();
         }
 
         announcements_changed || local_changed || scanning_changed
@@ -215,26 +217,6 @@ impl SidebarPanel {
         }
 
         self.unpushed = unpushed;
-        true
-    }
-
-    fn refresh_unsynced(&mut self, cx: &mut Context<Self>) -> bool {
-        let sync_status = SyncStatusStore::global(cx);
-        let mut unsynced = HashMap::with_capacity(self.announcements.len());
-
-        for announcement in self.announcements.iter() {
-            let addr = announcement.addr();
-            let count = sync_status.read(cx).unsynced(&addr);
-            if count > 0 {
-                unsynced.insert(addr, count);
-            }
-        }
-
-        if unsynced == self.unsynced {
-            return false;
-        }
-
-        self.unsynced = unsynced;
         true
     }
 
@@ -538,7 +520,7 @@ impl SidebarPanel {
 
         let addr = announcement.addr();
         let unpushed = self.unpushed.get(&addr).copied().unwrap_or(0);
-        let unsynced = self.unsynced.get(&addr).copied().unwrap_or(0);
+        let unsynced = self.sync_directory.read(cx).unsynced(&addr, cx);
 
         let mut row = NavItem::new(format!("repo:{}", announcement.id), name, avatar);
 
