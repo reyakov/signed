@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use nostr::prelude::Keys;
+use signed_core::RepoAddr;
+
 use super::*;
 
 #[test]
@@ -9,6 +12,70 @@ fn blocks_parent_components() {
     assert_eq!(GitCache::sanitize_path_component("."), "_");
     assert_eq!(GitCache::sanitize_path_component("../.."), ".._..");
     assert_eq!(GitCache::sanitize_path_component("a/../b"), "a_.._b");
+}
+
+#[test]
+fn concurrent_ensure_clone_succeeds_for_every_caller() {
+    let server = tempfile::tempdir().expect("tempdir");
+    let server_repo = bare_server(server.path(), "npub1test", "repo");
+
+    let (work_dir, work_repo) = fixture(&[("a.txt", b"one")]);
+    commit_all(&work_repo, "initial");
+    let work_dir = work_dir.path();
+
+    let base_url = format!("file://{}", server.path().display());
+    Repo::open(work_dir)
+        .expect("open")
+        .push_all(&base_url, "npub1test", "repo")
+        .expect("push");
+
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let cache = GitCache::new(cache_dir.path().to_path_buf());
+    let addr = RepoAddr::new(Keys::generate().public_key(), "repo");
+    let clone_url = format!("file://{}", server_repo.display());
+
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                cache
+                    .ensure_clone(&addr, &[&clone_url])
+                    .expect("ensure_clone");
+            });
+        }
+    });
+
+    assert!(cache.open(&addr).expect("open").is_some());
+}
+
+#[test]
+fn ensure_clone_recovers_from_a_leftover_directory() {
+    let server = tempfile::tempdir().expect("tempdir");
+    let server_repo = bare_server(server.path(), "npub1test", "repo");
+
+    let (work_dir, work_repo) = fixture(&[("a.txt", b"one")]);
+    commit_all(&work_repo, "initial");
+    let work_dir = work_dir.path();
+
+    let base_url = format!("file://{}", server.path().display());
+    Repo::open(work_dir)
+        .expect("open")
+        .push_all(&base_url, "npub1test", "repo")
+        .expect("push");
+
+    let cache_dir = tempfile::tempdir().expect("tempdir");
+    let cache = GitCache::new(cache_dir.path().to_path_buf());
+    let addr = RepoAddr::new(Keys::generate().public_key(), "repo");
+    let clone_url = format!("file://{}", server_repo.display());
+
+    // Simulate the remains of an interrupted clone.
+    let leftover = cache.repo_path(&addr);
+    std::fs::create_dir_all(&leftover).expect("mkdir");
+
+    cache
+        .ensure_clone(&addr, &[&clone_url])
+        .expect("ensure_clone");
+
+    assert!(cache.open(&addr).expect("open").is_some());
 }
 
 #[test]

@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use signed_core::{Announcement, RepoAddr};
 
 use crate::repo::Repo;
@@ -8,12 +10,16 @@ use crate::repo::Repo;
 #[derive(Debug, Clone)]
 pub struct GitCache {
     root: PathBuf,
+    clone_locks: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>>,
 }
 
 impl GitCache {
     /// Creates a cache rooted at `root`.
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            clone_locks: Arc::default(),
+        }
     }
 
     /// Returns the cache root directory.
@@ -38,20 +44,40 @@ impl GitCache {
         }
     }
 
+    /// Returns the clone lock for `path`, creating it on first use.
+    fn clone_lock(&self, path: &Path) -> Arc<Mutex<()>> {
+        let mut locks = self
+            .clone_locks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(locks.entry(path.to_path_buf()).or_default())
+    }
+
     /// Returns the cached repository, cloning from one of `clone_urls` on first use.
     pub fn ensure_clone<U: AsRef<str>>(&self, addr: &RepoAddr, clone_urls: &[U]) -> Result<Repo> {
         let path = self.repo_path(addr);
 
-        if let Some(repo) = self.open(addr)? {
+        // Lock the clone lock for this path to prevent concurrent clones.
+        let clone_lock = self.clone_lock(&path);
+        let _clone_guard = clone_lock.lock().unwrap_or_else(PoisonError::into_inner);
+
+        // Refreshes the cached repository if it is already cloned, or clones it from one of `clone_urls` otherwise.
+        if let Ok(Some(repo)) = self.open(addr) {
             if let Err(error) = repo.fetch() {
                 log::warn!("failed to refresh the cached repository: {error:#}");
             }
             return Ok(repo);
         }
 
+        // Create the parent directory if it does not exist.
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Remove the cached clone if it exists but is unusable.
+        if path.exists() {
+            log::warn!("removing unusable cached clone at {}", path.display());
+            std::fs::remove_dir_all(&path)?;
         }
 
         Repo::clone(clone_urls, &path)

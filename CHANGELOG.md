@@ -26,11 +26,14 @@
 - Restructure the core crate into focused modules for announcements, pull requests, git events, inbox, and upstream state
 - Publish nostr events directly through the client with relay acceptance required, removing the grasp push helper and its per-server retry loop so failures surface immediately
 - Poll the repository sync drift check every 180 seconds instead of 60
+- Track sync status per view instead of globally
 - Merge the `PixelAvatar` into the `Avatar` component. Seed user pixel avatars from the public key instead of the display name, so avatars stay stable when a user renames
 
 ### Fixed
 
 - Fix the repository view refreshing its mirror from the network while a push is in progress, so the refresh no longer races the push
+- Fix opening a repository failing with a `destination already exists` error when two loads raced to clone its mirror, clones are now serialized and later loads reuse the finished clone
+- Fix a repository never opening again after an interrupted clone left an unusable mirror directory behind, which is now removed and re-cloned
 - Fix signing in with a `bunker://` URI silently generating a new identity instead of erroring when its master key cannot be parsed
 
 ### Removed
