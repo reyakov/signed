@@ -13,9 +13,13 @@ gpui = { package = "gpui-pre", version = "0.3.8" }
 gpui_platform = { package = "gpui-pre-platform", version = "0.3.8", features = ["font-kit", "x11", "wayland"] }
 reqwest_client = { package = "gpui-pre-reqwest-client", version = "0.3.8" }
 
-# GPUI Kit
-gpui-component = { version = "0.7.1", features = ["tree-sitter-languages"] }
-gpui-base = "0.7.1"
+# GPUI Kit; exact pins keep the graph on the gpui-pre 0.3.8 closure that
+# native-theme-gpui 0.6.1 is verified against (0.7.3 and 0.8 pin 0.3.9).
+gpui-component = { version = "=0.7.1", features = ["tree-sitter-languages"] }
+gpui-base = "=0.7.1"
+
+native-theme = { version = "0.6.1", features = ["watch"] }
+native-theme-gpui = { version = "0.6.1", default-features = false, features = ["system-fonts"] }
 
 dock = { path = "crates/dock" }
 settings = { path = "crates/settings" }

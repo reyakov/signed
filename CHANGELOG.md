@@ -6,6 +6,7 @@
 
 ### Added
 
+- Follow the operating system's native theme on macOS, Windows and Linux (KDE, GNOME), applying the OS colors, fonts, radii and accessibility preferences.
 - Add an identity import dialog, importing an existing identity by pasting its `nsec` secret key (encrypted with a new passphrase), NIP-49 `ncryptsec` (unlocked with its passphrase), or `bunker://` NIP-46 URI
 - Add a dropdown menu on the signed-in user button in the sidebar
 - Add sign-out feature, confirmed by an alert dialog before deleting the stored session credential
@@ -17,6 +18,7 @@
 
 ### Changed
 
+- Use the built-in light/dark syntax highlighting palette instead of the Signed palette bundled in `signed.json` when the native theme is active
 - Increase the default theme corner radii from 2 to 4 and large radii from 6 to 8
 - Surface backend errors as error notifications in the workspace instead of silently dropping them
 - Break ties in repository activity lists by event id, so same-second events order deterministically
@@ -41,6 +43,7 @@
 
 ### Removed
 
+- Remove the light/dark theme pickers and the font size, corner radius, focus ring and shadow settings from the settings dialog; colors and geometry now come from the native theme
 - Remove dead code: the unused `login`/`logout` family, the unwired `SyncProgress` pipeline, `merge_pull_request`, inbox mark-read/archive APIs and the wasm32-only code paths
 
 ### Deprecated

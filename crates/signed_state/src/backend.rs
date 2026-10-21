@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Error, anyhow, bail};
@@ -24,8 +25,6 @@ use crate::repos::RepoListStore;
 use crate::state::{GitPushMode, GitPushPolicy, GitRef, PushStepStatus, SyncState};
 
 pub const USER_KEYRING: &str = "Signed Safe Storage";
-pub const NOSTR_CONNECT_TIMEOUT: u64 = 60;
-
 const PUMP_DEBOUNCE: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone)]
@@ -199,13 +198,9 @@ impl Backend {
                 } else if content.starts_with("bunker://") {
                     let (base, keys) = extract_master_key(&content)?;
                     let uri = NostrConnectUri::parse(base)?;
-                    let mut signer = NostrConnect::new(
-                        uri,
-                        keys,
-                        Duration::from_secs(NOSTR_CONNECT_TIMEOUT),
-                        None,
-                    )?;
-                    signer.auth_url_handler(SignedAuthUrlHandler);
+                    let signer = NostrConnect::builder(uri, keys)
+                        .auth_url_handler(Arc::new(SignedAuthUrlHandler))
+                        .build()?;
 
                     this.update(cx, |this, cx| {
                         this.set_signer(signer, cx);
@@ -366,13 +361,9 @@ impl Backend {
         let write = cx.write_credentials(USER_KEYRING, "bunker", credential.as_bytes());
 
         cx.spawn(async move |this, cx| {
-            let mut signer = NostrConnect::new(
-                connect_uri,
-                keys,
-                Duration::from_secs(NOSTR_CONNECT_TIMEOUT),
-                None,
-            )?;
-            signer.auth_url_handler(SignedAuthUrlHandler);
+            let signer = NostrConnect::builder(connect_uri, keys)
+                .auth_url_handler(Arc::new(SignedAuthUrlHandler))
+                .build()?;
 
             // Verify the bunker responds before persisting the credential.
             let public_key = signer.get_public_key_async().await?;
