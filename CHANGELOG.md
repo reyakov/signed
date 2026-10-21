@@ -1,8 +1,6 @@
 # Changelog
 
-## Unreleased
-
-### Breaking changes
+## v0.2.0 - 2026/10/21
 
 ### Added
 
@@ -45,8 +43,6 @@
 
 - Remove the light/dark theme pickers and the font size, corner radius, focus ring and shadow settings from the settings dialog; colors and geometry now come from the native theme
 - Remove dead code: the unused `login`/`logout` family, the unwired `SyncProgress` pipeline, `merge_pull_request`, inbox mark-read/archive APIs and the wasm32-only code paths
-
-### Deprecated
 
 ## v0.2.0-alpha - 2026/09/27
 
