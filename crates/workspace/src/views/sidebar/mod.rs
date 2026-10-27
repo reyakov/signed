@@ -514,10 +514,13 @@ impl SidebarPanel {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let name = announcement.name().map(SharedString::from);
-        // The sidebar rows are compact, so the avatar matches the 16px nav icons.
-        let avatar = Avatar::new(format!("{}:{}", announcement.owner, announcement.id)).xsmall();
-        let announcement = announcement.clone();
+        let owner = self.directory.read(cx).profile(&announcement.owner, cx);
+        let avatar = Avatar::new(announcement.owner)
+            .name(owner.name())
+            .picture(owner.picture())
+            .xsmall();
 
+        let announcement = announcement.clone();
         let addr = announcement.addr();
         let unpushed = self.unpushed.get(&addr).copied().unwrap_or(0);
         let unsynced = self.sync_directory.read(cx).unsynced(&addr, cx);
@@ -773,32 +776,24 @@ pub(super) fn server_host(relay: &RelayUrl) -> SharedString {
         .unwrap_or_else(|| SharedString::from(relay.to_string()))
 }
 
-/// The repository's pixel avatar, with the bound owner's avatar at its bottom right.
+/// The bound owner's avatar, falling back to the repo's pixel avatar when unowned.
 fn local_avatar(
     entry: &ResolvedLocalRepo,
     directory: &Entity<ProfileDirectory>,
     cx: &App,
 ) -> AnyElement {
-    // Matches the other sidebar rows, and the badge below sits at its corner.
-    let avatar = Avatar::new(entry.path.to_string_lossy()).xsmall();
-
     let Some(owner) = entry.nip34.as_ref().and_then(|binding| binding.owner) else {
-        return avatar.into_any_element();
+        return Avatar::new(entry.path.to_string_lossy())
+            .xsmall()
+            .into_any_element();
     };
 
     let profile = directory.read(cx).profile(&owner, cx);
 
-    div()
-        .relative()
-        .child(avatar)
-        .child(
-            div().absolute().bottom_neg_0p5().right_neg_0p5().child(
-                Avatar::new(owner)
-                    .name(profile.name())
-                    .picture(profile.picture())
-                    .size(px(14.)),
-            ),
-        )
+    Avatar::new(owner)
+        .name(profile.name())
+        .picture(profile.picture())
+        .xsmall()
         .into_any_element()
 }
 

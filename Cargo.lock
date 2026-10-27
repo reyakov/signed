@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "assets"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "gpui-component",
@@ -1863,7 +1863,7 @@ dependencies = [
 
 [[package]]
 name = "dock"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "gpui-base",
  "gpui-component",
@@ -5562,7 +5562,7 @@ dependencies = [
 
 [[package]]
 name = "metadata"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "flume 0.11.1",
@@ -6654,7 +6654,7 @@ dependencies = [
 
 [[package]]
 name = "paths"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "dirs 6.0.0",
 ]
@@ -8237,7 +8237,7 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "gpui-pre",
@@ -8334,7 +8334,7 @@ dependencies = [
 
 [[package]]
 name = "signed"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "assets",
  "dock",
@@ -8356,7 +8356,7 @@ dependencies = [
 
 [[package]]
 name = "signed_core"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "nostr",
  "serde",
@@ -8365,7 +8365,7 @@ dependencies = [
 
 [[package]]
 name = "signed_git"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "diffy",
@@ -8383,7 +8383,7 @@ dependencies = [
 
 [[package]]
 name = "signed_nostr"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "nostr-connect",
@@ -8395,7 +8395,7 @@ dependencies = [
 
 [[package]]
 name = "signed_state"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bitcoin_hashes 1.2.0",
@@ -8419,7 +8419,7 @@ dependencies = [
 
 [[package]]
 name = "signed_ui"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "assets",
  "futures",
@@ -10018,7 +10018,7 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "utils"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "nostr",
 ]
@@ -11267,7 +11267,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "workspace"
-version = "0.2.0-alpha"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "assets",
