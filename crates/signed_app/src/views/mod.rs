@@ -1,3 +1,4 @@
+pub mod explore;
 pub mod placeholder;
 pub mod repo;
 pub mod sidebar;

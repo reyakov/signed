@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use assets::CustomIconName;
 use gpui::{
     AnyElement, App, AppContext as _, Context, FontWeight, IntoElement, ObjectFit,
     ParentElement as _, SharedString, Styled as _, StyledImage as _, Subscription, WeakEntity,
@@ -26,6 +27,7 @@ use signed_state::{
 };
 
 use crate::dialogs;
+use crate::views::explore::ExploreView;
 
 pub struct SidebarView {
     weak: WeakEntity<Self>,
@@ -221,7 +223,17 @@ impl SidebarView {
             .transparent(true)
             .header(self.render_user(&profile, self.scanning, cx))
             .entries(move |_, cx| {
-                let mut entries = vec![SidebarEntry::header("All Repositories")];
+                let muted = cx.theme().colors.muted_foreground;
+                let mut entries = vec![
+                    SidebarEntry::row("browse", "Browse").prefix(
+                        Icon::named(CustomIconName::Globe)
+                            .size(px(14.))
+                            .color(muted),
+                    ),
+                    SidebarEntry::row("search", "Search")
+                        .prefix(Icon::named(IconRole::Search).size(px(14.)).color(muted)),
+                    SidebarEntry::header("All Repositories"),
+                ];
 
                 for announcement in announcements.iter() {
                     let owner = directory.read(cx).profile(&announcement.owner, cx);
@@ -323,7 +335,16 @@ impl SidebarView {
         let Some(index) = index else {
             return;
         };
-        let Some(row) = index.checked_sub(1) else {
+
+        match index {
+            0 | 1 => {
+                self.open_explore(window, cx);
+                return;
+            }
+            _ => {}
+        }
+
+        let Some(row) = index.checked_sub(3) else {
             return;
         };
 
@@ -400,6 +421,18 @@ impl SidebarView {
                     )
                 })
             },
+            window,
+            cx,
+        );
+    }
+
+    fn open_explore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dock = self.dock.clone();
+        let dock_for_build = dock.clone();
+        crate::panels::open(
+            &dock,
+            "explore",
+            move |_window, cx| cx.new(|cx| ExploreView::new(dock_for_build.clone(), cx)),
             window,
             cx,
         );
