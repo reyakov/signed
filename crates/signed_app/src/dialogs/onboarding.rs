@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    Styled as _, Window, div,
+    Styled as _, Window, div, px,
 };
 use gpui_native_kit::button::Button;
 use gpui_native_kit::common::v_flex;
@@ -88,6 +88,7 @@ impl Render for OnboardingDialog {
 
         Dialog::new("onboarding-dialog")
             .open(true)
+            .min_width(px(520.))
             .on_change(|open, _, cx| {
                 if !open {
                     close_global(cx);

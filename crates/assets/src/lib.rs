@@ -54,6 +54,9 @@ pub enum CustomIconName {
     Refresh,
     Grid,
     Init,
+    EllipsisVertical,
+    ArrowUp,
+    Trash,
 }
 
 impl IconNamed for CustomIconName {
@@ -84,6 +87,9 @@ impl IconNamed for CustomIconName {
             CustomIconName::Recent => "icons/recent.svg",
             CustomIconName::Grid => "icons/grid.svg",
             CustomIconName::Init => "icons/init.svg",
+            CustomIconName::EllipsisVertical => "icons/ellipsis-vertical.svg",
+            CustomIconName::ArrowUp => "icons/arrow-up.svg",
+            CustomIconName::Trash => "icons/trash.svg",
         }
         .into()
     }

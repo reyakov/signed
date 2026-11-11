@@ -1,8 +1,13 @@
+pub mod about;
+pub mod create_repo;
 pub mod exit;
+pub mod grasp_servers;
 pub mod import;
+pub mod init_repo;
 pub mod onboarding;
 pub mod passphrase;
 pub mod progress;
+pub mod reset_remote;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{

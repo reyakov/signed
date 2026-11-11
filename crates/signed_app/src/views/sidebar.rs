@@ -3,23 +3,26 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    App, Context, FontWeight, IntoElement, ObjectFit, ParentElement as _, SharedString,
-    Styled as _, StyledImage as _, Subscription, WeakEntity, Window, div, img, px,
+    AnyElement, App, AppContext as _, Context, FontWeight, IntoElement, ObjectFit,
+    ParentElement as _, SharedString, Styled as _, StyledImage as _, Subscription, WeakEntity,
+    Window, div, img, px,
 };
 use gpui_native_kit::avatar::Avatar;
+use gpui_native_kit::badge::{Badge, BadgeVariant};
 use gpui_native_kit::button::{Button, ButtonVariant};
-use gpui_native_kit::common::{h_flex, v_flex};
-use gpui_native_kit::data::sidebar::Sidebar;
+use gpui_native_kit::common::{Sizable as _, h_flex, v_flex};
+use gpui_native_kit::data::sidebar::{Sidebar, SidebarEntry};
 use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::layout::dock::DockState;
 use gpui_native_kit::menu::{Menu, MenuItem};
 use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::tooltip::Tooltip;
 use metadata::{Profile, ProfileDirectory};
 use nostr::prelude::PublicKey;
 use signed_core::{Announcement, RepoAddr};
 use signed_state::{
-    Backend, BackendEvent, CheckoutsStore, LocalReposStore, RepoListStore, ResolvedLocalRepo,
-    SyncStatusDirectory,
+    Backend, BackendEvent, CheckoutsStore, LocalReposStore, Nip34Binding, Nip34Kind, RepoListStore,
+    ResolvedLocalRepo, SyncStatusDirectory,
 };
 
 use crate::dialogs;
@@ -208,18 +211,198 @@ impl SidebarView {
         };
 
         let weak = self.weak.clone();
+        let announcements = self.announcements.clone();
+        let local_repos = self.local_repos.clone();
+        let unpushed = self.unpushed.clone();
+        let directory = self.directory.clone();
+        let sync_directory = self.sync_directory.clone();
 
         Sidebar::new("signed-sidebar")
             .transparent(true)
-            .header(self.render_user(&profile, cx))
-            .entries(|_, _| Vec::new())
+            .header(self.render_user(&profile, self.scanning, cx))
+            .entries(move |_, cx| {
+                let mut entries = vec![SidebarEntry::header("All Repositories")];
+
+                for announcement in announcements.iter() {
+                    let owner = directory.read(cx).profile(&announcement.owner, cx);
+                    let name = announcement
+                        .name
+                        .as_deref()
+                        .map(SharedString::from)
+                        .unwrap_or_else(|| SharedString::from(announcement.id.clone()));
+                    let addr = announcement.addr();
+                    let mut row = SidebarEntry::row(
+                        SharedString::from(format!("repo:{}", announcement.id)),
+                        name,
+                    )
+                    .prefix(
+                        Avatar::new(announcement.owner)
+                            .name(owner.name())
+                            .picture(owner.picture())
+                            .small(),
+                    );
+
+                    let count = unpushed.get(&addr).copied().unwrap_or(0);
+                    let unsynced = sync_directory.read(cx).unsynced(&addr, cx);
+
+                    if count > 0 || unsynced > 0 {
+                        let mut badges = h_flex().gap_1();
+                        if count > 0 {
+                            badges = badges.child(
+                                Badge::new(
+                                    SharedString::from(format!("unpushed:{addr}")),
+                                    count.to_string(),
+                                )
+                                .variant(BadgeVariant::Danger),
+                            );
+                        }
+                        if unsynced > 0 {
+                            badges = badges.child(
+                                Badge::new(
+                                    SharedString::from(format!("unsynced:{addr}")),
+                                    unsynced.to_string(),
+                                )
+                                .variant(BadgeVariant::Accent),
+                            );
+                        }
+                        row = row.suffix(badges);
+                    }
+
+                    entries.push(row);
+                }
+
+                for entry in local_repos.iter() {
+                    let suffix: AnyElement = match entry.nip34.as_ref() {
+                        Some(binding) => {
+                            let (label, note) = match binding.kind {
+                                Nip34Kind::Initialized => {
+                                    let platform = local_platform(binding).unwrap_or("Grasp");
+                                    (platform, "Initialized for NIP-34")
+                                }
+                                Nip34Kind::Cloned => ("Cloned", "Cloned but not initialized"),
+                                Nip34Kind::ToolingOnly => ("Tooling", "Grasp tooling only"),
+                            };
+                            Badge::new(
+                                SharedString::from(format!("local-badge:{}", entry.path.display())),
+                                label,
+                            )
+                            .tooltip(Tooltip::text(note))
+                            .into_any_element()
+                        }
+                        None => Badge::new(
+                            SharedString::from(format!(
+                                "local-unpublished:{}",
+                                entry.path.display()
+                            )),
+                            "Unpublished",
+                        )
+                        .variant(BadgeVariant::Warning)
+                        .into_any_element(),
+                    };
+
+                    entries.push(
+                        SidebarEntry::row(
+                            SharedString::from(format!("local-repo:{}", entry.path.display())),
+                            entry.name(),
+                        )
+                        .prefix(local_avatar(entry, &directory, cx))
+                        .suffix(suffix),
+                    );
+                }
+
+                entries
+            })
             .on_change(move |index, window, cx| {
-                let _ = weak.update(cx, |this, cx| this.activate(index, window, cx));
+                if let Err(error) = weak.update(cx, |this, cx| this.activate(index, window, cx)) {
+                    log::warn!("failed to activate sidebar row: {error}");
+                }
             })
     }
 
-    fn activate(&mut self, _index: Option<usize>, _window: &mut Window, _cx: &mut Context<Self>) {
-        // Repository and navigation rows arrive with their screens.
+    fn activate(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = index else {
+            return;
+        };
+        let Some(row) = index.checked_sub(1) else {
+            return;
+        };
+
+        if row < self.announcements.len() {
+            let announcement = self.announcements[row].clone();
+            let addr = announcement.addr();
+            crate::views::repo::actions::open_repo_panel(
+                &self.dock,
+                &addr,
+                Some(&announcement),
+                window,
+                cx,
+            );
+            return;
+        }
+
+        let local_ix = row - self.announcements.len();
+        if let Some(entry) = self.local_repos.get(local_ix).cloned() {
+            self.open_local_entry(entry, window, cx);
+        }
+    }
+
+    /// A local repository opens as the announced repository when its binding matches one.
+    fn open_local_entry(
+        &mut self,
+        entry: ResolvedLocalRepo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ResolvedLocalRepo {
+            path,
+            nip34,
+            announcement,
+        } = entry;
+
+        if let Some(announcement) = announcement {
+            let id = SharedString::from(format!("repo:{}", announcement.addr()));
+            let dock = self.dock.clone();
+            let dock_for_build = dock.clone();
+            crate::panels::open(
+                &dock,
+                id,
+                move |window, cx| {
+                    cx.new(|cx| {
+                        crate::views::repo::RepoDetailView::new_local_announced(
+                            dock_for_build.clone(),
+                            announcement.clone(),
+                            path.clone(),
+                            window,
+                            cx,
+                        )
+                    })
+                },
+                window,
+                cx,
+            );
+            return;
+        }
+
+        let id = SharedString::from(format!("repo-local:{}", path.display()));
+        let dock = self.dock.clone();
+        let dock_for_build = dock.clone();
+        crate::panels::open(
+            &dock,
+            id,
+            move |window, cx| {
+                cx.new(|cx| {
+                    crate::views::repo::RepoDetailView::new_local(
+                        dock_for_build.clone(),
+                        path.clone(),
+                        nip34.clone(),
+                        window,
+                        cx,
+                    )
+                })
+            },
+            window,
+            cx,
+        );
     }
 
     fn open_panel(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -231,15 +414,16 @@ impl SidebarView {
         }
     }
 
-    fn render_user(&self, profile: &Profile, cx: &App) -> impl IntoElement {
+    fn render_user(&self, profile: &Profile, scanning: bool, cx: &App) -> impl IntoElement {
         let name = profile.name();
         let picture = profile.picture();
         let public_key = profile.public_key();
         let weak = self.weak.clone();
         let weak_for_open = self.weak.clone();
         let muted = cx.theme().colors.muted_foreground;
+        let dock = self.dock.clone();
 
-        Menu::new("user-menu")
+        let menu = Menu::new("user-menu")
             .open(self.user_menu_open)
             .on_change({
                 let weak = weak_for_open.clone();
@@ -302,7 +486,36 @@ impl SidebarView {
                         .destructive(true)
                         .handler(|_, cx| dialogs::exit::open(cx)),
                 ]
-            })
+            });
+
+        h_flex().w_full().justify_between().child(menu).child(
+            h_flex()
+                .gap_1()
+                .child(
+                    Button::new("rescan-repos")
+                        .icon(Icon::named(IconRole::Loader))
+                        .variant(ButtonVariant::Ghost)
+                        .loading(scanning)
+                        .disabled(scanning)
+                        .tooltip(Tooltip::text("Rescan for local repositories"))
+                        .on_click(move |_, _, cx| {
+                            let local_repos = LocalReposStore::global(cx);
+                            local_repos.update(cx, |store, cx| store.rescan(cx));
+                        }),
+                )
+                .child(
+                    Button::new("add-repo")
+                        .icon(Icon::named(IconRole::Plus))
+                        .variant(ButtonVariant::Ghost)
+                        .tooltip(Tooltip::text("Create repository"))
+                        .on_click({
+                            let dock = dock.clone();
+                            move |_, window, cx| {
+                                dialogs::create_repo::open(dock.clone(), window, cx);
+                            }
+                        }),
+                ),
+        )
     }
 
     /// Shown while no identity is signed in.
@@ -366,4 +579,38 @@ fn pick_banner() -> SharedString {
         % 3
         + 1;
     format!("backgrounds/banner{num}.jpg").into()
+}
+
+/// The platform that bound a repository, `"nak"` or `"ngit"`.
+fn local_platform(binding: &Nip34Binding) -> Option<&'static str> {
+    let signals = &binding.signals;
+
+    if signals.nip34_json || signals.nip34_grasp_remote || signals.nip34_state_refs {
+        Some("nak")
+    } else if signals.nostr_repo_config {
+        Some("ngit")
+    } else {
+        None
+    }
+}
+
+/// The bound owner's avatar, falling back to the path's pixel avatar when unowned.
+fn local_avatar(
+    entry: &ResolvedLocalRepo,
+    directory: &gpui::Entity<ProfileDirectory>,
+    cx: &App,
+) -> AnyElement {
+    let Some(owner) = entry.nip34.as_ref().and_then(|binding| binding.owner) else {
+        return Avatar::new(entry.path.to_string_lossy())
+            .small()
+            .into_any_element();
+    };
+
+    let profile = directory.read(cx).profile(&owner, cx);
+
+    Avatar::new(owner)
+        .name(profile.name())
+        .picture(profile.picture())
+        .small()
+        .into_any_element()
 }
