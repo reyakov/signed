@@ -1,12 +1,10 @@
-use anyhow::Context;
 use gpui::{AssetSource, Result, SharedString};
-use gpui_component::IconNamed;
+use gpui_native_kit::icons::IconNamed;
 use rust_embed::RustEmbed;
 
 #[derive(RustEmbed)]
 #[folder = "assets"]
 #[include = "icons/**/*.svg"]
-#[include = "themes/**/*.json"]
 #[include = "backgrounds/**/*.jpg"]
 #[include = "backgrounds/**/*.png"]
 #[exclude = "*.DS_Store"]
@@ -14,35 +12,19 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        Self::get(path)
-            .map(|f| Some(f.data))
-            .with_context(|| format!("loading asset at path {path:?}"))
+        if let Some(file) = Self::get(path) {
+            return Ok(Some(file.data));
+        }
+        gpui_native_kit::icons::IconAssets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        Ok(Self::iter()
-            .filter_map(|p| {
-                if p.starts_with(path) {
-                    Some(p.into())
-                } else {
-                    None
-                }
-            })
-            .collect())
-    }
-}
-
-impl Assets {
-    pub fn themes(&self) -> Vec<(String, String)> {
-        Self::iter()
-            .filter(|path| path.starts_with("themes/"))
-            .filter_map(|path| {
-                let data = Self::get(path.as_ref())?;
-                let name = path.strip_prefix("themes/").unwrap_or(path.as_ref());
-                let content = std::str::from_utf8(data.data.as_ref()).ok()?.to_owned();
-                Some((name.to_owned(), content))
-            })
-            .collect()
+        let mut paths: Vec<SharedString> = Self::iter()
+            .filter(|p| p.starts_with(path))
+            .map(Into::into)
+            .collect();
+        paths.extend(gpui_native_kit::icons::IconAssets.list(path)?);
+        Ok(paths)
     }
 }
 

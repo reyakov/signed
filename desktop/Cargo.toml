@@ -31,16 +31,12 @@ assets = { path = "../crates/assets" }
 metadata = { path = "../crates/metadata" }
 paths = { path = "../crates/paths" }
 settings = { path = "../crates/settings" }
+signed_app = { path = "../crates/signed_app" }
 signed_state = { path = "../crates/signed_state" }
-workspace = { path = "../crates/workspace" }
 
 gpui.workspace = true
 gpui_platform.workspace = true
-dock = { workspace = true }
-gpui-component.workspace = true
-native-theme.workspace = true
-native-theme-gpui.workspace = true
-flume.workspace = true
+gpui-native-kit.workspace = true
 reqwest_client.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

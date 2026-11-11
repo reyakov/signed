@@ -2,6 +2,7 @@
 resolver = "2"
 members = ["crates/*", "desktop"]
 default-members = ["desktop"]
+exclude = ["crates/dock", "crates/signed_ui", "crates/workspace"]
 
 [workspace.package]
 version = "0.2.0"
@@ -9,20 +10,14 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-gpui = { package = "gpui-pre", version = "0.3.8" }
-gpui_platform = { package = "gpui-pre-platform", version = "0.3.8", features = ["font-kit", "x11", "wayland"] }
-reqwest_client = { package = "gpui-pre-reqwest-client", version = "0.3.8" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "f8cfc7ed9e57503def9479138894f3139f5400cc" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f8cfc7ed9e57503def9479138894f3139f5400cc", features = ["font-kit"] }
+reqwest_client = { git = "https://github.com/zed-industries/zed", rev = "f8cfc7ed9e57503def9479138894f3139f5400cc" }
 
-# GPUI Kit; exact pins keep the graph on the gpui-pre 0.3.8 closure that
-# native-theme-gpui 0.6.1 is verified against (0.7.3 and 0.8 pin 0.3.9).
-gpui-component = { version = "=0.7.1", features = ["tree-sitter-languages"] }
-gpui-base = "=0.7.1"
+gpui-native-kit = { git = "https://git.reya.info/reya/gpui-native-kit", rev = "4469a4c280194db033dd0abf9c4d6b8f4daa1858", features = ["layout", "editor"] }
 
-native-theme = { version = "0.6.1", features = ["watch"] }
-native-theme-gpui = { version = "0.6.1", default-features = false, features = ["system-fonts"] }
-
-dock = { path = "crates/dock" }
 settings = { path = "crates/settings" }
+signed_app = { path = "crates/signed_app" }
 
 nostr = { git = "https://github.com/rust-nostr/nostr", features = ["nip59", "nip49", "nip44", "os-rng"] }
 nostr-lmdb = { git = "https://github.com/rust-nostr/nostr" }
