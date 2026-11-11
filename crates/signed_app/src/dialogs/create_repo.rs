@@ -243,8 +243,7 @@ fn choose_folder(folder_input: &Entity<InputState>, window: &mut Window, cx: &mu
     cx.spawn(async move |cx| {
         if let Ok(Ok(Some(mut paths))) = prompt.await
             && let Some(path) = paths.pop()
-        {
-            if let Err(error) = cx.update_window(handle, |_, window, cx| {
+            && let Err(error) = cx.update_window(handle, |_, window, cx| {
                 let text = path.to_string_lossy().to_string();
                 store.update(cx, |store, cx| {
                     store.edit(
@@ -255,9 +254,9 @@ fn choose_folder(folder_input: &Entity<InputState>, window: &mut Window, cx: &mu
                     );
                 });
                 folder_input.update(cx, |input, cx| input.set_value(text, window, cx));
-            }) {
-                log::warn!("failed to apply selected folder: {error}");
-            }
+            })
+        {
+            log::warn!("failed to apply selected folder: {error}");
         }
     })
     .detach();

@@ -44,6 +44,7 @@ pub mod refs;
 
 use super::tree::{TreeItemSeed, build_tree_items, sorted_worktree_paths};
 use crate::dialogs;
+use crate::views::issues::IssuesView;
 use banners::Banners;
 use files::RepoFilesView;
 use history::RepoHistoryView;
@@ -83,6 +84,7 @@ pub struct RepoDetailView {
     share_open: bool,
     repo_menu_open: bool,
     clone_open: bool,
+    issues_menu_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -177,6 +179,7 @@ impl RepoDetailView {
             share_open: false,
             repo_menu_open: false,
             clone_open: false,
+            issues_menu_open: false,
             _subscriptions: subscriptions,
         };
 
@@ -833,6 +836,24 @@ impl RepoDetailView {
         dialogs::init_repo::open(local_path, cx.entity().downgrade(), window, cx);
     }
 
+    fn open_issues(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(addr) = self.store.read(cx).addr().cloned() else {
+            return;
+        };
+        let id = SharedString::from(format!("issues:{addr}"));
+        let dock = self.dock.clone();
+        let dock_for_build = dock.clone();
+        let store = self.store.clone();
+
+        crate::panels::open(
+            &dock,
+            id,
+            move |_, cx| cx.new(|cx| IssuesView::new(dock_for_build.clone(), store.clone(), cx)),
+            window,
+            cx,
+        );
+    }
+
     fn render_header(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.store.read(cx).addr().is_none() {
             return self.render_local_header(cx);
@@ -931,6 +952,43 @@ impl RepoDetailView {
                             .flex_none()
                             .gap_2()
                             .justify_end()
+                            .child({
+                                let weak_issues = cx.entity().downgrade();
+                                let weak_issues_open = cx.entity().downgrade();
+                                let store_for_issues = self.store.clone();
+                                let issues_count = self.store.read(cx).issue_count();
+
+                                DropdownMenu::new("issues")
+                                    .label(format!("Issues {issues_count}"))
+                                    .icon(Icon::named(CustomIconName::GitIssueDone))
+                                    .variant(ButtonVariant::Secondary)
+                                    .open(self.issues_menu_open)
+                                    .on_click(move |_, window, cx| {
+                                        if let Err(error) = weak_issues.update(cx, |this, cx| {
+                                            this.open_issues(window, cx);
+                                        }) {
+                                            log::warn!("failed to open issues: {error}");
+                                        }
+                                    })
+                                    .on_open_change(move |open, _, cx| {
+                                        if let Err(error) =
+                                            weak_issues_open.update(cx, |this, cx| {
+                                                this.issues_menu_open = open;
+                                                cx.notify();
+                                            })
+                                        {
+                                            log::warn!("failed to update issues menu: {error}");
+                                        }
+                                    })
+                                    .items(move |_, _| {
+                                        vec![MenuItem::new("New issue").handler({
+                                            let store = store_for_issues.clone();
+                                            move |_, cx| {
+                                                dialogs::new_issue::open(store.clone(), cx);
+                                            }
+                                        })]
+                                    })
+                            })
                             .child(
                                 DropdownMenu::new("share")
                                     .icon(Icon::named(IconRole::Copy))

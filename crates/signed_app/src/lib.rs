@@ -1,4 +1,5 @@
 mod app;
+pub mod components;
 mod dialogs;
 mod panels;
 mod views;

@@ -4,6 +4,7 @@ pub mod exit;
 pub mod grasp_servers;
 pub mod import;
 pub mod init_repo;
+pub mod new_issue;
 pub mod onboarding;
 pub mod passphrase;
 pub mod progress;

@@ -19,12 +19,12 @@ impl RefSwitcher {
                 Combobox::new("branch-select", "Branch", Vec::new())
                     .placeholder("Branch")
                     .on_change(move |value, window, cx| {
-                        if let Some(name) = value {
-                            if let Err(error) = branch_view.update(cx, |this, cx| {
+                        if let Some(name) = value
+                            && let Err(error) = branch_view.update(cx, |this, cx| {
                                 this.switch_ref(super::RefKind::Branch, name, window, cx);
-                            }) {
-                                log::warn!("failed to switch branch: {error}");
-                            }
+                            })
+                        {
+                            log::warn!("failed to switch branch: {error}");
                         }
                     }),
                 window,
@@ -38,12 +38,12 @@ impl RefSwitcher {
                 Combobox::new("tag-select", "Tag", Vec::new())
                     .placeholder("Tag")
                     .on_change(move |value, window, cx| {
-                        if let Some(name) = value {
-                            if let Err(error) = tag_view.update(cx, |this, cx| {
+                        if let Some(name) = value
+                            && let Err(error) = tag_view.update(cx, |this, cx| {
                                 this.switch_ref(super::RefKind::Tag, name, window, cx);
-                            }) {
-                                log::warn!("failed to switch tag: {error}");
-                            }
+                            })
+                        {
+                            log::warn!("failed to switch tag: {error}");
                         }
                     }),
                 window,
