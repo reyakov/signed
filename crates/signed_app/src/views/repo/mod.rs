@@ -15,6 +15,7 @@ use gpui_native_kit::badge::Badge;
 use gpui_native_kit::button::{Button, ButtonVariant};
 use gpui_native_kit::clipboard::ClipboardButton;
 use gpui_native_kit::common::{Sizable as _, h_flex, v_flex};
+use gpui_native_kit::data::tabs::{Tab, Tabs};
 use gpui_native_kit::dropdown_menu::DropdownMenu;
 use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::layout::dock::{DockState, Panel};
@@ -36,13 +37,16 @@ use utils::middle_truncate;
 
 pub mod actions;
 pub mod banners;
+pub mod commit_diff;
 pub mod files;
+pub mod history;
 pub mod refs;
 
 use super::tree::{TreeItemSeed, build_tree_items, sorted_worktree_paths};
 use crate::dialogs;
 use banners::Banners;
 use files::RepoFilesView;
+use history::RepoHistoryView;
 use refs::RefSwitcher;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,6 +64,10 @@ pub struct RepoDetailView {
     repo_started: bool,
     /// The Files tab, which owns the explorer, previews and the per-file commit map.
     files: Entity<RepoFilesView>,
+    /// The Commits tab, which walks HEAD and opens commit diffs.
+    history: Entity<RepoHistoryView>,
+    /// The active tab: Files or Commits.
+    active_tab: usize,
     /// The checked-out worktree path.
     worktree: Option<PathBuf>,
     loading: bool,
@@ -134,6 +142,7 @@ impl RepoDetailView {
     ) -> Self {
         let checkouts = CheckoutsStore::global(cx);
         let files = cx.new(RepoFilesView::new);
+        let history = cx.new(|_| RepoHistoryView::new(store.clone(), dock.clone()));
         let weak = cx.entity().downgrade();
         let refs = RefSwitcher::new(weak.clone(), window, cx);
 
@@ -154,6 +163,8 @@ impl RepoDetailView {
             store: store.clone(),
             repo_started: false,
             files,
+            history,
+            active_tab: 0,
             worktree: None,
             loading: true,
             error: None,
@@ -468,6 +479,11 @@ impl RepoDetailView {
             files.set_readme(readme_path, readme, cx);
         });
 
+        self.history.update(cx, |history, cx| {
+            history.set_worktree(Some(worktree.clone()));
+            history.reload(cx);
+        });
+
         let branches: Vec<SharedString> = branches.into_iter().map(Into::into).collect();
         let tags: Vec<SharedString> = tags.into_iter().map(Into::into).collect();
 
@@ -637,6 +653,7 @@ impl RepoDetailView {
                             files.apply_entries(tree, paths, cx);
                             files.set_readme(readme_path, readme, cx);
                         });
+                        this.history.update(cx, |history, cx| history.reload(cx));
                     }
                     Err(error) => {
                         this.error = Some(error.to_string().into());
@@ -861,6 +878,7 @@ impl RepoDetailView {
         let git_for_popover = git_commands.clone();
 
         v_flex()
+            .flex_none()
             .p_4()
             .w_full()
             .gap_6()
@@ -1104,6 +1122,7 @@ impl RepoDetailView {
                             ),
                     ),
             )
+            .child(self.render_tabs(cx))
             .into_any_element()
     }
 
@@ -1135,6 +1154,7 @@ impl RepoDetailView {
         };
 
         v_flex()
+            .flex_none()
             .px_4()
             .pb_4()
             .w_full()
@@ -1169,6 +1189,37 @@ impl RepoDetailView {
                     )
                     .child(action),
             )
+            .child(self.render_tabs(cx))
+            .into_any_element()
+    }
+
+    fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
+        let count = self.history.read(cx).commit_count();
+        let muted = cx.theme().colors.muted_foreground;
+        let weak = cx.entity().downgrade();
+        let commits_label = match count {
+            Some(count) => SharedString::from(format!("Commits ({count})")),
+            None => SharedString::from("Commits"),
+        };
+
+        Tabs::new("repo-tabs")
+            .selected(self.active_tab)
+            .tabs(move |_, _| {
+                vec![
+                    Tab::new("files", "Files")
+                        .lead(Icon::named(CustomIconName::GitFile).color(muted)),
+                    Tab::new("commits", commits_label.clone())
+                        .lead(Icon::named(CustomIconName::GitCommit).color(muted)),
+                ]
+            })
+            .on_change(move |index, _, cx| {
+                if let Err(error) = weak.update(cx, |this, cx| {
+                    this.active_tab = index;
+                    cx.notify();
+                }) {
+                    log::warn!("failed to switch repo tab: {error}");
+                }
+            })
             .into_any_element()
     }
 
@@ -1569,7 +1620,10 @@ impl Render for RepoDetailView {
                         }),
                 )
             })
-            .child(self.render_files_tab(cx))
+            .map(|this| match self.active_tab {
+                0 => this.child(self.render_files_tab(cx)),
+                _ => this.child(self.history.clone()),
+            })
     }
 }
 
@@ -1797,7 +1851,7 @@ fn bound_repo_label(
 }
 
 /// The profile avatar shown on the repository tab.
-fn repo_tab_avatar(
+pub(crate) fn repo_tab_avatar(
     store: &RepoStore,
     directory: &Entity<ProfileDirectory>,
     cx: &App,

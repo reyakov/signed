@@ -49,6 +49,24 @@ pub fn flatten(seeds: &[TreeItemSeed], expanded: &HashSet<String>) -> Vec<TreeRo
     rows
 }
 
+/// Every folder id, for starting with the tree fully expanded.
+pub fn collect_expanded(seeds: &[TreeItemSeed]) -> HashSet<String> {
+    fn push(seed: &TreeItemSeed, expanded: &mut HashSet<String>) {
+        if !seed.children.is_empty() {
+            expanded.insert(seed.id.clone());
+            for child in &seed.children {
+                push(child, expanded);
+            }
+        }
+    }
+
+    let mut expanded = HashSet::new();
+    for seed in seeds {
+        push(seed, &mut expanded);
+    }
+    expanded
+}
+
 /// Build nested tree items from a flat entry list sorted dirs-first.
 pub fn build_tree_items(entries: &[PathBuf]) -> Vec<TreeItemSeed> {
     // Node indices by full path, so parents resolve in constant time while inserting.

@@ -4,7 +4,7 @@ use gpui::{
 };
 use gpui_native_kit::icons::IconRole;
 use gpui_native_kit::layout::dock::{Dock, DockState};
-use gpui_native_kit::layout::shell::{LayoutState, Shell};
+use gpui_native_kit::layout::shell::{LayoutState, Shell, SidebarToggles};
 use gpui_native_kit::theme::{ActiveTheme as _, ThemeVariant, follow_system, set_mode_override};
 use gpui_native_kit::toast::Toast;
 use settings::{AppearanceMode, Settings, SettingsStore};
@@ -24,8 +24,12 @@ pub struct AppRoot {
 
 impl AppRoot {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let layout = LayoutState::new(cx);
         let dock = DockState::new(cx);
+        let layout = LayoutState::new(cx);
+
+        layout.update(cx, |layout, cx| {
+            layout.set_sidebar_toggles(SidebarToggles::Hidden, cx);
+        });
 
         dock.update(cx, |dock, cx| {
             dock.register_panel("welcome", |_, cx| {
@@ -42,8 +46,11 @@ impl AppRoot {
         let dialogs = cx.new(DialogHost::new);
         DialogHost::set_global(dialogs.clone(), cx);
 
-        let mut subscriptions = Vec::new();
         let backend = Backend::global(cx);
+        let settings = SettingsStore::global(cx);
+
+        let mut subscriptions = Vec::new();
+
         subscriptions.push(
             cx.subscribe(&backend, |this, _backend, event, cx| match event {
                 BackendEvent::PassphraseRequired => dialogs::passphrase::open(cx),
@@ -56,15 +63,13 @@ impl AppRoot {
             }),
         );
 
-        let settings = SettingsStore::global(cx);
         subscriptions.push(cx.observe(&settings, |_this, store, cx| {
             let settings = store.read(cx).settings().clone();
             apply_appearance(&settings, cx);
         }));
 
-        window.defer(cx, |_window, cx| {
-            let required = Backend::global(cx).read(cx).passphrase_required();
-            if required {
+        window.defer(cx, move |_window, cx| {
+            if backend.read(cx).passphrase_required() {
                 dialogs::passphrase::open(cx);
             }
         });
