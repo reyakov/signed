@@ -6927,6 +6927,7 @@ dependencies = [
  "gpui-native-kit",
  "log",
  "metadata",
+ "nostr",
  "paths",
  "settings",
  "signed_core",

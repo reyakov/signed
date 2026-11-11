@@ -1,3 +1,9 @@
+pub mod exit;
+pub mod import;
+pub mod onboarding;
+pub mod passphrase;
+pub mod progress;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyView, App, Context, Entity, Global, IntoElement, ParentElement as _, Render, Styled as _,
@@ -35,6 +41,28 @@ impl DialogHost {
         self.open = None;
         cx.notify();
     }
+}
+
+/// Replaces the mounted modal with `view`.
+pub fn open_global(view: impl Into<AnyView>, cx: &mut App) {
+    let host = DialogHost::global(cx);
+    host.update(cx, |host, cx| host.open(view.into(), cx));
+}
+
+/// Unmounts the current modal, if any.
+pub fn close_global(cx: &mut App) {
+    let host = DialogHost::global(cx);
+    host.update(cx, |host, cx| host.close(cx));
+}
+
+/// Opens the onboarding form.
+pub fn open_onboarding(cx: &mut App) {
+    open_global(onboarding::OnboardingDialog::new(cx), cx);
+}
+
+/// Opens the identity import form.
+pub fn open_import(cx: &mut App) {
+    open_global(import::ImportDialog::new(cx), cx);
 }
 
 impl Render for DialogHost {

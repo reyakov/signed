@@ -17,6 +17,7 @@ utils = { path = "../utils" }
 
 gpui.workspace = true
 gpui-native-kit.workspace = true
+nostr.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true

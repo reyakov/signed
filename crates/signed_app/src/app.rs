@@ -1,32 +1,80 @@
 use gpui::{
     App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
-    Window, div,
+    Subscription, Window, div,
 };
-use gpui_native_kit::empty_state::EmptyState;
-use gpui_native_kit::layout::dock::DockState;
+use gpui_native_kit::icons::IconRole;
+use gpui_native_kit::layout::dock::{Dock, DockState};
 use gpui_native_kit::layout::shell::{LayoutState, Shell};
 use gpui_native_kit::theme::{ActiveTheme as _, ThemeVariant, follow_system, set_mode_override};
-use settings::{AppearanceMode, Settings};
+use gpui_native_kit::toast::Toast;
+use settings::{AppearanceMode, Settings, SettingsStore};
+use signed_state::{Backend, BackendEvent};
 
-use crate::dialogs::DialogHost;
+use crate::dialogs::{self, DialogHost};
+use crate::views::placeholder::PlaceholderView;
+use crate::views::sidebar::SidebarView;
 
 pub struct AppRoot {
     layout: Entity<LayoutState>,
     dock: Entity<DockState>,
+    sidebar: Entity<SidebarView>,
     dialogs: Entity<DialogHost>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl AppRoot {
-    pub fn new(_window: &mut Window, cx: &mut App) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let layout = LayoutState::new(cx);
         let dock = DockState::new(cx);
+
+        dock.update(cx, |dock, cx| {
+            dock.register_panel("welcome", |_, cx| {
+                cx.new(|_| PlaceholderView::new("Welcome"))
+            });
+            dock.register_panel("profile", |_, cx| {
+                cx.new(|_| PlaceholderView::new("Profile"))
+            });
+            dock.register_panel("relays", |_, cx| cx.new(|_| PlaceholderView::new("Relays")));
+            dock.open_panel("welcome", window, cx);
+        });
+
+        let sidebar = cx.new(|cx| SidebarView::new(dock.downgrade(), cx));
         let dialogs = cx.new(DialogHost::new);
         DialogHost::set_global(dialogs.clone(), cx);
+
+        let mut subscriptions = Vec::new();
+        let backend = Backend::global(cx);
+        subscriptions.push(
+            cx.subscribe(&backend, |this, _backend, event, cx| match event {
+                BackendEvent::PassphraseRequired => dialogs::passphrase::open(cx),
+                BackendEvent::Error(message) => {
+                    this.layout.update(cx, |layout, cx| {
+                        layout.push_toast(Toast::new(message.clone()).icon(IconRole::Warning), cx);
+                    });
+                }
+                _ => {}
+            }),
+        );
+
+        let settings = SettingsStore::global(cx);
+        subscriptions.push(cx.observe(&settings, |_this, store, cx| {
+            let settings = store.read(cx).settings().clone();
+            apply_appearance(&settings, cx);
+        }));
+
+        window.defer(cx, |_window, cx| {
+            let required = Backend::global(cx).read(cx).passphrase_required();
+            if required {
+                dialogs::passphrase::open(cx);
+            }
+        });
 
         Self {
             layout,
             dock,
+            sidebar,
             dialogs,
+            _subscriptions: subscriptions,
         }
     }
 }
@@ -40,7 +88,13 @@ impl Render for AppRoot {
             .text_color(theme.colors.foreground)
             .child(
                 Shell::new("signed-shell", self.layout.clone())
-                    .center(EmptyState::new("Signed").hint("UI migration in progress")),
+                    .left_sidebar(self.sidebar.read(cx).build(cx))
+                    .center(
+                        Dock::new("signed-dock", self.dock.clone())
+                            .window_controls(true)
+                            .traffic_light_pad(!self.layout.read(cx).is_left_sidebar_visible())
+                            .sidebar_toggles(self.layout.clone()),
+                    ),
             )
             .child(self.dialogs.clone())
     }
