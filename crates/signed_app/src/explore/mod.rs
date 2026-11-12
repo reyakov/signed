@@ -42,7 +42,7 @@ impl ExploreView {
         let store = RepoListStore::global(cx);
         let directory = ProfileDirectory::new(cx);
 
-        let entity = cx.entity();
+        let weak = cx.entity().downgrade();
         let search = InputState::new(cx);
 
         let search_subscription = cx.subscribe(&search, |this, _search, event, cx| {
@@ -56,9 +56,9 @@ impl ExploreView {
         });
 
         cx.defer(move |cx| {
-            entity.update(cx, |this, cx| {
-                this.rebuild_rows(cx);
-            });
+            if let Err(error) = weak.update(cx, |this, cx| this.rebuild_rows(cx)) {
+                log::warn!("failed to load explore rows: {error}");
+            }
         });
 
         Self {

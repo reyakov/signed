@@ -419,7 +419,7 @@ fn render_diff_line(line: &DiffLine, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn commit_row(
+pub(crate) fn commit_row(
     ix: usize,
     commit: &FileCommit,
     on_click: impl Fn(&mut Window, &mut gpui::App) + 'static,

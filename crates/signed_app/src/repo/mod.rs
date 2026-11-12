@@ -42,9 +42,6 @@ pub mod helpers;
 pub mod history;
 pub mod refs;
 
-use crate::issues::IssuesView;
-use crate::shared::tree::{build_tree_items, sorted_worktree_paths};
-use crate::shared::widgets::repo_tab_avatar;
 use banners::Banners;
 use files::RepoFilesView;
 use helpers::{
@@ -53,6 +50,11 @@ use helpers::{
 };
 use history::RepoHistoryView;
 use refs::RefSwitcher;
+
+use crate::issues::IssuesView;
+use crate::pull_requests::{NewPullRequestView, PullRequestsView, SendPatchView};
+use crate::shared::tree::{build_tree_items, sorted_worktree_paths};
+use crate::shared::widgets::repo_tab_avatar;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RefKind {
@@ -89,6 +91,7 @@ pub struct RepoDetailView {
     repo_menu_open: bool,
     clone_open: bool,
     issues_menu_open: bool,
+    pulls_menu_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -146,13 +149,15 @@ impl RepoDetailView {
             }
         })];
 
+        let store_for_attach = store.clone();
         window.defer(cx, move |window, cx| {
-            if let Err(error) = weak.update(cx, |this, cx| this.load_repo(window, cx)) {
-                log::warn!("failed to load repository: {error}");
-            }
+            let _ = weak.update(cx, |this, cx| {
+                this.attach_store(&store_for_attach, window, cx);
+                this.load_repo(window, cx);
+            });
         });
 
-        let mut view = Self {
+        Self {
             dock,
             store: store.clone(),
             repo_started: false,
@@ -172,11 +177,9 @@ impl RepoDetailView {
             repo_menu_open: false,
             clone_open: false,
             issues_menu_open: false,
+            pulls_menu_open: false,
             _subscriptions: subscriptions,
-        };
-
-        view.attach_store(&store, window, cx);
-        view
+        }
     }
 
     pub(crate) fn apply_announcement(
@@ -828,6 +831,85 @@ impl RepoDetailView {
         dialogs::init::open(local_path, cx.entity().downgrade(), window, cx);
     }
 
+    fn open_pulls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(addr) = self.store.read(cx).addr().cloned() else {
+            return;
+        };
+
+        let id = SharedString::from(format!("pulls:{addr}"));
+        let dock = self.dock.clone();
+        let dock_for_build = dock.clone();
+        let store = self.store.clone();
+
+        crate::shared::panels::open(
+            &dock,
+            id,
+            move |_, cx| {
+                cx.new(|cx| PullRequestsView::new(dock_for_build.clone(), store.clone(), cx))
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn open_new_pull_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(addr) = self.store.read(cx).addr().cloned() else {
+            return;
+        };
+
+        let id = SharedString::from(format!("new-pr:{addr}"));
+        let dock = self.dock.clone();
+        let dock_for_build = dock.clone();
+        let store = self.store.clone();
+
+        crate::shared::panels::open(
+            &dock,
+            id.clone(),
+            move |window, cx| {
+                cx.new(|cx| {
+                    NewPullRequestView::new(
+                        dock_for_build.clone(),
+                        id.clone(),
+                        store.clone(),
+                        window,
+                        cx,
+                    )
+                })
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn open_send_patch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(addr) = self.store.read(cx).addr().cloned() else {
+            return;
+        };
+
+        let id = SharedString::from(format!("send-patch:{addr}"));
+        let dock = self.dock.clone();
+        let dock_for_build = dock.clone();
+        let store = self.store.clone();
+
+        crate::shared::panels::open(
+            &dock,
+            id.clone(),
+            move |window, cx| {
+                cx.new(|cx| {
+                    SendPatchView::new(
+                        dock_for_build.clone(),
+                        id.clone(),
+                        store.clone(),
+                        window,
+                        cx,
+                    )
+                })
+            },
+            window,
+            cx,
+        );
+    }
+
     fn open_issues(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(addr) = self.store.read(cx).addr().cloned() else {
             return;
@@ -944,6 +1026,53 @@ impl RepoDetailView {
                             .flex_none()
                             .gap_2()
                             .justify_end()
+                            .child({
+                                let weak_pulls = cx.entity().downgrade();
+                                let weak_pulls_open = cx.entity().downgrade();
+                                let _store_for_pulls = self.store.clone();
+                                let pulls_count = self.store.read(cx).pull_request_count();
+
+                                DropdownMenu::new("pulls")
+                                    .label(format!("Pull requests {pulls_count}"))
+                                    .icon(Icon::named(CustomIconName::GitPullRequest))
+                                    .variant(ButtonVariant::Secondary)
+                                    .open(self.pulls_menu_open)
+                                    .on_click(move |_, window, cx| {
+                                        if let Err(error) = weak_pulls.update(cx, |this, cx| {
+                                            this.open_pulls(window, cx);
+                                        }) {
+                                            log::warn!("failed to open pull requests: {error}");
+                                        }
+                                    })
+                                    .on_open_change(move |open, _, cx| {
+                                        if let Err(error) = weak_pulls_open.update(cx, |this, cx| {
+                                            this.pulls_menu_open = open;
+                                            cx.notify();
+                                        }) {
+                                            log::warn!("failed to update pulls menu: {error}");
+                                        }
+                                    })
+                                    .items({
+                                        let weak_new = cx.entity().downgrade();
+                                        let weak_patch = cx.entity().downgrade();
+                                        move |_, _| {
+                                            let weak_new = weak_new.clone();
+                                            let weak_patch = weak_patch.clone();
+                                            vec![
+                                                MenuItem::new("New pull request").handler(move |window, cx| {
+                                                    let _ = weak_new.update(cx, |this, cx| {
+                                                        this.open_new_pull_request(window, cx);
+                                                    });
+                                                }),
+                                                MenuItem::new("Send patch").handler(move |window, cx| {
+                                                    let _ = weak_patch.update(cx, |this, cx| {
+                                                        this.open_send_patch(window, cx);
+                                                    });
+                                                }),
+                                            ]
+                                        }
+                                    })
+                            })
                             .child({
                                 let weak_issues = cx.entity().downgrade();
                                 let weak_issues_open = cx.entity().downgrade();

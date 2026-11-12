@@ -92,6 +92,17 @@ impl DiffPane {
         cx.notify();
     }
 
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.diff = None;
+        self.seeds.clear();
+        self.expanded.clear();
+        self.rows.clear();
+        self.selected_file = None;
+        self.selected_index = None;
+        self.diff_rows.clear();
+        cx.notify();
+    }
+
     fn select_file(&mut self, path: &str, cx: &mut Context<Self>) {
         self.selected_file = Some(path.into());
         self.selected_index = self.rows.iter().position(|row| row.id == path);

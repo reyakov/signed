@@ -18,14 +18,14 @@ use signed_state::RepoStore;
 use utils::relative_time;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum IssueFilter {
+pub(crate) enum IssueFilter {
     All,
     Open,
     Closed,
 }
 
 impl IssueFilter {
-    pub(super) fn matches(self, status: RepoStatus) -> bool {
+    pub(crate) fn matches(self, status: RepoStatus) -> bool {
         match self {
             Self::All => true,
             Self::Open => status == RepoStatus::Open,
@@ -36,12 +36,12 @@ impl IssueFilter {
 
 /// Root events counted by their resolved status.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) struct StatusCounts {
-    pub(super) total: usize,
-    pub(super) open: usize,
-    pub(super) closed: usize,
-    pub(super) draft: usize,
-    pub(super) applied: usize,
+pub(crate) struct StatusCounts {
+    pub(crate) total: usize,
+    pub(crate) open: usize,
+    pub(crate) closed: usize,
+    pub(crate) draft: usize,
+    pub(crate) applied: usize,
 }
 
 impl StatusCounts {
@@ -57,7 +57,7 @@ impl StatusCounts {
 }
 
 /// Indices of `roots` whose status `keep` accepts, counting every root's status.
-pub(super) fn filter_by_status<'a>(
+pub(crate) fn filter_by_status<'a>(
     roots: impl IntoIterator<Item = &'a Event>,
     status_of: impl Fn(&Event) -> RepoStatus,
     keep: impl Fn(RepoStatus) -> bool,
@@ -77,11 +77,15 @@ pub(super) fn filter_by_status<'a>(
     (visible, counts)
 }
 
-pub(super) fn issue_roots(store: &RepoStore) -> &[Event] {
+pub(crate) fn issue_roots(store: &RepoStore) -> &[Event] {
     &store.issues
 }
 
-pub(super) fn sidebar_section(
+pub(crate) fn pr_roots(store: &RepoStore) -> &[Event] {
+    &store.pull_requests
+}
+
+pub(crate) fn sidebar_section(
     store: &Entity<RepoStore>,
     id: EventId,
     roots: fn(&RepoStore) -> &[Event],
@@ -153,7 +157,7 @@ pub(super) fn sidebar_section(
         .into_any_element()
 }
 
-pub(super) fn comments_section(
+pub(crate) fn comments_section(
     store: &Entity<RepoStore>,
     root: EventId,
     directory: &Entity<ProfileDirectory>,
@@ -214,7 +218,7 @@ pub(super) fn comments_section(
         .into_any_element()
 }
 
-pub(super) fn comment_form(
+pub(crate) fn comment_form(
     store: &Entity<RepoStore>,
     root: EventId,
     roots: fn(&RepoStore) -> &[Event],

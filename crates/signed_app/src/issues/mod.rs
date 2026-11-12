@@ -27,7 +27,7 @@ use crate::shared::panels;
 use crate::shared::widgets::{repo_tab_avatar, status_badge};
 
 pub mod detail;
-mod helpers;
+pub(crate) mod helpers;
 pub mod new_issue;
 
 const ISSUE_ROW_HEIGHT: f32 = 73.;
@@ -58,8 +58,12 @@ impl IssuesView {
         let subscription = cx.observe(&store, |this, _store, cx| {
             this.rebuild(cx);
         });
+        let weak = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = weak.update(cx, |this, cx| this.rebuild(cx));
+        });
 
-        let mut view = Self {
+        Self {
             dock,
             store,
             repo_name,
@@ -70,9 +74,7 @@ impl IssuesView {
             scroll_handle: UniformListScrollHandle::new(),
             directory: ProfileDirectory::new(cx),
             _subscription: subscription,
-        };
-        view.rebuild(cx);
-        view
+        }
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {

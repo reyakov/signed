@@ -2,6 +2,7 @@ mod app;
 mod explore;
 mod identity;
 mod issues;
+mod pull_requests;
 mod repo;
 mod shared;
 mod sidebar;

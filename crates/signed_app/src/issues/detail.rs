@@ -39,17 +39,19 @@ impl IssueDetailView {
         });
 
         let directory = ProfileDirectory::new(cx);
+        let weak = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = weak.update(cx, |this, cx| this.track_participants(cx));
+        });
 
-        let mut view = Self {
+        Self {
             store,
             issue_id,
             comment_input,
             directory,
             scroll_handle: ScrollHandle::new(),
             _subscription: subscription,
-        };
-        view.track_participants(cx);
-        view
+        }
     }
 
     /// Track the issue author, everyone who commented and the repository owner.
