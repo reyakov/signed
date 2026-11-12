@@ -30,6 +30,7 @@ use crate::explore::ExploreView;
 use crate::identity;
 use crate::inbox::InboxView;
 use crate::repo::dialogs;
+use crate::settings;
 
 mod helpers;
 
@@ -226,6 +227,7 @@ impl SidebarView {
         Sidebar::new("signed-sidebar")
             .transparent(true)
             .header(self.render_user(&profile, self.scanning, cx))
+            .footer(self.render_footer(cx))
             .entries(move |_, cx| {
                 let muted = cx.theme().colors.muted_foreground;
                 let mut entries = vec![
@@ -437,6 +439,34 @@ impl SidebarView {
             window,
             cx,
         );
+    }
+
+    fn render_footer(&self, _cx: &App) -> impl IntoElement {
+        let guide_weak = self.weak.clone();
+        let settings_click = |_: &gpui::ClickEvent, _: &mut Window, cx: &mut gpui::App| {
+            settings::open(cx);
+        };
+
+        v_flex()
+            .p_2()
+            .gap_1()
+            .w_full()
+            .child(
+                Button::new("guide")
+                    .label("Guide")
+                    .variant(ButtonVariant::Ghost)
+                    .on_click(move |_, window, cx| {
+                        let _ = guide_weak.update(cx, |this, cx| {
+                            this.open_explore(window, cx);
+                        });
+                    }),
+            )
+            .child(
+                Button::new("settings")
+                    .label("Settings")
+                    .variant(ButtonVariant::Ghost)
+                    .on_click(settings_click),
+            )
     }
 
     fn open_inbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
