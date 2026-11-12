@@ -25,9 +25,7 @@ pub struct PassphraseDialog {
 impl PassphraseDialog {
     pub fn new(cx: &mut App) -> Entity<Self> {
         let state = cx.new(|_| DialogProgress::default());
-
-        let pass_input = InputState::new(cx);
-        pass_input.update(cx, |state, cx| state.set_password(true, cx));
+        let pass_input = InputState::builder().password().build(cx);
 
         cx.new(|cx| {
             let enter_subscription =

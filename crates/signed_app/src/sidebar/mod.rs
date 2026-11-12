@@ -17,6 +17,7 @@ use gpui_native_kit::layout::dock::DockState;
 use gpui_native_kit::menu::{Menu, MenuItem};
 use gpui_native_kit::theme::ActiveTheme as _;
 use gpui_native_kit::tooltip::Tooltip;
+use helpers::{local_avatar, local_platform, pick_banner};
 use metadata::{Profile, ProfileDirectory};
 use nostr::prelude::PublicKey;
 use signed_core::{Announcement, RepoAddr};
@@ -25,12 +26,12 @@ use signed_state::{
     ResolvedLocalRepo, SyncStatusDirectory,
 };
 
-mod helpers;
-
 use crate::explore::ExploreView;
 use crate::identity;
+use crate::inbox::InboxView;
 use crate::repo::dialogs;
-use helpers::{local_avatar, local_platform, pick_banner};
+
+mod helpers;
 
 pub struct SidebarView {
     weak: WeakEntity<Self>,
@@ -228,6 +229,11 @@ impl SidebarView {
             .entries(move |_, cx| {
                 let muted = cx.theme().colors.muted_foreground;
                 let mut entries = vec![
+                    SidebarEntry::row("inbox", "Inbox").prefix(
+                        Icon::named(CustomIconName::Inbox)
+                            .size(px(14.))
+                            .color(muted),
+                    ),
                     SidebarEntry::row("browse", "Browse").prefix(
                         Icon::named(CustomIconName::Globe)
                             .size(px(14.))
@@ -340,14 +346,18 @@ impl SidebarView {
         };
 
         match index {
-            0 | 1 => {
+            0 => {
+                self.open_inbox(window, cx);
+                return;
+            }
+            1 | 2 => {
                 self.open_explore(window, cx);
                 return;
             }
             _ => {}
         }
 
-        let Some(row) = index.checked_sub(3) else {
+        let Some(row) = index.checked_sub(4) else {
             return;
         };
 
@@ -429,9 +439,23 @@ impl SidebarView {
         );
     }
 
+    fn open_inbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dock = self.dock.clone();
+        let dock_for_build = dock.clone();
+
+        crate::shared::panels::open(
+            &dock,
+            "inbox",
+            move |_, cx| cx.new(|cx| InboxView::new(dock_for_build.clone(), cx)),
+            window,
+            cx,
+        );
+    }
+
     fn open_explore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dock = self.dock.clone();
         let dock_for_build = dock.clone();
+
         crate::shared::panels::open(
             &dock,
             "explore",

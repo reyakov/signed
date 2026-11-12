@@ -46,10 +46,12 @@ impl CreateRepoDialog {
         let grasp_settings = settings.read(cx).settings().grasp_servers.clone();
 
         let name_input = InputState::new(cx);
-        let desc_input = InputState::new(cx);
-        desc_input.update(cx, |state, cx| state.set_multiline(true, cx));
-        let folder_input = InputState::new_with_text(default_folder.to_string_lossy(), cx);
+        let desc_input = InputState::builder().multiline().build(cx);
+        let folder_input = InputState::builder()
+            .text(default_folder.to_string_lossy())
+            .build(cx);
         folder_input.update(cx, |state, cx| state.set_read_only(true, cx));
+
         let relay_input = InputState::new(cx);
         let state = cx.new(|_| DialogProgress::default());
         let grasp_state = cx.new(|_| GraspServersState::new_default(&grasp_settings));

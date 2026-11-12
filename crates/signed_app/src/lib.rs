@@ -1,6 +1,7 @@
 mod app;
 mod explore;
 mod identity;
+mod inbox;
 mod issues;
 mod pull_requests;
 mod repo;

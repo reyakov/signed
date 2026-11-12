@@ -25,12 +25,8 @@ impl OnboardingDialog {
     pub fn new(cx: &mut App) -> Entity<Self> {
         let state = cx.new(|_| DialogProgress::default());
         let name_input = InputState::new(cx);
-
-        let pass_input = InputState::new(cx);
-        pass_input.update(cx, |state, cx| state.set_password(true, cx));
-
-        let repass_input = InputState::new(cx);
-        repass_input.update(cx, |state, cx| state.set_password(true, cx));
+        let pass_input = InputState::builder().password().build(cx);
+        let repass_input = InputState::builder().password().build(cx);
 
         cx.new(|_| Self {
             name_input,

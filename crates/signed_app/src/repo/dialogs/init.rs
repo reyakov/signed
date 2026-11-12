@@ -54,10 +54,11 @@ impl InitRepoDialog {
 
         let state = cx.new(|_| DialogProgress::default());
         let grasp_state = cx.new(|_| GraspServersState::new_default(&grasp_settings));
-        let name_input = InputState::new_with_text(default_name, cx);
+
+        let name_input = InputState::builder().text(default_name).build(cx);
         name_input.update(cx, |state, cx| state.set_read_only(true, cx));
-        let desc_input = InputState::new(cx);
-        desc_input.update(cx, |state, cx| state.set_multiline(true, cx));
+
+        let desc_input = InputState::builder().multiline().build(cx);
         let relay_input = InputState::new(cx);
 
         load_user_grasp_servers(grasp_state.clone(), window, cx);

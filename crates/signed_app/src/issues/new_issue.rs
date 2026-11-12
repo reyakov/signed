@@ -21,8 +21,7 @@ pub struct NewIssueDialog {
 impl NewIssueDialog {
     pub fn new(store: Entity<RepoStore>, cx: &mut App) -> Entity<Self> {
         let subject = InputState::new(cx);
-        let content = InputState::new(cx);
-        content.update(cx, |state, cx| state.set_multiline(true, cx));
+        let content = InputState::builder().multiline().build(cx);
 
         cx.new(|_| Self {
             store,

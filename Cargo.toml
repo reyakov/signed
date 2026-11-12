@@ -14,7 +14,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "f8cfc7ed9e57503de
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f8cfc7ed9e57503def9479138894f3139f5400cc", features = ["font-kit"] }
 reqwest_client = { git = "https://github.com/zed-industries/zed", rev = "f8cfc7ed9e57503def9479138894f3139f5400cc" }
 
-gpui-native-kit = { git = "https://git.reya.info/reya/gpui-native-kit", rev = "72118bdd6c6c6a90f17f92f767c6ad342c1516b8", features = ["layout", "editor"] }
+gpui-native-kit = { git = "https://git.reya.info/reya/gpui-native-kit", rev = "ccd8997801186a33d4ed299d5bc9446c0f015781", features = ["layout", "editor"] }
 
 settings = { path = "crates/settings" }
 signed_app = { path = "crates/signed_app" }

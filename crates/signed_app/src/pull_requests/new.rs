@@ -72,9 +72,7 @@ impl NewPullRequestView {
 
         let weak = cx.entity().downgrade();
         let subject = InputState::new(cx);
-
-        let description = InputState::new(cx);
-        description.update(cx, |state, cx| state.set_multiline(true, cx));
+        let description = InputState::builder().multiline().build(cx);
 
         let base_select = cx.new(|cx| {
             ComboboxState::new(

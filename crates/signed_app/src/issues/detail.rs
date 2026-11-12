@@ -30,8 +30,7 @@ pub struct IssueDetailView {
 
 impl IssueDetailView {
     pub fn new(store: Entity<RepoStore>, issue_id: EventId, cx: &mut Context<Self>) -> Self {
-        let comment_input = InputState::new(cx);
-        comment_input.update(cx, |state, cx| state.set_multiline(true, cx));
+        let comment_input = InputState::builder().multiline().build(cx);
 
         let subscription = cx.observe(&store, |this, _store, cx| {
             this.track_participants(cx);

@@ -76,16 +76,13 @@ impl PullRequestDetailView {
         cx: &mut Context<Self>,
     ) -> Self {
         let pane = cx.new(DiffPane::new);
-
-        let comment_input = InputState::new(cx);
-        comment_input.update(cx, |state, cx| state.set_multiline(true, cx));
+        let comment_input = InputState::builder().multiline().build(cx);
+        let weak = cx.entity().downgrade();
+        let repo_name = store.read(cx).name();
 
         let subscription = cx.observe(&store, |this, _store, cx| {
             this.sync(cx);
         });
-
-        let weak = cx.entity().downgrade();
-        let repo_name = store.read(cx).name();
 
         cx.defer(move |cx| {
             let _ = weak.update(cx, |this, cx| this.sync(cx));

@@ -25,8 +25,7 @@ pub struct UpdatePrDialog {
 
 impl UpdatePrDialog {
     pub fn new(store: Entity<RepoStore>, root: Event, cx: &mut App) -> Entity<Self> {
-        let patch = InputState::new(cx);
-        patch.update(cx, |state, cx| state.set_multiline(true, cx));
+        let patch = InputState::builder().multiline().build(cx);
         cx.new(|_| Self { store, root, patch })
     }
 

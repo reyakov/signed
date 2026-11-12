@@ -58,6 +58,7 @@ pub enum CustomIconName {
     ArrowUp,
     Trash,
     Globe,
+    Inbox,
 }
 
 impl IconNamed for CustomIconName {
@@ -92,6 +93,7 @@ impl IconNamed for CustomIconName {
             CustomIconName::ArrowUp => "icons/arrow-up.svg",
             CustomIconName::Trash => "icons/trash.svg",
             CustomIconName::Globe => "icons/globe.svg",
+            CustomIconName::Inbox => "icons/inbox.svg",
         }
         .into()
     }

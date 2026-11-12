@@ -3059,7 +3059,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-core"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=72118bdd6c6c6a90f17f92f767c6ad342c1516b8#72118bdd6c6c6a90f17f92f767c6ad342c1516b8"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=ccd8997801186a33d4ed299d5bc9446c0f015781#ccd8997801186a33d4ed299d5bc9446c0f015781"
 dependencies = [
  "cpal",
  "flume 0.12.0",
@@ -3074,7 +3074,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-data"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=72118bdd6c6c6a90f17f92f767c6ad342c1516b8#72118bdd6c6c6a90f17f92f767c6ad342c1516b8"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=ccd8997801186a33d4ed299d5bc9446c0f015781#ccd8997801186a33d4ed299d5bc9446c0f015781"
 dependencies = [
  "gpui",
  "gpui-native-core",
@@ -3086,7 +3086,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-editor"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=72118bdd6c6c6a90f17f92f767c6ad342c1516b8#72118bdd6c6c6a90f17f92f767c6ad342c1516b8"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=ccd8997801186a33d4ed299d5bc9446c0f015781#ccd8997801186a33d4ed299d5bc9446c0f015781"
 dependencies = [
  "gpui",
  "gpui-native-core",
@@ -3105,7 +3105,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-icons"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=72118bdd6c6c6a90f17f92f767c6ad342c1516b8#72118bdd6c6c6a90f17f92f767c6ad342c1516b8"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=ccd8997801186a33d4ed299d5bc9446c0f015781#ccd8997801186a33d4ed299d5bc9446c0f015781"
 dependencies = [
  "anyhow",
  "gpui",
@@ -3114,7 +3114,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-kit"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=72118bdd6c6c6a90f17f92f767c6ad342c1516b8#72118bdd6c6c6a90f17f92f767c6ad342c1516b8"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=ccd8997801186a33d4ed299d5bc9446c0f015781#ccd8997801186a33d4ed299d5bc9446c0f015781"
 dependencies = [
  "gpui",
  "gpui-native-core",
@@ -3128,7 +3128,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-layout"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=72118bdd6c6c6a90f17f92f767c6ad342c1516b8#72118bdd6c6c6a90f17f92f767c6ad342c1516b8"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=ccd8997801186a33d4ed299d5bc9446c0f015781#ccd8997801186a33d4ed299d5bc9446c0f015781"
 dependencies = [
  "gpui",
  "gpui-native-core",
@@ -3141,7 +3141,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-theme"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=72118bdd6c6c6a90f17f92f767c6ad342c1516b8#72118bdd6c6c6a90f17f92f767c6ad342c1516b8"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=ccd8997801186a33d4ed299d5bc9446c0f015781#ccd8997801186a33d4ed299d5bc9446c0f015781"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3162,7 +3162,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-utils"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=72118bdd6c6c6a90f17f92f767c6ad342c1516b8#72118bdd6c6c6a90f17f92f767c6ad342c1516b8"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=ccd8997801186a33d4ed299d5bc9446c0f015781#ccd8997801186a33d4ed299d5bc9446c0f015781"
 dependencies = [
  "gpui",
  "gpui-native-theme",

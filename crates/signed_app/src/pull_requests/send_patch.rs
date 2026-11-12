@@ -36,20 +36,18 @@ impl SendPatchView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let subject = InputState::new(cx);
+        let description = InputState::builder().multiline().build(cx);
+        let patch = InputState::builder().multiline().build(cx);
+
         let repo_name = store.read(cx).name();
         let directory = ProfileDirectory::new(cx);
 
         if let Some(owner) = store.read(cx).announcement.as_ref().map(|a| a.owner) {
-            directory.update(cx, |directory, cx| directory.track([owner], cx));
+            directory.update(cx, |directory, cx| {
+                directory.track([owner], cx);
+            });
         }
-
-        let subject = InputState::new(cx);
-
-        let description = InputState::new(cx);
-        description.update(cx, |state, cx| state.set_multiline(true, cx));
-
-        let patch = InputState::new(cx);
-        patch.update(cx, |state, cx| state.set_multiline(true, cx));
 
         Self {
             dock,
