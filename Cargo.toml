@@ -2,7 +2,6 @@
 resolver = "2"
 members = ["crates/*", "desktop"]
 default-members = ["desktop"]
-exclude = ["crates/dock", "crates/signed_ui", "crates/workspace"]
 
 [workspace.package]
 version = "0.2.0"
@@ -14,7 +13,7 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "f8cfc7ed9e57503de
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f8cfc7ed9e57503def9479138894f3139f5400cc", features = ["font-kit"] }
 reqwest_client = { git = "https://github.com/zed-industries/zed", rev = "f8cfc7ed9e57503def9479138894f3139f5400cc" }
 
-gpui-native-kit = { git = "https://git.reya.info/reya/gpui-native-kit", rev = "9678a7676f4c70f91f04b6ab0ad68148659c2558", features = ["layout", "editor"] }
+gpui-native-kit = { git = "https://git.reya.info/reya/gpui-native-kit", rev = "6667c812597bd2adf415d29a4e50355bb3bf06ee", features = ["layout", "editor"] }
 
 settings = { path = "crates/settings" }
 signed_app = { path = "crates/signed_app" }

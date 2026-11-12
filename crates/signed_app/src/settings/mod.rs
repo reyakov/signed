@@ -7,7 +7,6 @@ use gpui::{
 use gpui_native_kit::common::v_flex;
 use gpui_native_kit::dialog::Dialog;
 use gpui_native_kit::input::InputState;
-use gpui_native_kit::scroll_area::ScrollArea;
 use gpui_native_kit::separator::Separator;
 use helpers::{
     appearance_select, default_folder_selector, event_fetching_select, grasp_servers_editor,
@@ -55,6 +54,7 @@ impl Render for SettingsDialog {
         Dialog::new("settings-dialog")
             .open(true)
             .min_width(px(650.))
+            .height(px(560.))
             .on_change(|open, _, cx| {
                 if !open {
                     crate::shared::dialogs::close_global(cx);
@@ -62,10 +62,7 @@ impl Render for SettingsDialog {
             })
             .title("Settings")
             .content(move |_, cx| {
-                ScrollArea::new("settings-scroll")
-                    .max_h(px(560.))
-                    .child(
-                        v_flex()
+                v_flex()
                             .gap_4()
                             .child(setting_row(
                                 cx,
@@ -99,8 +96,7 @@ impl Render for SettingsDialog {
                                 "Default Folder",
                                 "The folder for newly created repositories.",
                                 default_folder_selector(&default_folder, weak.clone()),
-                            )),
-                    )
+                            ))
                     .into_any_element()
             })
     }
