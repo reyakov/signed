@@ -4,7 +4,7 @@ use gpui::{
 use gpui_native_kit::button::{Button, ButtonVariant};
 use gpui_native_kit::common::v_flex;
 use gpui_native_kit::dialog::Dialog;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use signed_state::Backend;
 
 use crate::shared::dialogs::close_global;
@@ -25,7 +25,7 @@ impl Render for ExitDialog {
                 v_flex()
                     .child(
                         div()
-                            .text_sm()
+                            .typeset(TextRole::Body, cx)
                             .text_color(cx.theme().colors.muted_foreground)
                             .child(
                                 "You will be signed out on this device and will need to sign in again on the next session.",

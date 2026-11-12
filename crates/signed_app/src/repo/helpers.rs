@@ -14,7 +14,7 @@ use gpui_native_kit::combobox::ComboboxState;
 use gpui_native_kit::common::{Sizable as _, h_flex, v_flex};
 use gpui_native_kit::icons::Icon;
 use gpui_native_kit::menu::MenuItem;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use metadata::ProfileDirectory;
 use nostr::nips::nip19::Nip19Coordinate;
 use nostr::prelude::{RelayUrl, ToBech32};
@@ -117,10 +117,19 @@ impl ShareTargets {
     }
 }
 
-pub(super) fn clone_group(label: &str, id: &'static str, command: &SharedString) -> AnyElement {
+pub(super) fn clone_group(
+    label: &str,
+    id: &'static str,
+    command: &SharedString,
+    cx: &App,
+) -> AnyElement {
     v_flex()
         .gap_1()
-        .child(div().text_xs().child(SharedString::from(label)))
+        .child(
+            div()
+                .typeset(TextRole::Caption, cx)
+                .child(SharedString::from(label)),
+        )
         .child(ClipboardButton::new(id, command.clone()))
         .into_any_element()
 }
@@ -170,9 +179,9 @@ pub(super) fn fork_row(
     let row = h_flex()
         .gap_1()
         .min_w_0()
-        .text_sm()
+        .typeset(TextRole::Body, cx)
         .text_color(cx.theme().colors.muted_foreground)
-        .child(Icon::named(CustomIconName::GitBranch).size(px(14.)))
+        .child(Icon::named(CustomIconName::GitBranch).small())
         .child(div().whitespace_nowrap().text_ellipsis().child(label));
 
     Some(if clickable {
@@ -253,7 +262,7 @@ pub(super) fn bound_repo_label(
     h_flex()
         .flex_shrink_0()
         .gap_2()
-        .text_sm()
+        .typeset(TextRole::Body, cx)
         .child("Initialized by")
         .text_color(cx.theme().colors.muted_foreground)
         .when_some(profile, |this, profile| {
@@ -274,8 +283,7 @@ pub(super) fn bound_repo_label(
         .when_some(binding.identifier.as_deref(), |this, ident| {
             this.child(
                 div()
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .typeset(TextRole::Caption2, cx)
                     .child(SharedString::from(format!("/{ident}"))),
             )
         })
@@ -361,7 +369,7 @@ pub(super) fn render_diff_row(hunks: &[DiffHunk], row: DiffRow, cx: &App) -> Any
             .w_full()
             .h(px(DIFF_ROW_HEIGHT))
             .font_family(cx.theme().mono_font)
-            .text_xs()
+            .typeset(TextRole::Caption, cx)
             .bg(cx.theme().colors.muted)
             .border_y_1()
             .border_color(cx.theme().colors.border)
@@ -387,7 +395,7 @@ fn render_diff_line(line: &DiffLine, cx: &App) -> AnyElement {
         .w_full()
         .h(px(DIFF_ROW_HEIGHT))
         .font_family(cx.theme().mono_font)
-        .text_xs()
+        .typeset(TextRole::Caption, cx)
         .when_some(bg, |this, bg| this.bg(bg))
         .child(
             div()
@@ -447,7 +455,7 @@ pub(crate) fn commit_row(
                         .child(
                             div()
                                 .font_family(cx.theme().mono_font)
-                                .text_xs()
+                                .typeset(TextRole::Caption, cx)
                                 .text_color(cx.theme().colors.muted_foreground)
                                 .child(commit.id.clone()),
                         )
@@ -455,7 +463,7 @@ pub(crate) fn commit_row(
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .text_sm()
+                                .typeset(TextRole::Body, cx)
                                 .text_ellipsis()
                                 .whitespace_nowrap()
                                 .child(commit.summary.clone()),
@@ -464,7 +472,7 @@ pub(crate) fn commit_row(
                 .child(
                     h_flex()
                         .gap_2()
-                        .text_xs()
+                        .typeset(TextRole::Caption, cx)
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(commit.author.clone())
                         .child(relative_time_secs(commit.time)),

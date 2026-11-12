@@ -7,7 +7,7 @@ use gpui_native_kit::common::v_flex;
 use gpui_native_kit::dialog::Dialog;
 use gpui_native_kit::field::Field;
 use gpui_native_kit::input::{Input, InputState};
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use nostr::prelude::Event;
 use signed_state::RepoStore;
 
@@ -56,7 +56,7 @@ impl Render for UpdatePrDialog {
                     .gap_3()
                     .child(
                         div()
-                            .text_sm()
+                            .typeset(TextRole::Body, cx)
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Publish a new revision with the output of `git format-patch`."),
                     )

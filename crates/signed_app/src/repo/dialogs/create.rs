@@ -12,7 +12,7 @@ use gpui_native_kit::field::Field;
 use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::input::{Input, InputState};
 use gpui_native_kit::layout::dock::DockState;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use gpui_native_kit::tooltip::Tooltip;
 use settings::SettingsStore;
 use signed_state::{Backend, CheckoutsStore};
@@ -166,7 +166,7 @@ impl Render for CreateRepoDialog {
                     .gap_3()
                     .child(
                         div()
-                            .text_sm()
+                            .typeset(TextRole::Body, cx)
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Publish a new repository to your grasp servers."),
                     )

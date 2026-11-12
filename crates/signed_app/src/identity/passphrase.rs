@@ -2,7 +2,7 @@ use assets::CustomIconName;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    Styled as _, Subscription, Window, div,
+    Styled as _, Subscription, Window, px,
 };
 use gpui_native_kit::button::Button;
 use gpui_native_kit::common::v_flex;
@@ -10,7 +10,6 @@ use gpui_native_kit::dialog::Dialog;
 use gpui_native_kit::field::Field;
 use gpui_native_kit::icons::Icon;
 use gpui_native_kit::input::{Input, InputState, InputStateEvent};
-use gpui_native_kit::theme::ActiveTheme as _;
 use signed_state::Backend;
 
 use crate::shared::dialogs::close_global;
@@ -92,20 +91,18 @@ impl Render for PassphraseDialog {
         Dialog::new("passphrase-dialog")
             .open(true)
             .on_change(|_open, _, _| {})
+            .min_width(px(420.))
             .title("Unlock your identity")
             .content(move |_window, cx| {
                 let progress = state.read(cx);
                 v_flex()
                     .gap_3()
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().colors.muted_foreground)
-                            .child("Enter the passphrase used to encrypt this identity."),
-                    )
-                    .child(
-                        Field::new("passphrase-field", "Passphrase")
-                            .child(Input::new("passphrase-input", pass_input.clone())),
+                        Field::new(
+                            "passphrase-field",
+                            "Enter the passphrase used to encrypt this identity.",
+                        )
+                        .child(Input::new("passphrase-input", pass_input.clone())),
                     )
                     .when_some(error_row(&progress.error, cx), |el, error| el.child(error))
                     .when_some(push_steps_row(&progress.push_steps, cx), |el, steps| {

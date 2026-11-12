@@ -9,7 +9,7 @@ use gpui_native_kit::button::Button;
 use gpui_native_kit::common::{Sizable as _, h_flex, v_flex};
 use gpui_native_kit::icons::Icon;
 use gpui_native_kit::input::{Input, InputState};
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use gpui_native_kit::tooltip::Tooltip;
 use metadata::ProfileDirectory;
 use nostr::prelude::{Event, EventId, PublicKey};
@@ -130,7 +130,12 @@ pub(crate) fn sidebar_section(
                                 .picture(profile.picture())
                                 .small(),
                         )
-                        .child(div().text_sm().text_ellipsis().child(name))
+                        .child(
+                            div()
+                                .typeset(TextRole::Body, cx)
+                                .text_ellipsis()
+                                .child(name),
+                        )
                         .into_any_element()
                 })),
         )
@@ -142,7 +147,7 @@ pub(crate) fn sidebar_section(
                     if labels.is_empty() {
                         this.child(
                             div()
-                                .text_sm()
+                                .typeset(TextRole::Body, cx)
                                 .text_color(cx.theme().colors.muted_foreground)
                                 .child("None yet."),
                         )
@@ -169,12 +174,7 @@ pub(crate) fn comments_section(
 
     v_flex()
         .gap_4()
-        .child(
-            div()
-                .text_xs()
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(title),
-        )
+        .child(div().typeset(TextRole::Caption2, cx).child(title))
         .children(comments.iter().map(|comment| {
             let profile = directory.read(cx).profile(&comment.pubkey, cx);
             let author = profile.name();
@@ -190,7 +190,7 @@ pub(crate) fn comments_section(
                 .child(
                     h_flex()
                         .gap_2()
-                        .text_sm()
+                        .typeset(TextRole::Body, cx)
                         .child(
                             h_flex()
                                 .gap_1()
@@ -213,7 +213,7 @@ pub(crate) fn comments_section(
                                 .child(SharedString::from(age)),
                         ),
                 )
-                .child(div().text_sm().child(content))
+                .child(div().typeset(TextRole::Body, cx).child(content))
         }))
         .into_any_element()
 }
@@ -242,7 +242,7 @@ pub(crate) fn comment_form(
                 .child(
                     h_flex()
                         .gap_1()
-                        .text_xs()
+                        .typeset(TextRole::Caption, cx)
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(
                             Icon::named(CustomIconName::Markdown)

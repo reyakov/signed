@@ -5,7 +5,7 @@ use gpui::{
 use gpui_native_kit::button::{Button, ButtonVariant};
 use gpui_native_kit::common::v_flex;
 use gpui_native_kit::dialog::Dialog;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use signed_state::RepoStore;
 
 use crate::shared::dialogs::{close_global, open_global};
@@ -40,7 +40,7 @@ impl Render for ResetRemoteDialog {
                     .gap_2()
                     .child(
                         div()
-                            .text_sm()
+                            .typeset(TextRole::Body, cx)
                             .text_color(cx.theme().colors.muted_foreground)
                             .child(
                                 "Grasp servers are overwritten to match the local mirror. Refs that do not exist locally are deleted from the servers. This cannot be undone.",
@@ -48,7 +48,7 @@ impl Render for ResetRemoteDialog {
                     )
                     .child(if deleted.is_empty() {
                         div()
-                            .text_sm()
+                            .typeset(TextRole::Body, cx)
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("No server refs will be deleted.")
                             .into_any_element()
@@ -57,7 +57,7 @@ impl Render for ResetRemoteDialog {
                             .gap_1()
                             .children(deleted.iter().map(|name| {
                                 div()
-                                    .text_sm()
+                                    .typeset(TextRole::Body, cx)
                                     .font_family(cx.theme().mono_font)
                                     .child(name.clone())
                             }))

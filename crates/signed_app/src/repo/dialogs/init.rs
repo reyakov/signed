@@ -12,7 +12,7 @@ use gpui_native_kit::field::Field;
 use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::input::{Input, InputState};
 use gpui_native_kit::select::{Select, SelectOption};
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use settings::SettingsStore;
 use signed_core::RepoAddr;
 use signed_git::Repo;
@@ -181,7 +181,7 @@ impl Render for InitRepoDialog {
                     .gap_3()
                     .child(
                         div()
-                            .text_sm()
+                            .typeset(TextRole::Body, cx)
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Publish this local repository to Nostr."),
                     )
@@ -204,7 +204,7 @@ impl Render for InitRepoDialog {
                                     .w_full()
                                     .px_2()
                                     .bg(cx.theme().colors.muted)
-                                    .text_sm()
+                                    .typeset(TextRole::Body, cx)
                                     .text_color(cx.theme().colors.muted_foreground)
                                     .rounded(cx.theme().radius.control)
                                     .child(folder.clone()),

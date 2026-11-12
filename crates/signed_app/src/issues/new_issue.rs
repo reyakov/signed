@@ -7,7 +7,7 @@ use gpui_native_kit::common::v_flex;
 use gpui_native_kit::dialog::Dialog;
 use gpui_native_kit::field::Field;
 use gpui_native_kit::input::{Input, InputState};
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use signed_state::RepoStore;
 
 use crate::shared::dialogs::{close_global, open_global};
@@ -63,7 +63,7 @@ impl Render for NewIssueDialog {
                     .gap_3()
                     .child(
                         div()
-                            .text_sm()
+                            .typeset(TextRole::Body, cx)
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Report a bug, ask a question, or propose a change."),
                     )

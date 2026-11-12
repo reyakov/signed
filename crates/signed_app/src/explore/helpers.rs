@@ -8,7 +8,7 @@ use gpui_native_kit::avatar::Avatar;
 use gpui_native_kit::common::{Sizable as _, h_flex, v_flex};
 use gpui_native_kit::icons::Icon;
 use gpui_native_kit::layout::dock::DockState;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use metadata::ProfileDirectory;
 use signed_core::Announcement;
 use signed_state::{RepoListStore, Timestamp};
@@ -121,8 +121,7 @@ pub(super) fn render_card(
                 .child(
                     div()
                         .min_w_0()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .typeset(TextRole::Headline, cx)
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .child(name),
@@ -131,7 +130,7 @@ pub(super) fn render_card(
                     this.child(
                         h_flex()
                             .gap_1()
-                            .text_xs()
+                            .typeset(TextRole::Caption, cx)
                             .text_color(cx.theme().colors.muted_foreground)
                             .whitespace_nowrap()
                             .child(
@@ -147,7 +146,7 @@ pub(super) fn render_card(
             div()
                 .h_16()
                 .min_w_0()
-                .text_xs()
+                .typeset(TextRole::Caption, cx)
                 .text_color(cx.theme().colors.muted_foreground)
                 .line_clamp(2)
                 .child(description),
@@ -168,7 +167,7 @@ pub(super) fn render_card(
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .typeset(TextRole::Caption, cx)
                                 .text_color(cx.theme().colors.muted_foreground)
                                 .whitespace_nowrap()
                                 .child(owner_name),
@@ -178,7 +177,7 @@ pub(super) fn render_card(
                     h_flex()
                         .flex_1()
                         .justify_end()
-                        .text_xs()
+                        .typeset(TextRole::Caption, cx)
                         .text_color(cx.theme().colors.muted_foreground)
                         .whitespace_nowrap()
                         .child(activity),

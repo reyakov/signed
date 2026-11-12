@@ -8,12 +8,12 @@ use gpui_native_kit::avatar::Avatar;
 use gpui_native_kit::badge::Badge;
 use gpui_native_kit::common::{Sizable as _, h_flex, v_flex};
 use gpui_native_kit::icons::Icon;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use metadata::ProfileDirectory;
 use nostr::prelude::{Event, Kind, PublicKey};
 use utils::relative_time;
 
-pub fn repo_header(id: SharedString, name: SharedString, unread: usize) -> AnyElement {
+pub fn repo_header(id: SharedString, name: SharedString, unread: usize, cx: &App) -> AnyElement {
     h_flex()
         .h_12()
         .w_full()
@@ -21,7 +21,7 @@ pub fn repo_header(id: SharedString, name: SharedString, unread: usize) -> AnyEl
         .child(
             div()
                 .min_w_0()
-                .text_sm()
+                .typeset(TextRole::Body, cx)
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .child(name),
@@ -37,7 +37,7 @@ pub fn empty_section_row(cx: &App) -> AnyElement {
         .h_12()
         .w_full()
         .px_3()
-        .text_xs()
+        .typeset(TextRole::Caption, cx)
         .text_color(cx.theme().colors.muted_foreground)
         .bg(cx.theme().colors.secondary)
         .rounded(cx.theme().radius.control)
@@ -79,7 +79,7 @@ pub fn thread(
         .child(
             h_flex()
                 .gap_2()
-                .text_sm()
+                .typeset(TextRole::Body, cx)
                 .child(
                     h_flex()
                         .size_6()
@@ -88,7 +88,7 @@ pub fn thread(
                         .justify_center()
                         .child(
                             Icon::named(CustomIconName::Inbox)
-                                .size(px(14.))
+                                .small()
                                 .color(cx.theme().colors.muted_foreground),
                         ),
                 )
@@ -135,7 +135,7 @@ fn sub_activity(
                 .flex_1()
                 .min_w_0()
                 .gap_1()
-                .text_xs()
+                .typeset(TextRole::Caption, cx)
                 .child(
                     Avatar::new(event.pubkey)
                         .name(name.clone())
@@ -185,7 +185,7 @@ pub fn empty_state(message: &'static str, cx: &App) -> AnyElement {
         )
         .child(
             div()
-                .text_sm()
+                .typeset(TextRole::Body, cx)
                 .text_color(cx.theme().colors.muted_foreground)
                 .child(SharedString::from(message)),
         )

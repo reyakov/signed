@@ -15,7 +15,7 @@ use gpui_native_kit::dropdown_menu::DropdownMenu;
 use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::menu::MenuItem;
 use gpui_native_kit::popover::Popover;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use gpui_native_kit::tooltip::Tooltip;
 use signed_state::{Backend, Nip34Kind};
 
@@ -211,14 +211,14 @@ impl RepoDetailView {
                             .child(
                                 h_flex()
                                     .gap_2()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .typeset(TextRole::Headline, cx)
                                     .child(avatar)
                                     .child(name),
                             )
                             .child(
                                 div()
                                     .min_w_0()
-                                    .text_sm()
+                                    .typeset(TextRole::Body, cx)
                                     .text_color(cx.theme().colors.muted_foreground)
                                     .line_clamp(2)
                                     .child(description),
@@ -231,9 +231,8 @@ impl RepoDetailView {
                                     .gap_1()
                                     .child(
                                         div()
-                                            .text_xs()
+                                            .typeset(TextRole::Caption2, cx)
                                             .text_color(cx.theme().colors.muted_foreground)
-                                            .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .child("Maintainers:"),
                                     )
                                     .child(self.render_maintainers(cx)),
@@ -458,18 +457,20 @@ impl RepoDetailView {
                                                 "Clone with ngit",
                                                 "copy-ngit",
                                                 &ngit_for_popover,
+                                                cx,
                                             ))
                                             .child(clone_group(
                                                 "Clone with nak",
                                                 "copy-nak",
                                                 &nak_for_popover,
+                                                cx,
                                             ))
                                             .child(
                                                 v_flex()
                                                     .gap_1()
                                                     .child(
                                                         div()
-                                                            .text_xs()
+                                                            .typeset(TextRole::Caption, cx)
                                                             .text_color(
                                                                 cx.theme().colors.muted_foreground,
                                                             )
@@ -478,7 +479,7 @@ impl RepoDetailView {
                                                     .when(git_for_popover.is_empty(), |this| {
                                                         this.child(
                                                             div()
-                                                                .text_xs()
+                                                                .typeset(TextRole::Caption, cx)
                                                                 .child("No git clone urls."),
                                                         )
                                                     })
@@ -572,14 +573,14 @@ impl RepoDetailView {
                             .child(
                                 h_flex()
                                     .gap_2()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .typeset(TextRole::Headline, cx)
                                     .child(avatar)
                                     .child(name),
                             )
                             .child(
                                 div()
                                     .min_w_0()
-                                    .text_sm()
+                                    .typeset(TextRole::Body, cx)
                                     .text_color(cx.theme().colors.muted_foreground)
                                     .child(path),
                             ),
@@ -651,12 +652,17 @@ impl RepoDetailView {
                                     .picture(owner.picture())
                                     .small(),
                             )
-                            .child(div().text_xs().whitespace_nowrap().child(owner_name)),
+                            .child(
+                                div()
+                                    .typeset(TextRole::Caption, cx)
+                                    .whitespace_nowrap()
+                                    .child(owner_name),
+                            ),
                     )
                     .when(!rest.is_empty(), |this| {
                         this.child(
                             div()
-                                .text_xs()
+                                .typeset(TextRole::Caption, cx)
                                 .text_color(cx.theme().colors.muted_foreground)
                                 .child(SharedString::from(format!("+{}", rest.len()))),
                         )

@@ -18,7 +18,7 @@ use gpui_native_kit::layout::dock::{DockState, Panel};
 use gpui_native_kit::scroll_area::ScrollArea;
 use gpui_native_kit::scrollbar::Scrollbar;
 use gpui_native_kit::spinner::Spinner;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use metadata::ProfileDirectory;
 use nostr::prelude::{EventId, Kind, PublicKey, Url};
 use signed_core::{GitEvent, PullRequest, RepoAddr};
@@ -388,7 +388,7 @@ impl PullRequestDetailView {
                                     .child(
                                         h_flex()
                                             .gap_2()
-                                            .text_sm()
+                                            .typeset(TextRole::Body, cx)
                                             .child(
                                                 h_flex()
                                                     .gap_1()
@@ -408,7 +408,11 @@ impl PullRequestDetailView {
                                             ),
                                     )
                                     .when(!self.description.is_empty(), |this| {
-                                        this.child(div().text_sm().child(self.description.clone()))
+                                        this.child(
+                                            div()
+                                                .typeset(TextRole::Body, cx)
+                                                .child(self.description.clone()),
+                                        )
                                     }),
                             )
                             .child(comments_section(&self.store, root_id, &self.directory, cx))
@@ -534,7 +538,7 @@ impl PullRequestDetailView {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .typeset(TextRole::Headline, cx)
                         .text_ellipsis()
                         .child(title),
                 ),
@@ -575,7 +579,7 @@ impl PullRequestDetailView {
                             h_flex()
                                 .gap_1()
                                 .font_family(cx.theme().mono_font)
-                                .text_xs()
+                                .typeset(TextRole::Caption, cx)
                                 .text_color(cx.theme().colors.muted_foreground)
                                 .child(id.clone())
                                 .child(ClipboardButton::new("pr-commit", &id)),

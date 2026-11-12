@@ -7,7 +7,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task,
-    WeakEntity, Window, div, px,
+    WeakEntity, Window, div,
 };
 use gpui_native_kit::alert::{Alert, AlertSeverity};
 use gpui_native_kit::badge::Badge;
@@ -16,7 +16,7 @@ use gpui_native_kit::common::{Sizable as _, h_flex, v_flex};
 use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::layout::dock::{DockState, Panel};
 use gpui_native_kit::spinner::Spinner;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use metadata::ProfileDirectory;
 use nostr::prelude::{PublicKey, Url};
 use signed_core::{Announcement, RepoAddr};
@@ -854,7 +854,7 @@ impl RepoDetailView {
                 .child(
                     h_flex()
                         .gap_2()
-                        .text_sm()
+                        .typeset(TextRole::Body, cx)
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(Badge::new("ready-branch", status.branch.clone()))
                         .child(commits)
@@ -939,7 +939,7 @@ impl RepoDetailView {
                 .child(
                     h_flex()
                         .gap_2()
-                        .text_sm()
+                        .typeset(TextRole::Body, cx)
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(Badge::new("push-branch", status.branch.clone()))
                         .child(commits)
@@ -1008,7 +1008,7 @@ impl RepoDetailView {
                 .child(
                     h_flex()
                         .gap_2()
-                        .text_sm()
+                        .typeset(TextRole::Body, cx)
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(Badge::new("sync-branch", branch))
                         .child(commits)
@@ -1059,22 +1059,22 @@ impl RepoDetailView {
                 match status {
                     PushStepStatus::Running(_) => h_flex()
                         .gap_2()
-                        .text_sm()
+                        .typeset(TextRole::Body, cx)
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(Spinner::new("push-step"))
                         .child(label)
                         .into_any_element(),
                     PushStepStatus::Done(_) => h_flex()
                         .gap_2()
-                        .text_sm()
-                        .child(Icon::named(IconRole::Check).size(px(14.)))
+                        .typeset(TextRole::Body, cx)
+                        .child(Icon::named(IconRole::Check).small())
                         .child(label)
                         .into_any_element(),
                     PushStepStatus::Failed(_, reason) => h_flex()
                         .gap_2()
-                        .text_sm()
+                        .typeset(TextRole::Body, cx)
                         .text_color(cx.theme().ramps.destructive.base)
-                        .child(Icon::named(IconRole::Close).size(px(14.)))
+                        .child(Icon::named(IconRole::Close).small())
                         .child(SharedString::from(format!(
                             "{}: {reason}",
                             status.step().label()
@@ -1090,7 +1090,7 @@ impl RepoDetailView {
                 .gap_1()
                 .w_full()
                 .bg(cx.theme().colors.muted)
-                .child(div().text_sm().child("Pushing"))
+                .child(div().typeset(TextRole::Body, cx).child("Pushing"))
                 .children(steps)
                 .into_any_element(),
         )
@@ -1115,12 +1115,12 @@ impl RepoDetailView {
                         .min_w_0()
                         .flex_1()
                         .items_start()
-                        .child(Icon::named(IconRole::Warning).size(px(14.)))
+                        .child(Icon::named(IconRole::Warning).small())
                         .child(
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .text_sm()
+                                .typeset(TextRole::Body, cx)
                                 .text_color(cx.theme().ramps.warning.base)
                                 .child(SharedString::from(warning)),
                         ),
@@ -1174,7 +1174,7 @@ impl RepoDetailView {
                 .child(Spinner::new("repo-loading"))
                 .child(
                     div()
-                        .text_sm()
+                        .typeset(TextRole::Body, cx)
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(label),
                 )

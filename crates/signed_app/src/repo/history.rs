@@ -10,7 +10,7 @@ use gpui_native_kit::common::v_flex;
 use gpui_native_kit::layout::dock::DockState;
 use gpui_native_kit::scrollbar::Scrollbar;
 use gpui_native_kit::spinner::Spinner;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use signed_git::{CommitList, Repo};
 use signed_state::RepoStore;
 
@@ -190,7 +190,7 @@ impl Render for RepoHistoryView {
                     div()
                         .py_2()
                         .w_full()
-                        .text_xs()
+                        .typeset(TextRole::Caption, cx)
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(format!("Showing {shown} of {total} commits")),
                 )

@@ -9,7 +9,7 @@ use gpui_native_kit::common::{h_flex, v_flex};
 use gpui_native_kit::icons::Icon;
 use gpui_native_kit::input::{Input, InputState};
 use gpui_native_kit::layout::dock::{DockState, Panel};
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use metadata::ProfileDirectory;
 use signed_state::RepoStore;
 
@@ -163,7 +163,7 @@ impl Render for SendPatchView {
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .typeset(TextRole::Caption, cx)
                             .text_color(cx.theme().colors.muted_foreground)
                             .child(
                                 "You can paste a git diff or a git format-patch patch series here.",
@@ -177,7 +177,7 @@ impl Render for SendPatchView {
                     .when_some(self.error.clone(), |this, error| {
                         this.child(
                             div()
-                                .text_xs()
+                                .typeset(TextRole::Caption, cx)
                                 .text_color(cx.theme().ramps.destructive.base)
                                 .child(error),
                         )

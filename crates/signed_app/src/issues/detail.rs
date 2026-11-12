@@ -8,7 +8,7 @@ use gpui_native_kit::empty_state::EmptyState;
 use gpui_native_kit::input::InputState;
 use gpui_native_kit::layout::dock::Panel;
 use gpui_native_kit::scroll_area::ScrollArea;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use metadata::ProfileDirectory;
 use nostr::prelude::{EventId, PublicKey};
 use signed_core::GitEvent;
@@ -157,7 +157,7 @@ impl Render for IssueDetailView {
                                     div()
                                         .flex_1()
                                         .min_w_0()
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .typeset(TextRole::Headline, cx)
                                         .child(title),
                                 ),
                             )
@@ -170,7 +170,7 @@ impl Render for IssueDetailView {
                                             .child(
                                                 h_flex()
                                                     .gap_2()
-                                                    .text_sm()
+                                                    .typeset(TextRole::Body, cx)
                                                     .child(
                                                         h_flex()
                                                             .gap_1()
@@ -197,7 +197,9 @@ impl Render for IssueDetailView {
                                                             .child(SharedString::from(age)),
                                                     ),
                                             )
-                                            .child(div().text_sm().child(content)),
+                                            .child(
+                                                div().typeset(TextRole::Body, cx).child(content),
+                                            ),
                                     )
                                     .child(comments_section(
                                         &self.store,

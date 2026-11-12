@@ -12,7 +12,7 @@ use gpui_native_kit::data::tree::{Tree, TreeItem};
 use gpui_native_kit::editor::code::CodeViewState;
 use gpui_native_kit::editor::markdown::MarkdownViewState;
 use gpui_native_kit::icons::{Icon, IconRole};
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use signed_git::{FileCommit, Repo, WorktreeSnapshot};
 
 use super::helpers::{code_language, is_markdown_path, preview_spinner, source_hash};
@@ -355,8 +355,7 @@ impl RepoFilesView {
                     .text_color(cx.theme().colors.muted_foreground)
                     .child(
                         div()
-                            .text_xs()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .typeset(TextRole::Caption2, cx)
                             .text_ellipsis()
                             .whitespace_nowrap()
                             .child(pane_title),
@@ -368,14 +367,14 @@ impl RepoFilesView {
                                 .gap_1()
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .typeset(TextRole::Caption, cx)
                                         .font_family(cx.theme().mono_font)
                                         .child(commit.id.clone()),
                                 )
                                 .child(
                                     div()
                                         .max_w(px(250.))
-                                        .text_xs()
+                                        .typeset(TextRole::Caption, cx)
                                         .text_ellipsis()
                                         .whitespace_nowrap()
                                         .child(commit.summary.clone()),

@@ -3,9 +3,8 @@ use std::sync::Arc;
 
 use assets::CustomIconName;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, FontWeight, IntoElement, ObjectFit,
-    ParentElement as _, SharedString, Styled as _, StyledImage as _, Subscription, WeakEntity,
-    Window, div, img, px,
+    AnyElement, App, AppContext as _, Context, IntoElement, ObjectFit, ParentElement as _,
+    SharedString, Styled as _, StyledImage as _, Subscription, WeakEntity, Window, div, img, px,
 };
 use gpui_native_kit::avatar::Avatar;
 use gpui_native_kit::badge::{Badge, BadgeVariant};
@@ -27,10 +26,9 @@ use signed_state::{
 };
 
 use crate::explore::ExploreView;
-use crate::identity;
 use crate::inbox::InboxView;
 use crate::repo::dialogs;
-use crate::settings;
+use crate::{identity, settings};
 
 mod helpers;
 
@@ -218,14 +216,9 @@ impl SidebarView {
     pub fn build(&self, cx: &App) -> Sidebar {
         let backend = Backend::global(cx);
 
-        let profile = backend
-            .read(cx)
-            .current_user()
-            .map(|public_key| self.directory.read(cx).profile(&public_key, cx));
-
-        let Some(profile) = profile else {
+        if backend.read(cx).current_user().is_none() {
             return Sidebar::new("signed-sidebar").content(self.render_sign_in(cx));
-        };
+        }
 
         let weak = self.weak.clone();
         let announcements = self.announcements.clone();
@@ -236,23 +229,16 @@ impl SidebarView {
 
         Sidebar::new("signed-sidebar")
             .transparent(true)
-            .header(self.render_user(&profile, self.scanning, cx))
             .footer(self.render_footer(cx))
             .entries(move |_, cx| {
                 let muted = cx.theme().colors.muted_foreground;
                 let mut entries = vec![
-                    SidebarEntry::row("inbox", "Inbox").prefix(
-                        Icon::named(CustomIconName::Inbox)
-                            .size(px(14.))
-                            .color(muted),
-                    ),
-                    SidebarEntry::row("browse", "Browse").prefix(
-                        Icon::named(CustomIconName::Globe)
-                            .size(px(14.))
-                            .color(muted),
-                    ),
+                    SidebarEntry::row("inbox", "Inbox")
+                        .prefix(Icon::named(CustomIconName::Inbox).small().color(muted)),
+                    SidebarEntry::row("browse", "Browse")
+                        .prefix(Icon::named(CustomIconName::Globe).small().color(muted)),
                     SidebarEntry::row("search", "Search")
-                        .prefix(Icon::named(IconRole::Search).size(px(14.)).color(muted)),
+                        .prefix(Icon::named(IconRole::Search).small().color(muted)),
                     SidebarEntry::header("All Repositories"),
                 ];
 
@@ -513,6 +499,18 @@ impl SidebarView {
         }
     }
 
+    pub fn render_titlebar(&self, cx: &App) -> Option<AnyElement> {
+        let profile = Backend::global(cx)
+            .read(cx)
+            .current_user()
+            .map(|public_key| self.directory.read(cx).profile(&public_key, cx))?;
+
+        Some(
+            self.render_user(&profile, self.scanning, cx)
+                .into_any_element(),
+        )
+    }
+
     fn render_user(&self, profile: &Profile, scanning: bool, cx: &App) -> impl IntoElement {
         let name = profile.name();
         let picture = profile.picture();
@@ -546,12 +544,6 @@ impl SidebarView {
                             Avatar::new(public_key)
                                 .name(name.clone())
                                 .picture(picture.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(name.clone()),
                         )
                         .child(
                             Icon::named(IconRole::ChevronDown)

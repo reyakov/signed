@@ -13,7 +13,7 @@ use gpui_native_kit::common::{h_flex, v_flex};
 use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::layout::dock::{DockState, Panel};
 use gpui_native_kit::scroll_area::ScrollArea;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use metadata::ProfileDirectory;
 use nostr::prelude::{Event, EventId, Kind, PublicKey, Timestamp};
 use signed_core::{InboxItem, InboxReadState, RepoAddr};
@@ -351,7 +351,7 @@ impl InboxView {
                         .map(ToString::to_string)
                         .unwrap_or_default()
                 ));
-                repo_header(id, name, section.unread)
+                repo_header(id, name, section.unread, cx)
             }
             InboxRow::Entry(section_ix, entry_ix) => {
                 let Some(section) = self.sections.get(section_ix) else {
@@ -425,8 +425,7 @@ impl Render for InboxView {
                     .gap_2()
                     .child(
                         div()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .typeset(TextRole::Headline, cx)
                             .child(SharedString::from("Inbox")),
                     )
                     .child(div().flex_1())

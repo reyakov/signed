@@ -14,7 +14,7 @@ use gpui_native_kit::input::{Input, InputState, InputStateEvent};
 use gpui_native_kit::layout::dock::{DockState, Panel};
 use gpui_native_kit::scrollbar::Scrollbar;
 use gpui_native_kit::segmented::{Segmented, SegmentedOption};
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use helpers::{RepoFilter, render_card};
 use metadata::ProfileDirectory;
 use nostr::prelude::PublicKey;
@@ -107,15 +107,10 @@ impl ExploreView {
             .child(
                 v_flex()
                     .gap_1()
+                    .child(div().typeset(TextRole::Caption2, cx).child("Repositories"))
                     .child(
                         div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_xs()
-                            .child("Repositories"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.))
+                            .typeset(TextRole::Caption, cx)
                             .text_color(muted)
                             .child(SharedString::from(format!("Total: {count}"))),
                     ),
@@ -124,7 +119,7 @@ impl ExploreView {
                 div().w(px(180.)).child(
                     Input::new("explore-search", self.search.clone())
                         .placeholder("Search...")
-                        .prefix(Icon::named(IconRole::Search).size(px(14.)).color(muted)),
+                        .prefix(Icon::named(IconRole::Search).small().color(muted)),
                 ),
             )
             .child(div().flex_1())
@@ -132,17 +127,11 @@ impl ExploreView {
                 Segmented::new("explore-filter", self.filter)
                     .options(vec![
                         SegmentedOption::new(RepoFilter::All, "All")
-                            .icon(Icon::named(CustomIconName::Grid).size(px(14.)).color(muted)),
-                        SegmentedOption::new(RepoFilter::Popular, "Popular").icon(
-                            Icon::named(CustomIconName::Trending)
-                                .size(px(14.))
-                                .color(muted),
-                        ),
-                        SegmentedOption::new(RepoFilter::Recent, "Recent").icon(
-                            Icon::named(CustomIconName::Recent)
-                                .size(px(14.))
-                                .color(muted),
-                        ),
+                            .icon(Icon::named(CustomIconName::Grid).small().color(muted)),
+                        SegmentedOption::new(RepoFilter::Popular, "Popular")
+                            .icon(Icon::named(CustomIconName::Trending).small().color(muted)),
+                        SegmentedOption::new(RepoFilter::Recent, "Recent")
+                            .icon(Icon::named(CustomIconName::Recent).small().color(muted)),
                     ])
                     .on_change(move |filter, _, cx| {
                         if let Err(error) = weak.update(cx, |this, cx| {
@@ -165,7 +154,7 @@ impl Panel for ExploreView {
     fn lead(&self, cx: &App) -> Option<AnyElement> {
         Some(
             Icon::named(CustomIconName::Globe)
-                .size(px(14.))
+                .small()
                 .color(cx.theme().colors.muted_foreground)
                 .into_any_element(),
         )

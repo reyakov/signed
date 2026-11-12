@@ -1,11 +1,11 @@
 use gpui::{
     AnyElement, App, Context, IntoElement as _, ParentElement as _, SharedString, Styled as _,
-    Subscription, div, px,
+    Subscription, div,
 };
 use gpui_native_kit::common::{h_flex, v_flex};
 use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::spinner::Spinner;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use signed_core::RepoAddr;
 use signed_state::{Backend, BackendEvent, PushStepStatus};
 
@@ -69,7 +69,7 @@ impl DialogProgress {
 pub fn error_row(error: &Option<SharedString>, cx: &App) -> Option<AnyElement> {
     error.as_ref().map(|message| {
         div()
-            .text_sm()
+            .typeset(TextRole::Body, cx)
             .text_color(cx.theme().ramps.destructive.base)
             .child(message.clone())
             .into_any_element()
@@ -90,29 +90,29 @@ pub fn push_steps_row(steps: &[PushStepStatus], cx: &App) -> Option<AnyElement> 
             match status {
                 PushStepStatus::Running(_) => h_flex()
                     .gap_2()
-                    .text_sm()
+                    .typeset(TextRole::Body, cx)
                     .text_color(cx.theme().colors.muted_foreground)
                     .child(Spinner::new("push-step"))
                     .child(label)
                     .into_any_element(),
                 PushStepStatus::Done(_) => h_flex()
                     .gap_2()
-                    .text_sm()
+                    .typeset(TextRole::Body, cx)
                     .text_color(cx.theme().colors.foreground)
                     .child(
                         Icon::named(IconRole::Check)
-                            .size(px(14.))
+                            .small()
                             .color(cx.theme().colors.foreground),
                     )
                     .child(label)
                     .into_any_element(),
                 PushStepStatus::Failed(_, reason) => h_flex()
                     .gap_2()
-                    .text_sm()
+                    .typeset(TextRole::Body, cx)
                     .text_color(cx.theme().ramps.destructive.base)
                     .child(
                         Icon::named(IconRole::Close)
-                            .size(px(14.))
+                            .small()
                             .color(cx.theme().ramps.destructive.base),
                     )
                     .child(SharedString::from(format!(

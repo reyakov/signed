@@ -7,7 +7,7 @@ use gpui_native_kit::badge::{Badge, BadgeVariant};
 use gpui_native_kit::common::Sizable as _;
 use gpui_native_kit::empty_state::EmptyState;
 use gpui_native_kit::icons::Icon;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use gpui_native_kit::tooltip::Tooltip;
 use metadata::ProfileDirectory;
 use signed_core::RepoStatus;
@@ -90,8 +90,7 @@ pub fn repo_tab_avatar(
 /// A one-line muted label used by section headers.
 pub fn section_label(text: impl Into<SharedString>, cx: &App) -> AnyElement {
     div()
-        .text_xs()
-        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .typeset(TextRole::Caption2, cx)
         .text_color(cx.theme().colors.muted_foreground)
         .child(text.into())
         .into_any_element()

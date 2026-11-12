@@ -17,7 +17,7 @@ use gpui_native_kit::layout::dock::{DockState, Panel};
 use gpui_native_kit::menu::Menu;
 use gpui_native_kit::scrollbar::Scrollbar;
 use gpui_native_kit::spinner::Spinner;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use metadata::ProfileDirectory;
 use signed_state::{CheckoutsStore, RepoStore};
 
@@ -301,17 +301,17 @@ impl NewPullRequestView {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(label("Merge Into"))
+                    .child(label("Merge Into", cx))
                     .child(div().w(px(160.)).child(self.base_select.clone())),
             )
             .child(
                 v_flex()
                     .gap_1()
-                    .child(label("Pull From"))
+                    .child(label("Pull From", cx))
                     .child(div().w(px(160.)).child(self.compare_select.clone())),
             )
             .child(
-                v_flex().gap_1().child(label("Source")).child(
+                v_flex().gap_1().child(label("Source", cx)).child(
                     Menu::new("pr-source")
                         .open(self.source_open)
                         .on_change(move |open, _, cx| {
@@ -502,7 +502,7 @@ impl Render for NewPullRequestView {
                             .when_some(self.error.clone(), |this, error| {
                                 this.child(
                                     div()
-                                        .text_xs()
+                                        .typeset(TextRole::Caption, cx)
                                         .text_color(cx.theme().ramps.destructive.base)
                                         .child(error),
                                 )
@@ -520,10 +520,9 @@ impl Render for NewPullRequestView {
     }
 }
 
-fn label(text: &'static str) -> AnyElement {
+fn label(text: &'static str, cx: &App) -> AnyElement {
     div()
-        .text_xs()
-        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .typeset(TextRole::Caption2, cx)
         .child(text)
         .into_any_element()
 }

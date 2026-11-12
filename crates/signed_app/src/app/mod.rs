@@ -1,13 +1,16 @@
 pub mod helpers;
 mod placeholder;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
-    Subscription, Window, div,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, Styled as _, Subscription, Window, div,
 };
+use gpui_native_kit::common::h_flex;
 use gpui_native_kit::icons::IconRole;
 use gpui_native_kit::layout::dock::{Dock, DockState};
 use gpui_native_kit::layout::shell::{LayoutState, Shell, SidebarToggles};
+use gpui_native_kit::layout::window_controls::{TRAFFIC_LIGHT_PAD, titlebar_strip};
 use gpui_native_kit::theme::ActiveTheme as _;
 use gpui_native_kit::toast::Toast;
 use helpers::apply_appearance;
@@ -90,9 +93,35 @@ impl AppRoot {
 }
 
 impl Render for AppRoot {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = *cx.theme();
+        let layout = self.layout.read(cx);
+        let left_visible = layout.is_left_sidebar_visible();
+        let sidebar_width = layout.left_sidebar_width();
+
+        let titlebar = if left_visible {
+            self.sidebar.read(cx).render_titlebar(cx)
+        } else {
+            None
+        };
+
+        let titlebar = titlebar.map(|row| {
+            let strip = h_flex()
+                .id("signed-sidebar-titlebar")
+                .size_full()
+                .when(cfg!(target_os = "macos"), |strip| {
+                    strip.pl(TRAFFIC_LIGHT_PAD)
+                })
+                .when(cfg!(not(target_os = "macos")), |strip| strip.pl_2())
+                .pr_2();
+
+            titlebar_strip(strip, "signed-sidebar-titlebar-drag", window, cx)
+                .child(row)
+                .into_any_element()
+        });
+
         div()
+            .relative()
             .size_full()
             .font_family(".SystemUIFont")
             .text_color(theme.colors.foreground)
@@ -102,10 +131,21 @@ impl Render for AppRoot {
                     .center(
                         Dock::new("signed-dock", self.dock.clone())
                             .window_controls(true)
-                            .traffic_light_pad(!self.layout.read(cx).is_left_sidebar_visible())
+                            .traffic_light_pad(!left_visible)
                             .sidebar_toggles(self.layout.clone()),
                     ),
             )
+            .when_some(titlebar, |root, titlebar| {
+                root.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(sidebar_width)
+                        .h(theme.titlebar_height)
+                        .child(titlebar),
+                )
+            })
             .child(self.dialogs.clone())
     }
 }

@@ -8,7 +8,7 @@ use gpui_native_kit::common::{h_flex, v_flex};
 use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::input::{Input, InputState};
 use gpui_native_kit::switch::Switch;
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use gpui_native_kit::tooltip::Tooltip;
 use nostr::prelude::RelayUrl;
 use settings::{DEFAULT_GRASP_SERVERS, GraspServersSettings};
@@ -72,7 +72,7 @@ pub fn grasp_servers_field(
             h_flex()
                 .justify_between()
                 .items_center()
-                .child(div().text_sm().child("Grasp servers"))
+                .child(div().typeset(TextRole::Body, cx).child("Grasp servers"))
                 .child(
                     Switch::new("grasp-servers-toggle")
                         .checked(servers_enabled)
@@ -88,7 +88,7 @@ pub fn grasp_servers_field(
             section
                 .child(
                     div()
-                        .text_xs()
+                        .typeset(TextRole::Caption, cx)
                         .text_color(cx.theme().colors.muted_foreground)
                         .child("Where the repository is hosted"),
                 )
@@ -122,7 +122,7 @@ pub fn grasp_servers_field(
                 .when(loading_servers, |section| {
                     section.child(
                         div()
-                            .text_xs()
+                            .typeset(TextRole::Caption, cx)
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Loading your grasp servers..."),
                     )
@@ -130,7 +130,7 @@ pub fn grasp_servers_field(
                 .when_some(error, |section, error| {
                     section.child(
                         div()
-                            .text_xs()
+                            .typeset(TextRole::Caption, cx)
                             .text_color(cx.theme().ramps.destructive.base)
                             .child(error),
                     )
@@ -156,7 +156,7 @@ fn render_server_row(
                 .px_2()
                 .bg(cx.theme().colors.muted)
                 .text_color(cx.theme().colors.muted_foreground)
-                .text_sm()
+                .typeset(TextRole::Body, cx)
                 .rounded(cx.theme().radius.control)
                 .child(server_host(relay)),
         )

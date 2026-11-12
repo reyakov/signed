@@ -14,7 +14,7 @@ use gpui_native_kit::layout::dock::{DockState, Panel};
 use gpui_native_kit::menu::MenuItem;
 use gpui_native_kit::scrollbar::Scrollbar;
 use gpui_native_kit::segmented::{Segmented, SegmentedOption};
-use gpui_native_kit::theme::ActiveTheme as _;
+use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use metadata::ProfileDirectory;
 use nostr::prelude::{Kind, PublicKey};
 use signed_core::GitEvent;
@@ -389,7 +389,7 @@ impl Render for PullRequestsView {
                                                     .gap_1()
                                                     .child(
                                                         div()
-                                                            .text_sm()
+                                                            .typeset(TextRole::Body, cx)
                                                             .text_ellipsis()
                                                             .whitespace_nowrap()
                                                             .child(title),
@@ -397,7 +397,7 @@ impl Render for PullRequestsView {
                                                     .child(
                                                         h_flex()
                                                             .gap_2()
-                                                            .text_xs()
+                                                            .typeset(TextRole::Caption, cx)
                                                             .child(
                                                                 h_flex()
                                                                     .gap_1()
