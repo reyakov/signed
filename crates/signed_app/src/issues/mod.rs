@@ -60,7 +60,7 @@ impl IssuesView {
         });
         let weak = cx.entity().downgrade();
         cx.defer(move |cx| {
-            let _ = weak.update(cx, |this, cx| this.rebuild(cx));
+            crate::shared::log_dropped(weak.update(cx, |this, cx| this.rebuild(cx)));
         });
 
         Self {

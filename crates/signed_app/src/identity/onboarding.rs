@@ -128,7 +128,9 @@ impl Render for OnboardingDialog {
                     .loading(busy)
                     .disabled(busy)
                     .on_click(move |_, _, cx| {
-                        let _ = this.update(cx, |this, cx| this.create_identity(cx));
+                        crate::shared::log_dropped(
+                            this.update(cx, |this, cx| this.create_identity(cx)),
+                        );
                     })
                     .into_any_element();
 

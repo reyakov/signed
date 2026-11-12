@@ -102,9 +102,10 @@ impl SendPatchView {
         }
 
         let panel_id = self.panel_id.clone();
-        let _ = self
-            .dock
-            .update(cx, |dock, cx| dock.close_panel(&panel_id, cx));
+        crate::shared::log_dropped(
+            self.dock
+                .update(cx, |dock, cx| dock.close_panel(&panel_id, cx)),
+        );
     }
 
     fn render_footer(&self, cx: &Context<Self>) -> AnyElement {
@@ -127,7 +128,7 @@ impl SendPatchView {
                     .loading(self.submitting)
                     .disabled(!can_submit)
                     .on_click(move |_, _, cx| {
-                        let _ = weak.update(cx, |this, cx| this.submit(cx));
+                        crate::shared::log_dropped(weak.update(cx, |this, cx| this.submit(cx)));
                     }),
             )
             .into_any_element()

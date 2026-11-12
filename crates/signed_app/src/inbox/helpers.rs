@@ -13,7 +13,7 @@ use metadata::ProfileDirectory;
 use nostr::prelude::{Event, Kind, PublicKey};
 use utils::relative_time;
 
-pub fn repo_header(name: SharedString, unread: usize) -> AnyElement {
+pub fn repo_header(id: SharedString, name: SharedString, unread: usize) -> AnyElement {
     h_flex()
         .h_12()
         .w_full()
@@ -27,7 +27,7 @@ pub fn repo_header(name: SharedString, unread: usize) -> AnyElement {
                 .child(name),
         )
         .when(unread > 0, |this| {
-            this.child(Badge::new("inbox-unread", unread.to_string()))
+            this.child(Badge::new(id.clone(), unread.to_string()))
         })
         .into_any_element()
 }

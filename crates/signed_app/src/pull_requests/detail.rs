@@ -85,7 +85,7 @@ impl PullRequestDetailView {
         });
 
         cx.defer(move |cx| {
-            let _ = weak.update(cx, |this, cx| this.sync(cx));
+            crate::shared::log_dropped(weak.update(cx, |this, cx| this.sync(cx)));
         });
 
         Self {
@@ -291,7 +291,6 @@ impl PullRequestDetailView {
             None => SharedString::from(format!("commit:{}:{commit_id}", worktree.display())),
         };
         let dock = self.dock.clone();
-        let dock_for_build = dock.clone();
         let store = self.store.clone();
         let repo_name = self.repo_name.clone();
         let commit_id = commit_id.to_owned();
@@ -313,7 +312,6 @@ impl PullRequestDetailView {
             window,
             cx,
         );
-        let _ = dock_for_build;
     }
 
     fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -339,10 +337,10 @@ impl PullRequestDetailView {
                 ]
             })
             .on_change(move |index, _, cx| {
-                let _ = weak.update(cx, |this, cx| {
+                crate::shared::log_dropped(weak.update(cx, |this, cx| {
                     this.active_tab = index;
                     cx.notify();
-                });
+                }));
             })
             .into_any_element()
     }
@@ -476,9 +474,9 @@ impl PullRequestDetailView {
                                 &commit,
                                 move |window, cx| {
                                     if let Some(worktree) = worktree.clone() {
-                                        let _ = view.update(cx, |this, cx| {
+                                        crate::shared::log_dropped(view.update(cx, |this, cx| {
                                             this.open_commit_diff(worktree, &id, window, cx);
-                                        });
+                                        }));
                                     }
                                 },
                                 cx,
@@ -555,7 +553,7 @@ impl PullRequestDetailView {
                     .when(can_update, |this| {
                         this.child(Button::new("update-pr").label("Update").small().on_click(
                             move |_, _, cx| {
-                                let _ = weak.update(cx, |this, cx| {
+                                crate::shared::log_dropped(weak.update(cx, |this, cx| {
                                     let root = this
                                         .store
                                         .read(cx)
@@ -568,7 +566,7 @@ impl PullRequestDetailView {
                                     if let Some(root) = root {
                                         dialogs::update::open(this.store.clone(), root, cx);
                                     }
-                                });
+                                }));
                             },
                         ))
                     })

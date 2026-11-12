@@ -222,7 +222,9 @@ impl Render for CreateRepoDialog {
                     .loading(busy)
                     .disabled(busy)
                     .on_click(move |_, window, cx| {
-                        let _ = this.update(cx, |this, cx| this.create(window, cx));
+                        crate::shared::log_dropped(
+                            this.update(cx, |this, cx| this.create(window, cx)),
+                        );
                     })
                     .into_any_element();
 

@@ -46,10 +46,9 @@ impl SettingsDialog {
 }
 
 impl Render for SettingsDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let grasp_input = self.grasp_input.clone();
         let default_folder = self.default_folder.clone();
-        let weak = cx.entity().downgrade();
 
         Dialog::new("settings-dialog")
             .open(true)
@@ -95,7 +94,7 @@ impl Render for SettingsDialog {
                                 cx,
                                 "Default Folder",
                                 "The folder for newly created repositories.",
-                                default_folder_selector(&default_folder, weak.clone()),
+                                default_folder_selector(&default_folder),
                             ))
                     .into_any_element()
             })

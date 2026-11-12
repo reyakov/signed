@@ -7,6 +7,13 @@ use signed_state::RepoStore;
 use crate::repo::RepoDetailView;
 use crate::shared::panels;
 
+/// An item of a repository to open from outside its detail panel.
+pub enum RepoItem {
+    Issue(EventId),
+    PullRequest(EventId),
+    Patch,
+}
+
 /// Opens a repository as a dock panel, keyed by its address.
 pub fn open_repo_panel(
     dock: &WeakEntity<DockState>,
@@ -31,13 +38,6 @@ pub fn open_repo_panel(
         window,
         cx,
     );
-}
-
-/// An item of a repository to open from outside its detail panel.
-pub enum RepoItem {
-    Issue(EventId),
-    PullRequest(EventId),
-    Patch,
 }
 
 /// Opens an issue or pull request using a store built here.

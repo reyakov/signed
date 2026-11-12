@@ -26,6 +26,24 @@ use utils::{middle_truncate, relative_time_secs};
 use super::RepoDetailView;
 use crate::shared::tree::{TreeItemSeed, build_tree_items};
 
+const GUTTER_WIDTH: f32 = 44.;
+pub const DIFF_ROW_HEIGHT: f32 = 20.;
+pub const COMMIT_ROW_HEIGHT: f32 = 56.;
+
+#[derive(Clone, Copy)]
+pub(super) enum DiffRow {
+    Hunk {
+        old_start: u32,
+        old_lines: u32,
+        new_start: u32,
+        new_lines: u32,
+    },
+    Line {
+        hunk: usize,
+        line: usize,
+    },
+}
+
 pub(super) struct RepoData {
     pub(super) tree: Vec<TreeItemSeed>,
     pub(super) entries: Vec<PathBuf>,
@@ -36,6 +54,67 @@ pub(super) struct RepoData {
     pub(super) tags: Vec<String>,
     pub(super) current_branch: Option<String>,
     pub(super) head_commit: Option<FileCommit>,
+}
+
+#[derive(Clone)]
+pub(super) struct ShareTargets {
+    /// NIP-19 `naddr1...` of the announcement, with its announced relays.
+    pub(super) naddr: String,
+    /// Hex ID of the announcement event itself.
+    event_id: String,
+    /// NIP-34 coordinate `30617:<pubkey>:<repo-id>`.
+    coordinate: String,
+    gitworkshop: String,
+    ditto: String,
+}
+
+impl ShareTargets {
+    pub(super) fn from_announcement(announcement: &Announcement) -> Self {
+        let addr = announcement.addr();
+        let coordinate = addr.to_string();
+        let naddr = Nip19Coordinate::new(addr.into(), announcement.relays.iter().cloned())
+            .to_bech32()
+            .unwrap_or_else(|_| coordinate.clone());
+
+        Self {
+            naddr: naddr.clone(),
+            event_id: announcement
+                .event_id
+                .to_bech32()
+                .unwrap_or_else(|_| announcement.event_id.to_string()),
+            coordinate,
+            gitworkshop: format!("https://gitworkshop.dev/{naddr}"),
+            ditto: format!("https://ditto.pub/{naddr}"),
+        }
+    }
+
+    pub(super) fn menu(&self) -> Vec<MenuItem> {
+        let items = [
+            ("GitWorkshop", truncate_naddr_link(&self.gitworkshop, 4)),
+            ("Ditto", truncate_naddr_link(&self.ditto, 4)),
+            ("Event ID", middle_truncate(&self.event_id, 10, 10)),
+            ("Coordinate", middle_truncate(&self.coordinate, 10, 10)),
+        ];
+
+        let values = [
+            self.gitworkshop.clone(),
+            self.ditto.clone(),
+            self.event_id.clone(),
+            self.coordinate.clone(),
+        ];
+
+        items
+            .into_iter()
+            .zip(values)
+            .map(|((label, detail), value)| {
+                MenuItem::new(SharedString::from(format!("{label}  {detail}"))).handler(
+                    move |_, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                    },
+                )
+            })
+            .collect()
+    }
 }
 
 pub(super) fn clone_group(label: &str, id: &'static str, command: &SharedString) -> AnyElement {
@@ -104,67 +183,6 @@ pub(super) fn fork_row(
     } else {
         row.into_any_element()
     })
-}
-
-#[derive(Clone)]
-pub(super) struct ShareTargets {
-    /// NIP-19 `naddr1...` of the announcement, with its announced relays.
-    pub(super) naddr: String,
-    /// Hex ID of the announcement event itself.
-    event_id: String,
-    /// NIP-34 coordinate `30617:<pubkey>:<repo-id>`.
-    coordinate: String,
-    gitworkshop: String,
-    ditto: String,
-}
-
-impl ShareTargets {
-    pub(super) fn from_announcement(announcement: &Announcement) -> Self {
-        let addr = announcement.addr();
-        let coordinate = addr.to_string();
-        let naddr = Nip19Coordinate::new(addr.into(), announcement.relays.iter().cloned())
-            .to_bech32()
-            .unwrap_or_else(|_| coordinate.clone());
-
-        Self {
-            naddr: naddr.clone(),
-            event_id: announcement
-                .event_id
-                .to_bech32()
-                .unwrap_or_else(|_| announcement.event_id.to_string()),
-            coordinate,
-            gitworkshop: format!("https://gitworkshop.dev/{naddr}"),
-            ditto: format!("https://ditto.pub/{naddr}"),
-        }
-    }
-
-    pub(super) fn menu(&self) -> Vec<MenuItem> {
-        let items = [
-            ("GitWorkshop", truncate_naddr_link(&self.gitworkshop, 4)),
-            ("Ditto", truncate_naddr_link(&self.ditto, 4)),
-            ("Event ID", middle_truncate(&self.event_id, 10, 10)),
-            ("Coordinate", middle_truncate(&self.coordinate, 10, 10)),
-        ];
-
-        let values = [
-            self.gitworkshop.clone(),
-            self.ditto.clone(),
-            self.event_id.clone(),
-            self.coordinate.clone(),
-        ];
-
-        items
-            .into_iter()
-            .zip(values)
-            .map(|((label, detail), value)| {
-                MenuItem::new(SharedString::from(format!("{label}  {detail}"))).handler(
-                    move |_, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
-                    },
-                )
-            })
-            .collect()
-    }
 }
 
 pub(super) fn truncate_naddr_link(url: &str, tail: usize) -> String {
@@ -312,24 +330,6 @@ pub(super) fn is_markdown_path(path: &str) -> bool {
                 "md" | "markdown" | "mdown" | "mkdn"
             )
         })
-}
-
-const GUTTER_WIDTH: f32 = 44.;
-pub const DIFF_ROW_HEIGHT: f32 = 20.;
-pub const COMMIT_ROW_HEIGHT: f32 = 56.;
-
-#[derive(Clone, Copy)]
-pub(super) enum DiffRow {
-    Hunk {
-        old_start: u32,
-        old_lines: u32,
-        new_start: u32,
-        new_lines: u32,
-    },
-    Line {
-        hunk: usize,
-        line: usize,
-    },
 }
 
 pub(super) fn diff_rows(file: &FileDiff) -> Vec<DiffRow> {

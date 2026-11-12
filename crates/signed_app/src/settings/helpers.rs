@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use gpui::{
     AnyElement, App, AppContext as _, Entity, IntoElement, ParentElement as _, PathPromptOptions,
-    SharedString, Styled as _, WeakEntity, Window, div, px,
+    SharedString, Styled as _, Window, div, px,
 };
 use gpui_native_kit::button::Button;
 use gpui_native_kit::common::{h_flex, v_flex};
@@ -13,7 +13,6 @@ use gpui_native_kit::theme::ActiveTheme as _;
 use gpui_native_kit::tooltip::Tooltip;
 use settings::{AppearanceMode, EventFetchingStrategy, SettingsStore};
 
-use super::SettingsDialog;
 use crate::repo::dialogs::grasp_servers::{normalize_server, server_host};
 
 /// A settings row with the label and description on the left and the control on the right.
@@ -306,10 +305,7 @@ fn add_scan_path(cx: &mut App) {
     .detach();
 }
 
-pub fn default_folder_selector(
-    default_folder: &Entity<InputState>,
-    weak: WeakEntity<SettingsDialog>,
-) -> AnyElement {
+pub fn default_folder_selector(default_folder: &Entity<InputState>) -> AnyElement {
     let folder = default_folder.clone();
     h_flex()
         .gap_1()
@@ -324,21 +320,15 @@ pub fn default_folder_selector(
                 .variant(gpui_native_kit::button::ButtonVariant::Ghost)
                 .tooltip(Tooltip::text("Choose folder"))
                 .on_click(move |_, window, cx| {
-                    choose_default_folder(&folder, &weak, window, cx);
+                    choose_default_folder(&folder, window, cx);
                 }),
         )
         .into_any_element()
 }
 
-fn choose_default_folder(
-    default_folder: &Entity<InputState>,
-    weak: &WeakEntity<SettingsDialog>,
-    window: &mut Window,
-    cx: &mut App,
-) {
+fn choose_default_folder(default_folder: &Entity<InputState>, window: &mut Window, cx: &mut App) {
     let handle = window.window_handle();
     let default_folder = default_folder.clone();
-    let weak = weak.clone();
     let prompt = cx.prompt_for_paths(PathPromptOptions {
         files: false,
         directories: true,
@@ -359,7 +349,6 @@ fn choose_default_folder(
                     );
                 });
                 default_folder.update(cx, |input, cx| input.set_value(text, window, cx));
-                let _ = weak.update(cx, |_this, cx| cx.notify());
             }) {
                 log::warn!("failed to apply default folder: {error}");
             }

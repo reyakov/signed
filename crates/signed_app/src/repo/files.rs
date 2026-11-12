@@ -69,8 +69,7 @@ pub struct RepoFilesView {
 }
 
 impl RepoFilesView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let _ = cx;
+    pub fn new(_cx: &mut Context<Self>) -> Self {
         Self {
             seeds: Vec::new(),
             expanded: HashSet::new(),
@@ -448,13 +447,7 @@ impl RepoFilesView {
             .into_any_element()
     }
 
-    fn set_code(
-        &mut self,
-        path: SharedString,
-        text: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn set_code(&mut self, path: SharedString, text: &str, cx: &mut Context<Self>) {
         let hash = source_hash(text);
         let language = code_language(path.as_ref());
 
@@ -480,7 +473,6 @@ impl RepoFilesView {
         }
 
         let state = cx.new(|cx| CodeViewState::new("repo-code", text, language, cx));
-        let _ = window;
         self.code = Some(CodeView {
             path,
             state,
@@ -514,7 +506,7 @@ impl RepoFilesView {
                         self.set_markdown(Some(path.into()), &text, cx);
                     }
                 } else if self.code.as_ref().map(|code| code.path.as_str()) != Some(path) {
-                    self.set_code(path.into(), &text, window, cx);
+                    self.set_code(path.into(), &text, cx);
                 }
             }
             cx.notify();
@@ -574,7 +566,7 @@ impl RepoFilesView {
                 })
                 .await;
 
-            this.update_in(cx, |this, window, cx| {
+            this.update_in(cx, |this, _window, cx| {
                 this.loading_files.remove(&path);
 
                 match content {
@@ -590,7 +582,7 @@ impl RepoFilesView {
                                 let same = this.code.as_ref().map(|code| code.path.as_str())
                                     == Some(path.as_str());
                                 if !same {
-                                    this.set_code(path.clone().into(), text, window, cx);
+                                    this.set_code(path.clone().into(), text, cx);
                                 }
                             }
                             this.preview_bytes += text.len();

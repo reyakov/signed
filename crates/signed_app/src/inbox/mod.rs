@@ -27,13 +27,6 @@ use crate::repo::actions::{RepoItem, open_repo_item};
 
 const MAX_SUB_ACTIVITIES: usize = 5;
 
-struct InboxSection {
-    address: Option<RepoAddr>,
-    unread: usize,
-    entries: Vec<usize>,
-    latest: Timestamp,
-}
-
 #[derive(Clone, Copy)]
 enum InboxRow {
     Repo(usize),
@@ -41,12 +34,18 @@ enum InboxRow {
     Empty,
 }
 
+struct InboxSection {
+    address: Option<RepoAddr>,
+    unread: usize,
+    entries: Vec<usize>,
+    latest: Timestamp,
+}
+
 pub struct InboxView {
     dock: WeakEntity<DockState>,
     threads: Arc<Vec<InboxItem>>,
     sections: Arc<Vec<InboxSection>>,
     rows: Arc<Vec<InboxRow>>,
-    unread_count: usize,
     state: InboxReadState,
     state_loaded: bool,
     refresh: RefreshGate,
@@ -89,7 +88,6 @@ impl InboxView {
             threads: Arc::new(Vec::new()),
             sections: Arc::new(Vec::new()),
             rows: Arc::new(Vec::new()),
-            unread_count: 0,
             state: InboxReadState::default(),
             state_loaded: false,
             refresh: RefreshGate::default(),
@@ -182,7 +180,7 @@ impl InboxView {
         let work = cx.background_spawn(async move { Inbox::query(&client, me, &state).await });
 
         self.tasks.push(cx.spawn(async move |this, cx| {
-            let (threads, unread_count) = match work.await {
+            let (threads, _unread_count) = match work.await {
                 Ok(results) => results,
                 Err(error) => {
                     log::warn!("inbox refresh failed: {error}");
@@ -196,7 +194,6 @@ impl InboxView {
                     return false;
                 }
                 this.threads = Arc::new(threads);
-                this.unread_count = unread_count;
                 this.rebuild(cx);
                 cx.notify();
                 this.refresh.finish()
@@ -214,7 +211,6 @@ impl InboxView {
         for item in items.iter_mut() {
             item.apply_state(&self.state);
         }
-        self.unread_count = items.iter().filter(|item| item.is_unread()).count();
         self.threads = Arc::new(items);
         self.rebuild(cx);
     }
@@ -310,7 +306,6 @@ impl InboxView {
         self.threads = Arc::new(Vec::new());
         self.sections = Arc::new(Vec::new());
         self.rows = Arc::new(Vec::new());
-        self.unread_count = 0;
         self.state = InboxReadState::default();
         self.state_loaded = false;
         self.refresh = RefreshGate::default();
@@ -348,7 +343,15 @@ impl InboxView {
                     return div().into_any_element();
                 };
                 let name = repo_name(section.address.as_ref(), cx);
-                repo_header(name, section.unread)
+                let id = SharedString::from(format!(
+                    "inbox-unread:{}",
+                    section
+                        .address
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_default()
+                ));
+                repo_header(id, name, section.unread)
             }
             InboxRow::Entry(section_ix, entry_ix) => {
                 let Some(section) = self.sections.get(section_ix) else {
@@ -387,19 +390,6 @@ impl InboxView {
             }
         }
     }
-}
-
-fn repo_name(addr: Option<&RepoAddr>, cx: &App) -> SharedString {
-    let Some(addr) = addr else {
-        return SharedString::from("Untitled");
-    };
-    RepoListStore::global(cx)
-        .read(cx)
-        .announcements
-        .iter()
-        .find(|announcement| announcement.addr() == *addr)
-        .and_then(|announcement| announcement.name.as_deref().map(SharedString::from))
-        .unwrap_or_else(|| SharedString::from("Untitled"))
 }
 
 impl Panel for InboxView {
@@ -464,4 +454,23 @@ impl Render for InboxView {
             )
             .into_any_element()
     }
+}
+
+fn repo_name(addr: Option<&RepoAddr>, cx: &App) -> SharedString {
+    let Some(addr) = addr else {
+        return SharedString::from("Untitled");
+    };
+    RepoListStore::global(cx)
+        .read(cx)
+        .announcements
+        .iter()
+        .find(|announcement| announcement.addr() == *addr)
+        .map(|announcement| {
+            announcement
+                .name
+                .as_deref()
+                .map(SharedString::from)
+                .unwrap_or_else(|| SharedString::from(announcement.id.clone()))
+        })
+        .unwrap_or_else(|| SharedString::from("Untitled"))
 }

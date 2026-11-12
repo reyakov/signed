@@ -37,6 +37,15 @@ impl DialogHost {
     }
 }
 
+impl Render for DialogHost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .absolute()
+            .inset_0()
+            .when_some(self.open.clone(), |host, view| host.child(view))
+    }
+}
+
 /// Replaces the mounted modal with `view`.
 pub fn open_global(view: impl Into<AnyView>, cx: &mut App) {
     let host = DialogHost::global(cx);
@@ -47,13 +56,4 @@ pub fn open_global(view: impl Into<AnyView>, cx: &mut App) {
 pub fn close_global(cx: &mut App) {
     let host = DialogHost::global(cx);
     host.update(cx, |host, cx| host.close(cx));
-}
-
-impl Render for DialogHost {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .absolute()
-            .inset_0()
-            .when_some(self.open.clone(), |host, view| host.child(view))
-    }
 }

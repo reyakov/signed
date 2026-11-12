@@ -243,7 +243,9 @@ impl Render for InitRepoDialog {
                     .loading(busy)
                     .disabled(busy)
                     .on_click(move |_, window, cx| {
-                        let _ = this.update(cx, |this, cx| this.init_repository(window, cx));
+                        crate::shared::log_dropped(
+                            this.update(cx, |this, cx| this.init_repository(window, cx)),
+                        );
                     })
                     .into_any_element();
 

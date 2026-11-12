@@ -123,7 +123,7 @@ impl Render for PassphraseDialog {
                     .loading(busy)
                     .disabled(busy)
                     .on_click(move |_, _, cx| {
-                        let _ = this.update(cx, |this, cx| this.unlock(cx));
+                        crate::shared::log_dropped(this.update(cx, |this, cx| this.unlock(cx)));
                     })
                     .into_any_element();
 

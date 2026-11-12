@@ -64,9 +64,9 @@ impl PullRequestsView {
         });
 
         cx.defer(move |cx| {
-            let _ = weak.update(cx, |this, cx| {
+            crate::shared::log_dropped(weak.update(cx, |this, cx| {
                 this.rebuild(cx);
-            });
+            }));
         });
 
         Self {
@@ -255,18 +255,18 @@ impl PullRequestsView {
                         }
                     })
                     .on_open_change(move |open, _, cx| {
-                        let _ = menu_open_weak.update(cx, |this, cx| {
+                        crate::shared::log_dropped(menu_open_weak.update(cx, |this, cx| {
                             this.new_pr_menu_open = open;
                             cx.notify();
-                        });
+                        }));
                     })
                     .items(move |_, _| {
                         vec![MenuItem::new("Send Patch").handler({
                             let weak = patch_weak.clone();
                             move |window, cx| {
-                                let _ = weak.update(cx, |this, cx| {
+                                crate::shared::log_dropped(weak.update(cx, |this, cx| {
                                     this.open_send_patch(window, cx);
-                                });
+                                }));
                             }
                         })]
                     }),

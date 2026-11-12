@@ -83,7 +83,7 @@ impl Render for NewIssueDialog {
                     Button::new("create-issue")
                         .label("Create issue")
                         .on_click(move |_, _, cx| {
-                            let _ = this.update(cx, |this, cx| this.submit(cx));
+                            crate::shared::log_dropped(this.update(cx, |this, cx| this.submit(cx)));
                         })
                         .into_any_element() as AnyElement,
                 ]

@@ -40,7 +40,7 @@ impl IssueDetailView {
         let directory = ProfileDirectory::new(cx);
         let weak = cx.entity().downgrade();
         cx.defer(move |cx| {
-            let _ = weak.update(cx, |this, cx| this.track_participants(cx));
+            crate::shared::log_dropped(weak.update(cx, |this, cx| this.track_participants(cx)));
         });
 
         Self {

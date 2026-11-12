@@ -13,10 +13,6 @@ use signed_state::RepoStore;
 
 use crate::shared::dialogs::{close_global, open_global};
 
-pub fn open(store: Entity<RepoStore>, root: Event, cx: &mut App) {
-    open_global(UpdatePrDialog::new(store, root, cx), cx);
-}
-
 pub struct UpdatePrDialog {
     store: Entity<RepoStore>,
     root: Event,
@@ -76,10 +72,14 @@ impl Render for UpdatePrDialog {
                     Button::new("submit-update")
                         .label("Update pull request")
                         .on_click(move |_, _, cx| {
-                            let _ = this.update(cx, |this, cx| this.submit(cx));
+                            crate::shared::log_dropped(this.update(cx, |this, cx| this.submit(cx)));
                         })
                         .into_any_element() as AnyElement,
                 ]
             })
     }
+}
+
+pub fn open(store: Entity<RepoStore>, root: Event, cx: &mut App) {
+    open_global(UpdatePrDialog::new(store, root, cx), cx);
 }

@@ -34,6 +34,16 @@ use crate::settings;
 
 mod helpers;
 
+#[derive(Clone, Copy)]
+enum SidebarSlot {
+    Inbox,
+    Browse,
+    Search,
+    Header,
+    Repo(usize),
+    Local(usize),
+}
+
 pub struct SidebarView {
     weak: WeakEntity<Self>,
     dock: WeakEntity<DockState>,
@@ -333,6 +343,10 @@ impl SidebarView {
                     );
                 }
 
+                debug_assert_eq!(
+                    entries.len(),
+                    slots(announcements.len(), local_repos.len()).len()
+                );
                 entries
             })
             .on_change(move |index, window, cx| {
@@ -346,39 +360,34 @@ impl SidebarView {
         let Some(index) = index else {
             return;
         };
-
-        match index {
-            0 => {
-                self.open_inbox(window, cx);
-                return;
-            }
-            1 | 2 => {
-                self.open_explore(window, cx);
-                return;
-            }
-            _ => {}
-        }
-
-        let Some(row) = index.checked_sub(4) else {
+        let Some(slot) = slots(self.announcements.len(), self.local_repos.len())
+            .get(index)
+            .copied()
+        else {
             return;
         };
 
-        if row < self.announcements.len() {
-            let announcement = self.announcements[row].clone();
-            let addr = announcement.addr();
-            crate::repo::actions::open_repo_panel(
-                &self.dock,
-                &addr,
-                Some(&announcement),
-                window,
-                cx,
-            );
-            return;
-        }
-
-        let local_ix = row - self.announcements.len();
-        if let Some(entry) = self.local_repos.get(local_ix).cloned() {
-            self.open_local_entry(entry, window, cx);
+        match slot {
+            SidebarSlot::Inbox => self.open_inbox(window, cx),
+            SidebarSlot::Browse | SidebarSlot::Search => self.open_explore(window, cx),
+            SidebarSlot::Header => {}
+            SidebarSlot::Repo(ix) => {
+                if let Some(announcement) = self.announcements.get(ix).cloned() {
+                    let addr = announcement.addr();
+                    crate::repo::actions::open_repo_panel(
+                        &self.dock,
+                        &addr,
+                        Some(&announcement),
+                        window,
+                        cx,
+                    );
+                }
+            }
+            SidebarSlot::Local(ix) => {
+                if let Some(entry) = self.local_repos.get(ix).cloned() {
+                    self.open_local_entry(entry, window, cx);
+                }
+            }
         }
     }
 
@@ -456,9 +465,9 @@ impl SidebarView {
                     .label("Guide")
                     .variant(ButtonVariant::Ghost)
                     .on_click(move |_, window, cx| {
-                        let _ = guide_weak.update(cx, |this, cx| {
+                        crate::shared::log_dropped(guide_weak.update(cx, |this, cx| {
                             this.open_explore(window, cx);
-                        });
+                        }));
                     }),
             )
             .child(
@@ -659,4 +668,16 @@ impl SidebarView {
                     ),
             )
     }
+}
+
+fn slots(announcements: usize, local_repos: usize) -> Vec<SidebarSlot> {
+    let mut slots = vec![
+        SidebarSlot::Inbox,
+        SidebarSlot::Browse,
+        SidebarSlot::Search,
+        SidebarSlot::Header,
+    ];
+    slots.extend((0..announcements).map(SidebarSlot::Repo));
+    slots.extend((0..local_repos).map(SidebarSlot::Local));
+    slots
 }
