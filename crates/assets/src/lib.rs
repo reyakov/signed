@@ -96,3 +96,4 @@ impl IconNamed for CustomIconName {
         .into()
     }
 }
+

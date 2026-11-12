@@ -1,10 +1,13 @@
 mod app;
-pub mod components;
-mod dialogs;
-mod panels;
-mod views;
+mod explore;
+mod identity;
+mod issues;
+mod repo;
+mod shared;
+mod sidebar;
 
-pub use app::{AppRoot, apply_appearance};
+pub use app::AppRoot;
+pub use app::helpers::apply_appearance;
 
 use gpui::{App, AppContext as _, Entity, Window};
 
