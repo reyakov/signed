@@ -341,7 +341,7 @@ impl NewPullRequestView {
             .when_some(refresh_fork, |this, fork| {
                 this.child(
                     Button::new("refresh-fork")
-                        .icon(Icon::named(CustomIconName::Refresh))
+                        .icon(Icon::named(IconRole::Refresh))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.choose_fork(fork.clone(), window, cx);
                         })),

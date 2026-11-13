@@ -1019,7 +1019,7 @@ impl RepoDetailView {
                         .gap_1()
                         .child(
                             Button::new("sync-banner")
-                                .icon(Icon::named(CustomIconName::Refresh))
+                                .icon(Icon::named(IconRole::Refresh))
                                 .label("Sync now")
                                 .small()
                                 .loading(pushing)

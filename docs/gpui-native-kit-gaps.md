@@ -19,8 +19,8 @@ modifying the kit or reimplementing a parallel mechanism.
    plain text.
 6. **Hunk-only diffs.** Kit `DiffViewState` needs the full old and new texts;
    `CommitDiff` carries hunks only. The custom hunk rows are retained.
-7. **Tree data.** The kit tree is flat with caller-managed expansion, and has no
-   file glyph; folders use the folder role.
+7. **Tree data.** The kit tree is flat with caller-managed expansion.
+   Folder rows use `IconRole::Folder` and file rows use `IconRole::File`.
 8. **Dynamic dock panels.** `DockState` has no unregister or `open_view` API.
    Per-repository/per-entity panels register a builder keyed by a unique id and
    stay in the builder map. No dock persistence, zoom, or bottom/right
@@ -34,6 +34,7 @@ modifying the kit or reimplementing a parallel mechanism.
     into labels.
 12. **Combobox trigger.** `Combobox` has no custom trigger renderer; branch/tag
     selectors lose the leading git icon and custom caret.
-13. **Icons.** The built-in role set is limited. App-specific glyphs remain in
-    `assets::CustomIconName` through `IconNamed`; kit icons are unpainted
-    unless given a color.
+13. **Icons.** The kit provides common platform roles plus Settings, Help,
+    Refresh, File, Folder, and similar glyphs. App-specific git, issue, and
+    pull-request glyphs remain in `assets::CustomIconName` through `IconNamed`;
+    kit icons are unpainted unless given a color.

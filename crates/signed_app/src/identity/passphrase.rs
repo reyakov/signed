@@ -1,4 +1,3 @@
-use assets::CustomIconName;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
@@ -8,7 +7,7 @@ use gpui_native_kit::button::Button;
 use gpui_native_kit::common::v_flex;
 use gpui_native_kit::dialog::Dialog;
 use gpui_native_kit::field::Field;
-use gpui_native_kit::icons::Icon;
+use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::input::{Input, InputState, InputStateEvent};
 use signed_state::Backend;
 
@@ -116,7 +115,7 @@ impl Render for PassphraseDialog {
 
                 let unlock: AnyElement = Button::new("unlock")
                     .label("Unlock")
-                    .icon(Icon::named(CustomIconName::Unlock))
+                    .icon(Icon::named(IconRole::Unlock))
                     .loading(busy)
                     .disabled(busy)
                     .on_click(move |_, _, cx| {

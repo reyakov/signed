@@ -2,7 +2,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{AnyElement, App, IntoElement, SharedString};
 use gpui_native_kit::avatar::Avatar;
-use gpui_native_kit::common::Sizable as _;
 use metadata::ProfileDirectory;
 use signed_state::{Nip34Binding, ResolvedLocalRepo};
 
@@ -36,9 +35,7 @@ pub(super) fn local_avatar(
     cx: &App,
 ) -> AnyElement {
     let Some(owner) = entry.nip34.as_ref().and_then(|binding| binding.owner) else {
-        return Avatar::new(entry.path.to_string_lossy())
-            .small()
-            .into_any_element();
+        return Avatar::new(entry.path.to_string_lossy()).into_any_element();
     };
 
     let profile = directory.read(cx).profile(&owner, cx);
@@ -46,6 +43,5 @@ pub(super) fn local_avatar(
     Avatar::new(owner)
         .name(profile.name())
         .picture(profile.picture())
-        .small()
         .into_any_element()
 }

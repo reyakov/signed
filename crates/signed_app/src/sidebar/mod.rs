@@ -9,7 +9,7 @@ use gpui::{
 use gpui_native_kit::avatar::Avatar;
 use gpui_native_kit::badge::{Badge, BadgeVariant};
 use gpui_native_kit::button::{Button, ButtonVariant};
-use gpui_native_kit::common::{Sizable as _, h_flex, v_flex};
+use gpui_native_kit::common::{h_flex, v_flex};
 use gpui_native_kit::data::sidebar::{Sidebar, SidebarEntry};
 use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::layout::dock::DockState;
@@ -28,6 +28,7 @@ use signed_state::{
 use crate::explore::ExploreView;
 use crate::inbox::InboxView;
 use crate::repo::dialogs;
+use crate::shared::log_dropped;
 use crate::{identity, settings};
 
 mod helpers;
@@ -232,56 +233,49 @@ impl SidebarView {
             .footer(self.render_footer(cx))
             .entries(move |_, cx| {
                 let muted = cx.theme().colors.muted_foreground;
+
                 let mut entries = vec![
                     SidebarEntry::row("inbox", "Inbox")
-                        .prefix(Icon::named(CustomIconName::Inbox).small().color(muted)),
+                        .prefix(Icon::named(CustomIconName::Inbox).color(muted)),
                     SidebarEntry::row("browse", "Browse")
-                        .prefix(Icon::named(CustomIconName::Globe).small().color(muted)),
+                        .prefix(Icon::named(CustomIconName::Globe).color(muted)),
                     SidebarEntry::row("search", "Search")
-                        .prefix(Icon::named(IconRole::Search).small().color(muted)),
-                    SidebarEntry::header("All Repositories"),
+                        .prefix(Icon::named(IconRole::Search).color(muted)),
+                    SidebarEntry::header("Repositories"),
                 ];
 
                 for announcement in announcements.iter() {
+                    let addr = announcement.addr();
                     let owner = directory.read(cx).profile(&announcement.owner, cx);
+
+                    let count = unpushed.get(&addr).copied().unwrap_or(0);
+                    let unsynced = sync_directory.read(cx).unsynced(&addr, cx);
+
                     let name = announcement
                         .name
                         .as_deref()
                         .map(SharedString::from)
                         .unwrap_or_else(|| SharedString::from(announcement.id.clone()));
-                    let addr = announcement.addr();
-                    let mut row = SidebarEntry::row(
-                        SharedString::from(format!("repo:{}", announcement.id)),
-                        name,
-                    )
-                    .prefix(
-                        Avatar::new(announcement.owner)
-                            .name(owner.name())
-                            .picture(owner.picture())
-                            .small(),
-                    );
 
-                    let count = unpushed.get(&addr).copied().unwrap_or(0);
-                    let unsynced = sync_directory.read(cx).unsynced(&addr, cx);
+                    let mut row = SidebarEntry::row(format!("repo:{}", announcement.id), name)
+                        .prefix(
+                            Avatar::new(announcement.owner)
+                                .name(owner.name())
+                                .picture(owner.picture()),
+                        );
 
                     if count > 0 || unsynced > 0 {
                         let mut badges = h_flex().gap_1();
                         if count > 0 {
                             badges = badges.child(
-                                Badge::new(
-                                    SharedString::from(format!("unpushed:{addr}")),
-                                    count.to_string(),
-                                )
-                                .variant(BadgeVariant::Danger),
+                                Badge::new(format!("unpushed:{addr}"), count.to_string())
+                                    .variant(BadgeVariant::Warning),
                             );
                         }
                         if unsynced > 0 {
                             badges = badges.child(
-                                Badge::new(
-                                    SharedString::from(format!("unsynced:{addr}")),
-                                    unsynced.to_string(),
-                                )
-                                .variant(BadgeVariant::Accent),
+                                Badge::new(format!("unsynced:{addr}"), unsynced.to_string())
+                                    .variant(BadgeVariant::Accent),
                             );
                         }
                         row = row.suffix(badges);
@@ -301,31 +295,19 @@ impl SidebarView {
                                 Nip34Kind::Cloned => ("Cloned", "Cloned but not initialized"),
                                 Nip34Kind::ToolingOnly => ("Tooling", "Grasp tooling only"),
                             };
-                            Badge::new(
-                                SharedString::from(format!("local-badge:{}", entry.path.display())),
-                                label,
-                            )
-                            .tooltip(Tooltip::text(note))
-                            .into_any_element()
+                            Badge::new(format!("lbadge:{}", entry.path.display()), label)
+                                .tooltip(Tooltip::text(note))
+                                .into_any_element()
                         }
-                        None => Badge::new(
-                            SharedString::from(format!(
-                                "local-unpublished:{}",
-                                entry.path.display()
-                            )),
-                            "Unpublished",
-                        )
-                        .variant(BadgeVariant::Warning)
-                        .into_any_element(),
+                        None => Badge::new(format!("un-{}", entry.path.display()), "Unpublished")
+                            .variant(BadgeVariant::Outline)
+                            .into_any_element(),
                     };
 
                     entries.push(
-                        SidebarEntry::row(
-                            SharedString::from(format!("local-repo:{}", entry.path.display())),
-                            entry.name(),
-                        )
-                        .prefix(local_avatar(entry, &directory, cx))
-                        .suffix(suffix),
+                        SidebarEntry::row(format!("lrepo:{}", entry.path.display()), entry.name())
+                            .prefix(local_avatar(entry, &directory, cx))
+                            .suffix(suffix),
                     );
                 }
 
@@ -417,6 +399,7 @@ impl SidebarView {
         let id = SharedString::from(format!("repo-local:{}", path.display()));
         let dock = self.dock.clone();
         let dock_for_build = dock.clone();
+
         crate::shared::panels::open(
             &dock,
             id,
@@ -438,9 +421,6 @@ impl SidebarView {
 
     fn render_footer(&self, _cx: &App) -> impl IntoElement {
         let guide_weak = self.weak.clone();
-        let settings_click = |_: &gpui::ClickEvent, _: &mut Window, cx: &mut gpui::App| {
-            settings::open(cx);
-        };
 
         v_flex()
             .p_2()
@@ -448,19 +428,25 @@ impl SidebarView {
             .w_full()
             .child(
                 Button::new("guide")
+                    .icon(IconRole::Info)
                     .label("Guide")
+                    .side(gpui_native_kit::button::ButtonSide::Left)
                     .variant(ButtonVariant::Ghost)
                     .on_click(move |_, window, cx| {
-                        crate::shared::log_dropped(guide_weak.update(cx, |this, cx| {
+                        log_dropped(guide_weak.update(cx, |this, cx| {
                             this.open_explore(window, cx);
                         }));
                     }),
             )
             .child(
                 Button::new("settings")
+                    .icon(IconRole::Settings)
                     .label("Settings")
+                    .side(gpui_native_kit::button::ButtonSide::Left)
                     .variant(ButtonVariant::Ghost)
-                    .on_click(settings_click),
+                    .on_click(|_, _, cx| {
+                        settings::open(cx);
+                    }),
             )
     }
 

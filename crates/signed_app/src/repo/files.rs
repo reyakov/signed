@@ -272,7 +272,7 @@ impl RepoFilesView {
                                     if row.expandable {
                                         item.icon(Icon::named(IconRole::Folder))
                                     } else {
-                                        item
+                                        item.icon(Icon::named(IconRole::File))
                                     }
                                 })
                                 .collect()

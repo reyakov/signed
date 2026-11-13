@@ -127,11 +127,11 @@ impl ExploreView {
                 Segmented::new("explore-filter", self.filter)
                     .options(vec![
                         SegmentedOption::new(RepoFilter::All, "All")
-                            .icon(Icon::named(CustomIconName::Grid).small().color(muted)),
+                            .icon(Icon::named(IconRole::Grid).small().color(muted)),
                         SegmentedOption::new(RepoFilter::Popular, "Popular")
                             .icon(Icon::named(CustomIconName::Trending).small().color(muted)),
                         SegmentedOption::new(RepoFilter::Recent, "Recent")
-                            .icon(Icon::named(CustomIconName::Recent).small().color(muted)),
+                            .icon(Icon::named(IconRole::Clock).small().color(muted)),
                     ])
                     .on_change(move |filter, _, cx| {
                         if let Err(error) = weak.update(cx, |this, cx| {

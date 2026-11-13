@@ -76,6 +76,22 @@ impl AppRoot {
             apply_appearance(&settings, cx);
         }));
 
+        subscriptions.push(cx.observe(&dock, |this, dock, cx| {
+            let Some(panel) = dock.read(cx).active_panel() else {
+                return;
+            };
+
+            if !panel.starts_with("repo:") && !panel.starts_with("repo-local:") {
+                return;
+            }
+
+            this.layout.update(cx, |layout, cx| {
+                if !layout.is_right_sidebar_visible() {
+                    layout.set_right_sidebar_visible(true, cx);
+                }
+            });
+        }));
+
         window.defer(cx, move |_window, cx| {
             if backend.read(cx).passphrase_required() {
                 identity::helpers::open_passphrase(cx);
@@ -128,6 +144,7 @@ impl Render for AppRoot {
             .child(
                 Shell::new("signed-shell", self.layout.clone())
                     .left_sidebar(self.sidebar.read(cx).build(cx))
+                    .right_sidebar(div())
                     .center(
                         Dock::new("signed-dock", self.dock.clone())
                             .window_controls(true)
