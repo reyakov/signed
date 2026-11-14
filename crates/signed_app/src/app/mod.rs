@@ -8,7 +8,7 @@ use gpui::{
 };
 use gpui_native_kit::common::h_flex;
 use gpui_native_kit::icons::IconRole;
-use gpui_native_kit::layout::dock::{Dock, DockState};
+use gpui_native_kit::layout::dock::{Dock, DockSidebar, DockState};
 use gpui_native_kit::layout::shell::{LayoutState, Shell, SidebarToggles};
 use gpui_native_kit::layout::window_controls::{TRAFFIC_LIGHT_PAD, titlebar_strip};
 use gpui_native_kit::theme::ActiveTheme as _;
@@ -36,7 +36,7 @@ impl AppRoot {
         let layout = LayoutState::new(cx);
 
         layout.update(cx, |layout, cx| {
-            layout.set_sidebar_toggles(SidebarToggles::Hidden, cx);
+            layout.set_sidebar_toggles(SidebarToggles::Tabbar, cx);
         });
 
         dock.update(cx, |dock, cx| {
@@ -80,14 +80,13 @@ impl AppRoot {
             let Some(panel) = dock.read(cx).active_panel() else {
                 return;
             };
-
-            if !panel.starts_with("repo:") && !panel.starts_with("repo-local:") {
-                return;
-            }
+            let is_repo = panel.starts_with("repo:") || panel.starts_with("repo-local:");
 
             this.layout.update(cx, |layout, cx| {
-                if !layout.is_right_sidebar_visible() {
+                if is_repo && !layout.is_right_sidebar_visible() {
                     layout.set_right_sidebar_visible(true, cx);
+                } else if !is_repo && layout.is_right_sidebar_visible() {
+                    layout.set_right_sidebar_visible(false, cx);
                 }
             });
         }));
@@ -144,7 +143,7 @@ impl Render for AppRoot {
             .child(
                 Shell::new("signed-shell", self.layout.clone())
                     .left_sidebar(self.sidebar.read(cx).build(cx))
-                    .right_sidebar(div())
+                    .right_sidebar(DockSidebar::new("signed-dock-sidebar", self.dock.clone()))
                     .center(
                         Dock::new("signed-dock", self.dock.clone())
                             .window_controls(true)

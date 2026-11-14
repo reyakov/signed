@@ -4,17 +4,15 @@ use assets::CustomIconName;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AppContext as _, ClipboardItem, Context, IntoElement, ParentElement as _,
-    SharedString, Styled as _, Window, div, px,
+    SharedString, Styled as _, Window, div,
 };
 use gpui_native_kit::avatar::Avatar;
 use gpui_native_kit::button::{Button, ButtonVariant};
-use gpui_native_kit::clipboard::ClipboardButton;
 use gpui_native_kit::common::{Sizable as _, h_flex, v_flex};
 use gpui_native_kit::data::tabs::{Tab, Tabs};
 use gpui_native_kit::dropdown_menu::DropdownMenu;
 use gpui_native_kit::icons::{Icon, IconRole};
 use gpui_native_kit::menu::MenuItem;
-use gpui_native_kit::popover::Popover;
 use gpui_native_kit::theme::{ActiveTheme as _, TextRole, Typeset as _};
 use gpui_native_kit::tooltip::Tooltip;
 use signed_state::{Backend, Nip34Kind};
@@ -22,9 +20,7 @@ use signed_state::{Backend, Nip34Kind};
 use super::RepoDetailView;
 use super::actions;
 use super::dialogs;
-use super::helpers::{
-    ShareTargets, bound_repo_label, clone_group, fork_row, nostr_clone_url, repo_display_name,
-};
+use super::helpers::{ShareTargets, bound_repo_label, fork_row, repo_display_name};
 use crate::issues::IssuesView;
 use crate::pull_requests::{NewPullRequestView, PullRequestsView, SendPatchView};
 
@@ -49,7 +45,7 @@ impl RepoDetailView {
         dialogs::init::open(local_path, cx.entity().downgrade(), window, cx);
     }
 
-    fn open_pulls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_pulls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(addr) = self.store.read(cx).addr().cloned() else {
             return;
         };
@@ -99,7 +95,7 @@ impl RepoDetailView {
         );
     }
 
-    fn open_send_patch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_send_patch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(addr) = self.store.read(cx).addr().cloned() else {
             return;
         };
@@ -128,7 +124,7 @@ impl RepoDetailView {
         );
     }
 
-    fn open_issues(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_issues(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(addr) = self.store.read(cx).addr().cloned() else {
             return;
         };
@@ -153,27 +149,12 @@ impl RepoDetailView {
 
         let store = self.store.read(cx);
         let pushing = store.pushing;
-        let cloning = store.cloning;
 
         let Some(announcement) = store.announcement.clone() else {
             return div().into_any_element();
         };
 
-        let nip05 = self
-            .directory
-            .read(cx)
-            .profile(&announcement.owner, cx)
-            .metadata()
-            .nip05
-            .clone()
-            .filter(|nip05| !nip05.trim().is_empty());
-
         let share = ShareTargets::from_announcement(&announcement);
-        let nostr_url = nostr_clone_url(&announcement, nip05.as_deref());
-        let ngit_command = SharedString::from(format!("git clone {nostr_url}"));
-        let nak_command = SharedString::from(format!("nak git clone {nostr_url}"));
-        let git_commands: Vec<String> = announcement.clone_urls();
-
         let name = repo_display_name(self.store.read(cx));
         let description = announcement.description();
         let avatar = Avatar::new(format!("{}:{}", announcement.owner, announcement.id));
@@ -184,11 +165,6 @@ impl RepoDetailView {
         let weak_share = cx.entity().downgrade();
         let weak_menu_open = cx.entity().downgrade();
         let weak_menu_items = cx.entity().downgrade();
-        let weak_clone = cx.entity().downgrade();
-        let weak_download = cx.entity().downgrade();
-        let ngit_for_popover = ngit_command.clone();
-        let nak_for_popover = nak_command.clone();
-        let git_for_popover = git_commands.clone();
 
         v_flex()
             .flex_none()
@@ -243,90 +219,6 @@ impl RepoDetailView {
                             .flex_none()
                             .gap_2()
                             .justify_end()
-                            .child({
-                                let weak_pulls = cx.entity().downgrade();
-                                let weak_pulls_open = cx.entity().downgrade();
-                                let _store_for_pulls = self.store.clone();
-                                let pulls_count = self.store.read(cx).pull_request_count();
-
-                                DropdownMenu::new("pulls")
-                                    .label(format!("Pull requests {pulls_count}"))
-                                    .icon(Icon::named(CustomIconName::GitPullRequest))
-                                    .variant(ButtonVariant::Secondary)
-                                    .open(self.pulls_menu_open)
-                                    .on_click(move |_, window, cx| {
-                                        if let Err(error) = weak_pulls.update(cx, |this, cx| {
-                                            this.open_pulls(window, cx);
-                                        }) {
-                                            log::warn!("failed to open pull requests: {error}");
-                                        }
-                                    })
-                                    .on_open_change(move |open, _, cx| {
-                                        if let Err(error) = weak_pulls_open.update(cx, |this, cx| {
-                                            this.pulls_menu_open = open;
-                                            cx.notify();
-                                        }) {
-                                            log::warn!("failed to update pulls menu: {error}");
-                                        }
-                                    })
-                                    .items({
-                                        let weak_new = cx.entity().downgrade();
-                                        let weak_patch = cx.entity().downgrade();
-                                        move |_, _| {
-                                            let weak_new = weak_new.clone();
-                                            let weak_patch = weak_patch.clone();
-                                            vec![
-                                                MenuItem::new("New pull request").handler(move |window, cx| {
-                                                    crate::shared::log_dropped(weak_new.update(cx, |this, cx| {
-                                                        this.open_new_pull_request(window, cx);
-                                                    }));
-                                                }),
-                                                MenuItem::new("Send patch").handler(move |window, cx| {
-                                                    crate::shared::log_dropped(weak_patch.update(cx, |this, cx| {
-                                                        this.open_send_patch(window, cx);
-                                                    }));
-                                                }),
-                                            ]
-                                        }
-                                    })
-                            })
-                            .child({
-                                let weak_issues = cx.entity().downgrade();
-                                let weak_issues_open = cx.entity().downgrade();
-                                let store_for_issues = self.store.clone();
-                                let issues_count = self.store.read(cx).issue_count();
-
-                                DropdownMenu::new("issues")
-                                    .label(format!("Issues {issues_count}"))
-                                    .icon(Icon::named(CustomIconName::GitIssueDone))
-                                    .variant(ButtonVariant::Secondary)
-                                    .open(self.issues_menu_open)
-                                    .on_click(move |_, window, cx| {
-                                        if let Err(error) = weak_issues.update(cx, |this, cx| {
-                                            this.open_issues(window, cx);
-                                        }) {
-                                            log::warn!("failed to open issues: {error}");
-                                        }
-                                    })
-                                    .on_open_change(move |open, _, cx| {
-                                        if let Err(error) =
-                                            weak_issues_open.update(cx, |this, cx| {
-                                                this.issues_menu_open = open;
-                                                cx.notify();
-                                            })
-                                        {
-                                            log::warn!("failed to update issues menu: {error}");
-                                        }
-                                    })
-                                    .items(move |_, _| {
-                                        vec![MenuItem::new("New issue").handler({
-                                            let store = store_for_issues.clone();
-                                            move |_, cx| {
-                                                crate::issues::new_issue::open(store.clone(), cx);
-                                            }
-                                        })]
-                                    })
-                            })
                             .child(
                                 DropdownMenu::new("share")
                                     .icon(Icon::named(IconRole::Copy))
@@ -429,95 +321,6 @@ impl RepoDetailView {
                                         items
                                     }),
                             )
-                            .child(
-                                Popover::new("clone")
-                                    .open(self.clone_open)
-                                    .on_change(move |open, _, cx| {
-                                        if let Err(error) = weak_clone.update(cx, |this, cx| {
-                                            this.clone_open = open;
-                                            cx.notify();
-                                        }) {
-                                            log::warn!("failed to update clone popover: {error}");
-                                        }
-                                    })
-                                    .trigger(move |_, _| {
-                                        Button::new("clone")
-                                            .icon(Icon::named(CustomIconName::GitClone))
-                                            .tooltip(Tooltip::text("Clone"))
-                                            .loading(cloning)
-                                            .disabled(cloning)
-                                            .into_any_element()
-                                    })
-                                    .content(move |_, cx| {
-                                        v_flex()
-                                            .w(px(440.))
-                                            .p_3()
-                                            .gap_4()
-                                            .child(clone_group(
-                                                "Clone with ngit",
-                                                "copy-ngit",
-                                                &ngit_for_popover,
-                                                cx,
-                                            ))
-                                            .child(clone_group(
-                                                "Clone with nak",
-                                                "copy-nak",
-                                                &nak_for_popover,
-                                                cx,
-                                            ))
-                                            .child(
-                                                v_flex()
-                                                    .gap_1()
-                                                    .child(
-                                                        div()
-                                                            .typeset(TextRole::Caption, cx)
-                                                            .text_color(
-                                                                cx.theme().colors.muted_foreground,
-                                                            )
-                                                            .child("Grasp Servers"),
-                                                    )
-                                                    .when(git_for_popover.is_empty(), |this| {
-                                                        this.child(
-                                                            div()
-                                                                .typeset(TextRole::Caption, cx)
-                                                                .child("No git clone urls."),
-                                                        )
-                                                    })
-                                                    .children(git_for_popover.iter().enumerate().map(
-                                                        |(ix, command)| {
-                                                            ClipboardButton::new(
-                                                                SharedString::from(format!(
-                                                                    "copy-git-{ix}"
-                                                                )),
-                                                                command.clone(),
-                                                            )
-                                                        },
-                                                    )),
-                                            )
-                                            .child(
-                                                h_flex().justify_end().child(
-                                                    Button::new("download")
-                                                        .icon(Icon::named(CustomIconName::GitClone))
-                                                        .label("Download")
-                                                        .on_click({
-                                                            let weak = weak_download.clone();
-                                                            move |_, window, cx| {
-                                                                if let Err(error) =
-                                                                    weak.update(cx, |this, cx| {
-                                                                        this.clone_to_folder(window, cx);
-                                                                    })
-                                                                {
-                                                                    log::warn!(
-                                                                        "failed to clone: {error}"
-                                                                    );
-                                                                }
-                                                            }
-                                                        }),
-                                                ),
-                                            )
-                                            .into_any_element()
-                                    }),
-                            ),
                     ),
             )
             .child(self.render_tabs(cx))

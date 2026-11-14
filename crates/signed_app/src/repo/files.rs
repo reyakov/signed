@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
+use std::rc::Rc;
 
 use anyhow::Error;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
+    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Task, WeakEntity, Window, div, px,
 };
 use gpui_native_kit::common::{h_flex, v_flex};
@@ -19,10 +20,11 @@ use super::helpers::{code_language, is_markdown_path, preview_spinner, source_ha
 use crate::shared::tree::{TreeItemSeed, TreeRow, collect_expanded, flatten};
 use crate::shared::widgets::empty_state;
 
-const TREE_WIDTH: f32 = 240.;
 const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 const MAX_PREVIEWED_FILES: usize = 32;
 const MAX_PREVIEW_CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+pub(super) type ActivateHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
 enum FileContent {
     Text(String),
@@ -223,6 +225,14 @@ impl RepoFilesView {
             .unwrap_or_else(|| "Overview".into())
     }
 
+    pub(super) fn tree_rows(&self) -> &[TreeRow] {
+        &self.rows
+    }
+
+    pub(super) fn selected_index(&self) -> Option<usize> {
+        self.selected_index
+    }
+
     fn activate_row(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(index) else {
             return;
@@ -240,23 +250,19 @@ impl RepoFilesView {
         cx.notify();
     }
 
-    fn render_tree_column(
-        &self,
+    pub(super) fn tree_element(
         rows: Vec<TreeRow>,
         selected: Option<usize>,
         view: WeakEntity<Self>,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+        on_activate: Option<ActivateHandler>,
+    ) -> AnyElement {
         let change_view = view.clone();
         let disclosure_view = view;
+        let rows_for_change = rows.clone();
 
         v_flex()
-            .h_full()
-            .w(px(TREE_WIDTH))
-            .p_2()
-            .flex_none()
-            .border_r_1()
-            .border_color(cx.theme().colors.border)
+            .size_full()
+            .p_1()
             .child(
                 div().flex_1().min_h_0().child(
                     Tree::new("repo-tree")
@@ -287,6 +293,14 @@ impl RepoFilesView {
                                 {
                                     log::warn!("failed to activate tree row: {error}");
                                 }
+
+                                let is_file = index
+                                    .and_then(|index| rows_for_change.get(index))
+                                    .is_some_and(|row| !row.expandable);
+
+                                if is_file && let Some(on_activate) = &on_activate {
+                                    on_activate(window, cx);
+                                }
                             }
                         })
                         .on_disclosure({
@@ -305,6 +319,7 @@ impl RepoFilesView {
                         }),
                 ),
             )
+            .into_any_element()
     }
 
     fn render_content_column(
@@ -712,16 +727,12 @@ impl RepoFilesView {
 
 impl Render for RepoFilesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = self.rows.clone();
-        let selected = self.selected_index;
-        let view = cx.entity().downgrade();
         let pane_title = self.pane_title();
 
         h_flex()
             .flex_1()
             .w_full()
             .overflow_hidden()
-            .child(self.render_tree_column(rows, selected, view, cx))
             .child(self.render_content_column(pane_title, cx))
     }
 }

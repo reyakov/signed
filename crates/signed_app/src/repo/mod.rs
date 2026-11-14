@@ -5,9 +5,9 @@ use anyhow::Error;
 use assets::CustomIconName;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task,
-    WeakEntity, Window, div,
+    AnyElement, AnyView, App, AppContext as _, Context, Entity, InteractiveElement as _,
+    IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _,
+    Subscription, Task, WeakEntity, Window, div,
 };
 use gpui_native_kit::alert::{Alert, AlertSeverity};
 use gpui_native_kit::badge::Badge;
@@ -35,12 +35,14 @@ mod header;
 pub mod helpers;
 pub mod history;
 pub mod refs;
+mod sidebar;
 
 use banners::Banners;
 use files::RepoFilesView;
 use helpers::{RepoData, load_repo_data, repo_display_name};
 use history::RepoHistoryView;
 use refs::RefSwitcher;
+use sidebar::RepoRightSidebar;
 
 use crate::shared::tree::{build_tree_items, sorted_worktree_paths};
 use crate::shared::widgets::repo_tab_avatar;
@@ -76,11 +78,10 @@ pub struct RepoDetailView {
     pub(super) directory: Entity<ProfileDirectory>,
     /// Sync status feeding the sync-to-Nostr banner.
     sync_directory: Entity<SyncStatusDirectory>,
+    /// Actions and file tree shown in the shell's right sidebar.
+    right_sidebar: Entity<RepoRightSidebar>,
     pub(super) share_open: bool,
     pub(super) repo_menu_open: bool,
-    pub(super) clone_open: bool,
-    pub(super) issues_menu_open: bool,
-    pub(super) pulls_menu_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -131,6 +132,19 @@ impl RepoDetailView {
         let history = cx.new(|_| RepoHistoryView::new(store.clone(), dock.clone()));
         let weak = cx.entity().downgrade();
         let refs = RefSwitcher::new(weak.clone(), window, cx);
+        let directory = ProfileDirectory::new(cx);
+        let sync_directory = SyncStatusDirectory::new(cx);
+
+        let right_sidebar = cx.new(|cx| {
+            RepoRightSidebar::new(
+                weak.clone(),
+                store.clone(),
+                files.clone(),
+                directory.clone(),
+                sync_directory.clone(),
+                cx,
+            )
+        });
 
         let subscriptions = vec![cx.observe(&checkouts, |this, _checkouts, cx| {
             if this.refresh_statuses(cx) {
@@ -160,13 +174,11 @@ impl RepoDetailView {
             refs,
             tasks: Vec::new(),
             banners: Banners::default(),
-            directory: ProfileDirectory::new(cx),
-            sync_directory: SyncStatusDirectory::new(cx),
+            directory,
+            sync_directory,
+            right_sidebar,
             share_open: false,
             repo_menu_open: false,
-            clone_open: false,
-            issues_menu_open: false,
-            pulls_menu_open: false,
             _subscriptions: subscriptions,
         }
     }
@@ -487,7 +499,7 @@ impl RepoDetailView {
         self.refs.set_tags(tags, window, cx);
     }
 
-    fn clone_to_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn clone_to_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let store = self.store.clone();
 
         let name = {
@@ -903,7 +915,7 @@ impl RepoDetailView {
             .find(|status| !self.banners.dismissal(status))
     }
 
-    fn sync_suggestion(&self, cx: &App) -> Option<CheckoutSyncStatus> {
+    pub(super) fn sync_candidate(&self, cx: &App) -> Option<CheckoutSyncStatus> {
         let store = self.store.read(cx);
         let addr = store.addr()?;
         let user = Backend::global(cx).read(cx).current_user()?;
@@ -912,11 +924,24 @@ impl RepoDetailView {
             return None;
         }
 
-        let statuses = self.sync_directory.read(cx).statuses_of(addr, cx);
+        self.sync_directory
+            .read(cx)
+            .statuses_of(addr, cx)
+            .into_iter()
+            .find(|checkout| checkout.status.ahead_total > 0)
+    }
 
-        statuses.into_iter().find(|checkout| {
-            checkout.status.ahead_total > 0 && !self.banners.sync_dismissal(checkout)
-        })
+    fn sync_suggestion(&self, cx: &App) -> Option<CheckoutSyncStatus> {
+        self.sync_candidate(cx)
+            .filter(|checkout| !self.banners.sync_dismissal(checkout))
+    }
+
+    pub(super) fn sync_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(checkout) = self.sync_candidate(cx) else {
+            return;
+        };
+        let path = checkout.path.clone();
+        self.push_unpushed_checkout(path, window, cx);
     }
 
     fn render_push_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
@@ -977,7 +1002,6 @@ impl RepoDetailView {
 
     fn render_sync_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let checkout = self.sync_suggestion(cx)?;
-        let path = checkout.path.clone();
         let pushing = self.store.read(cx).pushing;
 
         let (branch, ahead) = checkout
@@ -1015,30 +1039,17 @@ impl RepoDetailView {
                         .child("ahead of Nostr"),
                 )
                 .child(
-                    h_flex()
-                        .gap_1()
-                        .child(
-                            Button::new("sync-banner")
-                                .icon(Icon::named(IconRole::Refresh))
-                                .label("Sync now")
-                                .small()
-                                .loading(pushing)
-                                .disabled(pushing)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.push_unpushed_checkout(path.clone(), window, cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("dismiss-sync-banner")
-                                .icon(Icon::named(IconRole::Close))
-                                .variant(ButtonVariant::Ghost)
-                                .small()
-                                .disabled(pushing)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.banners.sync_dismiss(&checkout);
-                                    cx.notify();
-                                })),
-                        ),
+                    h_flex().gap_1().child(
+                        Button::new("dismiss-sync-banner")
+                            .icon(Icon::named(IconRole::Close))
+                            .variant(ButtonVariant::Ghost)
+                            .small()
+                            .disabled(pushing)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.banners.sync_dismiss(&checkout);
+                                cx.notify();
+                            })),
+                    ),
                 )
                 .into_any_element(),
         )
@@ -1192,6 +1203,10 @@ impl Panel for RepoDetailView {
 
     fn lead(&self, cx: &App) -> Option<AnyElement> {
         Some(repo_tab_avatar(self.store.read(cx), &self.directory, cx))
+    }
+
+    fn right_sidebar(&mut self, _window: &mut Window, _cx: &mut App) -> Option<AnyView> {
+        Some(self.right_sidebar.clone().into())
     }
 }
 
