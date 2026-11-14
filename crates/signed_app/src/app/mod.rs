@@ -6,10 +6,11 @@ use gpui::{
     AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
     Render, Styled as _, Subscription, Window, div,
 };
-use gpui_native_kit::common::h_flex;
+use gpui_native_kit::button::{Button, ButtonVariant};
+use gpui_native_kit::common::{Sizable as _, h_flex};
 use gpui_native_kit::icons::IconRole;
 use gpui_native_kit::layout::dock::{Dock, DockSidebar, DockState};
-use gpui_native_kit::layout::shell::{LayoutState, Shell, SidebarToggles};
+use gpui_native_kit::layout::shell::{LayoutState, Shell};
 use gpui_native_kit::layout::window_controls::{TRAFFIC_LIGHT_PAD, titlebar_strip};
 use gpui_native_kit::theme::ActiveTheme as _;
 use gpui_native_kit::toast::Toast;
@@ -34,10 +35,6 @@ impl AppRoot {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let dock = DockState::new(cx);
         let layout = LayoutState::new(cx);
-
-        layout.update(cx, |layout, cx| {
-            layout.set_sidebar_toggles(SidebarToggles::Tabbar, cx);
-        });
 
         dock.update(cx, |dock, cx| {
             dock.register_panel("welcome", |_, cx| {
@@ -114,6 +111,11 @@ impl Render for AppRoot {
         let left_visible = layout.is_left_sidebar_visible();
         let sidebar_width = layout.left_sidebar_width();
 
+        let repo_active =
+            self.dock.read(cx).active_panel().is_some_and(|panel| {
+                panel.starts_with("repo:") || panel.starts_with("repo-local:")
+            });
+
         let titlebar = if left_visible {
             self.sidebar.read(cx).render_titlebar(cx)
         } else {
@@ -142,13 +144,48 @@ impl Render for AppRoot {
             .text_color(theme.colors.foreground)
             .child(
                 Shell::new("signed-shell", self.layout.clone())
+                    .toggle_button(false)
                     .left_sidebar(self.sidebar.read(cx).build(cx))
                     .right_sidebar(DockSidebar::new("signed-dock-sidebar", self.dock.clone()))
                     .center(
                         Dock::new("signed-dock", self.dock.clone())
                             .window_controls(true)
                             .traffic_light_pad(!left_visible)
-                            .sidebar_toggles(self.layout.clone()),
+                            .tab_prefix({
+                                let layout = self.layout.clone();
+                                move || {
+                                    let layout = layout.clone();
+                                    Button::new("toggle-left-sidebar")
+                                        .icon(IconRole::PanelLeft)
+                                        .variant(ButtonVariant::Ghost)
+                                        .small()
+                                        .on_click(move |_, _, cx| {
+                                            layout.update(cx, |layout, cx| {
+                                                layout.toggle_left_sidebar(cx)
+                                            });
+                                        })
+                                        .into_any_element()
+                                }
+                            })
+                            .tab_suffix({
+                                let layout = self.layout.clone();
+                                move || {
+                                    if !repo_active {
+                                        return div().into_any_element();
+                                    }
+                                    let layout = layout.clone();
+                                    Button::new("toggle-right-sidebar")
+                                        .icon(IconRole::PanelRight)
+                                        .variant(ButtonVariant::Ghost)
+                                        .small()
+                                        .on_click(move |_, _, cx| {
+                                            layout.update(cx, |layout, cx| {
+                                                layout.toggle_right_sidebar(cx)
+                                            });
+                                        })
+                                        .into_any_element()
+                                }
+                            }),
                     ),
             )
             .when_some(titlebar, |root, titlebar| {

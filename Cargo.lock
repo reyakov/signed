@@ -1579,7 +1579,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3059,7 +3059,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-core"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=bf8a92a133ac2066eb7b6fda7958d19233599923#bf8a92a133ac2066eb7b6fda7958d19233599923"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=33f8856bc2332c426e90f5392b3f0e50d711ea05#33f8856bc2332c426e90f5392b3f0e50d711ea05"
 dependencies = [
  "cpal",
  "flume 0.12.0",
@@ -3075,7 +3075,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-data"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=bf8a92a133ac2066eb7b6fda7958d19233599923#bf8a92a133ac2066eb7b6fda7958d19233599923"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=33f8856bc2332c426e90f5392b3f0e50d711ea05#33f8856bc2332c426e90f5392b3f0e50d711ea05"
 dependencies = [
  "gpui",
  "gpui-native-core",
@@ -3087,7 +3087,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-editor"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=bf8a92a133ac2066eb7b6fda7958d19233599923#bf8a92a133ac2066eb7b6fda7958d19233599923"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=33f8856bc2332c426e90f5392b3f0e50d711ea05#33f8856bc2332c426e90f5392b3f0e50d711ea05"
 dependencies = [
  "gpui",
  "gpui-native-core",
@@ -3106,7 +3106,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-icons"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=bf8a92a133ac2066eb7b6fda7958d19233599923#bf8a92a133ac2066eb7b6fda7958d19233599923"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=33f8856bc2332c426e90f5392b3f0e50d711ea05#33f8856bc2332c426e90f5392b3f0e50d711ea05"
 dependencies = [
  "anyhow",
  "gpui",
@@ -3115,7 +3115,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-kit"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=bf8a92a133ac2066eb7b6fda7958d19233599923#bf8a92a133ac2066eb7b6fda7958d19233599923"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=33f8856bc2332c426e90f5392b3f0e50d711ea05#33f8856bc2332c426e90f5392b3f0e50d711ea05"
 dependencies = [
  "gpui",
  "gpui-native-core",
@@ -3129,7 +3129,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-layout"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=bf8a92a133ac2066eb7b6fda7958d19233599923#bf8a92a133ac2066eb7b6fda7958d19233599923"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=33f8856bc2332c426e90f5392b3f0e50d711ea05#33f8856bc2332c426e90f5392b3f0e50d711ea05"
 dependencies = [
  "gpui",
  "gpui-native-core",
@@ -3142,7 +3142,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-theme"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=bf8a92a133ac2066eb7b6fda7958d19233599923#bf8a92a133ac2066eb7b6fda7958d19233599923"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=33f8856bc2332c426e90f5392b3f0e50d711ea05#33f8856bc2332c426e90f5392b3f0e50d711ea05"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3163,7 +3163,7 @@ dependencies = [
 [[package]]
 name = "gpui-native-utils"
 version = "0.1.0"
-source = "git+https://git.reya.info/reya/gpui-native-kit?rev=bf8a92a133ac2066eb7b6fda7958d19233599923#bf8a92a133ac2066eb7b6fda7958d19233599923"
+source = "git+https://git.reya.info/reya/gpui-native-kit?rev=33f8856bc2332c426e90f5392b3f0e50d711ea05#33f8856bc2332c426e90f5392b3f0e50d711ea05"
 dependencies = [
  "gpui",
  "gpui-native-theme",
@@ -5940,7 +5940,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6438,7 +6438,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6506,7 +6506,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7382,7 +7382,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8575,7 +8575,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
