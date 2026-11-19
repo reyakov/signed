@@ -5,20 +5,23 @@ use anyhow::Error;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task,
-    WeakEntity, Window, div,
+    ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription,
+    SystemNotification, Task, WeakEntity, Window, div,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::{PublicKey, Url};
 use signed_core::{Announcement, RepoAddr};
 use signed_git::{FileCommit, GitCache, Repo};
 use signed_state::{
-    Backend, LocalReposStore, Mirrors, Nip34Binding, RepoStore, SyncStatusDirectory,
+    Backend, BackendEvent, LocalReposStore, Mirrors, Nip34Binding, PushStepStatus, RepoStore,
+    SyncStatusDirectory,
 };
 use ui::alert::{Alert, AlertSeverity};
 use ui::avatar::Avatar;
 use ui::badge::Badge;
+use ui::button::{Button, ButtonVariant};
 use ui::common::{Sizable as _, h_flex, v_flex};
+use ui::dialog::Dialog;
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::Panel;
 use ui::sidebar::{Sidebar, SidebarEntry};
@@ -41,6 +44,7 @@ use refs::RefSwitcher;
 
 use crate::issues::IssuesView;
 use crate::pull_requests::PullRequestsView;
+use crate::shared::log_dropped;
 use crate::shared::tree::{build_tree_items, sorted_worktree_paths};
 use crate::workspace::Workspace;
 
@@ -89,6 +93,10 @@ pub struct RepoDetailView {
     pub(super) directory: Entity<ProfileDirectory>,
     /// Sync status feeding the per-commit sync buttons.
     sync_directory: Entity<SyncStatusDirectory>,
+    /// Only a commit sync reports push steps; republish stays silent.
+    sync_progress: bool,
+    /// The push error shown by the modal alert dialog.
+    sync_error: Option<SharedString>,
     pub(super) repo_menu_open: bool,
     pub(super) clone_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -136,9 +144,16 @@ impl RepoDetailView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let backend = Backend::global(cx);
         let weak = cx.entity().downgrade();
+
         let sync_directory = SyncStatusDirectory::new(cx);
         let files = cx.new(RepoFilesView::new);
+
+        let issues = cx.new(|cx| IssuesView::new(workspace.clone(), store.clone(), cx));
+        let pulls = cx.new(|cx| PullRequestsView::new(workspace.clone(), store.clone(), cx));
+        let refs = RefSwitcher::new(weak.clone(), window, cx);
+
         let history = cx.new(|_| {
             RepoHistoryView::new(
                 store.clone(),
@@ -147,13 +162,26 @@ impl RepoDetailView {
                 sync_directory.clone(),
             )
         });
-        let issues = cx.new(|cx| IssuesView::new(workspace.clone(), store.clone(), cx));
-        let pulls = cx.new(|cx| PullRequestsView::new(workspace.clone(), store.clone(), cx));
-        let refs = RefSwitcher::new(weak.clone(), window, cx);
 
         let subscriptions = vec![
             cx.observe(&sync_directory, |this, _directory, cx| {
                 this.sync_history_source(cx);
+            }),
+            cx.subscribe(&backend, |this, _backend, event, cx| {
+                let BackendEvent::PushProgress { addr, status } = event else {
+                    return;
+                };
+
+                if !this.sync_progress {
+                    return;
+                }
+
+                let current = this.store.read(cx).addr().cloned();
+                if current.as_ref() != Some(addr) {
+                    return;
+                }
+
+                cx.show_system_notification(Self::sync_progress_notification(addr, status));
             }),
             cx.subscribe(&files, |this, _files, _event, cx| {
                 if this.active_section != RepoSection::Files {
@@ -191,6 +219,8 @@ impl RepoDetailView {
             tasks: Vec::new(),
             directory: ProfileDirectory::new(cx),
             sync_directory,
+            sync_progress: false,
+            sync_error: None,
             repo_menu_open: false,
             clone_open: false,
             _subscriptions: subscriptions,
@@ -740,6 +770,27 @@ impl RepoDetailView {
         self.tasks.push(task);
     }
 
+    fn sync_notification_tag(addr: &RepoAddr) -> SharedString {
+        SharedString::from(format!("signed-sync-commit:{addr}"))
+    }
+
+    fn sync_progress_notification(addr: &RepoAddr, status: &PushStepStatus) -> SystemNotification {
+        let label = status.step().label();
+
+        let (title, body) = match status {
+            PushStepStatus::Running(_) => ("Syncing commit", format!("{label}...")),
+            PushStepStatus::Done(_) => ("Syncing commit", format!("{label} done")),
+            PushStepStatus::Failed(_, reason) => ("Sync warning", format!("{label}: {reason}")),
+        };
+
+        SystemNotification {
+            tag: Self::sync_notification_tag(addr),
+            title: title.into(),
+            body: body.into(),
+            actions: Vec::new(),
+        }
+    }
+
     fn sync_checkout_commit(
         &mut self,
         path: PathBuf,
@@ -754,16 +805,64 @@ impl RepoDetailView {
         }
 
         self.error = None;
+        self.sync_error = None;
+        self.sync_progress = true;
+
+        let tag = store
+            .read(cx)
+            .addr()
+            .cloned()
+            .map(|addr| Self::sync_notification_tag(&addr));
+
+        // The first backend step may lag behind event signing; post feedback immediately.
+        if let Some(tag) = &tag {
+            cx.show_system_notification(SystemNotification {
+                tag: tag.clone(),
+                title: "Syncing commit".into(),
+                body: "Preparing the push...".into(),
+                actions: Vec::new(),
+            });
+        }
         cx.notify();
 
-        let task: Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
-            let push = this.update_in(cx, |_this, _window, cx| {
-                store.update(cx, |store, cx| {
-                    store.push_checkout_commit(path.clone(), commit.clone(), cx)
-                })
-            })?;
+        let push = store.update(cx, |store, cx| {
+            store.push_checkout_commit(path, commit.clone(), cx)
+        });
 
-            push.await?;
+        let task: Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
+            let result = push.await;
+
+            this.update_in(cx, |this, _window, cx| {
+                this.sync_progress = false;
+
+                match result {
+                    Ok(()) => {
+                        if let Some(tag) = &tag {
+                            let short = commit.chars().take(7).collect::<String>();
+                            let (title, body) = match store.read(cx).last_push_warning.clone() {
+                                Some(warning) => ("Sync partially failed", warning),
+                                None => ("Sync complete", format!("Synced up to {short}")),
+                            };
+
+                            cx.show_system_notification(SystemNotification {
+                                tag: tag.clone(),
+                                title: title.into(),
+                                body: body.into(),
+                                actions: Vec::new(),
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(tag) = &tag {
+                            cx.dismiss_system_notification(tag.as_ref()).detach();
+                        }
+                        store.update(cx, |store, _| store.last_error = None);
+                        this.sync_error = Some(format!("{error:#}").into());
+                    }
+                }
+
+                cx.notify();
+            })?;
 
             Ok(())
         });
@@ -959,11 +1058,13 @@ impl Panel for RepoDetailView {
 
     fn prefix(&self, cx: &App) -> Option<AnyElement> {
         let store = self.store.read(cx);
+
         let key = match (store.announcement.as_ref(), store.path.as_ref()) {
             (Some(announcement), _) => SharedString::from(format!("repo:{}", announcement.addr())),
             (None, Some(path)) => SharedString::from(format!("repo-local:{}", path.display())),
             (None, None) => SharedString::from("repo"),
         };
+
         let owner = store
             .nip34
             .as_ref()
@@ -974,11 +1075,13 @@ impl Panel for RepoDetailView {
                     .as_ref()
                     .map(|announcement| announcement.owner)
             });
+
         let mut avatar = Avatar::new(key);
         if let Some(owner) = owner {
             let profile = self.directory.read(cx).profile(&owner, cx);
             avatar = avatar.name(profile.name()).picture(profile.picture());
         }
+
         Some(avatar.small().into_any_element())
     }
 
@@ -990,6 +1093,8 @@ impl Panel for RepoDetailView {
 impl Render for RepoDetailView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.entity().downgrade();
+        let sync_weak = cx.entity().downgrade();
+
         let error = self.error.clone().or_else(|| {
             self.store
                 .read(cx)
@@ -1042,5 +1147,35 @@ impl Render for RepoDetailView {
             .when_some(self.about.clone(), |el, view| el.child(view))
             .when_some(self.init.clone(), |el, view| el.child(view))
             .when_some(self.reset.clone(), |el, view| el.child(view))
+            .when_some(self.sync_error.clone(), |el, error| {
+                el.child(
+                    Dialog::new("sync-error-dialog")
+                        .alert(true)
+                        .open(true)
+                        .title("Sync failed")
+                        .content(move |_, cx| {
+                            div()
+                                .text_base()
+                                .text_color(cx.theme().colors.muted_foreground)
+                                .child(error.clone())
+                                .into_any_element()
+                        })
+                        .actions(move |_, _| {
+                            let sync_weak = sync_weak.clone();
+                            vec![
+                                Button::new("close-sync-error")
+                                    .label("Close")
+                                    .variant(ButtonVariant::Secondary)
+                                    .on_click(move |_, _, cx| {
+                                        log_dropped(sync_weak.update(cx, |this, cx| {
+                                            this.sync_error = None;
+                                            cx.notify();
+                                        }));
+                                    })
+                                    .into_any_element(),
+                            ]
+                        }),
+                )
+            })
     }
 }
