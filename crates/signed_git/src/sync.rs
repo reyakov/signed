@@ -18,6 +18,10 @@ pub struct RepoSyncStatus {
     pub refs: Vec<(String, RefSync)>,
     pub ahead_total: usize,
     pub behind_total: usize,
+    /// Current branch short name of the checkout, `None` when detached.
+    pub head: Option<String>,
+    /// Ids of commits reachable from HEAD that publish the current branch as a fast-forward.
+    pub ahead_commits: Vec<String>,
 }
 
 impl RepoSyncStatus {

@@ -90,7 +90,7 @@ mod tests {
 
     /// Builds a signed event with a fixed timestamp.
     fn signed(author: &Keys, kind: Kind, tags: Vec<Tag>, created_at: u64) -> Event {
-        EventBuilder::new(kind, "")
+        EventBuilder::new(kind)
             .tags(tags)
             .custom_created_at(Timestamp::from_secs(created_at))
             .finalize(author)

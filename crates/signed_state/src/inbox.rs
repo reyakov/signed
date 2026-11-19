@@ -154,7 +154,8 @@ impl Inbox {
         me: PublicKey,
         state: &InboxReadState,
     ) -> Result<(), Error> {
-        let event = EventBuilder::new(Kind::ApplicationSpecificData, serde_json::to_string(state)?)
+        let event = EventBuilder::new(Kind::ApplicationSpecificData)
+            .content(serde_json::to_string(state)?)
             .tags([Tag::identifier(Self::inbox_state_d_tag(me))])
             .finalize(&Keys::generate())?;
 

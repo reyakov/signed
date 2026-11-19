@@ -182,7 +182,7 @@ mod tests {
     }
 
     fn signed(author: &Keys, kind: Kind, tags: Vec<Tag>) -> Event {
-        EventBuilder::new(kind, "")
+        EventBuilder::new(kind)
             .tags(tags)
             .finalize(author)
             .expect("signed event")

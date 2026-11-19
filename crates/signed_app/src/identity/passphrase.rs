@@ -1,0 +1,130 @@
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
+    Styled as _, Subscription, Window, px,
+};
+use signed_state::Backend;
+use ui::button::Button;
+use ui::common::v_flex;
+use ui::dialog::{Dialog, DialogHandle};
+use ui::field::Field;
+use ui::icons::{Icon, IconRole};
+use ui::input::{Input, InputState, InputStateEvent};
+
+use crate::shared::progress::{DialogProgress, error_row, push_steps_row};
+
+pub struct PassphraseDialog {
+    handle: DialogHandle,
+    pass_input: Entity<InputState>,
+    state: Entity<DialogProgress>,
+    _enter_subscription: Subscription,
+}
+
+impl PassphraseDialog {
+    pub fn new(cx: &mut App) -> Entity<Self> {
+        let state = cx.new(|_| DialogProgress::default());
+        let pass_input = InputState::builder().password().build(cx);
+
+        cx.new(|cx| {
+            let enter_subscription =
+                cx.subscribe(&pass_input, |this: &mut Self, _input, event, cx| {
+                    if matches!(event, InputStateEvent::Submitted) {
+                        this.unlock(cx);
+                    }
+                });
+
+            Self {
+                handle: DialogHandle::new(true),
+                pass_input,
+                state,
+                _enter_subscription: enter_subscription,
+            }
+        })
+    }
+
+    fn unlock(&mut self, cx: &mut Context<Self>) {
+        if self.state.read(cx).busy {
+            return;
+        }
+
+        let pass = self.pass_input.read(cx).value().to_string();
+
+        if pass.is_empty() {
+            self.state.update(cx, |state, cx| {
+                state.fail("Passphrase must not be empty");
+                cx.notify();
+            });
+            return;
+        }
+
+        self.state.update(cx, |state, cx| {
+            state.begin();
+            cx.notify();
+        });
+
+        let backend = Backend::global(cx);
+        let task = backend.update(cx, |backend, cx| backend.restore_with_passphrase(&pass, cx));
+        let state = self.state.clone();
+        let handle = self.handle.clone();
+
+        cx.spawn(async move |_this, cx| match task.await {
+            Ok(_) => cx.update(|cx| handle.close(cx)),
+            Err(error) => {
+                state.update(cx, |state, cx| {
+                    state.fail(error.to_string());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+}
+
+impl Render for PassphraseDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pass_input = self.pass_input.clone();
+        let state = self.state.clone();
+        let action_state = state.clone();
+        let this = cx.entity().downgrade();
+
+        Dialog::new("passphrase-dialog")
+            .handle(self.handle.clone())
+            .close_on_escape(false)
+            .close_on_backdrop(false)
+            .min_width(px(420.))
+            .title("Unlock your identity")
+            .content(move |_window, cx| {
+                let progress = state.read(cx);
+                v_flex()
+                    .gap_3()
+                    .child(
+                        Field::new(
+                            "passphrase-field",
+                            "Enter the passphrase used to encrypt this identity.",
+                        )
+                        .child(Input::new("passphrase-input", pass_input.clone())),
+                    )
+                    .when_some(error_row(&progress.error, cx), |el, error| el.child(error))
+                    .when_some(push_steps_row(&progress.push_steps, cx), |el, steps| {
+                        el.child(steps)
+                    })
+                    .into_any_element()
+            })
+            .actions(move |_, cx| {
+                let busy = action_state.read(cx).busy;
+                let this = this.clone();
+
+                let unlock: AnyElement = Button::new("unlock")
+                    .label("Unlock")
+                    .icon(Icon::named(IconRole::Unlock))
+                    .loading(busy)
+                    .disabled(busy)
+                    .on_click(move |_, _, cx| {
+                        crate::shared::log_dropped(this.update(cx, |this, cx| this.unlock(cx)));
+                    })
+                    .into_any_element();
+
+                vec![unlock]
+            })
+    }
+}

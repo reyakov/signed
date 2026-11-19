@@ -31,20 +31,21 @@ impl GitRef {
 }
 
 /// How much to push to the grasp servers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum GitPushMode {
     /// Mirror all branches and tags.
     #[default]
     All,
     /// Push `refs/heads/main` only (repo creation).
     Main,
+    /// Push only the named ref from the declared state.
+    Ref(String),
 }
 
 /// How to handle server-only refs when pushing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GitPushPolicy {
-    /// Reconcile the local refs with the grasp servers,
-    /// fetching missing refs before pushing.
+    /// Reconcile the local refs with the grasp servers, fetching missing refs before pushing.
     #[default]
     Reconcile,
     /// Declare the local refs only and delete server-only refs while pushing.
@@ -116,7 +117,7 @@ impl SyncState {
             );
         }
 
-        EventBuilder::new(Kind::RepoState, "").tags(tags)
+        EventBuilder::new(Kind::RepoState).tags(tags)
     }
 
     pub fn parse(event: &Event) -> Self {
@@ -280,7 +281,7 @@ impl SyncState {
             .await?;
 
         if !missing.is_empty() {
-            let (mode, policy) = (self.mode, self.policy);
+            let (mode, policy) = (self.mode.clone(), self.policy);
             *self = Self::from_repo(&snapshot_path)?;
             self.mode = mode;
             self.policy = policy;
@@ -319,7 +320,11 @@ impl SyncState {
             .map_err(|error| anyhow!("could not encode the repository owner: {error}"))?;
 
         let mut outcome = PushOutcome::default();
+
         let policy = self.policy;
+        let mode = self.mode.clone();
+        let refs = self.refs.clone();
+
         let declared: Vec<String> = self
             .refs
             .iter()
@@ -374,7 +379,8 @@ impl SyncState {
                 let base = base.clone();
                 let owner = owner.clone();
                 let repo_id = announcement.id.clone();
-                let mode = self.mode;
+                let mode = mode.clone();
+                let refs = refs.clone();
                 let declared = declared.clone();
 
                 async move {
@@ -382,6 +388,14 @@ impl SyncState {
 
                     match mode {
                         GitPushMode::Main => repo.push_main(&base, &owner, &repo_id),
+                        GitPushMode::Ref(name) => {
+                            let Some(git_ref) = refs.iter().find(|git_ref| git_ref.name == name)
+                            else {
+                                return Err(anyhow!("ref {name} is not declared for this push"));
+                            };
+                            let refspec = format!("+{}:{}", git_ref.commit, name);
+                            repo.push_refspecs(&base, &owner, &repo_id, &[refspec.as_str()])
+                        }
                         GitPushMode::All => {
                             let mut refspecs = force_refspecs();
                             if policy == GitPushPolicy::ResetRemote {

@@ -171,7 +171,7 @@ mod tests {
             .map(|t| Tag::parse(t.to_vec()).expect("valid tag"))
             .collect();
 
-        EventBuilder::new(Kind::GitRepoAnnouncement, "")
+        EventBuilder::new(Kind::GitRepoAnnouncement)
             .tags(tags)
             .finalize(&keys())
             .expect("signed event")
@@ -375,7 +375,7 @@ mod tests {
             .iter()
             .map(|t| Tag::parse(t.to_vec()).expect("valid tag"))
             .collect();
-        EventBuilder::new(Kind::GitRepoAnnouncement, "")
+        EventBuilder::new(Kind::GitRepoAnnouncement)
             .tags(tags)
             .finalize(&keys)
             .expect("signed event")

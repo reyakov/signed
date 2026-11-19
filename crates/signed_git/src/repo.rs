@@ -829,11 +829,76 @@ impl Repo {
             refs.push((name.to_owned(), sync));
         }
 
+        let ahead_commits = self.head_ahead_commits(remote_refs);
+
         Ok(RepoSyncStatus {
             refs,
             ahead_total,
             behind_total,
+            head: local_refs.head.clone(),
+            ahead_commits,
         })
+    }
+
+    /// Commit ids reachable from HEAD but not from any remote ref, newest first.
+    fn head_ahead_commits(&self, remote_refs: &[(String, String)]) -> Vec<String> {
+        let Ok(head) = self.inner.head_id() else {
+            return Vec::new();
+        };
+
+        let mut hidden = Vec::with_capacity(remote_refs.len());
+
+        for (_, commit) in remote_refs {
+            let Some(id) = self.inner.rev_parse_single(commit.as_bytes()).ok() else {
+                return Vec::new();
+            };
+            let Ok(object) = id.object() else {
+                return Vec::new();
+            };
+            let Ok(commit) = object.peel_to_commit() else {
+                return Vec::new();
+            };
+            hidden.push(commit.id().detach());
+        }
+
+        let Ok(walk) = self.inner.rev_walk([head]).with_hidden(hidden).all() else {
+            return Vec::new();
+        };
+
+        let ahead: Vec<String> = walk
+            .filter_map(Result::ok)
+            .take(MAX_LISTED_COMMITS)
+            .map(|info| info.id().to_string())
+            .collect();
+
+        let Some(branch) = self.current_branch() else {
+            return Vec::new();
+        };
+
+        let name = format!("refs/heads/{branch}");
+        let Some((_, published)) = remote_refs.iter().find(|(refname, _)| refname == &name) else {
+            // A branch missing on Nostr creates nothing, so every commit is safe.
+            return ahead;
+        };
+
+        // None of the ahead commits can extend a tip HEAD no longer descends from.
+        let fast_forward = self
+            .merge_base(&head.to_string(), published)
+            .ok()
+            .flatten()
+            .is_some_and(|base| base == *published);
+
+        if !fast_forward {
+            return Vec::new();
+        }
+
+        ahead
+            .into_iter()
+            .filter(|commit| {
+                self.merge_base(published, commit)
+                    .is_ok_and(|base| base.as_deref() == Some(published.as_str()))
+            })
+            .collect()
     }
 
     /// Classifies a branch present on both sides.

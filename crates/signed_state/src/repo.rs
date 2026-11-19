@@ -1134,7 +1134,7 @@ impl RepoStore {
             return;
         };
 
-        let builder = EventBuilder::new(status.kind(), "").tags([
+        let builder = EventBuilder::new(status.kind()).tags([
             root_ref,
             Tag::public_key(addr.public_key()),
             Tag::public_key(root.pubkey),
@@ -1190,9 +1190,10 @@ impl RepoStore {
         self.run_push(push, None, cx)
     }
 
-    pub fn push_checkout(
+    pub fn push_checkout_commit(
         &mut self,
         path: PathBuf,
+        commit: String,
         cx: &mut Context<Self>,
     ) -> Task<Result<(), Error>> {
         if self.pushing {
@@ -1210,12 +1211,11 @@ impl RepoStore {
         };
 
         // The state event's `HEAD` stays the announced default branch.
-        // The checkout may be on a side branch.
         let head = self.head.clone();
-
         let backend = Backend::global(cx);
+
         let push = backend.update(cx, |backend, cx| {
-            backend.push_checkout(announcement, path.clone(), head, cx)
+            backend.push_checkout_commit(announcement, path.clone(), head, commit, cx)
         });
 
         self.run_push(push, Some((addr, path)), cx)
@@ -1508,7 +1508,10 @@ where
             tags.push(tag);
         }
 
-        let builder = EventBuilder::new(Kind::GitPatch, part.clone()).tags(tags);
+        let builder = EventBuilder::new(Kind::GitPatch)
+            .content(part.clone())
+            .tags(tags);
+
         let event = builder.finalize_async(signer).await?;
         let output = client.send_event(&event).broadcast().await?;
 

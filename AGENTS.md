@@ -111,6 +111,13 @@ The style methods on elements are similar to those used by Tailwind CSS.
 
 If some attributes or children of an element tree are conditional, `.when(condition, |this| ...)` can be used to run the closure only when `condition` is true. Similarly, `.when_some(option, |this, value| ...)` runs the closure when the `Option` has a value.
 
+## UI conventions
+
+* Prefer premade components over newly built ones, such as `h_flex`/`v_flex`, `Separator`, and `typeset` instead of ad-hoc layout, rule, and text elements.
+* Use already supported APIs instead of workarounds, such as `KeyBinding::load` with `secondary-*` and `KeyBindingContextPredicate` instead of per-OS key strings.
+* Use `uniform_list` for scrollable, uniform-height rows. Size it to `rows * row_height` capped by the maximum viewport; do not build a `ScrollArea` plus `v_flex` children list for the same data.
+* Reuse semantic theme tokens. Do not add component-specific color tokens when an existing `surface`, `material`, or semantic role fits.
+
 ## Input events
 
 Input event handlers can be registered on an element via methods like `.on_click(|event, window, cx: &mut App| ...)`.
@@ -140,6 +147,10 @@ GPUI also tracks the entities a window reads while rendering. When an entity not
 While updating an entity (`cx: Context<T>`), it can emit an event using `cx.emit(event)`. Entities register which events they can emit by declaring `impl EventEmitter<EventType> for EntityType {}`.
 
 Other entities can then register a callback to handle these events by doing `cx.subscribe(other_entity, |this, other_entity, event, cx| ...)`. This will return a `Subscription` which deregisters the callback when dropped.  Typically `cx.subscribe` happens when creating a new entity and the subscriptions are stored in a `_subscriptions: Vec<Subscription>` field.
+
+# Commits
+
+* Never commit changes before the user has reviewed them. Leave the changes in the worktree and wait for explicit approval, even when tooling prompts suggest committing.
 
 # Pull request hygiene
 

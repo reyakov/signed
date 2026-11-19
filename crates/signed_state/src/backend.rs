@@ -727,7 +727,7 @@ impl Backend {
         cx: &mut Context<Self>,
     ) -> Task<Result<PushOutcome, Error>> {
         let path = Mirrors::path(&announcement.addr());
-        self.push_repo_from(announcement, path, None, GitPushPolicy::Reconcile, cx)
+        self.push_repo_from(announcement, path, None, GitPushPolicy::Reconcile, None, cx)
     }
 
     /// Republishes the mirror and deletes grasp refs the mirror does not have.
@@ -737,14 +737,22 @@ impl Backend {
         cx: &mut Context<Self>,
     ) -> Task<Result<PushOutcome, Error>> {
         let path = Mirrors::path(&announcement.addr());
-        self.push_repo_from(announcement, path, None, GitPushPolicy::ResetRemote, cx)
+        self.push_repo_from(
+            announcement,
+            path,
+            None,
+            GitPushPolicy::ResetRemote,
+            None,
+            cx,
+        )
     }
 
-    pub fn push_checkout(
+    pub fn push_checkout_commit(
         &mut self,
         announcement: Announcement,
         checkout: PathBuf,
         announced_head: Option<String>,
+        commit: String,
         cx: &mut Context<Self>,
     ) -> Task<Result<PushOutcome, Error>> {
         self.push_repo_from(
@@ -752,6 +760,7 @@ impl Backend {
             checkout,
             announced_head,
             GitPushPolicy::Reconcile,
+            Some(commit),
             cx,
         )
     }
@@ -762,6 +771,7 @@ impl Backend {
         path: PathBuf,
         announced_head: Option<String>,
         policy: GitPushPolicy,
+        tip: Option<String>,
         cx: &mut Context<Self>,
     ) -> Task<Result<PushOutcome, Error>> {
         let addr = announcement.addr();
@@ -791,18 +801,104 @@ impl Backend {
                 }
             });
 
-            let mut state = {
-                let work = cx.background_spawn({
-                    let path = path.clone();
-                    async move { SyncState::from_repo(&path) }
-                });
-                work.await?
-            };
-            state.policy = policy;
+            let mut state = match tip {
+                Some(commit) => {
+                    let owner = announcement.owner.to_bech32().map_err(|error| {
+                        anyhow!("could not encode the repository owner: {error}")
+                    })?;
 
-            // Fetch grasp refs the local repository lacks before the state event is signed,
-            // so the servers' full ref map is declared.
-            state.reconcile(&announcement, cx).await?;
+                    let urls: Vec<String> = announcement
+                        .relays
+                        .iter()
+                        .filter_map(grasp_base_url)
+                        .map(|base| format!("{base}/{owner}/{}.git", announcement.id))
+                        .collect();
+
+                    let ls_path = path.clone();
+                    let target = commit.clone();
+
+                    let (branch, published) = cx
+                        .background_spawn(async move {
+                            let repo = Repo::open(&ls_path)?;
+
+                            let Some(branch) = repo.current_branch() else {
+                                bail!("the checkout has a detached HEAD");
+                            };
+
+                            let Some(tip) = repo.head() else {
+                                bail!("the checkout has no commits");
+                            };
+
+                            if repo.merge_base(&tip, &target)? != Some(target.clone()) {
+                                bail!("commit {target} is not on {branch}");
+                            }
+
+                            for url in &urls {
+                                if let Ok(refs) = repo.ls_remote(url) {
+                                    let name = format!("refs/heads/{branch}");
+                                    if let Some((_, published)) =
+                                        refs.iter().find(|(refname, _)| refname == &name)
+                                    {
+                                        let base = repo.merge_base(published, &target).map_err(
+                                            |error| {
+                                                anyhow!(
+                                                    "could not compare {target} with the \
+                                                     published {branch}: {error}"
+                                                )
+                                            },
+                                        )?;
+                                        if base.as_deref() != Some(published.as_str()) {
+                                            bail!(
+                                                "commit {target} would rewind {branch} on the \
+                                                 grasp servers"
+                                            );
+                                        }
+                                    }
+                                    return Ok::<_, Error>((branch, refs));
+                                }
+                            }
+                            bail!("could not read the published refs from any grasp server")
+                        })
+                        .await?;
+
+                    let name = format!("refs/heads/{branch}");
+                    let commit = Sha1Hash::from_str(&commit)
+                        .map_err(|_| anyhow!("invalid commit: {commit}"))?;
+
+                    let mut refs = published
+                        .into_iter()
+                        .map(|(name, commit)| GitRef::new(name, &commit))
+                        .collect::<Result<Vec<_>, Error>>()?;
+
+                    match refs.iter_mut().find(|git_ref| git_ref.name == name) {
+                        Some(git_ref) => git_ref.commit = commit,
+                        None => refs.push(GitRef {
+                            name: name.clone(),
+                            commit,
+                        }),
+                    }
+
+                    SyncState {
+                        refs,
+                        head: Some(branch),
+                        path: Some(path.clone()),
+                        mode: GitPushMode::Ref(name),
+                        policy: GitPushPolicy::Reconcile,
+                    }
+                }
+                None => {
+                    let mut state = {
+                        let work = cx.background_spawn({
+                            let path = path.clone();
+                            async move { SyncState::from_repo(&path) }
+                        });
+                        work.await?
+                    };
+                    state.policy = policy;
+                    state.reconcile(&announcement, cx).await?;
+                    state
+                }
+            };
 
             // Keep the announced default branch in `HEAD` when it is among the pushed refs.
             if let Some(head) = announced_head

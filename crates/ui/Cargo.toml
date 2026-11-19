@@ -1,0 +1,71 @@
+[package]
+name = "ui"
+description = "Signed's native GPUI theme, icons, and components."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+gpui.workspace = true
+anyhow.workspace = true
+log.workspace = true
+serde.workspace = true
+rust-embed.workspace = true
+flume.workspace = true
+unicode-segmentation = "1.12"
+image = { version = "0.25.1", default-features = false }
+similar = "2"
+pulldown-cmark = { version = "0.13", default-features = false }
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-python = "0.23"
+toml = "0.8"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cpal = "0.18"
+tree-sitter = "0.25"
+
+[target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
+async-channel = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+notify = "8"
+zbus = "5"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Foundation",
+    "UI",
+    "UI_ViewManagement",
+    "Win32_Foundation",
+    "Win32_System_Com",
+] }
+windows-registry = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "NSAccessibility",
+    "NSAppearance",
+    "NSColor",
+    "NSColorSpace",
+    "NSWorkspace",
+    "block2",
+    "objc2-core-foundation",
+] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+    "NSDictionary",
+    "NSDistributedNotificationCenter",
+    "NSNotification",
+    "NSKeyValueObserving",
+    "NSOperation",
+    "NSUserDefaults",
+    "NSString",
+    "block2",
+    "std",
+] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

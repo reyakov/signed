@@ -131,7 +131,8 @@ mod tests {
 
     /// Builds a signed pull request event.
     fn pr_event(content: &str, tags: Vec<Tag>) -> Event {
-        EventBuilder::new(Kind::GitPullRequest, content)
+        EventBuilder::new(Kind::GitPullRequest)
+            .content(content)
             .tags(tags)
             .finalize(&keys())
             .expect("signed event")
@@ -139,7 +140,8 @@ mod tests {
 
     /// Builds a signed patch event with a fixed timestamp.
     fn patch_event(content: &str, tags: Vec<Tag>, created_at: u64) -> Event {
-        EventBuilder::new(Kind::GitPatch, content)
+        EventBuilder::new(Kind::GitPatch)
+            .content(content)
             .tags(tags)
             .custom_created_at(Timestamp::from(created_at))
             .finalize(&keys())
@@ -214,7 +216,7 @@ mod tests {
 
     /// Builds a signed event with a fixed timestamp.
     fn signed_at(kind: Kind, tags: Vec<Tag>, created_at: u64) -> Event {
-        EventBuilder::new(kind, "")
+        EventBuilder::new(kind)
             .tags(tags)
             .custom_created_at(Timestamp::from(created_at))
             .finalize(&keys())
@@ -268,7 +270,7 @@ mod tests {
             SecretKey::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
                 .expect("valid secret key"),
         );
-        let stranger = EventBuilder::new(Kind::GitPullRequestUpdate, "")
+        let stranger = EventBuilder::new(Kind::GitPullRequestUpdate)
             .tags([Tag::parse(["E", &root_hex]).expect("valid tag")])
             .custom_created_at(Timestamp::from(999))
             .finalize(&other)

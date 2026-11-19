@@ -177,7 +177,7 @@ mod tests {
     fn announcement(secret: &str, id: &str) -> Announcement {
         let keys = Keys::new(SecretKey::from_hex(secret).expect("secret"));
         let tag = Tag::parse(vec!["d", id]).expect("tag");
-        let event = EventBuilder::new(Kind::GitRepoAnnouncement, "")
+        let event = EventBuilder::new(Kind::GitRepoAnnouncement)
             .tags(vec![tag])
             .finalize(&keys)
             .expect("signed");

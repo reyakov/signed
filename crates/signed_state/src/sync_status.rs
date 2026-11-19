@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::Error;
@@ -317,6 +317,44 @@ impl SyncStatusDirectory {
                     .sum()
             })
             .unwrap_or(0)
+    }
+
+    /// Commit ids missing on Nostr, mapped to the checkout that holds them.
+    ///
+    /// When `checkout` matches a tracked checkout, only that checkout contributes.
+    pub fn ahead_commits_of(
+        &self,
+        addr: &RepoAddr,
+        checkout: Option<&Path>,
+        cx: &App,
+    ) -> HashMap<String, PathBuf> {
+        self.queue(addr, cx);
+
+        let Some(statuses) = self.statuses.get(addr) else {
+            return HashMap::new();
+        };
+
+        let selected: Vec<&CheckoutSyncStatus> = match checkout
+            .and_then(|path| statuses.iter().find(|status| status.path.as_path() == path))
+        {
+            Some(status) => vec![status],
+            None => statuses.iter().collect(),
+        };
+
+        let mut commits = HashMap::new();
+
+        for status in selected {
+            if status.status.head.is_none() {
+                continue;
+            }
+            for id in &status.status.ahead_commits {
+                commits
+                    .entry(id.clone())
+                    .or_insert_with(|| status.path.clone());
+            }
+        }
+
+        commits
     }
 
     fn queue(&self, addr: &RepoAddr, cx: &App) {

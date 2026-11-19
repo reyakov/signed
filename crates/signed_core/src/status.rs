@@ -63,7 +63,7 @@ mod tests {
     }
 
     fn status_event(author: &Keys, kind: Kind, root: EventId, created_at: u64) -> Event {
-        EventBuilder::new(kind, "")
+        EventBuilder::new(kind)
             .tags([Tag::event(root)])
             .custom_created_at(Timestamp::from(created_at))
             .finalize(author)
@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn references_root_matches_e_tag() {
         let root = root_event_id();
-        let event = EventBuilder::new(Kind::GitStatusOpen, "")
+        let event = EventBuilder::new(Kind::GitStatusOpen)
             .tags([Tag::event(root)])
             .finalize(&keys_from_hex(
                 "0000000000000000000000000000000000000000000000000000000000000001",

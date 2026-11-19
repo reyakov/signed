@@ -30,58 +30,6 @@ pub enum EventFetchingStrategy {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct ThemeSettings {
-    /// Name of the light theme in the theme registry.
-    pub light_theme: String,
-    /// Name of the dark theme in the theme registry.
-    pub dark_theme: String,
-    /// The base font size in pixels.
-    pub font_size: f32,
-    /// The monospace font size in pixels.
-    pub mono_font_size: f32,
-    /// Corner radius for general elements in pixels.
-    pub radius: f32,
-    /// Corner radius for large elements, dialogs and notifications, in pixels.
-    pub radius_lg: f32,
-    /// Whether focused controls draw a ring outside their border.
-    pub focus_ring: bool,
-    /// Whether to apply a shadow to elements.
-    pub shadow: bool,
-}
-
-impl Default for ThemeSettings {
-    fn default() -> Self {
-        Self {
-            light_theme: "Signed Light".into(),
-            dark_theme: "Signed Dark".into(),
-            font_size: 16.0,
-            mono_font_size: 13.0,
-            radius: 4.0,
-            radius_lg: 8.0,
-            focus_ring: false,
-            shadow: false,
-        }
-    }
-}
-
-/// Tab bar chrome.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct TabBarSettings {
-    /// Hide the previous and next tab buttons.
-    pub hide_navigation_buttons: bool,
-}
-
-impl Default for TabBarSettings {
-    fn default() -> Self {
-        Self {
-            hide_navigation_buttons: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct GraspServersSettings {
     /// Servers offered while the user has not published a grasp list, kind `10317`.
     pub default_servers: Vec<String>,
@@ -151,8 +99,6 @@ pub struct CreateRepositorySettings {
 pub struct Settings {
     pub appearance: AppearanceMode,
     pub event_fetching: EventFetchingStrategy,
-    pub theme: ThemeSettings,
-    pub tab_bar: TabBarSettings,
     pub grasp_servers: GraspServersSettings,
     pub local_repos: LocalReposSettings,
     pub checkouts: CheckoutsSettings,
@@ -168,10 +114,6 @@ mod tests {
         let settings = Settings {
             appearance: AppearanceMode::Dark,
             event_fetching: EventFetchingStrategy::Curated,
-            theme: ThemeSettings {
-                radius: 8.0,
-                ..Default::default()
-            },
             create_repository: CreateRepositorySettings {
                 default_folder: Some(PathBuf::from("/tmp/repos")),
             },
@@ -185,16 +127,32 @@ mod tests {
 
     #[test]
     fn partial_json_merges_with_defaults() {
-        let settings: Settings =
-            serde_json::from_str(r#"{"appearance": "dark", "theme": {"radius": 4.0}}"#).unwrap();
+        let settings: Settings = serde_json::from_str(
+            r#"{"appearance": "dark", "grasp_servers": {"default_servers": []}}"#,
+        )
+        .unwrap();
         assert_eq!(settings.appearance, AppearanceMode::Dark);
-        assert_eq!(settings.theme.radius, 4.0);
+        assert_eq!(settings.grasp_servers.default_servers, Vec::<String>::new());
         // Unset fields fall back to their defaults, including the fetching strategy.
         assert_eq!(settings.event_fetching, EventFetchingStrategy::Uncensored);
-        // The rest of the theme and the other groups keep their defaults.
-        assert_eq!(settings.theme.light_theme, "Signed Light");
-        assert_eq!(settings.grasp_servers, GraspServersSettings::default());
+        assert_eq!(settings.local_repos, LocalReposSettings::default());
         assert_eq!(settings.create_repository.default_folder, None);
+    }
+
+    #[test]
+    fn legacy_theme_keys_are_ignored() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"appearance": "light", "theme": {"radius": 8.0}, "tab_bar": {"hide_navigation_buttons": false}}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.appearance, AppearanceMode::Light);
+        assert_eq!(
+            settings,
+            Settings {
+                appearance: AppearanceMode::Light,
+                ..Default::default()
+            }
+        );
     }
 
     #[test]

@@ -430,6 +430,146 @@ fn merge_base_finds_the_fork_point_and_reports_unrelated_history() {
 }
 
 #[test]
+fn sync_status_lists_commits_missing_from_nostr() {
+    let (dir, repo) = fixture(&[("a.txt", b"one")]);
+    commit_all(&repo, "initial");
+    let root = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("root");
+
+    std::fs::write(dir.path().join("b.txt"), b"two").expect("write");
+    commit_all(&repo, "second");
+    let second = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("second");
+
+    std::fs::write(dir.path().join("c.txt"), b"three").expect("write");
+    commit_all(&repo, "third");
+    let third = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("third");
+
+    let branch = repo.current_branch().expect("branch");
+    let ahead = repo
+        .sync_status(&[(format!("refs/heads/{branch}"), root.clone())])
+        .expect("status");
+    assert_eq!(ahead.head.as_deref(), Some(branch.as_str()));
+    assert_eq!(ahead.ahead_total, 2);
+    assert_eq!(ahead.ahead_commits.len(), 2);
+    assert!(ahead.ahead_commits.contains(&second));
+    assert!(ahead.ahead_commits.contains(&third));
+    assert!(!ahead.ahead_commits.contains(&root));
+
+    let in_sync = repo
+        .sync_status(&[(format!("refs/heads/{branch}"), third)])
+        .expect("status");
+    assert!(in_sync.ahead_commits.is_empty());
+
+    let missing = repo
+        .sync_status(&[(format!("refs/heads/{branch}"), "0".repeat(40))])
+        .expect("status");
+    assert!(missing.ahead_commits.is_empty());
+}
+
+#[test]
+fn publishing_a_commit_advances_the_remote_tip() {
+    let server = tempfile::tempdir().expect("tempdir");
+    let server_repo = bare_server(server.path(), "npub1test", "my-repo");
+
+    let (dir, repo) = fixture(&[("a.txt", b"one")]);
+    commit_all(&repo, "initial");
+    let root = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("root");
+
+    std::fs::write(dir.path().join("b.txt"), b"two").expect("write");
+    commit_all(&repo, "second");
+    let second = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("second");
+
+    std::fs::write(dir.path().join("c.txt"), b"three").expect("write");
+    commit_all(&repo, "third");
+    let third = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("third");
+
+    let branch = repo.current_branch().expect("branch");
+    let refname = format!("refs/heads/{branch}");
+    let base_url = format!("file://{}", server.path().display());
+
+    let root_refspec = format!("+{root}:{refname}");
+    repo.push_refspecs(&base_url, "npub1test", "my-repo", &[root_refspec.as_str()])
+        .expect("publish root");
+    assert_eq!(
+        git_in(&server_repo, &["rev-parse", refname.as_str()]).expect("server tip"),
+        root
+    );
+
+    let status = repo
+        .sync_status(&[(refname.clone(), root.clone())])
+        .expect("status");
+    assert_eq!(status.ahead_commits.len(), 2);
+    assert!(status.ahead_commits.contains(&second));
+    assert!(status.ahead_commits.contains(&third));
+
+    let second_refspec = format!("+{second}:{refname}");
+    repo.push_refspecs(&base_url, "npub1test", "my-repo", &[second_refspec.as_str()])
+        .expect("publish second");
+    assert_eq!(
+        git_in(&server_repo, &["rev-parse", refname.as_str()]).expect("server tip"),
+        second
+    );
+
+    let status = repo
+        .sync_status(&[(refname, second.clone())])
+        .expect("status");
+    assert_eq!(status.ahead_commits, vec![third]);
+}
+
+#[test]
+fn sync_status_skips_a_merged_commit_that_would_rewind_the_branch() {
+    let (dir, repo) = fixture(&[("a.txt", b"one")]);
+    commit_all(&repo, "initial");
+    let root = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("root");
+    let branch = repo.current_branch().expect("branch");
+    let refname = format!("refs/heads/{branch}");
+
+    git_run(dir.path(), &["checkout", "-q", "-b", "side"]);
+    std::fs::write(dir.path().join("side.txt"), b"side").expect("write");
+    commit_all(&repo, "side work");
+    let side = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("side");
+
+    git_run(dir.path(), &["checkout", "-q", branch.as_str()]);
+    std::fs::write(dir.path().join("main.txt"), b"main").expect("write");
+    commit_all(&repo, "main work");
+    let mainline = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("mainline");
+    assert_ne!(root, mainline);
+
+    git_run(
+        dir.path(),
+        &["merge", "-q", "--no-ff", "-m", "merge side", "side"],
+    );
+    let merge = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("merge");
+
+    let status = repo.sync_status(&[(refname, mainline)]).expect("status");
+    assert!(status.ahead_commits.contains(&merge));
+    assert!(!status.ahead_commits.contains(&root));
+    // Publishing the side commit would drop the merge and everything after it.
+    assert!(!status.ahead_commits.contains(&side));
+}
+
+#[test]
+fn sync_status_skips_a_diverged_history() {
+    let (dir, repo) = fixture(&[("a.txt", b"one")]);
+    commit_all(&repo, "initial");
+    let root = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("root");
+    let branch = repo.current_branch().expect("branch");
+    let refname = format!("refs/heads/{branch}");
+
+    std::fs::write(dir.path().join("published.txt"), b"published").expect("write");
+    commit_all(&repo, "published");
+    let published = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("published");
+
+    git_run(dir.path(), &["reset", "-q", "--hard", root.as_str()]);
+    std::fs::write(dir.path().join("local.txt"), b"local").expect("write");
+    commit_all(&repo, "local");
+    let local = git_in(dir.path(), &["rev-parse", "HEAD"]).expect("local");
+
+    let status = repo.sync_status(&[(refname, published)]).expect("status");
+    assert!(status.ahead_commits.is_empty());
+    assert!(!status.ahead_commits.contains(&local));
+}
+
+#[test]
 fn split_patch_series_splits_real_multi_commit_mboxes() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("repo");
