@@ -14,9 +14,9 @@ use signed_state::{Nip34Binding, RepoListStore, RepoStore};
 use ui::avatar::Avatar;
 use ui::clipboard::ClipboardButton;
 use ui::combobox::ComboboxState;
-use ui::common::{Sizable as _, h_flex, v_flex};
+use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use utils::relative_time_secs;
 
 use super::RepoDetailView;
@@ -52,19 +52,10 @@ pub(super) struct RepoData {
     pub(super) head_commit: Option<FileCommit>,
 }
 
-pub(super) fn clone_group(
-    label: &str,
-    id: &'static str,
-    command: &SharedString,
-    cx: &App,
-) -> AnyElement {
+pub(super) fn clone_group(label: &str, id: &'static str, command: &SharedString) -> AnyElement {
     v_flex()
         .gap_1()
-        .child(
-            div()
-                .typeset(TextRole::Caption, cx)
-                .child(SharedString::from(label)),
-        )
+        .child(div().text_xs().child(SharedString::from(label)))
         .child(ClipboardButton::new(id, command.clone()))
         .into_any_element()
 }
@@ -114,7 +105,7 @@ pub(super) fn fork_row(
     let row = h_flex()
         .gap_1()
         .min_w_0()
-        .typeset(TextRole::Body, cx)
+        .text_base()
         .text_color(cx.theme().colors.muted_foreground)
         .child(Icon::named(IconRole::GitBranch).small())
         .child(div().whitespace_nowrap().text_ellipsis().child(label));
@@ -187,7 +178,7 @@ pub(super) fn bound_repo_label(
     h_flex()
         .flex_shrink_0()
         .gap_2()
-        .typeset(TextRole::Body, cx)
+        .text_base()
         .child("Initialized by")
         .text_color(cx.theme().colors.muted_foreground)
         .when_some(profile, |this, profile| {
@@ -208,7 +199,8 @@ pub(super) fn bound_repo_label(
         .when_some(binding.identifier.as_deref(), |this, ident| {
             this.child(
                 div()
-                    .typeset(TextRole::Caption2, cx)
+                    .text_xs()
+                    .font_medium()
                     .child(SharedString::from(format!("/{ident}"))),
             )
         })
@@ -292,7 +284,7 @@ pub(super) fn render_diff_row(hunks: &[DiffHunk], row: DiffRow, cx: &App) -> Any
             .w_full()
             .h(px(DIFF_ROW_HEIGHT))
             .font_family(cx.theme().mono_font)
-            .typeset(TextRole::Caption, cx)
+            .text_xs()
             .bg(cx.theme().colors.muted)
             .border_y_1()
             .border_color(cx.theme().colors.border)
@@ -318,7 +310,7 @@ fn render_diff_line(line: &DiffLine, cx: &App) -> AnyElement {
         .w_full()
         .h(px(DIFF_ROW_HEIGHT))
         .font_family(cx.theme().mono_font)
-        .typeset(TextRole::Caption, cx)
+        .text_xs()
         .when_some(bg, |this, bg| this.bg(bg))
         .child(
             div()
@@ -379,7 +371,7 @@ pub(crate) fn commit_row(
                         .child(
                             div()
                                 .font_family(cx.theme().mono_font)
-                                .typeset(TextRole::Callout, cx)
+                                .text_sm()
                                 .text_color(cx.theme().colors.muted_foreground)
                                 .child(commit.id.clone()),
                         )
@@ -387,7 +379,7 @@ pub(crate) fn commit_row(
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .typeset(TextRole::Callout, cx)
+                                .text_sm()
                                 .text_ellipsis()
                                 .whitespace_nowrap()
                                 .child(commit.summary.clone()),
@@ -396,7 +388,7 @@ pub(crate) fn commit_row(
                 .child(
                     h_flex()
                         .gap_2()
-                        .typeset(TextRole::Caption, cx)
+                        .text_xs()
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(commit.author.clone())
                         .child(relative_time_secs(commit.time)),

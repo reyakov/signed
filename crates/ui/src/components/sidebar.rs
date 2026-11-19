@@ -30,7 +30,7 @@ use crate::components::common::{
 };
 use crate::components::grain::grain as grain_overlay;
 use crate::components::scroll_area::ScrollArea;
-use crate::theme::{ActiveTheme as _, BORDER_WIDTH, SIDEBAR_DEFAULT_WIDTH, TextRole, Typeset as _};
+use crate::theme::{ActiveTheme as _, BORDER_WIDTH, SIDEBAR_DEFAULT_WIDTH};
 
 /// The change reporter, fired with the next selected row by pointer and keys.
 type ChangeHandler = Rc<dyn Fn(Option<usize>, &mut Window, &mut App)>;
@@ -396,7 +396,7 @@ impl RenderOnce for Sidebar {
             .debug_selector(move || format!("sidebar-{debug_id}"))
             .h_full()
             .w(width)
-            .text_size(theme.sizes.medium.text_size)
+            .text_sm()
             .when(border_right, |sidebar| {
                 sidebar
                     .border_r(BORDER_WIDTH)
@@ -437,7 +437,8 @@ impl SidebarEntry {
                     .px_2()
                     .pt_2()
                     .pb_1()
-                    .typeset(TextRole::Headline, cx)
+                    .text_sm()
+                    .font_semibold()
                     .text_color(theme.colors.muted_foreground)
                     .role(Role::Heading)
                     .when_some(prefix, |header, prefix| header.child(prefix))
@@ -471,7 +472,7 @@ impl SidebarEntry {
                     .gap_2()
                     .px_2()
                     .py_1()
-                    .min_h(theme.sizes.medium.control_height)
+                    .min_h_8()
                     .rounded(theme.radius.sm)
                     .text_color(label_color)
                     .role(Role::ListItem)
@@ -515,7 +516,7 @@ impl SidebarEntry {
                         row.child(
                             div()
                                 .flex_none()
-                                .typeset(TextRole::Subheadline, cx)
+                                .text_sm()
                                 .text_color(if selected {
                                     theme.colors.primary_foreground
                                 } else {

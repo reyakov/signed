@@ -14,9 +14,9 @@ use std::collections::HashMap;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Bounds, BoxShadow, Div, ElementId, FocusHandle, Global, Hsla, IntoElement, Pixels,
-    Refineable as _, StatefulInteractiveElement, StyleRefinement, Styled, Window, WindowId, div,
-    px,
+    App, Bounds, BoxShadow, Div, ElementId, FocusHandle, FontWeight, Global, Hsla, IntoElement,
+    Pixels, Refineable as _, Rems, StatefulInteractiveElement, StyleRefinement, Styled, Window,
+    WindowId, div, px, rems,
 };
 
 pub use crate::theme::Size;
@@ -57,6 +57,20 @@ pub trait StyledExt: Styled + Sized {
     #[must_use]
     fn refine_style(mut self, style: &StyleRefinement) -> Self {
         self.style().refine(style);
+        self
+    }
+
+    /// Sets the medium weight.
+    #[must_use]
+    fn font_medium(mut self) -> Self {
+        self.text_style().font_weight = Some(FontWeight::MEDIUM);
+        self
+    }
+
+    /// Sets the semibold weight.
+    #[must_use]
+    fn font_semibold(mut self) -> Self {
+        self.text_style().font_weight = Some(FontWeight::SEMIBOLD);
         self
     }
 }
@@ -228,5 +242,285 @@ pub trait Sizable: Sized {
         Self: Sized,
     {
         self.with_size(Size::Large)
+    }
+}
+
+/// Resolves a [`Size`] into GPUI's native rem utilities.
+pub trait ControlSizing: Styled + Sized {
+    /// The control's height: `h_5`, `h_7`, `h_8`, `h_10`.
+    fn control_height(self, size: Size) -> Self;
+    /// The control's square width: `w_5`, `w_7`, `w_8`, `w_10`.
+    fn control_width(self, size: Size) -> Self;
+    /// Horizontal padding inside a control: `px_1`, `px_2`, `px_3`, `px_4`.
+    fn control_padding_x(self, size: Size) -> Self;
+    /// Tight horizontal padding: `px_1`, `px_2`, `px_2`, `px_3`.
+    fn control_dense_padding_x(self, size: Size) -> Self;
+    /// The control label size: `text_xs`, `text_xs`, `text_sm`, `text_base`.
+    fn control_text(self, size: Size) -> Self;
+    /// The dense caption size: `text_xs`, `text_xs`, `text_xs`, `text_sm`.
+    fn control_caption_text(self, size: Size) -> Self;
+    /// The selection indicator side: `size_2p5`, `size_3p5`, `size_4`, `size_5`.
+    fn control_indicator(self, size: Size) -> Self;
+    /// The inset to a raised inner plate: `p_0`, `p_0p5`, `p_0p5`, `p_1`.
+    fn control_plate_inset(self, size: Size) -> Self;
+    /// The avatar side: `size_5`, `size_5`, `size_6`, `size_8`.
+    fn avatar_size(self, size: Size) -> Self;
+    /// The switch track height: `h_3p5`, `h_5`, `h_5`, `h_6`.
+    fn switch_track_height(self, size: Size) -> Self;
+    /// The switch track width: `w_6`, `w_8`, `w_9`, `w_11`.
+    fn switch_track_width(self, size: Size) -> Self;
+    /// The switch knob side: `size_2`, `size_3`, `size_3p5`, `size_5`.
+    fn switch_knob(self, size: Size) -> Self;
+}
+
+impl<E: Styled> ControlSizing for E {
+    fn control_height(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.h_5(),
+            Size::Small => self.h_7(),
+            Size::Medium => self.h_8(),
+            Size::Large => self.h_10(),
+        }
+    }
+
+    fn control_width(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.w_5(),
+            Size::Small => self.w_7(),
+            Size::Medium => self.w_8(),
+            Size::Large => self.w_10(),
+        }
+    }
+
+    fn control_padding_x(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.px_1(),
+            Size::Small => self.px_2(),
+            Size::Medium => self.px_3(),
+            Size::Large => self.px_4(),
+        }
+    }
+
+    fn control_dense_padding_x(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.px_1(),
+            Size::Small => self.px_2(),
+            Size::Medium => self.px_2(),
+            Size::Large => self.px_3(),
+        }
+    }
+
+    fn control_text(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.text_xs(),
+            Size::Small => self.text_xs(),
+            Size::Medium => self.text_sm(),
+            Size::Large => self.text_base(),
+        }
+    }
+
+    fn control_caption_text(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.text_xs(),
+            Size::Small => self.text_xs(),
+            Size::Medium => self.text_xs(),
+            Size::Large => self.text_sm(),
+        }
+    }
+
+    fn control_indicator(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.size_2p5(),
+            Size::Small => self.size_3p5(),
+            Size::Medium => self.size_4(),
+            Size::Large => self.size_5(),
+        }
+    }
+
+    fn control_plate_inset(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.p_0(),
+            Size::Small => self.p_0p5(),
+            Size::Medium => self.p_0p5(),
+            Size::Large => self.p_1(),
+        }
+    }
+
+    fn avatar_size(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.size_5(),
+            Size::Small => self.size_5(),
+            Size::Medium => self.size_6(),
+            Size::Large => self.size_8(),
+        }
+    }
+
+    fn switch_track_height(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.h_3p5(),
+            Size::Small => self.h_5(),
+            Size::Medium => self.h_5(),
+            Size::Large => self.h_6(),
+        }
+    }
+
+    fn switch_track_width(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.w_6(),
+            Size::Small => self.w_8(),
+            Size::Medium => self.w_9(),
+            Size::Large => self.w_11(),
+        }
+    }
+
+    fn switch_knob(self, size: Size) -> Self {
+        match size {
+            Size::XSmall => self.size_2(),
+            Size::Small => self.size_3(),
+            Size::Medium => self.size_3p5(),
+            Size::Large => self.size_5(),
+        }
+    }
+}
+
+impl Size {
+    /// The control height in rems; paints use the pixels this yields.
+    pub fn control_height_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(1.25),
+            Size::Small => rems(1.75),
+            Size::Medium => rems(2.0),
+            Size::Large => rems(2.5),
+        }
+    }
+
+    /// The horizontal control padding in rems.
+    pub fn padding_x_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(0.25),
+            Size::Small => rems(0.5),
+            Size::Medium => rems(0.75),
+            Size::Large => rems(1.0),
+        }
+    }
+
+    /// The tight horizontal control padding in rems.
+    pub fn dense_padding_x_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(0.25),
+            Size::Small => rems(0.5),
+            Size::Medium => rems(0.5),
+            Size::Large => rems(0.75),
+        }
+    }
+
+    /// The label text size in rems, for geometry that layers on the text.
+    pub fn text_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(0.75),
+            Size::Small => rems(0.75),
+            Size::Medium => rems(0.875),
+            Size::Large => rems(1.0),
+        }
+    }
+
+    /// The icon side in rems.
+    pub fn icon_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(0.625),
+            Size::Small => rems(0.875),
+            Size::Medium => rems(1.0),
+            Size::Large => rems(1.25),
+        }
+    }
+
+    /// The icon side for icons inline with dense rows in rems.
+    pub fn dense_icon_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(0.5),
+            Size::Small => rems(0.75),
+            Size::Medium => rems(0.75),
+            Size::Large => rems(1.0),
+        }
+    }
+
+    /// The selection indicator side in rems.
+    pub fn indicator_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(0.625),
+            Size::Small => rems(0.875),
+            Size::Medium => rems(1.0),
+            Size::Large => rems(1.25),
+        }
+    }
+
+    /// The avatar side in rems.
+    pub fn avatar_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(1.25),
+            Size::Small => rems(1.25),
+            Size::Medium => rems(1.5),
+            Size::Large => rems(2.0),
+        }
+    }
+
+    /// The inset between a control's edge and a raised plate in rems.
+    pub fn plate_inset_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(0.0),
+            Size::Small => rems(0.125),
+            Size::Medium => rems(0.125),
+            Size::Large => rems(0.25),
+        }
+    }
+
+    /// The switch track height in rems.
+    pub fn switch_track_height_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(0.875),
+            Size::Small => rems(1.25),
+            Size::Medium => rems(1.25),
+            Size::Large => rems(1.5),
+        }
+    }
+
+    /// The switch track width in rems.
+    pub fn switch_track_width_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(1.5),
+            Size::Small => rems(2.0),
+            Size::Medium => rems(2.25),
+            Size::Large => rems(2.75),
+        }
+    }
+
+    /// The switch knob side in rems.
+    pub fn switch_knob_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(0.5),
+            Size::Small => rems(0.75),
+            Size::Medium => rems(0.875),
+            Size::Large => rems(1.25),
+        }
+    }
+
+    /// The slider row height in rems.
+    pub fn slider_row_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(1.5),
+            Size::Small => rems(2.25),
+            Size::Medium => rems(2.5),
+            Size::Large => rems(3.0),
+        }
+    }
+
+    /// The slider track height in rems.
+    pub fn slider_track_rems(self) -> Rems {
+        match self {
+            Size::XSmall => rems(0.125),
+            Size::Small => rems(0.25),
+            Size::Medium => rems(0.25),
+            Size::Large => rems(0.375),
+        }
     }
 }

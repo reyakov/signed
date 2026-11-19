@@ -17,7 +17,7 @@ use gpui::{
     Window, transparent_black,
 };
 
-use crate::components::common::{Sizable, StyledExt, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt, h_flex};
 use crate::icons::Icon;
 use crate::theme::{ActiveTheme as _, Size, Theme};
 
@@ -150,15 +150,10 @@ impl gpui::Styled for Badge {
 impl RenderOnce for Badge {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        let metrics = theme.sizes.resolve(self.size);
-        let label_size = match self.size {
-            Size::XSmall | Size::Small => metrics.caption_size * 0.9,
-            Size::Medium | Size::Large => metrics.caption_size,
-        };
-        let square = label_size * 2.;
+        let size = self.size;
         let (background, foreground, border) = self.variant.tokens(theme);
 
-        h_flex()
+        let badge = h_flex()
             .id(self.id.clone())
             .flex_none()
             .justify_center()
@@ -168,12 +163,16 @@ impl RenderOnce for Badge {
             .border_color(border)
             .bg(background)
             .text_color(foreground)
-            .text_size(label_size)
-            .px(label_size * 0.5)
-            .min_w(square)
-            .min_h(square)
+            .control_caption_text(size);
+        let badge = match size {
+            Size::XSmall | Size::Small => badge.h_5().min_w_5().px_1(),
+            Size::Medium => badge.h_6().min_w_6().px_1p5(),
+            Size::Large => badge.h_7().min_w_7().px_2(),
+        };
+
+        badge
             .when_some(self.icon, |badge, icon| {
-                badge.child(icon.size(metrics.dense_icon_size).color(foreground))
+                badge.child(icon.size(size.dense_icon_rems()).color(foreground))
             })
             .child(self.label)
             .refine_style(&self.style)

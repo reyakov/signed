@@ -9,10 +9,10 @@ use gpui::{
 };
 use signed_git::{FileCommit, Repo, WorktreeSnapshot};
 use ui::code::CodeViewState;
-use ui::common::{h_flex, v_flex};
+use ui::common::{StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::markdown::MarkdownViewState;
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use ui::tree::{Tree, TreeItem};
 
 use super::helpers::{code_language, is_markdown_path, preview_spinner, source_hash};
@@ -352,7 +352,8 @@ impl RepoFilesView {
                     .text_color(cx.theme().colors.muted_foreground)
                     .child(
                         div()
-                            .typeset(TextRole::Caption2, cx)
+                            .text_xs()
+                            .font_medium()
                             .text_ellipsis()
                             .whitespace_nowrap()
                             .child(pane_title),
@@ -364,14 +365,14 @@ impl RepoFilesView {
                                 .gap_1()
                                 .child(
                                     div()
-                                        .typeset(TextRole::Caption, cx)
+                                        .text_xs()
                                         .font_family(cx.theme().mono_font)
                                         .child(commit.id.clone()),
                                 )
                                 .child(
                                     div()
                                         .max_w(px(250.))
-                                        .typeset(TextRole::Caption, cx)
+                                        .text_xs()
                                         .text_ellipsis()
                                         .whitespace_nowrap()
                                         .child(commit.summary.clone()),

@@ -21,12 +21,12 @@ use gpui::{
 };
 
 use crate::components::common::{
-    Sizable, StyledExt as _, focus_ring, h_flex, record_anchor_bounds,
+    ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex, record_anchor_bounds,
 };
 use crate::components::spinner::Spinner;
 use crate::icons::Icon;
 use crate::spinner::SpinnerVariant;
-use crate::theme::{ActiveTheme as _, ControlMetrics, DISABLED_OPACITY, Size};
+use crate::theme::{ActiveTheme as _, DISABLED_OPACITY, Size};
 
 /// The single activation handler, shared by pointer, Enter, and Space.
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -70,7 +70,6 @@ pub struct Button {
     children: Vec<AnyElement>,
     variant: ButtonVariant,
     size: Size,
-    custom_metrics: Option<ControlMetrics>,
     disabled: bool,
     loading: bool,
     padded: bool,
@@ -98,7 +97,6 @@ impl Button {
             children: Vec::new(),
             variant: ButtonVariant::default(),
             size: Size::default(),
-            custom_metrics: None,
             disabled: false,
             loading: false,
             padded: true,
@@ -147,12 +145,6 @@ impl Button {
         self
     }
 
-    /// Overrides the theme metrics, allowing sizes beyond the built-in classes.
-    pub fn custom_size(mut self, metrics: ControlMetrics) -> Self {
-        self.custom_metrics = Some(metrics);
-        self
-    }
-
     /// Sets whether the button is a keyboard tab stop. Dense toolbars typically
     /// turn this off.
     pub fn tab_stop(mut self, tab_stop: bool) -> Self {
@@ -187,7 +179,7 @@ impl Button {
         self
     }
 
-    /// Renders the button as a pill instead of the control radius.
+    /// Renders the button as a circle instead of the control radius.
     pub fn fully_rounded(mut self, fully_rounded: bool) -> Self {
         self.fully_rounded = fully_rounded;
         self
@@ -248,10 +240,6 @@ impl RenderOnce for Button {
         let colors = theme.colors;
         let ramps = theme.ramps;
 
-        let metrics = self
-            .custom_metrics
-            .unwrap_or_else(|| theme.sizes.resolve(self.size));
-
         let radius = if self.fully_rounded {
             theme.radius.full
         } else {
@@ -261,6 +249,12 @@ impl RenderOnce for Button {
         let on_click = self.on_click;
         let a11y_label = self.a11y_label.or_else(|| self.label.clone());
         let is_icon_only = self.icon.is_some() && self.label.is_none() && self.children.is_empty();
+
+        // A child-only button hugs its content as a circle when fully rounded.
+        let is_child_only =
+            self.icon.is_none() && self.label.is_none() && !self.children.is_empty();
+
+        let is_round_child = is_child_only && self.fully_rounded;
         let icon_trailing = self.side == ButtonSide::Right;
 
         let (background, foreground, hover, pressed) = match self.variant {
@@ -320,15 +314,18 @@ impl RenderOnce for Button {
                 ButtonSide::Left => button.justify_start(),
                 ButtonSide::Right => button.justify_end(),
             })
-            .h(metrics.control_height)
-            .when(is_icon_only, |button| button.w(metrics.control_height))
-            .when(self.full_width, |button| button.w_full())
-            .when(!is_icon_only && self.padded, |button| {
-                button.px(metrics.padding_x)
+            .control_height(self.size)
+            .when(is_icon_only || is_round_child, |button| {
+                button.control_width(self.size)
             })
+            .when(self.full_width, |button| button.w_full())
+            .when(self.padded && !is_icon_only && !is_round_child, |button| {
+                button.control_padding_x(self.size)
+            })
+            .when(is_round_child, |button| button.overflow_hidden())
             .line_height(relative(1.0))
             .rounded(radius)
-            .text_size(metrics.text_size)
+            .control_text(self.size)
             .border_1()
             .border_color(border)
             .when_some(background, |button, background| button.bg(background))
@@ -346,12 +343,12 @@ impl RenderOnce for Button {
                                 .when_some(self.label, |content, label| content.child(label))
                                 .children(self.children)
                                 .when_some(self.icon, |content, icon| {
-                                    content.child(icon.size(metrics.icon_size))
+                                    content.child(icon.size(self.size.icon_rems()))
                                 })
                         } else {
                             content
                                 .when_some(self.icon, |content, icon| {
-                                    content.child(icon.size(metrics.icon_size))
+                                    content.child(icon.size(self.size.icon_rems()))
                                 })
                                 .when_some(self.label, |content, label| content.child(label))
                                 .children(self.children)

@@ -9,12 +9,12 @@ use signed_state::{Backend, Nip34Kind};
 use ui::avatar::Avatar;
 use ui::button::{Button, ButtonVariant};
 use ui::clipboard::ClipboardButton;
-use ui::common::{Sizable, h_flex, v_flex};
+use ui::common::{Sizable, StyledExt as _, h_flex, v_flex};
 use ui::dropdown_menu::DropdownMenu;
 use ui::icons::{Icon, IconRole};
 use ui::menu::MenuItem;
 use ui::popover::Popover;
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 use utils::relative_time_secs;
 
@@ -103,14 +103,15 @@ impl RepoDetailView {
                     .child(
                         h_flex()
                             .gap_2()
-                            .typeset(TextRole::Headline, cx)
+                            .text_sm()
+                            .font_semibold()
                             .child(avatar)
                             .child(name),
                     )
                     .child(
                         div()
                             .min_w_0()
-                            .typeset(TextRole::Callout, cx)
+                            .text_sm()
                             .text_color(cx.theme().colors.muted_foreground)
                             .line_clamp(3)
                             .child(description),
@@ -151,28 +152,24 @@ impl RepoDetailView {
                                         "Clone with ngit",
                                         "copy-ngit",
                                         &ngit_for_popover,
-                                        cx,
                                     ))
                                     .child(clone_group(
                                         "Clone with nak",
                                         "copy-nak",
                                         &nak_for_popover,
-                                        cx,
                                     ))
                                     .child(
                                         v_flex()
                                             .gap_1()
                                             .child(
                                                 div()
-                                                    .typeset(TextRole::Caption, cx)
+                                                    .text_xs()
                                                     .text_color(cx.theme().colors.muted_foreground)
                                                     .child("Grasp Servers"),
                                             )
                                             .when(git_for_popover.is_empty(), |this| {
                                                 this.child(
-                                                    div()
-                                                        .typeset(TextRole::Caption, cx)
-                                                        .child("No git clone urls."),
+                                                    div().text_xs().child("No git clone urls."),
                                                 )
                                             })
                                             .children(git_for_popover.iter().enumerate().map(
@@ -325,7 +322,7 @@ impl RepoDetailView {
             .child(
                 div()
                     .min_w_0()
-                    .typeset(TextRole::Caption, cx)
+                    .text_xs()
                     .text_color(cx.theme().colors.muted_foreground)
                     .child(path),
             )
@@ -383,21 +380,21 @@ impl RepoDetailView {
                 .child(
                     div()
                         .font_family(cx.theme().mono_font)
-                        .typeset(TextRole::Callout, cx)
+                        .text_sm()
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(SharedString::from(short)),
                 )
                 .child(
                     div()
                         .max_w(px(220.))
-                        .typeset(TextRole::Callout, cx)
+                        .text_sm()
                         .text_ellipsis()
                         .whitespace_nowrap()
                         .child(commit.summary.clone()),
                 )
                 .child(
                     div()
-                        .typeset(TextRole::Callout, cx)
+                        .text_sm()
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(relative_time_secs(commit.time)),
                 )
@@ -434,17 +431,12 @@ impl RepoDetailView {
                             .picture(owner.picture())
                             .small(),
                     )
-                    .child(
-                        div()
-                            .typeset(TextRole::Caption, cx)
-                            .whitespace_nowrap()
-                            .child(owner_name),
-                    ),
+                    .child(div().text_xs().whitespace_nowrap().child(owner_name)),
             )
             .when(!rest.is_empty(), |this| {
                 this.child(
                     div()
-                        .typeset(TextRole::Caption, cx)
+                        .text_xs()
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(SharedString::from(format!("+{}", rest.len()))),
                 )

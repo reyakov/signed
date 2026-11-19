@@ -81,10 +81,16 @@ impl RenderOnce for Progress {
         let colors = theme.colors;
         let ramps = theme.ramps;
         let radius = theme.radius;
-        let metrics = theme.sizes.resolve(self.size);
+        let size = self.size;
 
-        let track_height = metrics.icon_size / 4.0;
         let value = self.value.clamp(0.0, 1.0);
+
+        let track = div().w_full().rounded(radius.full).bg(colors.border);
+        let track = match size {
+            Size::XSmall => track.h_0p5(),
+            Size::Small | Size::Medium => track.h_1(),
+            Size::Large => track.h_1p5(),
+        };
 
         div()
             .id(self.id)
@@ -100,34 +106,27 @@ impl RenderOnce for Progress {
                     .aria_min_numeric_value(0.0)
                     .aria_max_numeric_value(1.0)
             })
-            .child(
+            .child(track.child(if self.indeterminate {
                 div()
-                    .w_full()
-                    .h(track_height)
+                    .h_full()
+                    .w(relative(0.3))
                     .rounded(radius.full)
-                    .bg(colors.border)
-                    .child(if self.indeterminate {
-                        div()
-                            .h_full()
-                            .w(relative(0.3))
-                            .rounded(radius.full)
-                            .bg(ramps.primary.base)
-                            .with_animation(
-                                "indeterminate",
-                                Animation::new(PROGRESS_ANIMATION_PERIOD)
-                                    .repeat()
-                                    .with_max_fps(30.),
-                                |pill, delta| pill.ml(relative(delta * 0.7)),
-                            )
-                            .into_any_element()
-                    } else {
-                        div()
-                            .h_full()
-                            .w(relative(value))
-                            .rounded(radius.full)
-                            .bg(ramps.primary.base)
-                            .into_any_element()
-                    }),
-            )
+                    .bg(ramps.primary.base)
+                    .with_animation(
+                        "indeterminate",
+                        Animation::new(PROGRESS_ANIMATION_PERIOD)
+                            .repeat()
+                            .with_max_fps(30.),
+                        |pill, delta| pill.ml(relative(delta * 0.7)),
+                    )
+                    .into_any_element()
+            } else {
+                div()
+                    .h_full()
+                    .w(relative(value))
+                    .rounded(radius.full)
+                    .bg(ramps.primary.base)
+                    .into_any_element()
+            }))
     }
 }

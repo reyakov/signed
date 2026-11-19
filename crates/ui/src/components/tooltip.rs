@@ -80,8 +80,6 @@ impl Render for Tooltip {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Copied out: the mutable reads below need `cx` free of this borrow.
         let theme = cx.theme();
-        let text_size = theme.sizes.medium.text_size;
-        let line_height = theme.typography.callout.line_height;
         let surface = theme.colors.surface;
         let surface_foreground = theme.colors.surface_foreground;
         let radius_sm = theme.radius.sm;
@@ -102,8 +100,7 @@ impl Render for Tooltip {
                 .border_color(border)
                 .rounded(radius_sm)
                 .shadow(shadows.clone())
-                .text_size(text_size)
-                .line_height(line_height)
+                .text_sm()
                 .text_color(surface_foreground)
                 .child(self.text.clone())
         };
@@ -119,7 +116,7 @@ impl Render for Tooltip {
                     cx,
                 )
                 .map(|bounds| bounds.size.height)
-                .unwrap_or_else(|| line_height + px(8.) + BORDER_WIDTH * 2.0);
+                .unwrap_or_else(|| window.line_height() + px(8.) + BORDER_WIDTH * 2.0);
 
                 let below = viewport_height - px(4.) - parent.bottom();
                 let above = parent.top() - px(4.);

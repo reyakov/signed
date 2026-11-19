@@ -17,7 +17,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Toggled, Window,
 };
 
-use crate::components::common::{Sizable, StyledExt as _, focus_ring, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex};
 use crate::icons::Icon;
 use crate::theme::{ActiveTheme as _, DISABLED_OPACITY, Size};
 
@@ -124,7 +124,7 @@ impl RenderOnce for Toggle {
         let theme = cx.theme();
         let colors = theme.colors;
         let ramps = theme.ramps;
-        let metrics = theme.sizes.resolve(self.size);
+        let size = self.size;
         let on_change = self.on_change;
         let next = !self.pressed;
         let a11y_label = self.a11y_label.or_else(|| self.label.clone());
@@ -133,13 +133,11 @@ impl RenderOnce for Toggle {
         h_flex()
             .id(self.id)
             .justify_center()
-            .h(metrics.control_height)
-            .when(icon_only, |toggle| {
-                toggle.w(metrics.control_height).px(gpui::Pixels::ZERO)
-            })
-            .when(!icon_only, |toggle| toggle.px(metrics.dense_padding_x))
+            .control_height(size)
+            .when(icon_only, |toggle| toggle.control_width(size).px_0())
+            .when(!icon_only, |toggle| toggle.control_dense_padding_x(size))
             .rounded(theme.radius.control)
-            .text_size(metrics.text_size)
+            .control_text(size)
             .text_color(colors.foreground)
             .role(Role::Button)
             .when_some(a11y_label, |toggle, label| toggle.aria_label(label))
@@ -170,7 +168,7 @@ impl RenderOnce for Toggle {
                 h_flex()
                     .gap_2()
                     .when_some(self.icon, |content, icon| {
-                        content.child(icon.size(metrics.icon_size))
+                        content.child(icon.size(size.icon_rems()))
                     })
                     .when_some(self.label, |content, label| content.child(label)),
             )

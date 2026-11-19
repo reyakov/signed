@@ -18,7 +18,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window, div,
 };
 
-use crate::components::common::{Sizable, StyledExt, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt, h_flex};
 use crate::theme::{
     ActiveTheme as _, Oklch, PIXEL_AVATAR_DARK_FACTOR, PIXEL_AVATAR_DARK_FLOOR,
     PIXEL_AVATAR_LIGHT_CAP, PIXEL_AVATAR_LIGHT_LIFT, PIXEL_AVATAR_TINT_ALPHA, Size, ThemeVariant,
@@ -103,15 +103,10 @@ impl gpui::Styled for Avatar {
 }
 
 impl RenderOnce for Avatar {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        // Avatars sit one class below the shared control scale.
-        let size = match self.size {
-            Size::XSmall | Size::Small => Size::XSmall,
-            Size::Medium => Size::Small,
-            Size::Large => Size::Medium,
-        };
-        let side = theme.sizes.resolve(size).avatar_size;
+        let size = self.size;
+        let side = size.avatar_rems() * window.rem_size();
 
         let radius = if self.fully_rounded {
             theme.radius.full
@@ -124,7 +119,7 @@ impl RenderOnce for Avatar {
             .flex_none()
             .justify_center()
             .overflow_hidden()
-            .size(side)
+            .avatar_size(size)
             .bg(theme.colors.secondary)
             .rounded(radius)
             .role(Role::Image)

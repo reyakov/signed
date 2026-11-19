@@ -14,7 +14,7 @@ use signed_state::{Backend, Mirrors, RepoStore};
 use ui::avatar::Avatar;
 use ui::button::Button;
 use ui::clipboard::ClipboardButton;
-use ui::common::{Sizable as _, h_flex, v_flex};
+use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::input::InputState;
 use ui::layout::panel::Panel;
@@ -22,7 +22,7 @@ use ui::scroll_area::ScrollArea;
 use ui::scrollbar::Scrollbar;
 use ui::spinner::Spinner;
 use ui::tabs::{Tab, Tabs};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
 use super::dialogs;
@@ -376,7 +376,7 @@ impl PullRequestDetailView {
                                     .child(
                                         h_flex()
                                             .gap_2()
-                                            .typeset(TextRole::Body, cx)
+                                            .text_base()
                                             .child(
                                                 h_flex()
                                                     .gap_1()
@@ -397,9 +397,7 @@ impl PullRequestDetailView {
                                     )
                                     .when(!self.description.is_empty(), |this| {
                                         this.child(
-                                            div()
-                                                .typeset(TextRole::Body, cx)
-                                                .child(self.description.clone()),
+                                            div().text_base().child(self.description.clone()),
                                         )
                                     }),
                             )
@@ -527,7 +525,8 @@ impl PullRequestDetailView {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .typeset(TextRole::Headline, cx)
+                        .text_sm()
+                        .font_semibold()
                         .text_ellipsis()
                         .child(title),
                 ),
@@ -574,7 +573,7 @@ impl PullRequestDetailView {
                             h_flex()
                                 .gap_1()
                                 .font_family(cx.theme().mono_font)
-                                .typeset(TextRole::Caption, cx)
+                                .text_xs()
                                 .text_color(cx.theme().colors.muted_foreground)
                                 .child(id.clone())
                                 .child(ClipboardButton::new("pr-commit", &id)),

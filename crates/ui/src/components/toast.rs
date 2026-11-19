@@ -20,7 +20,7 @@ use gpui::{
     Animation, AnimationExt as _, App, Context, ElementId, Entity, InteractiveElement as _,
     IntoElement, ParentElement as _, RenderOnce, Role, SharedString,
     StatefulInteractiveElement as _, StyleRefinement, Styled as _, Task, Window, deferred, div,
-    ease_out_quint, px,
+    ease_out_quint, px, rems,
 };
 
 use crate::components::button::{Button, ButtonVariant};
@@ -291,8 +291,6 @@ impl ToastEntry {
         let foreground = theme.colors.foreground;
         let radius = theme.radius.full;
         let shadows = theme.elevations.popover.shadows();
-        let icon_size = theme.sizes.medium.icon_size;
-        let text_size = theme.sizes.medium.text_size;
         let toast = &self.toast;
         let toasts = toasts.clone();
         let id = self.id;
@@ -320,7 +318,7 @@ impl ToastEntry {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .child(icon.size(icon_size).color(foreground)),
+                        .child(icon.size(rems(1.0)).color(foreground)),
                 )
             })
             .child(
@@ -328,7 +326,7 @@ impl ToastEntry {
                     .flex_1()
                     .min_w(px(0.))
                     .truncate()
-                    .text_size(text_size)
+                    .text_sm()
                     .text_color(foreground)
                     .child(toast.message.clone()),
             )

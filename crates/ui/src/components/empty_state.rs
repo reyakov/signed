@@ -12,12 +12,12 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, IntoElement, ParentElement as _, RenderOnce, SharedString, StyleRefinement, Styled as _,
-    Window, div,
+    Window, div, rems,
 };
 
 use crate::components::common::{StyledExt, v_flex};
 use crate::icons::Icon;
-use crate::theme::{ActiveTheme as _, Size, TextRole, Typeset as _};
+use crate::theme::ActiveTheme as _;
 
 /// The centered "nothing here yet" panel for lists, tables, and searches.
 #[derive(IntoElement)]
@@ -82,10 +82,8 @@ impl gpui::Styled for EmptyState {
 impl RenderOnce for EmptyState {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        let metrics = theme.sizes.resolve(Size::Medium);
         let muted_foreground = theme.colors.muted_foreground;
         let foreground = theme.colors.foreground;
-        let illustration = metrics.icon_size * 2.0;
 
         v_flex()
             .w_full()
@@ -97,22 +95,18 @@ impl RenderOnce for EmptyState {
                 state.child(
                     div()
                         .mb_2()
-                        .child(icon.size(illustration).color(muted_foreground)),
+                        .child(icon.size(rems(2.0)).color(muted_foreground)),
                 )
             })
             .child(
                 div()
-                    .typeset(TextRole::Title3, cx)
+                    .text_base()
+                    .font_semibold()
                     .text_color(foreground)
                     .child(self.headline),
             )
             .when_some(self.hint, |state, hint| {
-                state.child(
-                    div()
-                        .typeset(TextRole::Subheadline, cx)
-                        .text_color(muted_foreground)
-                        .child(hint),
-                )
+                state.child(div().text_sm().text_color(muted_foreground).child(hint))
             })
             .when_some(self.action, |state, action| {
                 state.child(div().mt_3().child(action))

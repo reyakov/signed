@@ -19,7 +19,7 @@ use gpui::{
     SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Toggled, Window,
 };
 
-use crate::components::common::{Sizable, StyledExt as _, focus_ring, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex};
 use crate::icons::{IconRole, icon};
 use crate::theme::{ActiveTheme as _, DISABLED_OPACITY, Size};
 
@@ -126,7 +126,7 @@ impl RenderOnce for Checkbox {
         let theme = cx.theme();
         let colors = theme.colors;
         let ramps = theme.ramps;
-        let metrics = theme.sizes.resolve(self.size);
+        let size = self.size;
         let on_change = self.on_change;
         let next = !self.checked;
         let a11y_label = self.a11y_label.or_else(|| self.label.clone());
@@ -134,7 +134,7 @@ impl RenderOnce for Checkbox {
         h_flex()
             .id(self.id)
             .gap_2()
-            .text_size(metrics.text_size)
+            .control_text(size)
             .refine_style(&self.style)
             .when_some(self.debug_selector, |checkbox, selector| {
                 checkbox.debug_selector(move || selector())
@@ -157,7 +157,7 @@ impl RenderOnce for Checkbox {
                 h_flex()
                     .justify_center()
                     .flex_none()
-                    .size(metrics.indicator_size)
+                    .control_indicator(size)
                     .rounded(theme.radius.sm)
                     .border_1()
                     .when(self.checked, |indicator| {
@@ -171,7 +171,7 @@ impl RenderOnce for Checkbox {
                             })
                             .child(
                                 icon(IconRole::Check)
-                                    .size(metrics.dense_icon_size)
+                                    .size(size.dense_icon_rems())
                                     .color(colors.primary_foreground),
                             )
                     })

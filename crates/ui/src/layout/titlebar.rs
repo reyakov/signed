@@ -12,7 +12,7 @@ use gpui::{
 
 use crate::layout::window_controls::{WindowControls, titlebar_strip};
 use crate::layout::{StyledExt as _, h_flex};
-use crate::theme::{ActiveTheme as _, Size, TRAFFIC_LIGHT_PAD};
+use crate::theme::{ActiveTheme as _, TRAFFIC_LIGHT_PAD};
 
 /// The window's titlebar.
 #[derive(IntoElement)]
@@ -86,7 +86,6 @@ impl RenderOnce for Titlebar {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let height = theme.titlebar_height;
-        let padding_x = theme.sizes.resolve(Size::default()).padding_x;
         let shadow_bleed = theme.elevations.control.bleed();
 
         let id = self.id;
@@ -101,7 +100,7 @@ impl RenderOnce for Titlebar {
                 .h(height)
                 .gap_2()
                 .when(!self.transparent, |bar| bar.bg(theme.colors.muted))
-                .px(padding_x)
+                .px_3()
                 .refine_style(&self.style)
                 .when(cfg!(target_os = "macos"), |bar| bar.pl(TRAFFIC_LIGHT_PAD))
                 .when(!self.prefix.is_empty(), |bar| {

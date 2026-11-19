@@ -72,7 +72,7 @@ where
         .justify_center()
         .flex_none()
         .font_family(theme.mono_font)
-        .text_size(theme.sizes.small.text_size)
+        .text_xs()
         .line_height(gpui::relative(1.0))
         .text_color(color)
         .child(content)

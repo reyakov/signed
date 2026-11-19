@@ -18,7 +18,7 @@ use gpui::{
     StyleRefinement, Styled as _, Toggled, Window, div, px,
 };
 
-use crate::components::common::{Sizable, StyledExt as _, focus_ring, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex};
 use crate::theme::{ActiveTheme as _, BORDER_WIDTH, CONTROL_SPRING, DISABLED_OPACITY, Size};
 
 /// The change reporter, fired with the next value by pointer, Enter, and Space.
@@ -109,16 +109,16 @@ impl Sizable for Switch {
 }
 
 impl RenderOnce for Switch {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let colors = theme.colors;
         let ramps = theme.ramps;
-        let metrics = theme.sizes.resolve(self.size);
 
-        let track_height = metrics.switch_height;
-        let track_width = metrics.switch_width;
+        let rem = window.rem_size();
+        let track_height = self.size.switch_track_height_rems() * rem;
+        let track_width = self.size.switch_track_width_rems() * rem;
 
-        let knob = metrics.switch_knob;
+        let knob = self.size.switch_knob_rems() * rem;
         // Absolute children sit inside the track's border, so remove it from the inset.
         let inset = (track_height - knob) / 2. - BORDER_WIDTH;
         let travel = track_width - BORDER_WIDTH * 2. - knob - inset * 2.;
@@ -134,7 +134,7 @@ impl RenderOnce for Switch {
         h_flex()
             .id(self.id)
             .gap_2()
-            .text_size(metrics.text_size)
+            .control_text(self.size)
             .refine_style(&self.style)
             .role(Role::Switch)
             .when_some(a11y_label, |switch, label| switch.aria_label(label))
@@ -155,8 +155,8 @@ impl RenderOnce for Switch {
                     .flex_none()
                     .relative()
                     .debug_selector(move || format!("{id}-track"))
-                    .w(track_width)
-                    .h(track_height)
+                    .switch_track_width(self.size)
+                    .switch_track_height(self.size)
                     .rounded(theme.radius.full)
                     .border_1()
                     .when(self.checked, |track| {
@@ -177,7 +177,7 @@ impl RenderOnce for Switch {
                             .absolute()
                             .top(inset)
                             .left(inset)
-                            .size(knob)
+                            .switch_knob(self.size)
                             .rounded(theme.radius.full)
                             .bg(colors.primary_foreground)
                             .with_spring("switch-thumb", anim, move |thumb, offset| {

@@ -19,7 +19,9 @@ use gpui::{
     div,
 };
 
-use crate::components::common::{Sizable, StyledExt as _, focus_ring, h_flex, v_flex};
+use crate::components::common::{
+    ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex, v_flex,
+};
 use crate::theme::{ActiveTheme as _, DISABLED_OPACITY, Size};
 
 /// The group's change reporter, fired with the clicked radio's value.
@@ -178,7 +180,7 @@ where
         let colors = theme.colors;
         let ramps = theme.ramps;
         let radius = theme.radius;
-        let metrics = theme.sizes.resolve(self.size);
+        let size = self.size;
         let selected = self.selected;
         let on_change = self.on_change;
         let group_label = self.a11y_label;
@@ -186,7 +188,7 @@ where
         v_flex()
             .id(self.id)
             .gap_2()
-            .text_size(metrics.text_size)
+            .control_text(size)
             .refine_style(&self.style)
             .role(Role::RadioGroup)
             .when_some(group_label.clone(), |group, label| group.aria_label(label))
@@ -223,7 +225,7 @@ where
                         h_flex()
                             .justify_center()
                             .flex_none()
-                            .size(metrics.indicator_size)
+                            .control_indicator(size)
                             .rounded(radius.full)
                             .border_1()
                             .when(is_selected, |indicator| {
@@ -235,12 +237,14 @@ where
                                             .bg(ramps.primary.hover)
                                             .border_color(ramps.primary.hover)
                                     })
-                                    .child(
-                                        div()
-                                            .size(metrics.indicator_size / 2.0)
-                                            .rounded(radius.full)
-                                            .bg(colors.primary_foreground),
-                                    )
+                                    .child({
+                                        let dot = match size {
+                                            Size::XSmall => div().size_1p5(),
+                                            Size::Small | Size::Medium => div().size_2(),
+                                            Size::Large => div().size_2p5(),
+                                        };
+                                        dot.rounded(radius.full).bg(colors.primary_foreground)
+                                    })
                             })
                             .when(!is_selected, |indicator| {
                                 indicator

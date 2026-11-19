@@ -34,42 +34,25 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Div, Element, ElementId, Entity, FontStyle,
-    GlobalElementId, HighlightStyle, InspectorElementId, InteractiveElement as _, InteractiveText,
-    IntoElement, KeyBinding, KeyBindingContextPredicate, LayoutId, ListAlignment, ListOffset,
-    ListState, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit, ParentElement as _, Pixels,
-    Refineable as _, Render, SharedString, StatefulInteractiveElement as _, StrikethroughStyle,
-    StyleRefinement, Styled, StyledImage as _, StyledText, TextLayout, UnderlineStyle, Window,
-    actions, div, img, list, px, relative,
+    FontWeight, GlobalElementId, HighlightStyle, InspectorElementId, InteractiveElement as _,
+    InteractiveText, IntoElement, KeyBinding, KeyBindingContextPredicate, LayoutId, ListAlignment,
+    ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit,
+    ParentElement as _, Pixels, Refineable as _, Rems, Render, SharedString,
+    StatefulInteractiveElement as _, StrikethroughStyle, StyleRefinement, Styled, StyledImage as _,
+    StyledText, TextLayout, UnderlineStyle, Window, actions, div, img, list, px, relative, rems,
 };
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::components::button::{Button, ButtonVariant};
 use crate::components::checkbox::Checkbox;
-use crate::components::common::Sizable as _;
+use crate::components::common::{Sizable as _, StyledExt as _};
 use crate::components::highlight::{HighlightedCode, Language, highlight, plain};
 use crate::components::scrollbar::{Scrollbar, ScrollbarVisibility};
 use crate::components::utils::code_line;
-use crate::theme::{
-    ActiveTheme as _, BORDER_WIDTH, CODE_LINE_HEIGHT, CODE_OVERSCROLL_MAX, Size, TextRole,
-    Typeset as _,
-};
+use crate::theme::{ActiveTheme as _, BORDER_WIDTH, CODE_LINE_HEIGHT, CODE_OVERSCROLL_MAX, Size};
 
-/// The bottom padding between sibling blocks, in root font sizes.
-const BLOCK_GAP: f32 = 0.75;
-/// The tighter bottom padding between list items, in root font sizes.
-const ITEM_GAP: f32 = 0.2;
-/// The room a list marker column takes, in root font sizes.
-const MARKER_WIDTH: f32 = 1.75;
-/// The text inset behind a quote bar, in root font sizes.
-const QUOTE_INSET: f32 = 1.0;
-/// The indent each list level adds, in root font sizes.
-const INDENT_STEP: f32 = 1.5;
 /// The body line height.
 const BODY_LINE_HEIGHT: f32 = 1.6;
-/// The tallest a standalone image renders, in root font sizes.
-const IMAGE_MAX_HEIGHT: f32 = 14.0;
-/// The side of an inline image atom relative to the body text size.
-const INLINE_IMAGE_SCALE: f32 = 1.15;
 /// The key context the text view declares while it holds focus.
 pub const TEXT_VIEW_CONTEXT: &str = "TextView";
 
@@ -1431,8 +1414,7 @@ fn render_block(
     ctx: &BlockContext,
     cx: &App,
 ) -> AnyElement {
-    let theme = cx.theme();
-    let gap = theme.root_font_size * BLOCK_GAP;
+    let gap = rems(0.75);
 
     match block {
         MarkdownBlock::Heading {
@@ -1445,7 +1427,11 @@ fn render_block(
             spans,
             *indent,
             *quote,
-            if block_index == 0 { px(0.) } else { gap * 0.5 },
+            if block_index == 0 {
+                Rems::ZERO
+            } else {
+                rems(0.375)
+            },
             ctx,
             cx,
         ),
@@ -1459,15 +1445,7 @@ fn render_block(
             items,
             indent,
             quote,
-        } => text_row(
-            items,
-            *indent,
-            *quote,
-            theme.root_font_size * ITEM_GAP,
-            Some(*marker),
-            ctx,
-            cx,
-        ),
+        } => text_row(items, *indent, *quote, rems(0.2), Some(*marker), ctx, cx),
         MarkdownBlock::Image {
             source,
             alt,
@@ -1490,7 +1468,7 @@ fn render_block(
 }
 
 /// The shared block frame: ambient text style, spacing, quote bar.
-fn block_frame(quote: bool, top: Pixels, bottom: Pixels, id: &ElementId, cx: &App) -> Div {
+fn block_frame(quote: bool, top: Rems, bottom: Rems, id: &ElementId, cx: &App) -> Div {
     let theme = cx.theme();
     div()
         .debug_selector({
@@ -1501,25 +1479,25 @@ fn block_frame(quote: bool, top: Pixels, bottom: Pixels, id: &ElementId, cx: &Ap
         .flex()
         .flex_col()
         .font_family(".SystemUIFont")
-        .text_size(theme.sizes.small.text_size)
+        .text_xs()
         .line_height(relative(BODY_LINE_HEIGHT))
         .text_color(theme.colors.foreground)
         .pt(top)
         .pb(bottom)
         .when(quote, |frame| {
             frame
-                .border_l(BORDER_WIDTH * 2.0)
+                .border_l_2()
                 .border_color(theme.colors.border)
-                .pl(theme.root_font_size * QUOTE_INSET)
+                .pl(rems(1.0))
         })
 }
 
 /// Wraps the finished block in the list indent.
-fn indented_frame(indent: usize, frame: Div, cx: &App) -> Div {
-    let indent_px = cx.theme().root_font_size * INDENT_STEP * indent as f32;
+fn indented_frame(indent: usize, frame: Div) -> Div {
+    let indent = rems(1.5 * indent as f32);
 
-    if indent_px > px(0.) {
-        div().w_full().pl(indent_px).child(frame)
+    if indent.0 > 0.0 {
+        div().w_full().pl(indent).child(frame)
     } else {
         frame
     }
@@ -1531,30 +1509,23 @@ fn heading_row(
     spans: &[InlineSpan],
     indent: usize,
     quote: bool,
-    top: Pixels,
+    top: Rems,
     ctx: &BlockContext,
     cx: &App,
 ) -> AnyElement {
-    let theme = cx.theme();
-    let role = match level {
-        MarkdownHeading::H1 => TextRole::Title,
-        MarkdownHeading::H2 => TextRole::Title2,
-        MarkdownHeading::H3 => TextRole::Title3,
-        MarkdownHeading::H4 | MarkdownHeading::H5 | MarkdownHeading::H6 => TextRole::Headline,
+    let frame = block_frame(quote, top, rems(0.75), ctx.block_id, cx);
+    let frame = match level {
+        MarkdownHeading::H1 => frame.text_xl().font_semibold(),
+        MarkdownHeading::H2 => frame.text_lg().font_semibold(),
+        MarkdownHeading::H3 => frame.text_base().font_semibold(),
+        MarkdownHeading::H4 | MarkdownHeading::H5 | MarkdownHeading::H6 => {
+            frame.text_sm().font_semibold()
+        }
     };
 
     indented_frame(
         indent,
-        block_frame(
-            quote,
-            top,
-            theme.root_font_size * BLOCK_GAP,
-            ctx.block_id,
-            cx,
-        )
-        .typeset(role, cx)
-        .child(text_child(spans, ctx.block_id, ctx.piece_context(0), cx)),
-        cx,
+        frame.child(text_child(spans, ctx.block_id, ctx.piece_context(0), cx)),
     )
     .into_any_element()
 }
@@ -1563,7 +1534,7 @@ fn text_row(
     items: &[InlineItem],
     indent: usize,
     quote: bool,
-    bottom: Pixels,
+    bottom: Rems,
     marker: Option<ListMarker>,
     ctx: &BlockContext,
     cx: &App,
@@ -1572,12 +1543,12 @@ fn text_row(
 
     indented_frame(
         indent,
-        block_frame(quote, px(0.), bottom, ctx.block_id, cx).map(|frame| match marker {
+        block_frame(quote, Rems::ZERO, bottom, ctx.block_id, cx).map(|frame| match marker {
             Some(marker) => {
-                let line_height = theme.sizes.small.text_size * BODY_LINE_HEIGHT;
+                let line_height = rems(1.2);
                 let marker_cell = div()
                     .flex_none()
-                    .w(theme.root_font_size * MARKER_WIDTH)
+                    .w(rems(1.75))
                     .h(line_height)
                     .flex()
                     .items_center()
@@ -1608,7 +1579,6 @@ fn text_row(
             }
             None => frame.child(paragraph_child(items, ctx, cx)),
         }),
-        cx,
     )
     .into_any_element()
 }
@@ -1658,8 +1628,7 @@ fn paragraph_child(items: &[InlineItem], ctx: &BlockContext, cx: &App) -> AnyEle
         return text_child(spans, ctx.block_id, ctx.piece_context(0), cx);
     }
 
-    let theme = cx.theme();
-    let side = theme.sizes.small.text_size * INLINE_IMAGE_SCALE;
+    let side = rems(0.8625);
     let mut flow = div().flex().flex_wrap().items_center();
     let mut segment: Vec<&InlineSpan> = Vec::new();
     let mut segment_index = 0;
@@ -1709,21 +1678,13 @@ fn image_row(
     let theme = cx.theme();
     indented_frame(
         indent,
-        block_frame(
-            quote,
-            px(0.),
-            theme.root_font_size * BLOCK_GAP,
-            ctx.block_id,
-            cx,
-        )
-        .child(
+        block_frame(quote, Rems::ZERO, rems(0.75), ctx.block_id, cx).child(
             img(source.clone())
-                .max_h(theme.root_font_size * IMAGE_MAX_HEIGHT)
+                .max_h(rems(14.0))
                 .max_w_full()
                 .rounded(theme.radius.control)
                 .overflow_hidden(),
         ),
-        cx,
     )
     .id((ctx.block_id.clone(), "image"))
     .when(!alt.is_empty(), |frame| frame.aria_label(alt.clone()))
@@ -1744,7 +1705,7 @@ fn code_row(
     cx: &App,
 ) -> AnyElement {
     let theme = cx.theme();
-    let text_size = theme.sizes.small.text_size;
+    let text_size = rems(0.75).to_pixels(theme.root_font_size);
     let line_height = text_size * CODE_LINE_HEIGHT;
     let plain = lines
         .lines
@@ -1761,7 +1722,7 @@ fn code_row(
         .when_some(language.cloned(), |row, language| {
             row.child(
                 div()
-                    .typeset(TextRole::Caption, cx)
+                    .text_xs()
                     .text_color(theme.colors.muted_foreground)
                     .child(language),
             )
@@ -1784,7 +1745,7 @@ fn code_row(
         .bg(theme.colors.muted)
         .p_2()
         .font_family(theme.mono_font)
-        .text_size(text_size)
+        .text_xs()
         .line_height(relative(CODE_LINE_HEIGHT))
         .overflow_hidden()
         .child(actions_row)
@@ -1804,15 +1765,7 @@ fn code_row(
 
     indented_frame(
         indent,
-        block_frame(
-            quote,
-            px(0.),
-            theme.root_font_size * BLOCK_GAP,
-            ctx.block_id,
-            cx,
-        )
-        .child(plate),
-        cx,
+        block_frame(quote, Rems::ZERO, rems(0.75), ctx.block_id, cx).child(plate),
     )
     .into_any_element()
 }
@@ -1821,15 +1774,8 @@ fn rule_row(indent: usize, quote: bool, ctx: &BlockContext, cx: &App) -> AnyElem
     let theme = cx.theme();
     indented_frame(
         indent,
-        block_frame(
-            quote,
-            px(0.),
-            theme.root_font_size * BLOCK_GAP,
-            ctx.block_id,
-            cx,
-        )
-        .child(div().h(BORDER_WIDTH).w_full().bg(theme.colors.border)),
-        cx,
+        block_frame(quote, Rems::ZERO, rems(0.75), ctx.block_id, cx)
+            .child(div().h_px().w_full().bg(theme.colors.border)),
     )
     .into_any_element()
 }
@@ -1884,9 +1830,7 @@ fn table_row(
                                 .min_w_0()
                                 .px_2()
                                 .py_1()
-                                .when(row.header, |cell_element| {
-                                    cell_element.font_weight(theme.typography.headline.weight)
-                                })
+                                .when(row.header, |cell_element| cell_element.font_semibold())
                                 .child(text_child(&cell.spans, &cell_id, piece, cx))
                         })
                         // Ragged tables pad missing cells so rows align.
@@ -1899,15 +1843,7 @@ fn table_row(
 
     indented_frame(
         indent,
-        block_frame(
-            quote,
-            px(0.),
-            theme.root_font_size * BLOCK_GAP,
-            ctx.block_id,
-            cx,
-        )
-        .child(grid),
-        cx,
+        block_frame(quote, Rems::ZERO, rems(0.75), ctx.block_id, cx).child(grid),
     )
     .into_any_element()
 }
@@ -2021,7 +1957,7 @@ where
             InlineStyle::Strong => highlights.push((
                 range,
                 HighlightStyle {
-                    font_weight: Some(theme.typography.headline.weight),
+                    font_weight: Some(FontWeight::SEMIBOLD),
                     ..Default::default()
                 },
             )),
@@ -2029,7 +1965,7 @@ where
                 range,
                 HighlightStyle {
                     font_style: Some(FontStyle::Italic),
-                    font_weight: Some(theme.typography.headline.weight),
+                    font_weight: Some(FontWeight::SEMIBOLD),
                     ..Default::default()
                 },
             )),

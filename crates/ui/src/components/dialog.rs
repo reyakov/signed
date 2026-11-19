@@ -26,10 +26,10 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, DefiniteLength, ElementId,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _,
-    RenderOnce, Role, ScrollHandle, SharedString, StatefulInteractiveElement as _, StyleRefinement,
-    Styled as _, Window, canvas, deferred, div, ease_out_quint, relative,
+    Animation, AnimationExt as _, AnyElement, App, DefiniteLength, ElementId, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, ParentElement as _, RenderOnce, Role, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window, canvas,
+    deferred, div, ease_out_quint, relative,
 };
 
 use crate::components::button::{Button, ButtonVariant};
@@ -38,7 +38,7 @@ use crate::components::grain::grain;
 use crate::components::scroll_area::ScrollArea;
 use crate::icons::IconRole;
 use crate::layout::h_flex;
-use crate::theme::{ActiveTheme as _, DIALOG_MIN_WIDTH, TextRole, Typeset as _};
+use crate::theme::{ActiveTheme as _, DIALOG_MIN_WIDTH};
 
 /// Requests the dialog's close: `false` closes.
 pub type ChangeHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
@@ -336,13 +336,14 @@ impl RenderOnce for Dialog {
                         .px_2()
                         .gap_2()
                         .justify_between()
-                        .child(div().size_5())
+                        .when(show_close, |row| row.child(div().w_7()))
                         .when_some(self.title.clone(), |row, title| {
                             row.child(
                                 div()
                                     .flex_1()
                                     .text_center()
-                                    .typeset(TextRole::Headline, cx)
+                                    .text_sm()
+                                    .font_semibold()
                                     .child(title),
                             )
                         })

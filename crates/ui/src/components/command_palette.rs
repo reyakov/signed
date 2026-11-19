@@ -31,14 +31,14 @@ use gpui::{
     AnyElement, App, Context, ElementId, Entity, InteractiveElement as _, IntoElement, KeyBinding,
     MouseButton, ParentElement as _, Render, Role, ScrollHandle, SharedString,
     StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Window, actions,
-    canvas, deferred, div, relative,
+    canvas, deferred, div, relative, rems,
 };
 
 use crate::components::common::{DIALOG_LAYER, StyledExt as _, h_flex, v_flex};
 use crate::components::input::{Input, InputState, InputStateEvent};
 use crate::components::scroll_area::{ScrollArea, ScrollAxes};
 use crate::icons::Icon;
-use crate::theme::{ActiveTheme as _, POPUP_MAX_HEIGHT, Size};
+use crate::theme::{ActiveTheme as _, POPUP_MAX_HEIGHT};
 
 actions!(
     command_palette,
@@ -371,12 +371,11 @@ impl Render for CommandPaletteState {
             return div().into_any_element();
         }
 
-        let (colors, radius, metrics, panel_border, shadows, titlebar_height) = {
+        let (colors, radius, panel_border, shadows, titlebar_height) = {
             let theme = cx.theme();
             (
                 theme.colors,
                 theme.radius,
-                theme.sizes.resolve(Size::default()),
                 theme.colors.border,
                 theme.elevations.dialog.shadows(),
                 theme.titlebar_height,
@@ -407,8 +406,8 @@ impl Render for CommandPaletteState {
                     .gap_2()
                     .px_2()
                     .py_1()
-                    .min_h(metrics.control_height)
-                    .text_size(metrics.text_size)
+                    .min_h_8()
+                    .text_sm()
                     .line_height(relative(1.0))
                     .rounded(radius.sm)
                     .when(highlighted, |row| row.bg(colors.muted))
@@ -431,7 +430,7 @@ impl Render for CommandPaletteState {
                         }
                     })
                     .when_some(command.icon.clone(), |row, icon| {
-                        row.child(icon.size(metrics.icon_size).color(colors.foreground))
+                        row.child(icon.size(rems(1.0)).color(colors.foreground))
                     })
                     .child(
                         div()
@@ -446,7 +445,7 @@ impl Render for CommandPaletteState {
                         row.child(
                             div()
                                 .flex_shrink_0()
-                                .text_size(metrics.caption_size)
+                                .text_xs()
                                 .text_color(colors.muted_foreground)
                                 .child(hint),
                         )
@@ -459,7 +458,7 @@ impl Render for CommandPaletteState {
             div()
                 .px_2()
                 .py_1()
-                .text_size(metrics.caption_size)
+                .text_xs()
                 .text_color(colors.muted_foreground)
                 .child("No matches")
                 .into_any_element()

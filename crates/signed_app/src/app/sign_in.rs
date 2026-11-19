@@ -1,10 +1,10 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Context, Entity, FontWeight, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Window, div,
+    App, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Window, div,
 };
 use ui::button::{Button, ButtonVariant};
-use ui::common::v_flex;
+use ui::common::{StyledExt as _, v_flex};
 use ui::layout::panel::Panel;
 
 use crate::identity::import::ImportDialog;
@@ -47,12 +47,7 @@ impl Render for SignedOutView {
             .items_center()
             .justify_center()
             .gap_4()
-            .child(
-                div()
-                    .text_2xl()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Signed"),
-            )
+            .child(div().text_2xl().font_semibold().child("Signed"))
             .child(
                 v_flex()
                     .gap_1()

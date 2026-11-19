@@ -9,10 +9,10 @@ use signed_state::RepoStore;
 use ui::avatar::Avatar;
 use ui::badge::{Badge, BadgeVariant};
 use ui::button::Button;
-use ui::common::{Sizable as _, h_flex, v_flex};
+use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 use utils::relative_time;
 
@@ -129,12 +129,7 @@ pub(crate) fn sidebar_section(
                                 .picture(profile.picture())
                                 .small(),
                         )
-                        .child(
-                            div()
-                                .typeset(TextRole::Body, cx)
-                                .text_ellipsis()
-                                .child(name),
-                        )
+                        .child(div().text_base().text_ellipsis().child(name))
                         .into_any_element()
                 })),
         )
@@ -146,7 +141,7 @@ pub(crate) fn sidebar_section(
                     if labels.is_empty() {
                         this.child(
                             div()
-                                .typeset(TextRole::Body, cx)
+                                .text_base()
                                 .text_color(cx.theme().colors.muted_foreground)
                                 .child("None yet."),
                         )
@@ -173,7 +168,7 @@ pub(crate) fn comments_section(
 
     v_flex()
         .gap_4()
-        .child(div().typeset(TextRole::Caption2, cx).child(title))
+        .child(div().text_xs().font_medium().child(title))
         .children(comments.iter().map(|comment| {
             let profile = directory.read(cx).profile(&comment.pubkey, cx);
             let author = profile.name();
@@ -189,7 +184,7 @@ pub(crate) fn comments_section(
                 .child(
                     h_flex()
                         .gap_2()
-                        .typeset(TextRole::Body, cx)
+                        .text_base()
                         .child(
                             h_flex()
                                 .gap_1()
@@ -212,7 +207,7 @@ pub(crate) fn comments_section(
                                 .child(SharedString::from(age)),
                         ),
                 )
-                .child(div().typeset(TextRole::Body, cx).child(content))
+                .child(div().text_base().child(content))
         }))
         .into_any_element()
 }
@@ -241,7 +236,7 @@ pub(crate) fn comment_form(
                 .child(
                     h_flex()
                         .gap_1()
-                        .typeset(TextRole::Caption, cx)
+                        .text_xs()
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(
                             Icon::named(IconRole::Markdown)

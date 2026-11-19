@@ -14,9 +14,9 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Action, AnyElement, App, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
-    KeyBinding, KeyContext, Keystroke, OperatingSystem, ParentElement as _, RenderOnce,
-    SharedString, StyleRefinement, Styled as _, Window, div, relative,
+    Action, AnyElement, App, FocusHandle, InteractiveElement as _, IntoElement, KeyBinding,
+    KeyContext, Keystroke, OperatingSystem, ParentElement as _, RenderOnce, SharedString,
+    StyleRefinement, Styled as _, Window, div, relative,
 };
 
 use crate::components::common::{StyledExt as _, h_flex};
@@ -267,7 +267,7 @@ impl RenderOnce for Kbd {
                     .rounded(theme.radius.sm)
                     .text_center()
                     .line_height(relative(1.))
-                    .text_size(theme.typography.caption.size)
+                    .text_xs()
             })
             .refine_style(&self.style)
             .child(label)

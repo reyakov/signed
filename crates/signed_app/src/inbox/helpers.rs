@@ -9,10 +9,10 @@ use ui::avatar::Avatar;
 use ui::badge::Badge;
 use ui::common::{Sizable as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
-pub fn repo_header(id: SharedString, name: SharedString, unread: usize, cx: &App) -> AnyElement {
+pub fn repo_header(id: SharedString, name: SharedString, unread: usize) -> AnyElement {
     h_flex()
         .h_12()
         .w_full()
@@ -20,7 +20,7 @@ pub fn repo_header(id: SharedString, name: SharedString, unread: usize, cx: &App
         .child(
             div()
                 .min_w_0()
-                .typeset(TextRole::Body, cx)
+                .text_base()
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .child(name),
@@ -36,7 +36,7 @@ pub fn empty_section_row(cx: &App) -> AnyElement {
         .h_12()
         .w_full()
         .px_3()
-        .typeset(TextRole::Caption, cx)
+        .text_xs()
         .text_color(cx.theme().colors.muted_foreground)
         .bg(cx.theme().colors.secondary)
         .rounded(cx.theme().radius.control)
@@ -78,7 +78,7 @@ pub fn thread(
         .child(
             h_flex()
                 .gap_2()
-                .typeset(TextRole::Body, cx)
+                .text_base()
                 .child(
                     h_flex()
                         .size_6()
@@ -134,7 +134,7 @@ fn sub_activity(
                 .flex_1()
                 .min_w_0()
                 .gap_1()
-                .typeset(TextRole::Caption, cx)
+                .text_xs()
                 .child(
                     Avatar::new(event.pubkey)
                         .name(name.clone())
@@ -184,7 +184,7 @@ pub fn empty_state(message: &'static str, cx: &App) -> AnyElement {
         )
         .child(
             div()
-                .typeset(TextRole::Body, cx)
+                .text_base()
                 .text_color(cx.theme().colors.muted_foreground)
                 .child(SharedString::from(message)),
         )

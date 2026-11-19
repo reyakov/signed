@@ -33,7 +33,7 @@ use gpui::{
     App, Context, ElementId, HighlightStyle, InteractiveElement as _, IntoElement,
     ListHorizontalSizingBehavior, ParentElement as _, Pixels, Render, ScrollStrategy, SharedString,
     StatefulInteractiveElement as _, Styled as _, TextStyle, UniformListScrollHandle, Window, div,
-    point, uniform_list,
+    point, rems, uniform_list,
 };
 use similar::{Change, ChangeTag, TextDiff};
 
@@ -459,9 +459,8 @@ impl DiffViewState {
 }
 
 impl Render for DiffViewState {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let text_size = theme.sizes.small.text_size;
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let text_size = rems(0.75).to_pixels(window.rem_size());
 
         let id = self.id.clone();
         let state = cx.entity();
@@ -479,6 +478,7 @@ impl Render for DiffViewState {
                             &diff.row_layouts[row_index],
                             row_index,
                             options,
+                            text_size,
                             cx,
                         )
                     })
@@ -497,7 +497,7 @@ impl Render for DiffViewState {
             .id((id.clone(), "view"))
             .relative()
             .size_full()
-            .text_size(text_size)
+            .text_xs()
             .when_some(self.a11y_label.clone(), |view, label| {
                 view.aria_label(label)
             })
@@ -518,13 +518,13 @@ fn render_row(
     layout: &RowLayout,
     row_index: usize,
     options: DiffViewOptions,
+    text_size: Pixels,
     cx: &App,
 ) -> gpui::AnyElement {
     let theme = cx.theme();
     let mono_font = theme.mono_font;
     let colors = theme.colors;
     let ramps = theme.ramps;
-    let text_size = theme.sizes.small.text_size;
     let line_height = text_size * 1.5;
     let char_width = text_size * MONO_ADVANCE_RATIO;
 
@@ -534,7 +534,7 @@ fn render_row(
         .w_full()
         .h(line_height)
         .font_family(mono_font)
-        .text_size(text_size)
+        .text_xs()
         .overflow_hidden();
 
     if row.kind == DiffRowKind::Hunk {

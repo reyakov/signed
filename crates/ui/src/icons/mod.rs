@@ -4,13 +4,14 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AssetSource, Hsla, IntoElement, ParentElement as _, Pixels, RenderOnce,
-    SharedString, Styled as _, TimedTransformation, Transformation, Window, div, px, svg,
+    AbsoluteLength, AnyElement, AssetSource, Hsla, IntoElement, ParentElement as _, Pixels, Rems,
+    RenderOnce, SharedString, Styled as _, TimedTransformation, Transformation, Window, div, rems,
+    svg,
 };
 
-const SMALL_ICON_SIZE: Pixels = px(14.0);
-const DEFAULT_ICON_SIZE: Pixels = px(16.0);
-const LARGE_ICON_SIZE: Pixels = px(20.0);
+const SMALL_ICON_SIZE: Rems = rems(0.875);
+const DEFAULT_ICON_SIZE: Rems = rems(1.0);
+const LARGE_ICON_SIZE: Rems = rems(1.25);
 /// The spin presents at most this rate, rotating a sprite needs no more frames.
 const SPIN_MAX_FPS: f32 = 60.0;
 
@@ -137,7 +138,7 @@ enum Glyph {
 #[derive(Clone, IntoElement)]
 pub struct Icon {
     glyph: Glyph,
-    size: Pixels,
+    size: AbsoluteLength,
     color: Option<Hsla>,
     transformation: Option<Transformation>,
     rotation_period: Option<Duration>,
@@ -147,7 +148,7 @@ pub struct Icon {
 pub fn icon(role: IconRole) -> Icon {
     Icon {
         glyph: Glyph::Role(role),
-        size: DEFAULT_ICON_SIZE,
+        size: AbsoluteLength::Rems(DEFAULT_ICON_SIZE),
         color: None,
         transformation: None,
         rotation_period: None,
@@ -162,33 +163,33 @@ impl Icon {
     {
         Self {
             glyph: Glyph::Named(named.path()),
-            size: DEFAULT_ICON_SIZE,
+            size: AbsoluteLength::Rems(DEFAULT_ICON_SIZE),
             color: None,
             transformation: None,
             rotation_period: None,
         }
     }
 
-    pub fn size(mut self, size: Pixels) -> Self {
-        self.size = size;
+    pub fn size(mut self, size: impl Into<AbsoluteLength>) -> Self {
+        self.size = size.into();
         self
     }
 
     /// The small size.
     pub fn small(mut self) -> Self {
-        self.size = SMALL_ICON_SIZE;
+        self.size = AbsoluteLength::Rems(SMALL_ICON_SIZE);
         self
     }
 
     /// The default medium size.
     pub fn medium(mut self) -> Self {
-        self.size = DEFAULT_ICON_SIZE;
+        self.size = AbsoluteLength::Rems(DEFAULT_ICON_SIZE);
         self
     }
 
     /// The large size.
     pub fn large(mut self) -> Self {
-        self.size = LARGE_ICON_SIZE;
+        self.size = AbsoluteLength::Rems(LARGE_ICON_SIZE);
         self
     }
 
@@ -260,6 +261,7 @@ impl RenderOnce for Icon {
             rotation_period,
         } = self;
 
+        let size = size.to_pixels(window.rem_size());
         let color = color.unwrap_or_else(|| window.text_style().color);
 
         match glyph {

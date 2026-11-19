@@ -29,13 +29,13 @@ use gpui::{
     DispatchPhase, ElementId, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, RenderOnce, Role,
     ScrollHandle, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
-    Window, anchored, canvas, deferred, div, ease_out_quint, point, px, relative,
+    Window, anchored, canvas, deferred, div, ease_out_quint, point, px, relative, rems,
 };
 
 use crate::components::common::{OVERLAY_LAYER, StyledExt as _, focus_handle, v_flex};
 use crate::components::scroll_area::{ScrollArea, ScrollAxes};
 use crate::icons::{Icon, IconRole, icon as icon_glyph};
-use crate::theme::{ActiveTheme as _, BORDER_WIDTH, MENU_MIN_WIDTH, POPUP_MAX_HEIGHT};
+use crate::theme::{ActiveTheme as _, MENU_MIN_WIDTH, POPUP_MAX_HEIGHT};
 
 /// Runs the item's action. The menu closes itself before the handler runs.
 pub type ItemHandler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -201,10 +201,6 @@ pub(crate) struct MenuChrome {
     destructive_foreground: gpui::Hsla,
     radius_overlay: Pixels,
     radius_sm: Pixels,
-    icon_size: Pixels,
-    dense_icon_size: Pixels,
-    menu_item_height: Pixels,
-    text_size: Pixels,
     shadow: Vec<BoxShadow>,
 }
 
@@ -242,10 +238,6 @@ impl MenuChrome {
                 destructive_foreground: theme.colors.destructive_foreground,
                 radius_overlay: theme.radius.overlay,
                 radius_sm: theme.radius.sm,
-                icon_size: theme.sizes.medium.icon_size,
-                dense_icon_size: theme.sizes.medium.dense_icon_size,
-                menu_item_height: theme.sizes.medium.menu_item_height,
-                text_size: theme.sizes.medium.text_size,
                 shadow: theme.elevations.popover.shadows(),
             },
             theme.motion.overlay,
@@ -813,7 +805,7 @@ fn render_item(
 ) -> AnyElement {
     match &item.kind {
         MenuItemKind::Separator => div()
-            .h(BORDER_WIDTH)
+            .h_px()
             .debug_selector(move || format!("{}-separator-{index}", env.debug_prefix))
             .mx_2()
             .my_1()
@@ -846,7 +838,7 @@ fn render_item(
                     }
                 })
                 .when_some(icon, |row, icon| {
-                    row.child(icon.size(env.chrome.icon_size).color(label_color))
+                    row.child(icon.size(rems(1.0)).color(label_color))
                 })
                 .child(
                     div()
@@ -868,7 +860,7 @@ fn render_item(
                 .when(checked, |row| {
                     row.child(
                         icon_glyph(IconRole::Check)
-                            .size(env.chrome.dense_icon_size)
+                            .size(rems(0.75))
                             .color(label_color),
                     )
                 })
@@ -901,7 +893,7 @@ fn render_item(
                 )
                 .child(
                     icon_glyph(IconRole::ChevronRight)
-                        .size(chrome.dense_icon_size)
+                        .size(rems(0.75))
                         .color(label_color),
                 )
                 .aria_expanded(open)
@@ -948,7 +940,7 @@ fn render_item(
     }
 }
 
-/// The shared row shell: metrics, highlight, and hover-selection.
+/// The shared row shell: dimensions, highlight, and hover-selection.
 fn row_shell(
     cx: &App,
     item: &MenuItem,
@@ -972,9 +964,9 @@ fn row_shell(
         .flex()
         .items_center()
         .gap_2()
-        .min_h(chrome.menu_item_height)
+        .min_h_8()
         .px_4()
-        .text_size(chrome.text_size)
+        .text_sm()
         .line_height(relative(1.0))
         .rounded(chrome.radius_sm)
         .map(|row| {

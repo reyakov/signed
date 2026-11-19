@@ -7,9 +7,9 @@ use metadata::ProfileDirectory;
 use signed_core::Announcement;
 use signed_state::{RepoListStore, Timestamp};
 use ui::avatar::Avatar;
-use ui::common::{Sizable as _, h_flex, v_flex};
+use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
 use crate::repo::actions::open_repo_panel;
@@ -111,7 +111,8 @@ pub(super) fn render_card(
                 .child(
                     div()
                         .min_w_0()
-                        .typeset(TextRole::Headline, cx)
+                        .text_sm()
+                        .font_semibold()
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .child(name),
@@ -120,7 +121,7 @@ pub(super) fn render_card(
                     this.child(
                         h_flex()
                             .gap_1()
-                            .typeset(TextRole::Caption, cx)
+                            .text_xs()
                             .text_color(cx.theme().colors.muted_foreground)
                             .whitespace_nowrap()
                             .child(
@@ -136,7 +137,7 @@ pub(super) fn render_card(
             div()
                 .h_16()
                 .min_w_0()
-                .typeset(TextRole::Caption, cx)
+                .text_xs()
                 .text_color(cx.theme().colors.muted_foreground)
                 .line_clamp(2)
                 .child(description),
@@ -157,7 +158,7 @@ pub(super) fn render_card(
                         )
                         .child(
                             div()
-                                .typeset(TextRole::Caption, cx)
+                                .text_xs()
                                 .text_color(cx.theme().colors.muted_foreground)
                                 .whitespace_nowrap()
                                 .child(owner_name),
@@ -167,7 +168,7 @@ pub(super) fn render_card(
                     h_flex()
                         .flex_1()
                         .justify_end()
-                        .typeset(TextRole::Caption, cx)
+                        .text_xs()
                         .text_color(cx.theme().colors.muted_foreground)
                         .whitespace_nowrap()
                         .child(activity),

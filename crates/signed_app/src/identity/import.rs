@@ -9,7 +9,7 @@ use ui::common::v_flex;
 use ui::dialog::{Dialog, DialogHandle};
 use ui::field::Field;
 use ui::input::{Input, InputState, InputStateEvent};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 
 use crate::shared::progress::{DialogProgress, error_row};
 
@@ -163,7 +163,7 @@ impl Render for ImportDialog {
                     .gap_3()
                     .child(
                         div()
-                            .typeset(TextRole::Body, cx)
+                            .text_base()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child(description),
                     )

@@ -8,7 +8,7 @@ use ui::common::v_flex;
 use ui::dialog::{Dialog, DialogHandle};
 use ui::field::Field;
 use ui::input::{Input, InputState};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 
 pub struct NewIssueDialog {
     handle: DialogHandle,
@@ -58,7 +58,7 @@ impl Render for NewIssueDialog {
                     .gap_3()
                     .child(
                         div()
-                            .typeset(TextRole::Body, cx)
+                            .text_base()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Report a bug, ask a question, or propose a change."),
                     )

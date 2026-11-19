@@ -20,10 +20,10 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     App, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
     RenderOnce, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
-    Window, canvas,
+    Window, canvas, rems,
 };
 
-use crate::components::common::{Sizable, StyledExt, focus_handle, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt, focus_handle, h_flex};
 use crate::components::menu::{Menu, MenuItem};
 use crate::icons::{Icon, IconRole, icon};
 use crate::theme::{ActiveTheme as _, Size};
@@ -188,7 +188,6 @@ where
 {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        let metrics = theme.sizes.resolve(self.size);
         let border = theme.colors.border;
         let ring = theme.colors.ring;
         let input = theme.colors.input;
@@ -196,7 +195,6 @@ where
         let foreground = theme.colors.foreground;
         let muted_foreground = theme.colors.muted_foreground;
         let radius = theme.radius.control;
-        let icon_size = metrics.dense_icon_size;
 
         let label = self
             .a11y_label
@@ -271,14 +269,14 @@ where
                     .justify_between()
                     .gap_3()
                     .w_full()
-                    .h(metrics.input_height)
-                    .pl(metrics.dense_padding_x)
-                    .pr(metrics.plate_inset * 2.0)
+                    .control_height(self.size)
+                    .control_dense_padding_x(self.size)
+                    .pr(rems(self.size.plate_inset_rems().0 * 2.0))
                     .rounded(radius)
                     .border_1()
                     .border_color(rest_border)
                     .bg(input)
-                    .text_size(metrics.text_size)
+                    .control_text(self.size)
                     .text_color(if trigger_has_value {
                         foreground
                     } else {
@@ -288,7 +286,7 @@ where
                     .child(trigger_text.clone())
                     .child(
                         icon(IconRole::ChevronDown)
-                            .size(icon_size)
+                            .size(self.size.dense_icon_rems())
                             .color(muted_foreground),
                     )
                     .child(

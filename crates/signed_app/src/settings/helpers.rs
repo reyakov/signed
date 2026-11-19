@@ -6,11 +6,11 @@ use gpui::{
 };
 use settings::{AppearanceMode, EventFetchingStrategy, SettingsStore};
 use ui::button::Button;
-use ui::common::{h_flex, v_flex};
+use ui::common::{StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
 use ui::select::{Select, SelectOption};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 
 use crate::repo::dialogs::grasp_servers::{normalize_server, server_host};
@@ -31,10 +31,10 @@ pub fn setting_row(
                 .flex_1()
                 .min_w_0()
                 .gap_1()
-                .child(div().typeset(TextRole::Headline, cx).child(title.into()))
+                .child(div().text_sm().font_semibold().child(title.into()))
                 .child(
                     div()
-                        .typeset(TextRole::Caption, cx)
+                        .text_xs()
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(description.into()),
                 ),
@@ -56,10 +56,10 @@ pub fn setting_block(
         .child(
             v_flex()
                 .gap_1()
-                .child(div().typeset(TextRole::Headline, cx).child(title.into()))
+                .child(div().text_sm().font_semibold().child(title.into()))
                 .child(
                     div()
-                        .typeset(TextRole::Caption, cx)
+                        .text_xs()
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(description.into()),
                 ),
@@ -127,7 +127,7 @@ pub fn grasp_servers_editor(input: &Entity<InputState>, cx: &App) -> AnyElement 
                         .px_2()
                         .bg(cx.theme().colors.muted)
                         .text_color(cx.theme().colors.muted_foreground)
-                        .typeset(TextRole::Caption, cx)
+                        .text_xs()
                         .rounded(cx.theme().radius.control)
                         .child(display_server(server)),
                 )
@@ -227,7 +227,7 @@ pub fn scan_paths_editor(cx: &App) -> AnyElement {
                         .px_2()
                         .bg(cx.theme().colors.muted)
                         .text_color(cx.theme().colors.muted_foreground)
-                        .typeset(TextRole::Caption, cx)
+                        .text_xs()
                         .rounded(cx.theme().radius.control)
                         .child(path.display().to_string()),
                 )

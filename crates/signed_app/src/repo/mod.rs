@@ -23,7 +23,7 @@ use ui::icons::{Icon, IconRole};
 use ui::layout::panel::Panel;
 use ui::sidebar::{Sidebar, SidebarEntry};
 use ui::spinner::Spinner;
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 
 pub mod actions;
 pub mod commit_diff;
@@ -854,7 +854,7 @@ impl RepoDetailView {
                 .child(Spinner::new("repo-loading"))
                 .child(
                     div()
-                        .typeset(TextRole::Body, cx)
+                        .text_base()
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(label),
                 )

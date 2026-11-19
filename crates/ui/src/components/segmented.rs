@@ -22,7 +22,9 @@ use gpui::{
     StatefulInteractiveElement as _, StyleRefinement, Styled as _, Toggled, Window, canvas, div,
 };
 
-use crate::components::common::{Sizable, StyledExt, focus_handle, focus_ring, h_flex};
+use crate::components::common::{
+    ControlSizing, Sizable, StyledExt, focus_handle, focus_ring, h_flex,
+};
 use crate::icons::Icon;
 use crate::theme::{ActiveTheme as _, CONTROL_SPRING, Size};
 
@@ -168,7 +170,6 @@ where
 {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        let metrics = theme.sizes.resolve(self.size);
         let muted = theme.colors.muted;
         let surface = theme.colors.surface;
         let foreground = theme.colors.foreground;
@@ -176,12 +177,6 @@ where
         let ring = theme.colors.ring;
         let radius = theme.radius.full;
         let plate_shadow = theme.elevations.control.shadows();
-
-        let track_height = metrics.strip_height;
-        let track_inset = metrics.plate_inset;
-        let horizontal_padding = metrics.dense_padding_x;
-        let text_size = metrics.text_size;
-        let icon_size = metrics.icon_size;
 
         let selected_index = self
             .options
@@ -238,9 +233,9 @@ where
                         .justify_center()
                         .cursor_pointer()
                         .h_full()
-                        .px(horizontal_padding)
+                        .control_dense_padding_x(self.size)
                         .rounded(radius)
-                        .text_size(text_size)
+                        .control_text(self.size)
                         .text_color(content_color)
                         .when(!is_selected, |segment| {
                             segment.hover(|style| style.bg(surface))
@@ -249,7 +244,7 @@ where
                         .aria_label(segment.label.clone())
                         .aria_toggled(Toggled::from(is_selected))
                         .when_some(segment.icon.clone(), |segment, icon| {
-                            segment.child(icon.size(icon_size).color(content_color))
+                            segment.child(icon.size(self.size.icon_rems()).color(content_color))
                         })
                         .child(segment.label.clone())
                         .child(
@@ -296,11 +291,11 @@ where
                     .gap_1()
                     .relative()
                     .flex_none()
-                    .h(track_height)
-                    .p(track_inset)
+                    .control_height(self.size)
+                    .control_plate_inset(self.size)
                     .rounded(radius)
                     .bg(muted)
-                    .text_size(metrics.text_size)
+                    .control_text(self.size)
                     .child(
                         canvas(
                             {
@@ -321,8 +316,8 @@ where
                                 .id("segmented-plate")
                                 .debug_selector(|| "segmented-plate".to_string())
                                 .absolute()
-                                .top(track_inset)
-                                .bottom(track_inset)
+                                .top(self.size.plate_inset_rems())
+                                .bottom(self.size.plate_inset_rems())
                                 .rounded(radius)
                                 .bg(surface)
                                 .shadow(plate_shadow.clone())

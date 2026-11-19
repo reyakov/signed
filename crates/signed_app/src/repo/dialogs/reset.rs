@@ -6,7 +6,7 @@ use signed_state::RepoStore;
 use ui::button::{Button, ButtonVariant};
 use ui::common::v_flex;
 use ui::dialog::{Dialog, DialogHandle};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 
 pub struct ResetRemoteDialog {
     handle: DialogHandle,
@@ -39,16 +39,14 @@ impl Render for ResetRemoteDialog {
                 v_flex()
                     .gap_2()
                     .child(
-                        div()
-                            .typeset(TextRole::Body, cx)
+                        div().text_base()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child(
                                 "Grasp servers are overwritten to match the local mirror. Refs that do not exist locally are deleted from the servers. This cannot be undone.",
                             ),
                     )
                     .child(if deleted.is_empty() {
-                        div()
-                            .typeset(TextRole::Body, cx)
+                        div().text_base()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("No server refs will be deleted.")
                             .into_any_element()
@@ -56,8 +54,7 @@ impl Render for ResetRemoteDialog {
                         v_flex()
                             .gap_1()
                             .children(deleted.iter().map(|name| {
-                                div()
-                                    .typeset(TextRole::Body, cx)
+                                div().text_base()
                                     .font_family(cx.theme().mono_font)
                                     .child(name.clone())
                             }))

@@ -1,9 +1,10 @@
 use gpui::{AnyElement, App, IntoElement, ParentElement as _, SharedString, Styled as _, div};
 use signed_core::RepoStatus;
 use ui::badge::{Badge, BadgeVariant};
+use ui::common::StyledExt as _;
 use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 
 /// The status pill shown on issue and pull-request rows.
@@ -35,7 +36,8 @@ pub fn empty_state(message: impl Into<SharedString>) -> AnyElement {
 /// A one-line muted label used by section headers.
 pub fn section_label(text: impl Into<SharedString>, cx: &App) -> AnyElement {
     div()
-        .typeset(TextRole::Caption2, cx)
+        .text_xs()
+        .font_medium()
         .text_color(cx.theme().colors.muted_foreground)
         .child(text.into())
         .into_any_element()

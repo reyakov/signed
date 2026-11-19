@@ -16,7 +16,7 @@ use ui::field::Field;
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
 use ui::select::{Select, SelectOption};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 
 use super::grasp_servers::{GraspServersState, grasp_servers_field, load_user_grasp_servers};
 use crate::repo::RepoDetailView;
@@ -186,7 +186,7 @@ impl Render for InitRepoDialog {
                     .gap_3()
                     .child(
                         div()
-                            .typeset(TextRole::Body, cx)
+                            .text_base()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Publish this local repository to Nostr."),
                     )
@@ -209,7 +209,7 @@ impl Render for InitRepoDialog {
                                     .w_full()
                                     .px_2()
                                     .bg(cx.theme().colors.muted)
-                                    .typeset(TextRole::Body, cx)
+                                    .text_base()
                                     .text_color(cx.theme().colors.muted_foreground)
                                     .rounded(cx.theme().radius.control)
                                     .child(folder.clone()),

@@ -17,7 +17,7 @@ use ui::layout::panel::Panel;
 use ui::menu::MenuItem;
 use ui::scrollbar::Scrollbar;
 use ui::segmented::{Segmented, SegmentedOption};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
 mod detail;
@@ -387,7 +387,7 @@ impl Render for PullRequestsView {
                                                     .gap_1()
                                                     .child(
                                                         div()
-                                                            .typeset(TextRole::Body, cx)
+                                                            .text_base()
                                                             .text_ellipsis()
                                                             .whitespace_nowrap()
                                                             .child(title),
@@ -395,7 +395,7 @@ impl Render for PullRequestsView {
                                                     .child(
                                                         h_flex()
                                                             .gap_2()
-                                                            .typeset(TextRole::Caption, cx)
+                                                            .text_xs()
                                                             .child(
                                                                 h_flex()
                                                                     .gap_1()

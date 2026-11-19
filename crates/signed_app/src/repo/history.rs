@@ -13,7 +13,7 @@ use ui::common::{Sizable as _, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::scrollbar::Scrollbar;
 use ui::spinner::Spinner;
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 
 use super::RepoDetailView;
@@ -249,7 +249,7 @@ impl Render for RepoHistoryView {
                     div()
                         .py_2()
                         .w_full()
-                        .typeset(TextRole::Caption, cx)
+                        .text_xs()
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(format!("Showing {shown} of {total} commits")),
                 )

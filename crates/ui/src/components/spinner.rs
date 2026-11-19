@@ -113,9 +113,9 @@ impl Sizable for Spinner {
 }
 
 impl RenderOnce for Spinner {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        let side = theme.sizes.resolve(self.size).icon_size;
+        let side = self.size.icon_rems() * window.rem_size();
         let stroke = side * RING_STROKE;
         let track = theme.colors.border;
         let accent = self.color.unwrap_or(theme.ramps.primary.base);

@@ -13,7 +13,6 @@ mod ramps;
 mod resolve;
 mod source;
 mod system;
-mod typography;
 
 use std::time::Duration;
 
@@ -25,12 +24,9 @@ use gpui::{
 pub use ramps::{AccentShades, Oklch};
 pub use resolve::{Ramps, ResolvedTheme};
 pub use system::{AccessibilityPreferences, SourceKind, SystemTheme};
-pub use typography::{TextRole, TypeMetrics, Typeset, Typography};
 
 /// The hairline width of the control border every button and field paints.
 pub const BORDER_WIDTH: Pixels = px(1.0);
-/// The underline and drop indicators a tab strip paints.
-pub const TAB_INDICATOR_WIDTH: Pixels = px(2.0);
 /// The widest a titlebar tab grows before its label fades.
 pub const TAB_MAX_WIDTH: Pixels = px(240.0);
 /// The narrowest a titlebar tab shrinks, keeping short labels clear of the fade.
@@ -201,9 +197,6 @@ pub struct Theme {
     pub root_font_size: Pixels,
     /// The monospace family, for code surfaces.
     pub mono_font: &'static str,
-    /// The type ladder, resolved at the root font size.
-    pub typography: Typography,
-    pub sizes: SizeTable,
     pub accessibility: AccessibilityPreferences,
     /// The material a window should open with, after accessibility.
     pub window_background: WindowBackgroundAppearance,
@@ -230,8 +223,6 @@ impl Theme {
             titlebar_height: resolved.titlebar_height,
             root_font_size: resolved.root_font_size,
             mono_font: resolved.mono_font,
-            typography: resolved.typography,
-            sizes: resolved.sizes,
             accessibility: resolved.accessibility,
             window_background: resolved.window_background,
         }
@@ -451,185 +442,6 @@ impl Default for Scrollbar {
             inset: px(2.),
             min_thumb: px(24.),
             autohide: false,
-        }
-    }
-}
-
-/// The control metrics for one size class.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ControlMetrics {
-    /// Push buttons, toggles, and field rows.
-    pub control_height: Pixels,
-    /// Text fields; slightly taller than buttons, as native fields are.
-    pub input_height: Pixels,
-    /// Horizontal padding inside controls.
-    pub padding_x: Pixels,
-    /// Label text size.
-    pub text_size: Pixels,
-    /// Icons and on/off indicators.
-    pub icon_size: Pixels,
-    /// Icons inline with dense content — menu rows, badges, chevrons.
-    pub dense_icon_size: Pixels,
-    /// Selection indicators — checkboxes, radios, and switch knobs.
-    pub indicator_size: Pixels,
-    /// Avatars.
-    pub avatar_size: Pixels,
-    /// Dense label text.
-    pub caption_size: Pixels,
-    /// Tight horizontal padding inside pills, segments, fields, and icon-only buttons.
-    pub dense_padding_x: Pixels,
-    /// The inset between a control's edge and a raised inner plate.
-    pub plate_inset: Pixels,
-    /// The band height of multi-segment strips.
-    pub strip_height: Pixels,
-    /// The height of one menu row.
-    pub menu_item_height: Pixels,
-    /// Switch track height, width, and knob size.
-    pub switch_height: Pixels,
-    pub switch_width: Pixels,
-    pub switch_knob: Pixels,
-}
-
-/// The control metrics for every size class.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SizeTable {
-    pub xsmall: ControlMetrics,
-    pub small: ControlMetrics,
-    pub medium: ControlMetrics,
-    pub large: ControlMetrics,
-}
-
-impl SizeTable {
-    pub fn with_root_font_size(rem_size: Pixels) -> Self {
-        struct ClassFactors {
-            control_height: f32,
-            input_height: f32,
-            padding_x: f32,
-            text_size: f32,
-            icon_size: f32,
-            dense_icon_size: f32,
-            indicator_size: f32,
-            avatar_size: f32,
-            caption_size: f32,
-            dense_padding_x: f32,
-            plate_inset: f32,
-            strip_height: f32,
-            menu_item_height: f32,
-            switch_height: f32,
-            switch_width: f32,
-            switch_knob: f32,
-        }
-
-        let xsmall = ClassFactors {
-            control_height: 1.25,
-            input_height: 1.25,
-            padding_x: 0.25,
-            text_size: 0.6875,
-            icon_size: 0.625,
-            dense_icon_size: 0.5,
-            indicator_size: 0.625,
-            avatar_size: 1.125,
-            caption_size: 0.625,
-            dense_padding_x: 0.25,
-            plate_inset: 0.0,
-            strip_height: 1.25,
-            menu_item_height: 1.25,
-            switch_height: 0.875,
-            switch_width: 1.5,
-            switch_knob: 0.5,
-        };
-
-        let small = ClassFactors {
-            control_height: 1.75,
-            input_height: 1.75,
-            padding_x: 0.5,
-            text_size: 0.75,
-            icon_size: 0.875,
-            dense_icon_size: 0.75,
-            indicator_size: 0.875,
-            avatar_size: 1.5,
-            caption_size: 0.75,
-            dense_padding_x: 0.5,
-            plate_inset: 0.125,
-            strip_height: 1.75,
-            menu_item_height: 1.75,
-            switch_height: 1.125,
-            switch_width: 2.0,
-            switch_knob: 0.75,
-        };
-
-        let medium = ClassFactors {
-            control_height: 2.0,
-            input_height: 2.0,
-            padding_x: 0.75,
-            text_size: 0.875,
-            icon_size: 1.0,
-            dense_icon_size: 0.75,
-            indicator_size: 1.0,
-            avatar_size: 2.0,
-            caption_size: 0.75,
-            dense_padding_x: 0.5,
-            plate_inset: 0.125,
-            strip_height: 2.0,
-            menu_item_height: 2.0,
-            switch_height: 1.25,
-            switch_width: 2.25,
-            switch_knob: 0.875,
-        };
-
-        let large = ClassFactors {
-            control_height: 2.5,
-            input_height: 2.5,
-            padding_x: 1.0,
-            text_size: 1.0,
-            icon_size: 1.25,
-            dense_icon_size: 0.9375,
-            indicator_size: 1.25,
-            avatar_size: 2.5,
-            caption_size: 0.875,
-            dense_padding_x: 0.75,
-            plate_inset: 0.1875,
-            strip_height: 2.5,
-            menu_item_height: 2.25,
-            switch_height: 1.5,
-            switch_width: 2.75,
-            switch_knob: 1.125,
-        };
-
-        let metrics = |f: &ClassFactors| ControlMetrics {
-            control_height: rem_size * f.control_height,
-            input_height: rem_size * f.input_height,
-            padding_x: rem_size * f.padding_x,
-            text_size: rem_size * f.text_size,
-            icon_size: rem_size * f.icon_size,
-            dense_icon_size: rem_size * f.dense_icon_size,
-            indicator_size: rem_size * f.indicator_size,
-            avatar_size: rem_size * f.avatar_size,
-            caption_size: rem_size * f.caption_size,
-            dense_padding_x: rem_size * f.dense_padding_x,
-            plate_inset: rem_size * f.plate_inset,
-            strip_height: rem_size * f.strip_height,
-            menu_item_height: rem_size * f.menu_item_height,
-            switch_height: rem_size * f.switch_height,
-            switch_width: rem_size * f.switch_width,
-            switch_knob: rem_size * f.switch_knob,
-        };
-
-        Self {
-            xsmall: metrics(&xsmall),
-            small: metrics(&small),
-            medium: metrics(&medium),
-            large: metrics(&large),
-        }
-    }
-
-    /// The metrics for `size`.
-    pub fn resolve(&self, size: Size) -> ControlMetrics {
-        match size {
-            Size::XSmall => self.xsmall,
-            Size::Small => self.small,
-            Size::Medium => self.medium,
-            Size::Large => self.large,
         }
     }
 }

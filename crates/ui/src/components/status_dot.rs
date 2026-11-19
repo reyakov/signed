@@ -104,20 +104,24 @@ impl Styled for StatusDot {
 impl RenderOnce for StatusDot {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        let metrics = theme.sizes.resolve(self.size);
-        let side = metrics.icon_size / 2.;
+        let size = self.size;
         let color = self.variant.color(theme);
 
-        div()
+        let dot = div()
             .id(self.id.clone())
             .debug_selector(move || self.id.to_string())
             .flex_none()
-            .size(side)
             .rounded(theme.radius.full)
-            .bg(color)
-            .when_some(self.label, |dot, label| {
-                dot.role(Role::Status).aria_label(label)
-            })
-            .refine_style(&self.style)
+            .bg(color);
+        let dot = match size {
+            Size::XSmall => dot.size_1p5(),
+            Size::Small | Size::Medium => dot.size_2(),
+            Size::Large => dot.size_2p5(),
+        };
+
+        dot.when_some(self.label, |dot, label| {
+            dot.role(Role::Status).aria_label(label)
+        })
+        .refine_style(&self.style)
     }
 }

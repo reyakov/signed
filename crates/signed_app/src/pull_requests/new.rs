@@ -9,7 +9,7 @@ use gpui::{
 use signed_state::{CheckoutsStore, RepoStore};
 use ui::button::Button;
 use ui::combobox::{Combobox, ComboboxState};
-use ui::common::{h_flex, v_flex};
+use ui::common::{StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
 use ui::layout::panel::Panel;
@@ -17,7 +17,7 @@ use ui::menu::Menu;
 use ui::scrollbar::Scrollbar;
 use ui::spinner::Spinner;
 use ui::tabs::{Tab, Tabs};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 
 use super::helpers::{ForkCompare, fork_display_name, truncate_label};
 use crate::repo::commit_diff::{CommitDiffView, DiffPane};
@@ -281,17 +281,17 @@ impl NewPullRequestView {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(label("Merge Into", cx))
+                    .child(label("Merge Into"))
                     .child(div().w(px(160.)).child(self.base_select.clone())),
             )
             .child(
                 v_flex()
                     .gap_1()
-                    .child(label("Pull From", cx))
+                    .child(label("Pull From"))
                     .child(div().w(px(160.)).child(self.compare_select.clone())),
             )
             .child(
-                v_flex().gap_1().child(label("Source", cx)).child(
+                v_flex().gap_1().child(label("Source")).child(
                     Menu::new("pr-source")
                         .open(self.source_open)
                         .on_change(move |open, _, cx| {
@@ -475,7 +475,7 @@ impl Render for NewPullRequestView {
                             .when_some(self.error.clone(), |this, error| {
                                 this.child(
                                     div()
-                                        .typeset(TextRole::Caption, cx)
+                                        .text_xs()
                                         .text_color(cx.theme().ramps.destructive.base)
                                         .child(error),
                                 )
@@ -493,9 +493,6 @@ impl Render for NewPullRequestView {
     }
 }
 
-fn label(text: &'static str, cx: &App) -> AnyElement {
-    div()
-        .typeset(TextRole::Caption2, cx)
-        .child(text)
-        .into_any_element()
+fn label(text: &'static str) -> AnyElement {
+    div().text_xs().font_medium().child(text).into_any_element()
 }

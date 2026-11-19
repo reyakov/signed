@@ -4,8 +4,8 @@ use crate::theme::definition::ThemeDefinition;
 use crate::theme::ramps::{AccentShades, Oklch, contrast_foreground, derive_shades, mix};
 use crate::theme::system::{SourceKind, SystemTheme};
 use crate::theme::{
-    ColorTokens, CustomTheme, Elevations, MaterialTokens, Motion, Radius, Scrollbar, SizeTable,
-    ThemeVariant, Typography,
+    AccessibilityPreferences, ColorTokens, CustomTheme, Elevations, MaterialTokens, Motion, Radius,
+    Scrollbar, ThemeVariant,
 };
 
 /// Derived state shades for the colors that get pressed and hovered.
@@ -37,10 +37,7 @@ pub struct ResolvedTheme {
     pub root_font_size: gpui::Pixels,
     /// The monospace family, for code surfaces.
     pub mono_font: &'static str,
-    /// The type ladder, resolved at the root font size.
-    pub typography: Typography,
-    pub sizes: SizeTable,
-    pub accessibility: crate::theme::system::AccessibilityPreferences,
+    pub accessibility: AccessibilityPreferences,
     /// The material a window should open with, after accessibility.
     pub window_background: WindowBackgroundAppearance,
 }
@@ -140,7 +137,6 @@ pub(crate) fn resolve(
 
     // A custom theme's stated font size wins over the 16px design root.
     let root_font_size = custom.root_font_size.unwrap_or(px(16.));
-    let sizes = SizeTable::with_root_font_size(root_font_size);
     let titlebar_height = root_font_size * 2.5;
 
     let mut radius = Radius::default();
@@ -221,8 +217,6 @@ pub(crate) fn resolve(
         titlebar_height,
         root_font_size,
         mono_font: mono_font(),
-        typography: Typography::resolve(root_font_size),
-        sizes,
         accessibility,
         window_background,
     }

@@ -6,7 +6,7 @@ use signed_state::Backend;
 use ui::button::{Button, ButtonVariant};
 use ui::common::v_flex;
 use ui::dialog::{Dialog, DialogHandle};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 
 pub struct ExitDialog {
     handle: DialogHandle,
@@ -31,8 +31,7 @@ impl Render for ExitDialog {
             .content(|_, cx| {
                 v_flex()
                     .child(
-                        div()
-                            .typeset(TextRole::Body, cx)
+                        div().text_base()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child(
                                 "You will be signed out on this device and will need to sign in again on the next session.",

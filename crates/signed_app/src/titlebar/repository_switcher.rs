@@ -4,7 +4,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle, Window,
-    div, px, uniform_list,
+    div, px, rems, uniform_list,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::PublicKey;
@@ -16,7 +16,7 @@ use ui::input::{Input, InputState};
 use ui::kbd::Kbd;
 use ui::popover::Popover;
 use ui::separator::Separator;
-use ui::theme::{ActiveTheme as _, TextRole, Typeset};
+use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 
 use super::{CreateRepository, REPOSITORY_KEY_CONTEXT, SwitchRepository};
@@ -153,7 +153,7 @@ impl Render for RepositorySwitcher {
                     .cloned()
                     .collect();
 
-                let row_height = theme.sizes.medium.menu_item_height + px(2.);
+                let row_height = rems(2.0).to_pixels(window.rem_size()) + px(2.);
                 let list_height = (row_height * visible.len() as f32).min(px(280.));
                 let list_entries = visible.clone();
                 let list_directory = directory.clone();
@@ -189,7 +189,7 @@ impl Render for RepositorySwitcher {
                                     .p_3()
                                     .text_color(theme.colors.muted_foreground)
                                     .text_center()
-                                    .typeset(TextRole::Callout, cx)
+                                    .text_sm()
                                     .child("No repositories found"),
                             )
                         } else {
@@ -219,7 +219,7 @@ impl Render for RepositorySwitcher {
                                                         .px_3()
                                                         .gap_2()
                                                         .rounded(theme.radius.control)
-                                                        .text_size(theme.sizes.medium.text_size)
+                                                        .text_sm()
                                                         .hover(|row| row.bg(theme.colors.muted))
                                                         .child(entry.avatar(&list_directory, cx))
                                                         .child(

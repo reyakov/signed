@@ -10,13 +10,13 @@ use gpui::{
 use signed_git::{CommitDiff, DiffStatus, FileCommit, FileDiff, Repo};
 use ui::badge::{Badge, BadgeVariant};
 use ui::clipboard::ClipboardButton;
-use ui::common::{h_flex, v_flex};
+use ui::common::{StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::Panel;
 use ui::layout::resizable::{Resizable, ResizableState};
 use ui::scrollbar::Scrollbar;
 use ui::spinner::Spinner;
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use ui::tree::{Tree, TreeItem};
 use utils::relative_time_secs;
 
@@ -283,7 +283,8 @@ impl DiffPane {
                     .gap_2()
                     .child(
                         div()
-                            .typeset(TextRole::Caption2, cx)
+                            .text_xs()
+                            .font_medium()
                             .text_color(status_color)
                             .child(status_label),
                     )
@@ -291,7 +292,8 @@ impl DiffPane {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .typeset(TextRole::Caption2, cx)
+                            .text_xs()
+                            .font_medium()
                             .text_ellipsis()
                             .whitespace_nowrap()
                             .child(title),
@@ -300,7 +302,7 @@ impl DiffPane {
                         this.child(
                             h_flex()
                                 .gap_2()
-                                .typeset(TextRole::Caption, cx)
+                                .text_xs()
                                 .child(
                                     div()
                                         .text_color(cx.theme().ramps.success.base)
@@ -447,7 +449,8 @@ impl CommitDiffView {
                 v_flex()
                     .child(
                         div()
-                            .typeset(TextRole::Headline, cx)
+                            .text_sm()
+                            .font_semibold()
                             .text_ellipsis()
                             .whitespace_nowrap()
                             .child(commit.summary.clone()),
@@ -455,7 +458,7 @@ impl CommitDiffView {
                     .child(
                         h_flex()
                             .gap_2()
-                            .typeset(TextRole::Body, cx)
+                            .text_base()
                             .child(SharedString::from(format!("{} committed", commit.author)))
                             .child(
                                 h_flex()
@@ -472,16 +475,12 @@ impl CommitDiffView {
                     ),
             )
             .when_some(commit.description.as_ref(), |this, description| {
-                this.child(
-                    div()
-                        .typeset(TextRole::Body, cx)
-                        .child(SharedString::from(description)),
-                )
+                this.child(div().text_base().child(SharedString::from(description)))
             })
             .child(
                 h_flex()
                     .gap_2()
-                    .typeset(TextRole::Caption, cx)
+                    .text_xs()
                     .child(Badge::new("commit-files", format!("{files} files changed")))
                     .when(insertions > 0, |this| {
                         this.child(

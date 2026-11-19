@@ -25,7 +25,7 @@ use gpui::{
     InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Pixels,
     Point, Render, RenderOnce, Role, SharedString, Stateful, StatefulInteractiveElement as _,
     StyleRefinement, Styled as _, TextOverflow, Window, canvas, div, linear_color_stop,
-    linear_gradient, px,
+    linear_gradient, px, rems,
 };
 
 use crate::components::button::{Button, ButtonVariant};
@@ -35,10 +35,7 @@ use crate::components::scroll_area::{ScrollArea, ScrollAxes};
 use crate::components::spinner::Spinner;
 use crate::components::tooltip::Tooltip;
 use crate::icons::IconRole;
-use crate::theme::{
-    ActiveTheme as _, ControlMetrics, POPUP_MAX_HEIGHT, Size, TAB_INDICATOR_WIDTH, TAB_MAX_WIDTH,
-    TAB_MIN_WIDTH,
-};
+use crate::theme::{ActiveTheme as _, POPUP_MAX_HEIGHT, TAB_MAX_WIDTH, TAB_MIN_WIDTH};
 
 /// Reports the next selected tab by pointer and keys.
 type ChangeHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
@@ -215,7 +212,7 @@ impl Render for TabDragPreview {
             .border_1()
             .border_color(theme.colors.border)
             .bg(theme.colors.background)
-            .text_size(theme.sizes.medium.text_size)
+            .text_sm()
             .text_color(theme.colors.foreground)
             .shadow(theme.elevations.control.shadows())
             .child(self.label.clone())
@@ -620,8 +617,6 @@ impl Tabs {
             .clone();
 
         let theme = cx.theme();
-        let metrics = theme.sizes.resolve(Size::default());
-        let small = theme.sizes.small;
         let group_key = group_key(&tabs_id, &kind);
 
         let label_color = match ctx.variant {
@@ -671,13 +666,13 @@ impl Tabs {
                     .py_1()
                     .rounded_tl(theme.radius.sm)
                     .rounded_tr(theme.radius.sm)
-                    .border_b(TAB_INDICATOR_WIDTH)
+                    .border_b_2()
                     .border_color(gpui::transparent_black())
                     .when(active, |chip| chip.border_color(theme.ramps.primary.base)),
                 TabsVariant::Pill | TabsVariant::Titlebar => chip
-                    .h(small.control_height + metrics.plate_inset * 2.0)
-                    .px(metrics.dense_padding_x)
-                    .pr(metrics.plate_inset)
+                    .h_8()
+                    .px_2()
+                    .pr_0p5()
                     .rounded(match ctx.variant {
                         TabsVariant::Titlebar => theme.radius.full,
                         _ => theme.radius.control,
@@ -692,7 +687,7 @@ impl Tabs {
             })
             .child(SharedString::from(format!("{kind} ({count})")))
             .when(ctx.variant.is_capsule(), |chip| {
-                chip.child(div().flex_none().w(metrics.padding_x * 1.5))
+                chip.child(div().flex_none().w_4())
             })
             .when_some(ctx.measure.clone(), |chip, measure| {
                 let key = measure.key.clone();
@@ -799,17 +794,13 @@ impl RenderOnce for Tabs {
 
         let focus = crate::components::common::focus_handle(&self.id, window, cx);
         // Theme reads end here, so the strip's group chips can take `cx` mutably.
-        let (medium_text_size, border_color, shadow_bleed) = {
+        let (border_color, shadow_bleed) = {
             let theme = cx.theme();
             let shadow_bleed = match self.variant {
                 TabsVariant::Pill | TabsVariant::Titlebar => theme.elevations.control.bleed(),
                 TabsVariant::Underline => Pixels::ZERO,
             };
-            (
-                theme.sizes.medium.text_size,
-                theme.colors.border,
-                shadow_bleed,
-            )
+            (theme.colors.border, shadow_bleed)
         };
 
         let label = self
@@ -880,7 +871,7 @@ impl RenderOnce for Tabs {
         div()
             .id(self.id.clone())
             .flex()
-            .text_size(medium_text_size)
+            .text_sm()
             .refine_style(&self.style)
             .track_focus(&focus)
             .focusable()
@@ -1038,8 +1029,6 @@ impl Tab {
         let active = selected || self.pinned;
 
         let theme = cx.theme();
-        let metrics = theme.sizes.resolve(Size::default());
-        let small = theme.sizes.small;
 
         let label_color = match ctx.variant {
             TabsVariant::Underline => {
@@ -1069,14 +1058,8 @@ impl Tab {
 
         let titlebar = ctx.variant == TabsVariant::Titlebar;
         let group = SharedString::from(format!("{}-tab-{}", ctx.id, self.key));
-        let close = (self.closeable && ctx.on_close.is_some() && !self.disabled).then(|| {
-            let close_metrics = ControlMetrics {
-                control_height: small.control_height - metrics.plate_inset * 2.0,
-                icon_size: theme.sizes.xsmall.icon_size,
-                ..small
-            };
-            self.render_tab_close(&ctx.id, index, &ctx.on_close, close_metrics)
-        });
+        let close = (self.closeable && ctx.on_close.is_some() && !self.disabled)
+            .then(|| self.render_tab_close(&ctx.id, index, &ctx.on_close));
 
         let label = div()
             .flex_grow(1.0)
@@ -1093,8 +1076,8 @@ impl Tab {
                     theme.colors.muted_hover
                 };
 
-                let fade_width = metrics.padding_x;
-                let hover_fade_width = metrics.padding_x * 2.0;
+                let fade_width = rems(0.75);
+                let hover_fade_width = rems(1.5);
 
                 label
                     .min_w_0()
@@ -1166,15 +1149,15 @@ impl Tab {
                     .py_1()
                     .rounded_tl(theme.radius.sm)
                     .rounded_tr(theme.radius.sm)
-                    .border_b(TAB_INDICATOR_WIDTH)
+                    .border_b_2()
                     .border_color(gpui::transparent_black())
                     .when(active, |strip_tab| {
                         strip_tab.border_color(theme.ramps.primary.base)
                     }),
                 TabsVariant::Pill | TabsVariant::Titlebar => strip_tab
-                    .h(small.control_height + metrics.plate_inset * 2.0)
-                    .px(metrics.dense_padding_x)
-                    .pr(metrics.plate_inset)
+                    .h_8()
+                    .px_2()
+                    .pr_0p5()
                     .rounded(match ctx.variant {
                         TabsVariant::Titlebar => theme.radius.full,
                         _ => theme.radius.control,
@@ -1194,7 +1177,7 @@ impl Tab {
             .when_some(self.lead.take(), |strip_tab, lead| strip_tab.child(lead))
             .child(label)
             .when(ctx.variant == TabsVariant::Pill, |strip_tab| {
-                strip_tab.child(div().flex_none().w(metrics.padding_x * 1.5))
+                strip_tab.child(div().flex_none().w_4())
             })
             .when(self.busy && !self.disabled, |strip_tab| {
                 strip_tab.child(
@@ -1226,9 +1209,9 @@ impl Tab {
                         div()
                             .absolute()
                             .left_0()
-                            .top(TAB_INDICATOR_WIDTH)
-                            .bottom(TAB_INDICATOR_WIDTH)
-                            .w(TAB_INDICATOR_WIDTH)
+                            .top_0p5()
+                            .bottom_0p5()
+                            .w_0p5()
                             .rounded(theme.radius.sm)
                             .bg(theme.ramps.primary.base),
                     )
@@ -1351,12 +1334,11 @@ impl Tab {
         tabs_id: &ElementId,
         index: usize,
         on_close: &Option<CloseHandler>,
-        metrics: ControlMetrics,
     ) -> AnyElement {
         Button::new((self.key.clone(), "tab-close"))
             .icon(IconRole::Close)
             .variant(ButtonVariant::Ghost)
-            .custom_size(metrics)
+            .xsmall()
             .fully_rounded(true)
             .tab_stop(false)
             .debug_selector({

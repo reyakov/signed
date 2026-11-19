@@ -31,7 +31,7 @@ use gpui::{
     IntoElement, KeyBinding, KeyBindingContextPredicate, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, ScrollStrategy,
     SharedString, StatefulInteractiveElement as _, Styled as _, TextStyle, UniformListScrollHandle,
-    Window, actions, canvas, div, uniform_list,
+    Window, actions, canvas, div, rems, uniform_list,
 };
 
 use crate::components::highlight::{HighlightedCode, Language, Role, highlight};
@@ -297,14 +297,14 @@ impl gpui::Focusable for CodeViewState {
 }
 
 impl Render for CodeViewState {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let colors = theme.colors;
         let mono_font = theme.mono_font;
-        let text_size = theme.sizes.small.text_size;
+        let text_size = rems(0.75).to_pixels(window.rem_size());
         let line_height = text_size * CODE_LINE_HEIGHT;
         let char_width = text_size * MONO_ADVANCE_RATIO;
-        let root_font_size = theme.root_font_size;
+        let text_offset = rems(1.0).to_pixels(window.rem_size());
 
         let id = self.id.clone();
         let state = cx.entity();
@@ -334,7 +334,7 @@ impl Render for CodeViewState {
                             theme.mono_font,
                             theme.colors,
                             theme.ramps,
-                            theme.sizes.small.text_size,
+                            text_size,
                             line_height,
                             cx,
                         )
@@ -350,7 +350,7 @@ impl Render for CodeViewState {
             .id((id.clone(), "view"))
             .relative()
             .size_full()
-            .text_size(text_size)
+            .text_xs()
             .font_family(mono_font)
             .text_color(colors.foreground)
             .key_context(CODE_VIEW_CONTEXT)
@@ -366,7 +366,7 @@ impl Render for CodeViewState {
                         return;
                     };
 
-                    let text_x = bounds.origin.x + gutter_width + root_font_size;
+                    let text_x = bounds.origin.x + gutter_width + text_offset;
                     let point = {
                         let code = state.read(cx);
                         code.position_at(
@@ -403,7 +403,7 @@ impl Render for CodeViewState {
                         return;
                     };
 
-                    let text_x = bounds.origin.x + gutter_width + root_font_size;
+                    let text_x = bounds.origin.x + gutter_width + text_offset;
                     let point = {
                         let code = state.read(cx);
                         code.position_at(
@@ -584,6 +584,7 @@ fn render_row(
         .debug_selector(move || format!("{id}-row-{line_ix}"))
         .id(("code-row", line_ix))
         .w_full()
+        .text_xs()
         .h(line_height)
         .flex()
         .items_center()

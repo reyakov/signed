@@ -38,7 +38,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::components::button::{Button, ButtonVariant};
-use crate::components::common::{Sizable, StyledExt as _, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt as _, h_flex};
 use crate::icons::IconRole;
 use crate::theme::{
     ActiveTheme as _, CARET_WIDTH, ColorTokens, DISABLED_OPACITY, Size, UNDERLINE_WIDTH,
@@ -2017,7 +2017,11 @@ impl RenderOnce for Input {
         let theme = cx.theme();
         let colors = theme.colors;
         let radius = theme.radius;
-        let metrics = theme.sizes.resolve(self.size);
+        let rem = window.rem_size();
+        let input_height = self.size.control_height_rems().to_pixels(rem);
+        let text_size = self.size.text_rems().to_pixels(rem);
+        let padding_x = self.size.padding_x_rems().to_pixels(rem);
+        let dense_padding_x = self.size.dense_padding_x_rems().to_pixels(rem);
         let focus_handle = self.state.read(cx).focus_handle.clone();
         let focused = focus_handle.is_focused(window);
 
@@ -2027,17 +2031,17 @@ impl RenderOnce for Input {
         let multiline = self.state.read(cx).is_multiline();
         let recording = focused && !self.disabled && !self.state.read(cx).is_read_only();
 
-        let small = theme.sizes.resolve(Size::Small);
-        let docked_height = small.control_height;
-        let edge_inset = ((metrics.input_height - docked_height) / 2.0).max(Pixels::ZERO);
+        let docked_height = Size::Small.control_height_rems().to_pixels(rem);
+        let edge_inset = ((input_height - docked_height) / 2.0).max(Pixels::ZERO);
 
-        let vertical_inset = metrics.dense_padding_x * 0.5;
-        let reveal_width = small.dense_padding_x * 2.0 + small.icon_size;
+        let vertical_inset = dense_padding_x * 0.5;
+        let reveal_width = Size::Small.dense_padding_x_rems().to_pixels(rem) * 2.0
+            + Size::Small.icon_rems().to_pixels(rem);
 
         let field_padding = FieldPadding {
             left: Pixels::ZERO,
             right: if is_password {
-                (edge_inset + reveal_width - metrics.dense_padding_x).max(Pixels::ZERO)
+                (edge_inset + reveal_width - dense_padding_x).max(Pixels::ZERO)
             } else {
                 Pixels::ZERO
             },
@@ -2045,11 +2049,11 @@ impl RenderOnce for Input {
         };
 
         let line_height = multiline.then(|| match window.text_style().line_height {
-            DefiniteLength::Fraction(ratio) => metrics.text_size * ratio,
+            DefiniteLength::Fraction(ratio) => text_size * ratio,
             DefiniteLength::Absolute(length) => length.to_pixels(window.rem_size()),
         });
 
-        let field_height = line_height.map_or(metrics.input_height, |line_height| {
+        let field_height = line_height.map_or(input_height, |line_height| {
             line_height * self.rows as f32 + vertical_inset * 2.0
         });
 
@@ -2176,14 +2180,14 @@ impl RenderOnce for Input {
             .w_full()
             .h(field_height)
             .pl(if self.prefix.is_some() {
-                metrics.padding_x
+                padding_x
             } else {
-                metrics.dense_padding_x
+                dense_padding_x
             })
             .pr(if self.suffix.is_some() {
-                metrics.padding_x
+                padding_x
             } else {
-                metrics.dense_padding_x
+                dense_padding_x
             })
             .gap_2()
             .rounded(if self.fully_rounded {
@@ -2192,7 +2196,7 @@ impl RenderOnce for Input {
                 radius.control
             })
             .bg(colors.input)
-            .text_size(metrics.text_size)
+            .control_text(self.size)
             .text_color(colors.foreground)
             .border_1()
             .border_color(colors.border)

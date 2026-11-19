@@ -23,7 +23,7 @@ use gpui::{
     Animation, AnimationExt as _, App, Context, ElementId, Entity, InteractiveElement as _,
     IntoElement, ParentElement as _, RenderOnce, Role, SharedString,
     StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window, deferred, div,
-    ease_out_quint,
+    ease_out_quint, rems,
 };
 
 use crate::components::button::{Button, ButtonVariant};
@@ -31,10 +31,7 @@ use crate::components::common::{
     DismissHandler, ResultLogErr as _, Sizable as _, StyledExt as _, TOAST_LAYER, v_flex,
 };
 use crate::icons::{Icon, IconRole};
-use crate::theme::{
-    ALERT_EDGE_WIDTH, ALERT_STACK_WIDTH, ActiveTheme as _, ENTER_SLIDE_DISTANCE, Size, TextRole,
-    Typeset as _,
-};
+use crate::theme::{ALERT_EDGE_WIDTH, ALERT_STACK_WIDTH, ActiveTheme as _, ENTER_SLIDE_DISTANCE};
 
 /// How alarming an [`Alert`] is; picks the accent color.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -166,17 +163,14 @@ impl RenderOnce for Alert {
         let foreground = theme.colors.foreground;
         let muted_foreground = theme.colors.muted_foreground;
 
-        let metrics = theme.sizes.resolve(Size::Medium);
-        let icon_size = metrics.icon_size;
-        let dense_icon_size = metrics.dense_icon_size;
-
         let content = v_flex()
             .flex_1()
             .gap_0p5()
             .when_some(self.title.clone(), |alert, title| {
                 alert.child(
                     div()
-                        .typeset(TextRole::Headline, cx)
+                        .text_sm()
+                        .font_semibold()
                         .text_color(foreground)
                         .child(title),
                 )
@@ -187,12 +181,7 @@ impl RenderOnce for Alert {
                 } else {
                     foreground
                 };
-                alert.child(
-                    div()
-                        .text_size(metrics.text_size)
-                        .text_color(color)
-                        .child(message),
-                )
+                alert.child(div().text_sm().text_color(color).child(message))
             });
 
         let dismiss = self.on_dismiss.clone().map(|on_dismiss| {
@@ -231,7 +220,7 @@ impl RenderOnce for Alert {
                                 .flex()
                                 .items_center()
                                 .h(window.line_height())
-                                .child(icon_glyph.size(icon_size).color(ramp.base)),
+                                .child(icon_glyph.size(rems(1.0)).color(ramp.base)),
                         )
                     })
                     .child(content)
@@ -267,10 +256,10 @@ impl RenderOnce for Alert {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .size(theme.sizes.small.avatar_size)
+                                    .size_6()
                                     .rounded(theme.radius.full)
                                     .bg(ramp.base)
-                                    .child(icon_glyph.size(dense_icon_size).color(ramp.foreground)),
+                                    .child(icon_glyph.size(rems(0.75)).color(ramp.foreground)),
                             )
                         })
                         .child(content),

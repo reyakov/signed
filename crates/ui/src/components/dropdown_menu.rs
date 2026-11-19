@@ -24,7 +24,9 @@ use gpui::{
 };
 
 use crate::components::button::ButtonVariant;
-use crate::components::common::{Sizable, StyledExt as _, focus_handle, focus_ring, h_flex};
+use crate::components::common::{
+    ControlSizing, Sizable, StyledExt as _, focus_handle, focus_ring, h_flex,
+};
 use crate::components::menu::{
     ChangeHandler, MenuChrome, MenuItem, MenuPanelSpec, TriggerBoundsCell, anchored_menu_panel,
 };
@@ -193,7 +195,6 @@ impl RenderOnce for DropdownMenu {
         let theme = cx.theme();
         let colors = theme.colors;
         let ramps = theme.ramps;
-        let metrics = theme.sizes.resolve(self.size);
         let radius = theme.radius.control;
 
         let ring = colors.ring;
@@ -277,16 +278,12 @@ impl RenderOnce for DropdownMenu {
             .when(icon_only, |zone| zone.w_full())
             .gap_2()
             .line_height(relative(1.0))
-            .text_size(metrics.text_size)
+            .control_text(self.size)
             .text_color(foreground)
             .role(Role::Button)
             .when_some(a11y_label, |zone, label| zone.aria_label(label))
             .aria_expanded(self.open)
-            .px(if icon_only {
-                gpui::Pixels::ZERO
-            } else {
-                metrics.padding_x
-            })
+            .when(!icon_only, |zone| zone.control_padding_x(self.size))
             .when(split, |zone| zone.rounded_l(radius))
             .when(!split, |zone| {
                 zone.rounded(radius)
@@ -295,7 +292,7 @@ impl RenderOnce for DropdownMenu {
             .when(!icon_only && !split, |zone| {
                 zone.child(
                     icon(IconRole::ChevronDown)
-                        .size(metrics.dense_icon_size)
+                        .size(self.size.dense_icon_rems())
                         .color(foreground),
                 )
             })
@@ -304,7 +301,7 @@ impl RenderOnce for DropdownMenu {
                     .gap_2()
                     .when(self.loading, |content| content.invisible())
                     .when_some(self.icon, |content, icon| {
-                        content.child(icon.size(metrics.icon_size).color(foreground))
+                        content.child(icon.size(self.size.icon_rems()).color(foreground))
                     })
                     .when_some(self.label, |content, label| content.child(label)),
             )
@@ -361,7 +358,7 @@ impl RenderOnce for DropdownMenu {
             })
             .relative()
             .h_full()
-            .px(metrics.dense_padding_x)
+            .control_dense_padding_x(self.size)
             .rounded_r(radius)
             .rounded_l_none()
             .border_l_1()
@@ -374,7 +371,7 @@ impl RenderOnce for DropdownMenu {
             })
             .child(
                 icon(IconRole::ChevronDown)
-                    .size(metrics.dense_icon_size)
+                    .size(self.size.dense_icon_rems())
                     .color(foreground),
             )
             .child(
@@ -394,8 +391,8 @@ impl RenderOnce for DropdownMenu {
                 let id = self.id.clone();
                 move || format!("{id}-trigger")
             })
-            .h(metrics.control_height)
-            .when(icon_only, |trigger| trigger.w(metrics.control_height))
+            .control_height(self.size)
+            .when(icon_only, |trigger| trigger.control_width(self.size))
             .rounded(radius)
             .border_1()
             .border_color(border)

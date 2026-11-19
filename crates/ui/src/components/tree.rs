@@ -21,7 +21,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, ElementId, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled as _, Window, div,
+    StyleRefinement, Styled as _, Window, div, rems,
 };
 
 use crate::components::common::{
@@ -254,7 +254,6 @@ impl RenderOnce for Tree {
             .collect();
 
         let focus = crate::components::common::focus_handle(&self.id, window, cx);
-        let theme = cx.theme();
 
         let label = self
             .a11y_label
@@ -286,7 +285,7 @@ impl RenderOnce for Tree {
             .flex()
             .flex_col()
             .gap_0p5()
-            .text_size(theme.sizes.medium.text_size)
+            .text_sm()
             .refine_style(&self.style)
             .track_focus(&focus)
             .focusable()
@@ -364,7 +363,7 @@ impl TreeItem {
         let disabled = self.disabled;
 
         let depth = u32::try_from(self.depth).unwrap_or(u32::MAX) as f32;
-        let indent = theme.sizes.medium.padding_x * if self.depth == 0 { 0.5 } else { depth + 1.0 };
+        let indent = rems(0.75 * if self.depth == 0 { 0.5 } else { depth + 1.0 });
 
         div()
             .id((self.key.clone(), "tree-item"))
@@ -375,7 +374,7 @@ impl TreeItem {
             .pl(indent)
             .pr_2()
             .py_1()
-            .min_h(theme.sizes.medium.control_height)
+            .min_h_8()
             .rounded(theme.radius.sm)
             .role(Role::TreeItem)
             .aria_selected(selected)
@@ -407,7 +406,7 @@ impl TreeItem {
                 let step = u32::try_from(level).unwrap_or(u32::MAX) as f32;
                 div()
                     .absolute()
-                    .left(theme.sizes.medium.padding_x * (step + 0.5))
+                    .left(rems(0.75 * (step + 0.5)))
                     .top_0()
                     .bottom_0()
                     .border_l_1()
@@ -418,7 +417,7 @@ impl TreeItem {
                 self.icon
                     .clone()
                     .or_else(|| (!self.expandable).then(|| icon(IconRole::File))),
-                |row, icon| row.child(icon.size(theme.sizes.medium.icon_size).color(label_color)),
+                |row, icon| row.child(icon.size(rems(1.0)).color(label_color)),
             )
             .child(
                 div()
@@ -440,7 +439,7 @@ impl TreeItem {
         // Only expandable rows draw a chevron; the empty cell keeps labels aligned with folders.
         div()
             .flex_none()
-            .size(theme.sizes.medium.icon_size)
+            .size_4()
             .flex()
             .items_center()
             .justify_center()
@@ -451,7 +450,7 @@ impl TreeItem {
                     } else {
                         IconRole::ChevronRight
                     })
-                    .size(theme.sizes.medium.dense_icon_size)
+                    .size(rems(0.75))
                     .color(glyph_color),
                 )
             })

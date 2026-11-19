@@ -142,11 +142,11 @@ impl RenderOnce for Slider {
         let colors = theme.colors;
         let ramps = theme.ramps;
         let radius = theme.radius;
-        let metrics = theme.sizes.resolve(self.size);
 
-        let row_height = metrics.icon_size * 2.5;
-        let track_height = metrics.icon_size / 4.0;
-        let knob = metrics.indicator_size;
+        let rem = window.rem_size();
+        let row_height = self.size.slider_row_rems() * rem;
+        let track_height = self.size.slider_track_rems() * rem;
+        let knob = self.size.indicator_rems() * rem;
 
         let value = self.value.clamp(self.min, self.max);
         let fraction = if self.max > self.min {
@@ -188,7 +188,12 @@ impl RenderOnce for Slider {
             .id(self.id)
             .relative()
             .w_full()
-            .h(row_height)
+            .map(|slider| match self.size {
+                Size::XSmall => slider.h_6(),
+                Size::Small => slider.h_9(),
+                Size::Medium => slider.h_10(),
+                Size::Large => slider.h_12(),
+            })
             .refine_style(&self.style)
             .role(Role::Slider)
             .when_some(self.a11y_label.clone(), |slider, label| {
@@ -284,7 +289,11 @@ impl RenderOnce for Slider {
                     .absolute()
                     .left_0()
                     .top((row_height - track_height) / 2.0)
-                    .h(track_height)
+                    .map(|track| match self.size {
+                        Size::XSmall => track.h_0p5(),
+                        Size::Small | Size::Medium => track.h_1(),
+                        Size::Large => track.h_1p5(),
+                    })
                     .w_full()
                     .rounded(radius.full)
                     .bg(colors.border),
@@ -294,7 +303,11 @@ impl RenderOnce for Slider {
                     .absolute()
                     .left_0()
                     .top((row_height - track_height) / 2.0)
-                    .h(track_height)
+                    .map(|track| match self.size {
+                        Size::XSmall => track.h_0p5(),
+                        Size::Small | Size::Medium => track.h_1(),
+                        Size::Large => track.h_1p5(),
+                    })
                     .w(relative(fraction))
                     .rounded(radius.full)
                     .bg(ramps.primary.base),
@@ -310,7 +323,12 @@ impl RenderOnce for Slider {
                     .items_center()
                     .child(
                         div()
-                            .size(knob)
+                            .map(|dot| match self.size {
+                                Size::XSmall => dot.size_2p5(),
+                                Size::Small => dot.size_3p5(),
+                                Size::Medium => dot.size_4(),
+                                Size::Large => dot.size_5(),
+                            })
                             .flex_none()
                             .rounded(radius.full)
                             .bg(colors.primary_foreground)

@@ -13,7 +13,7 @@ use gpui::Styled as _;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use gpui::prelude::FluentBuilder as _;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-use gpui::{AnyElement, ParentElement as _};
+use gpui::{AnyElement, ParentElement as _, rems};
 use gpui::{
     App, ClickEvent, Div, ElementId, InteractiveElement as _, IntoElement, MouseButton, RenderOnce,
     Stateful, StatefulInteractiveElement as _, Window, WindowControlArea, div,
@@ -229,7 +229,6 @@ fn caption_button(
     close: bool,
 ) -> AnyElement {
     let theme = cx.theme();
-    let glyph_size = theme.sizes.small.dense_icon_size;
 
     let hover = if close {
         WINDOWS_CLOSE_HOVER
@@ -275,7 +274,7 @@ fn caption_button(
                         .text_color(theme.colors.foreground)
                 })
         })
-        .child(icon(role).size(glyph_size))
+        .child(icon(role).size(rems(0.75)))
         .into_any_element()
 }
 
@@ -287,7 +286,6 @@ where
     F: Fn(&mut Window, &mut App) + 'static,
 {
     let theme = cx.theme();
-    let small = theme.sizes.small;
 
     div()
         .id(id)
@@ -295,7 +293,7 @@ where
         .flex()
         .items_center()
         .justify_center()
-        .size(small.control_height)
+        .size_7()
         .rounded(theme.radius.full)
         .text_color(if enabled {
             theme.colors.foreground
@@ -311,6 +309,6 @@ where
                     action(window, cx);
                 })
         })
-        .child(icon(role).size(small.dense_icon_size))
+        .child(icon(role).size(rems(0.75)))
         .into_any_element()
 }

@@ -9,7 +9,7 @@ use ui::common::{h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
 use ui::layout::panel::Panel;
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 
 use crate::workspace::Workspace;
 
@@ -148,7 +148,7 @@ impl Render for SendPatchView {
                     )
                     .child(
                         div()
-                            .typeset(TextRole::Caption, cx)
+                            .text_xs()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child(
                                 "You can paste a git diff or a git format-patch patch series here.",
@@ -162,7 +162,7 @@ impl Render for SendPatchView {
                     .when_some(self.error.clone(), |this, error| {
                         this.child(
                             div()
-                                .typeset(TextRole::Caption, cx)
+                                .text_xs()
                                 .text_color(cx.theme().ramps.destructive.base)
                                 .child(error),
                         )

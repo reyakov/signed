@@ -21,7 +21,7 @@ use gpui::{
     Window,
 };
 
-use crate::components::common::{Sizable, StyledExt as _, focus_ring, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex};
 use crate::theme::{ActiveTheme as _, DISABLED_OPACITY, Size};
 
 /// The handler called with the [`gpui::ClickEvent`], replacing the default `href` opening.
@@ -119,7 +119,7 @@ impl RenderOnce for Link {
         let theme = cx.theme();
         let colors = theme.colors;
         let ramps = theme.ramps;
-        let metrics = theme.sizes.resolve(self.size);
+        let size = self.size;
 
         let on_click = self.on_click;
         let href = self.href;
@@ -127,7 +127,7 @@ impl RenderOnce for Link {
 
         h_flex()
             .id(self.id)
-            .text_size(metrics.text_size)
+            .control_text(size)
             .text_color(ramps.primary.base)
             .underline()
             .refine_style(&self.style)

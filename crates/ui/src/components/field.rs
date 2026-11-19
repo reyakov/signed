@@ -19,7 +19,7 @@ use gpui::{
 };
 
 use crate::components::common::{StyledExt, h_flex, v_flex};
-use crate::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use crate::theme::ActiveTheme as _;
 
 /// The arrangement of a [`Field`]'s label and control.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -102,7 +102,6 @@ impl Styled for Field {
 impl RenderOnce for Field {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        let metrics = theme.sizes.medium;
         let error_color = theme.ramps.destructive.base;
         let id = self.id.clone();
 
@@ -112,11 +111,9 @@ impl RenderOnce for Field {
                 move || format!("{id}-label")
             })
             .when(self.description.is_some(), |title| {
-                title.typeset(TextRole::Headline, cx)
+                title.text_sm().font_semibold()
             })
-            .when(self.description.is_none(), |title| {
-                title.typeset(TextRole::Callout, cx)
-            })
+            .when(self.description.is_none(), |title| title.text_sm())
             .child(self.label.clone());
 
         let control = h_flex()
@@ -134,14 +131,14 @@ impl RenderOnce for Field {
                     let id = id.clone();
                     move || format!("{id}-error")
                 })
-                .text_size(metrics.caption_size)
+                .text_xs()
                 .text_color(error_color)
                 .child(error)
         });
 
         let description_text = |cx: &App| {
             div()
-                .text_size(metrics.caption_size)
+                .text_xs()
                 .text_color(cx.theme().colors.muted_foreground)
         };
 

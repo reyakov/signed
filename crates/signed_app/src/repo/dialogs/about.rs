@@ -7,9 +7,9 @@ use nostr::prelude::PublicKey;
 use signed_core::Announcement;
 use ui::avatar::Avatar;
 use ui::clipboard::ClipboardButton;
-use ui::common::{Sizable as _, h_flex, v_flex};
+use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::dialog::{Dialog, DialogHandle};
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use utils::middle_truncate;
 
 pub struct AboutDialog {
@@ -61,7 +61,6 @@ fn announcement_rows(
                 .as_deref()
                 .map(SharedString::from)
                 .unwrap_or_else(|| SharedString::from("-")),
-            cx,
         ),
         cx,
     ));
@@ -73,7 +72,6 @@ fn announcement_rows(
                 .as_deref()
                 .map(SharedString::from)
                 .unwrap_or_else(|| SharedString::from("-")),
-            cx,
         ),
         cx,
     ));
@@ -99,13 +97,13 @@ fn announcement_rows(
     }
 
     if let Some(upstream) = &announcement.upstream {
-        rows.push(row("Upstream", text(upstream.display(), cx), cx));
+        rows.push(row("Upstream", text(upstream.display()), cx));
     }
 
     if !announcement.hashtags.is_empty() {
         rows.push(row(
             "Hashtags",
-            text(SharedString::from(announcement.hashtags.join(", ")), cx),
+            text(SharedString::from(announcement.hashtags.join(", "))),
             cx,
         ));
     }
@@ -151,7 +149,8 @@ fn row(label: &'static str, value: AnyElement, cx: &App) -> AnyElement {
         .min_w_0()
         .child(
             div()
-                .typeset(TextRole::Caption2, cx)
+                .text_xs()
+                .font_medium()
                 .text_color(cx.theme().colors.muted_foreground)
                 .child(label),
         )
@@ -159,12 +158,12 @@ fn row(label: &'static str, value: AnyElement, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-fn text<T>(value: T, cx: &App) -> AnyElement
+fn text<T>(value: T) -> AnyElement
 where
     T: Into<SharedString>,
 {
     div()
-        .typeset(TextRole::Body, cx)
+        .text_base()
         .w_full()
         .min_w_0()
         .child(value.into())
@@ -179,7 +178,7 @@ fn copy_value(id: &'static str, value: String, cx: &App) -> AnyElement {
         .child(
             div()
                 .font_family(cx.theme().mono_font)
-                .typeset(TextRole::Caption, cx)
+                .text_xs()
                 .min_w_0()
                 .child(SharedString::from(value.clone())),
         )
@@ -216,7 +215,7 @@ fn maintainers(
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .typeset(TextRole::Body, cx)
+                        .text_base()
                         .child(name),
                 )
                 .into_any_element()
@@ -243,7 +242,7 @@ fn list(id: &'static str, items: impl IntoIterator<Item = String>, cx: &App) -> 
                         .min_w_0()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .typeset(TextRole::Body, cx)
+                        .text_base()
                         .child(SharedString::from(middle_truncate(&item, 28, 16))),
                 )
                 .child(ClipboardButton::new(

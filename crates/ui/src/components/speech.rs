@@ -32,10 +32,10 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Context, ElementId, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled, Subscription, Task, WeakEntity, Window, div, relative,
+    StyleRefinement, Styled, Subscription, Task, WeakEntity, Window, div, relative, rems,
 };
 
-use crate::components::common::{Sizable, StyledExt as _, focus_ring, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex};
 use crate::components::spinner::{Spinner, SpinnerVariant};
 use crate::components::tooltip::Tooltip;
 use crate::icons::{IconRole, icon};
@@ -745,7 +745,7 @@ impl RenderOnce for SpeechButton {
 
         let theme = cx.theme();
         let colors = theme.colors;
-        let metrics = theme.sizes.resolve(self.size);
+        let size = self.size;
         let id: ElementId = ("speech-button", self.speech.entity_id()).into();
 
         let group = SharedString::from(format!(
@@ -768,8 +768,8 @@ impl RenderOnce for SpeechButton {
             .group(group.clone())
             .role(Role::Button)
             .justify_center()
-            .h(metrics.control_height)
-            .px(metrics.dense_padding_x)
+            .control_height(size)
+            .control_dense_padding_x(size)
             .gap_0p5()
             .rounded(theme.radius.control)
             .text_color(foreground)
@@ -794,13 +794,13 @@ impl RenderOnce for SpeechButton {
                 };
                 h_flex()
                     .id(("speech-bars", self.speech.entity_id()))
-                    .h(metrics.icon_size)
+                    .h(size.icon_rems())
                     .items_end()
                     .gap_0p5()
                     .children(bars.iter().map(|level| {
                         div()
                             .flex_none()
-                            .w(metrics.dense_icon_size / 4.)
+                            .w(rems(size.dense_icon_rems().0 / 4.0))
                             .h(relative(bar_height(*level)))
                             .rounded(theme.radius.full)
                             .bg(theme.ramps.primary.base)
@@ -809,7 +809,7 @@ impl RenderOnce for SpeechButton {
                     .into_any_element()
             } else {
                 icon(IconRole::Microphone)
-                    .size(metrics.icon_size)
+                    .size(size.icon_rems())
                     .color(foreground)
                     .into_any_element()
             })
@@ -820,7 +820,7 @@ impl RenderOnce for SpeechButton {
                         .group_hover(group, |style| style.visible())
                         .child(
                             icon(IconRole::Stop)
-                                .size(metrics.icon_size)
+                                .size(size.icon_rems())
                                 .color(foreground),
                         ),
                 )
@@ -887,7 +887,7 @@ impl RenderOnce for SpeechWaveform {
 
         let theme = cx.theme();
         let colors = theme.colors;
-        let metrics = theme.sizes.resolve(self.size);
+        let size = self.size;
         let bar_height = |level: f32| {
             if reduce_motion {
                 STILL_HEIGHT
@@ -901,13 +901,13 @@ impl RenderOnce for SpeechWaveform {
             .items_end()
             .justify_end()
             .gap_0p5()
-            .h(metrics.icon_size)
+            .h(size.icon_rems())
             .w(SPEECH_WAVEFORM_WIDTH)
             .overflow_hidden()
             .children(levels.iter().map(|level| {
                 div()
                     .flex_none()
-                    .w(metrics.dense_icon_size / 4.)
+                    .w(rems(size.dense_icon_rems().0 / 4.0))
                     .h(relative(bar_height(*level)))
                     .rounded(theme.radius.full)
                     .bg(if *level <= 0.0 {

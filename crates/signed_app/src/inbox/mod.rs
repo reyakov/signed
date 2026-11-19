@@ -12,11 +12,10 @@ use nostr::prelude::{Event, EventId, Kind, PublicKey, Timestamp};
 use signed_core::{InboxItem, InboxReadState, RepoAddr};
 use signed_state::{Backend, BackendEvent, Inbox, RefreshGate, RefreshRequest, RepoListStore};
 use ui::button::Button;
-use ui::common::{h_flex, v_flex};
+use ui::common::{StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::Panel;
 use ui::scroll_area::ScrollArea;
-use ui::theme::{TextRole, Typeset as _};
 
 mod helpers;
 
@@ -351,7 +350,7 @@ impl InboxView {
                         .map(ToString::to_string)
                         .unwrap_or_default()
                 ));
-                repo_header(id, name, section.unread, cx)
+                repo_header(id, name, section.unread)
             }
             InboxRow::Entry(section_ix, entry_ix) => {
                 let Some(section) = self.sections.get(section_ix) else {
@@ -416,7 +415,8 @@ impl Render for InboxView {
                     .gap_2()
                     .child(
                         div()
-                            .typeset(TextRole::Headline, cx)
+                            .text_sm()
+                            .font_semibold()
                             .child(SharedString::from("Inbox")),
                     )
                     .child(div().flex_1())

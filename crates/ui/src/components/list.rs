@@ -22,14 +22,14 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, ElementId, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled as _, Window, div,
+    StyleRefinement, Styled as _, Window, div, rems,
 };
 
 use crate::components::common::{
     StyledExt as _, nav_key, paint_selectable_row, selectable_label_color,
 };
 use crate::icons::Icon;
-use crate::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use crate::theme::ActiveTheme as _;
 
 /// The change reporter, fired with the next selection by pointer and keys.
 type ChangeHandler = Rc<dyn Fn(Option<usize>, &mut Window, &mut App)>;
@@ -173,7 +173,6 @@ impl RenderOnce for List {
             .collect();
 
         let focus = crate::components::common::focus_handle(&self.id, window, cx);
-        let theme = cx.theme();
 
         let label = self
             .a11y_label
@@ -200,7 +199,7 @@ impl RenderOnce for List {
             .flex()
             .flex_col()
             .gap_0p5()
-            .text_size(theme.sizes.medium.text_size)
+            .text_sm()
             .refine_style(&self.style)
             .track_focus(&focus)
             .focusable()
@@ -246,7 +245,7 @@ impl ListItem {
             .gap_2()
             .px_2()
             .py_1()
-            .min_h(theme.sizes.medium.control_height)
+            .min_h_8()
             .rounded(theme.radius.sm)
             .role(Role::ListItem)
             .aria_selected(selected)
@@ -266,7 +265,7 @@ impl ListItem {
                 })
             })
             .when_some(self.icon.clone(), |row, icon| {
-                row.child(icon.size(theme.sizes.medium.icon_size).color(label_color))
+                row.child(icon.size(rems(1.0)).color(label_color))
             })
             .child(
                 div()
@@ -278,7 +277,7 @@ impl ListItem {
                 row.child(
                     div()
                         .flex_none()
-                        .typeset(TextRole::Subheadline, cx)
+                        .text_sm()
                         .text_color(if selected {
                             theme.colors.primary_foreground
                         } else {

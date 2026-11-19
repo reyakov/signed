@@ -7,12 +7,12 @@ use nostr::prelude::{EventId, PublicKey};
 use signed_core::GitEvent;
 use signed_state::RepoStore;
 use ui::avatar::Avatar;
-use ui::common::{Sizable as _, h_flex, v_flex};
+use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::empty_state::EmptyState;
 use ui::input::InputState;
 use ui::layout::panel::Panel;
 use ui::scroll_area::ScrollArea;
-use ui::theme::{ActiveTheme as _, TextRole, Typeset as _};
+use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
 use crate::issues::helpers::{comment_form, comments_section, issue_roots, sidebar_section};
@@ -147,7 +147,8 @@ impl Render for IssueDetailView {
                                     div()
                                         .flex_1()
                                         .min_w_0()
-                                        .typeset(TextRole::Headline, cx)
+                                        .text_sm()
+                                        .font_semibold()
                                         .child(title),
                                 ),
                             )
@@ -160,7 +161,7 @@ impl Render for IssueDetailView {
                                             .child(
                                                 h_flex()
                                                     .gap_2()
-                                                    .typeset(TextRole::Body, cx)
+                                                    .text_base()
                                                     .child(
                                                         h_flex()
                                                             .gap_1()
@@ -187,9 +188,7 @@ impl Render for IssueDetailView {
                                                             .child(SharedString::from(age)),
                                                     ),
                                             )
-                                            .child(
-                                                div().typeset(TextRole::Body, cx).child(content),
-                                            ),
+                                            .child(div().text_base().child(content)),
                                     )
                                     .child(comments_section(
                                         &self.store,

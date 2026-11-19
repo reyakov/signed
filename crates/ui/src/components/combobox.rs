@@ -37,7 +37,7 @@ use gpui::{
 };
 
 use crate::components::common::{
-    OVERLAY_LAYER, ResultLogErr as _, Sizable, StyledExt as _, h_flex, v_flex,
+    ControlSizing, OVERLAY_LAYER, ResultLogErr as _, Sizable, StyledExt as _, h_flex, v_flex,
 };
 use crate::components::input::{Input, InputState, InputStateEvent};
 use crate::components::scroll_area::ScrollArea;
@@ -511,12 +511,10 @@ where
     T: Clone + PartialEq + 'static,
 {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (metrics, colors, radius, panel_border, shadows) = {
+        let (colors, radius, panel_border, shadows) = {
             let theme = cx.theme();
-            let metrics = theme.sizes.resolve(self.size);
 
             (
-                metrics,
                 theme.colors,
                 theme.radius,
                 theme.colors.border,
@@ -524,7 +522,6 @@ where
             )
         };
 
-        let icon_size = metrics.dense_icon_size;
         let id = self.id.clone();
         let state = cx.entity();
         let open = self.highlight.is_some();
@@ -556,7 +553,7 @@ where
             })
             .child(
                 icon(IconRole::ChevronDown)
-                    .size(icon_size)
+                    .size(self.size.dense_icon_rems())
                     .color(colors.muted_foreground),
             );
 
@@ -616,8 +613,10 @@ where
             .child(
                 h_flex()
                     .absolute()
-                    .right(metrics.dense_padding_x)
-                    .top((metrics.input_height - icon_size) / 2.)
+                    .right(self.size.dense_padding_x_rems())
+                    .top_0()
+                    .bottom_0()
+                    .items_center()
                     .child(chevron),
             )
             .when(open, |wrapper| {
@@ -648,7 +647,8 @@ where
                             .gap_2()
                             .px_2()
                             .py_1()
-                            .min_h(metrics.control_height)
+                            .control_height(self.size)
+                            .control_text(self.size)
                             .rounded(radius.sm)
                             .when(highlighted, |row| row.bg(colors.muted))
                             .when(!highlighted, |row| row.hover(|row| row.bg(colors.muted)))
@@ -683,7 +683,7 @@ where
                             .when(checked, |row| {
                                 row.child(
                                     icon(IconRole::Check)
-                                        .size(icon_size)
+                                        .size(self.size.dense_icon_rems())
                                         .color(colors.foreground),
                                 )
                             })
@@ -695,7 +695,7 @@ where
                     div()
                         .px_2()
                         .py_1()
-                        .text_size(metrics.caption_size)
+                        .control_caption_text(self.size)
                         .text_color(colors.muted_foreground)
                         .child("No matches")
                         .into_any_element()
