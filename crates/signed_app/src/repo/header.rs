@@ -8,7 +8,6 @@ use gpui::{
 use signed_state::{Backend, Nip34Kind};
 use ui::avatar::Avatar;
 use ui::button::{Button, ButtonVariant};
-use ui::clipboard::ClipboardButton;
 use ui::common::{Sizable, StyledExt as _, h_flex, v_flex};
 use ui::dropdown_menu::DropdownMenu;
 use ui::icons::{Icon, IconRole};
@@ -18,7 +17,9 @@ use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 use utils::relative_time_secs;
 
-use super::helpers::{bound_repo_label, clone_group, fork_row, nostr_clone_url, repo_display_name};
+use super::helpers::{
+    bound_repo_label, clone_group, clone_row, fork_row, nostr_clone_url, repo_display_name,
+};
 use super::{RepoDetailView, actions, dialogs};
 
 impl RepoDetailView {
@@ -150,13 +151,15 @@ impl RepoDetailView {
                                     .gap_4()
                                     .child(clone_group(
                                         "Clone with ngit",
-                                        "copy-ngit",
+                                        "copy-ngit".into(),
                                         &ngit_for_popover,
+                                        cx,
                                     ))
                                     .child(clone_group(
                                         "Clone with nak",
-                                        "copy-nak",
+                                        "copy-nak".into(),
                                         &nak_for_popover,
+                                        cx,
                                     ))
                                     .child(
                                         v_flex()
@@ -164,21 +167,28 @@ impl RepoDetailView {
                                             .child(
                                                 div()
                                                     .text_xs()
-                                                    .text_color(cx.theme().colors.muted_foreground)
+                                                    .font_semibold()
                                                     .child("Grasp Servers"),
                                             )
                                             .when(git_for_popover.is_empty(), |this| {
                                                 this.child(
-                                                    div().text_xs().child("No git clone urls."),
+                                                    div()
+                                                        .text_xs()
+                                                        .text_center()
+                                                        .text_color(
+                                                            cx.theme().colors.muted_foreground,
+                                                        )
+                                                        .child("No git clone urls."),
                                                 )
                                             })
                                             .children(git_for_popover.iter().enumerate().map(
                                                 |(ix, command)| {
-                                                    ClipboardButton::new(
+                                                    clone_row(
                                                         SharedString::from(format!(
                                                             "copy-git-{ix}"
                                                         )),
-                                                        command.clone(),
+                                                        command.clone().into(),
+                                                        cx,
                                                     )
                                                 },
                                             )),

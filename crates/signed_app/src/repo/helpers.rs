@@ -52,11 +52,47 @@ pub(super) struct RepoData {
     pub(super) head_commit: Option<FileCommit>,
 }
 
-pub(super) fn clone_group(label: &str, id: &'static str, command: &SharedString) -> AnyElement {
+pub(super) fn clone_group(
+    label: &str,
+    id: SharedString,
+    command: &SharedString,
+    cx: &App,
+) -> AnyElement {
     v_flex()
         .gap_1()
-        .child(div().text_xs().child(SharedString::from(label)))
-        .child(ClipboardButton::new(id, command.clone()))
+        .min_w_0()
+        .child(
+            div()
+                .text_xs()
+                .font_semibold()
+                .child(SharedString::from(label)),
+        )
+        .child(clone_row(id, command.clone(), cx))
+        .into_any_element()
+}
+
+/// One copyable clone command with its text visible next to the copy icon.
+pub(super) fn clone_row(id: SharedString, command: SharedString, cx: &App) -> AnyElement {
+    h_flex()
+        .h_8()
+        .px_2()
+        .gap_2()
+        .min_w_0()
+        .bg(cx.theme().colors.secondary)
+        .rounded(cx.theme().radius.control)
+        .text_color(cx.theme().colors.secondary_foreground)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .font_family(cx.theme().mono_font)
+                .text_xs()
+                .child(command.clone()),
+        )
+        .child(ClipboardButton::new(id, command).xsmall())
         .into_any_element()
 }
 
