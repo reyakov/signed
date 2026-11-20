@@ -179,8 +179,14 @@ pub(crate) fn resolve(
         info: derive_shades(info, colors.background, variant == ThemeVariant::Dark),
     };
 
+    // Subtle is too faint over field fills; weight the accent so selection reads.
     if def_color(|d| d.selection()).is_none() {
-        colors.selection = ramps.primary.subtle;
+        colors.selection = mix(
+            Oklch::from_hsla(ramps.primary.base),
+            Oklch::from_hsla(colors.background),
+            0.65,
+        )
+        .to_hsla();
     }
 
     let material = MaterialTokens::derive(

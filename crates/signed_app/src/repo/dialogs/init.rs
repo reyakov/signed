@@ -15,6 +15,7 @@ use ui::dialog::{Dialog, DialogHandle};
 use ui::field::Field;
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
+use ui::layout::h_flex;
 use ui::select::{Select, SelectOption};
 use ui::theme::ActiveTheme as _;
 
@@ -189,7 +190,7 @@ impl Render for InitRepoDialog {
                     .gap_3()
                     .child(
                         div()
-                            .text_base()
+                            .text_sm()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Publish this local repository to Nostr."),
                     )
@@ -207,12 +208,12 @@ impl Render for InitRepoDialog {
                         Field::new("init-folder", "Folder")
                             .description("The local repository being published")
                             .child(
-                                div()
+                                h_flex()
                                     .h_8()
                                     .w_full()
                                     .px_2()
                                     .bg(cx.theme().colors.muted)
-                                    .text_base()
+                                    .text_sm()
                                     .text_color(cx.theme().colors.muted_foreground)
                                     .rounded(cx.theme().radius.control)
                                     .child(folder.clone()),
