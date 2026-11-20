@@ -10,7 +10,8 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{
     NSDictionary, NSDistributedNotificationCenter, NSKeyValueObservingOptions, NSNotification,
-    NSNotificationName, NSObjectNSKeyValueObserverRegistration, NSString, NSUserDefaults,
+    NSNotificationCenter, NSNotificationName, NSObjectNSKeyValueObserverRegistration, NSString,
+    NSUserDefaults,
 };
 
 use super::signal::ReapplySignal;
@@ -46,14 +47,37 @@ define_class!(
 impl ThemeObserver {
     fn new(reapply: async_channel::Sender<()>) -> Retained<Self> {
         let this = Self::alloc().set_ivars(reapply);
+        // SAFETY: `this` is freshly allocated with ivars set and not yet
+        // initialized, which is exactly the receiver `init` requires.
         unsafe { msg_send![super(this), init] }
     }
 }
 
+/// One watcher registration, kept so [`Drop`] can undo it.
+enum Watcher {
+    /// A distributed notification, registered by name.
+    Distributed {
+        center: Retained<NSDistributedNotificationCenter>,
+        name: Retained<NSNotificationName>,
+    },
+    /// A defaults key path observed via KVO, which does not retain observers.
+    Defaults {
+        defaults: Retained<NSUserDefaults>,
+        key: Retained<NSString>,
+    },
+    /// A workspace notification, registered by name.
+    Workspace {
+        center: Retained<NSNotificationCenter>,
+        name: &'static NSNotificationName,
+    },
+}
+
 #[derive(Default)]
 pub(crate) struct MacosSource {
-    /// The notification centers track, but do not retain, the observer.
-    _observer: Option<Retained<ThemeObserver>>,
+    /// The observer, retained until `Drop` has removed every registration.
+    observer: Option<Retained<ThemeObserver>>,
+    /// Registrations to undo, in the order they were installed.
+    watchers: Vec<Watcher>,
     /// Keeps the reapply loop alive.
     _signal: Option<ReapplySignal>,
 }
@@ -96,6 +120,7 @@ impl ThemeSource for MacosSource {
     fn install_watchers(&mut self, async_cx: gpui::AsyncApp) {
         let signal = ReapplySignal::install(&async_cx);
         let observer = ThemeObserver::new(signal.sender());
+        let mut watchers = Vec::new();
 
         let center = NSDistributedNotificationCenter::defaultCenter();
         for name in [
@@ -103,7 +128,9 @@ impl ThemeSource for MacosSource {
             "AppleInterfaceThemeChangedNotification",
         ] {
             let name = NSNotificationName::from_str(name);
-            // SAFETY: the observer is retained past every delivery.
+            // SAFETY: the center tracks this exact registration until `Drop`
+            // removes it, and the observer is retained by `MacosSource` until
+            // after that removal.
             unsafe {
                 center.addObserver_selector_name_object(
                     &observer,
@@ -112,6 +139,10 @@ impl ThemeSource for MacosSource {
                     None,
                 );
             }
+            watchers.push(Watcher::Distributed {
+                center: center.clone(),
+                name,
+            });
         }
 
         let defaults = NSUserDefaults::standardUserDefaults();
@@ -121,7 +152,9 @@ impl ThemeSource for MacosSource {
             "AppleInterfaceStyle",
         ] {
             let key = NSString::from_str(key);
-            // SAFETY: as above
+            // SAFETY: KVO does not retain the observer, so the registration is
+            // only valid while `MacosSource` keeps the observer alive and
+            // `Drop` unregisters the key path before releasing it.
             unsafe {
                 defaults.addObserver_forKeyPath_options_context(
                     &observer,
@@ -130,13 +163,18 @@ impl ThemeSource for MacosSource {
                     core::ptr::null_mut(),
                 );
             }
+            watchers.push(Watcher::Defaults {
+                defaults: defaults.clone(),
+                key,
+            });
         }
 
         let workspace_center = NSWorkspace::sharedWorkspace().notificationCenter();
         let accessibility_name =
             unsafe { NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification };
 
-        // SAFETY: as above.
+        // SAFETY: the workspace center retains the observer for the
+        // registration's lifetime, and `Drop` removes the registration.
         unsafe {
             workspace_center.addObserver_selector_name_object(
                 &observer,
@@ -145,12 +183,50 @@ impl ThemeSource for MacosSource {
                 None,
             );
         }
+        watchers.push(Watcher::Workspace {
+            center: workspace_center,
+            name: accessibility_name,
+        });
 
-        self._observer = Some(observer);
+        self.observer = Some(observer);
+        self.watchers = watchers;
         self._signal = Some(signal);
     }
 
     fn label(&self) -> &'static str {
         SourceKind::Macos.label()
+    }
+}
+
+impl Drop for MacosSource {
+    fn drop(&mut self) {
+        let Some(observer) = self.observer.take() else {
+            return;
+        };
+        for watcher in self.watchers.drain(..) {
+            match watcher {
+                Watcher::Distributed { center, name } => {
+                    // SAFETY: the observer is registered with this center
+                    // under this name and object.
+                    unsafe {
+                        center.removeObserver_name_object(&observer, Some(&name), None);
+                    }
+                }
+                Watcher::Defaults { defaults, key } => {
+                    // SAFETY: the observer is registered for this key path
+                    // with no context.
+                    unsafe {
+                        defaults.removeObserver_forKeyPath(&observer, &key);
+                    }
+                }
+                Watcher::Workspace { center, name } => {
+                    // SAFETY: the observer is registered with this center
+                    // under this name and object.
+                    unsafe {
+                        center.removeObserver_name_object(&observer, Some(name), None);
+                    }
+                }
+            }
+        }
     }
 }

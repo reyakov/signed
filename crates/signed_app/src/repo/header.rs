@@ -17,10 +17,9 @@ use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 use utils::relative_time_secs;
 
-use super::helpers::{
-    bound_repo_label, clone_group, clone_row, fork_row, nostr_clone_url, repo_display_name,
-};
+use super::helpers::{bound_repo_label, clone_group, fork_row, nostr_clone_url, repo_display_name};
 use super::{RepoDetailView, actions, dialogs};
+use crate::shared::widgets::clone_row;
 
 impl RepoDetailView {
     pub(super) fn open_upstream(&mut self, window: &mut Window, cx: &mut Context<Self>) {

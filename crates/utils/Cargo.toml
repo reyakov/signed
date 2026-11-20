@@ -6,3 +6,6 @@ publish.workspace = true
 
 [dependencies]
 nostr.workspace = true
+
+[lints]
+workspace = true

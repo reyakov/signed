@@ -19,8 +19,10 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Window, canvas, div, point, px,
 };
 
-use crate::components::common::{anchor_bounds, record_anchor_bounds};
-use crate::theme::{ActiveTheme as _, BORDER_WIDTH, TOOLTIP_MAX_WIDTH, TOOLTIP_OFFSET};
+use crate::components::common::{anchor_bounds, floating_panel, record_anchor_bounds};
+use crate::theme::{
+    ActiveTheme as _, BORDER_WIDTH, TOOLTIP_ANCHOR_GAP, TOOLTIP_MAX_WIDTH, TOOLTIP_OFFSET,
+};
 
 const PANEL_BOUNDS_ID: &str = "tooltip-panel-bounds";
 
@@ -80,29 +82,26 @@ impl Render for Tooltip {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Copied out: the mutable reads below need `cx` free of this borrow.
         let theme = cx.theme();
-        let surface = theme.colors.surface;
         let surface_foreground = theme.colors.surface_foreground;
         let radius_sm = theme.radius.sm;
         let shadows = theme.elevations.popover.shadows();
 
-        let border = theme.colors.border;
-
         let build_panel = || {
-            div()
-                .id("tooltip-panel")
-                .role(Role::Tooltip)
-                .debug_selector(|| "tooltip-panel".to_string())
-                .px_2()
-                .py_1()
-                .max_w(TOOLTIP_MAX_WIDTH)
-                .bg(surface)
-                .border_1()
-                .border_color(border)
-                .rounded(radius_sm)
-                .shadow(shadows.clone())
-                .text_sm()
-                .text_color(surface_foreground)
-                .child(self.text.clone())
+            floating_panel(
+                cx,
+                radius_sm,
+                div()
+                    .id("tooltip-panel")
+                    .role(Role::Tooltip)
+                    .debug_selector(|| "tooltip-panel".to_string())
+                    .px_2()
+                    .py_1()
+                    .max_w(TOOLTIP_MAX_WIDTH)
+                    .text_sm()
+                    .text_color(surface_foreground)
+                    .child(self.text.clone()),
+                shadows.clone(),
+            )
         };
 
         let (wrapper, panel) = match self.anchor {
@@ -118,16 +117,16 @@ impl Render for Tooltip {
                 .map(|bounds| bounds.size.height)
                 .unwrap_or_else(|| window.line_height() + px(8.) + BORDER_WIDTH * 2.0);
 
-                let below = viewport_height - px(4.) - parent.bottom();
-                let above = parent.top() - px(4.);
+                let below = viewport_height - TOOLTIP_ANCHOR_GAP - parent.bottom();
+                let above = parent.top() - TOOLTIP_ANCHOR_GAP;
                 let hang_below = below >= height || below >= above;
 
                 let panel = build_panel()
                     .ml(parent.left() - origin.x)
                     .mt(if hang_below {
-                        parent.bottom() + px(4.) - origin.y
+                        parent.bottom() + TOOLTIP_ANCHOR_GAP - origin.y
                     } else {
-                        parent.top() - px(4.) - height - origin.y
+                        parent.top() - TOOLTIP_ANCHOR_GAP - height - origin.y
                     })
                     .child(
                         canvas(

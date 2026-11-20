@@ -50,3 +50,8 @@ panic = "unwind"
 [profile.profiling]
 inherits = "release"
 debug = true
+
+[workspace.lints.clippy]
+all = "deny"
+perf = "deny"
+unwrap_used = "deny"

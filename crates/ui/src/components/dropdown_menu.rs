@@ -23,7 +23,7 @@ use gpui::{
     div, relative,
 };
 
-use crate::components::button::ButtonVariant;
+use crate::components::button::{ButtonChrome, ButtonVariant};
 use crate::components::common::{
     ControlSizing, Sizable, StyledExt as _, focus_handle, focus_ring, h_flex,
 };
@@ -194,45 +194,20 @@ impl RenderOnce for DropdownMenu {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let colors = theme.colors;
-        let ramps = theme.ramps;
-        let radius = theme.radius.control;
+        let radius = theme.radius.full;
 
         let ring = colors.ring;
 
         let (panel_chrome, enter_duration) = MenuChrome::read(cx);
-        let (background, foreground, hover, pressed) = match self.variant {
-            ButtonVariant::Primary => (
-                Some(ramps.primary.base),
-                colors.primary_foreground,
-                ramps.primary.hover,
-                ramps.primary.pressed,
-            ),
-            ButtonVariant::Secondary => (
-                Some(colors.surface),
-                colors.foreground,
-                colors.muted,
-                colors.muted_hover,
-            ),
-            ButtonVariant::Ghost => (
-                None,
-                colors.foreground,
-                colors.muted_hover,
-                ramps.secondary.pressed,
-            ),
-            ButtonVariant::Destructive => (
-                Some(ramps.destructive.base),
-                colors.destructive_foreground,
-                ramps.destructive.hover,
-                ramps.destructive.pressed,
-            ),
-        };
 
-        let border = match self.variant {
-            ButtonVariant::Primary => ramps.primary.base,
-            ButtonVariant::Secondary => colors.border,
-            ButtonVariant::Ghost => gpui::transparent_black(),
-            ButtonVariant::Destructive => ramps.destructive.base,
-        };
+        let ButtonChrome {
+            background,
+            foreground,
+            hover,
+            pressed,
+            border,
+            ..
+        } = self.variant.chrome(cx);
 
         let split = self.on_click.is_some();
         let icon_only = self.icon.is_some() && self.label.is_none() && !split;

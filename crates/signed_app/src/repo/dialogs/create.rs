@@ -8,7 +8,7 @@ use gpui::{
 use settings::SettingsStore;
 use signed_state::{Backend, CheckoutsStore};
 use ui::button::{Button, ButtonVariant};
-use ui::common::{h_flex, v_flex};
+use ui::common::{ResultLogErr as _, h_flex, v_flex};
 use ui::dialog::{Dialog, DialogHandle};
 use ui::field::Field;
 use ui::icons::{Icon, IconRole};
@@ -17,7 +17,7 @@ use ui::tooltip::Tooltip;
 
 use super::grasp_servers::{GraspServersState, grasp_servers_field, load_user_grasp_servers};
 use crate::repo::actions::open_repo_panel;
-use crate::shared::progress::{DialogProgress, error_row, push_steps_row};
+use crate::shared::progress::{DialogProgress, error_row, push_steps_row, run_dialog_task_with};
 use crate::workspace::Workspace;
 
 /// Progress of the create-repository flow, so async results can be rendered.
@@ -94,17 +94,26 @@ impl CreateRepoDialog {
         let servers = self.grasp_state.read(cx).grasp_servers.clone();
 
         if name.is_empty() {
-            self.fail("Repository name is required", cx);
+            self.state.update(cx, |state, cx| {
+                state.fail("Repository name is required");
+                cx.notify();
+            });
             return;
         }
         if servers.is_empty() {
-            self.fail("Add at least one grasp server", cx);
+            self.state.update(cx, |state, cx| {
+                state.fail("Add at least one grasp server");
+                cx.notify();
+            });
             return;
         }
 
         let backend = Backend::global(cx);
         let Some(user) = backend.read(cx).current_user() else {
-            self.fail("Sign in to create a repository", cx);
+            self.state.update(cx, |state, cx| {
+                state.fail("Sign in to create a repository");
+                cx.notify();
+            });
             return;
         };
 
@@ -123,8 +132,10 @@ impl CreateRepoDialog {
         let close = self.handle.clone();
         let handle = window.window_handle();
 
-        cx.spawn(async move |_this, cx| match task.await {
-            Ok((announcement, local_path)) => {
+        run_dialog_task_with(
+            task,
+            cx,
+            move |(announcement, local_path), cx| {
                 cx.update_window(handle, |_, window, cx| {
                     let checkouts = CheckoutsStore::global(cx);
                     checkouts.update(cx, |store, cx| {
@@ -140,23 +151,15 @@ impl CreateRepoDialog {
                     );
                     close.close(cx);
                 })
-                .ok();
-            }
-            Err(error) => {
+                .log_err();
+            },
+            move |error, cx| {
                 state.update(cx, |state, cx| {
                     state.fail(error.to_string());
                     cx.notify();
                 });
-            }
-        })
-        .detach();
-    }
-
-    fn fail(&mut self, message: impl Into<gpui::SharedString>, cx: &mut Context<Self>) {
-        self.state.update(cx, |state, cx| {
-            state.fail(message);
-            cx.notify();
-        });
+            },
+        );
     }
 }
 

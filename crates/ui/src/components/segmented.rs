@@ -228,8 +228,8 @@ where
                     };
 
                     h_flex()
-                        .id((ElementId::from("segment"), segment.label.clone()))
-                        .gap_2()
+                        .id(("segment", index))
+                        .gap_1()
                         .justify_center()
                         .cursor_pointer()
                         .h_full()

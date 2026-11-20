@@ -31,17 +31,19 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, Bounds, Context, ElementId, Entity, InteractiveElement as _, IntoElement, KeyBinding,
-    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Render, Role, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Subscription, Task,
-    Window, actions, anchored, canvas, deferred, div, point, px,
+    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Render, Role, SharedString,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, Subscription, Task,
+    UniformListScrollHandle, Window, actions, anchored, canvas, deferred, div, point, px,
+    uniform_list,
 };
 
 use crate::components::common::{
-    ControlSizing, OVERLAY_LAYER, ResultLogErr as _, Sizable, StyledExt as _, h_flex, v_flex,
+    ControlSizing, OVERLAY_LAYER, ResultLogErr as _, Sizable, StyledExt as _, floating_panel,
+    h_flex, paint_highlighted_row, v_flex, wrapping_adjacent_selectable,
 };
+use crate::components::empty_state::EmptyState;
 use crate::components::input::{Input, InputState, InputStateEvent};
-use crate::components::scroll_area::ScrollArea;
-use crate::icons::{IconRole, icon};
+use crate::icons::{Icon, IconRole, icon};
 use crate::theme::{ActiveTheme as _, COMBOBOX_MIN_WIDTH, COMBOBOX_WIDTH, POPUP_MAX_HEIGHT, Size};
 
 actions!(
@@ -104,6 +106,8 @@ where
     filter: Option<ComboboxFilter<T>>,
     unmatched: UnmatchedText,
     size: Size,
+    /// Icon shown at the field's leading edge while a value is selected.
+    selected_icon: Option<Icon>,
     style: StyleRefinement,
 }
 
@@ -127,6 +131,7 @@ where
             filter: None,
             unmatched: UnmatchedText::default(),
             size: Size::default(),
+            selected_icon: None,
             style: StyleRefinement::default(),
         }
     }
@@ -146,6 +151,12 @@ where
         L: Into<SharedString>,
     {
         self.placeholder = placeholder.into();
+        self
+    }
+
+    /// Shows an icon at the field's leading edge while a value is selected.
+    pub fn selected_icon(mut self, icon: Icon) -> Self {
+        self.selected_icon = Some(icon);
         self
     }
 
@@ -245,8 +256,12 @@ where
     size: Size,
     /// Width refinements from the builder, applied to the wrapper each render.
     style: StyleRefinement,
-    /// Handler reports in flight; held so they die with the state.
-    tasks: Vec<Task<()>>,
+    /// Icon shown at the field's leading edge while a value is selected.
+    selected_icon: Option<Icon>,
+    /// The row list's scroll, kept across frames while the popup is open.
+    rows_scroll: UniformListScrollHandle,
+    /// The most recent handler report in flight; a newer report replaces it.
+    task: Option<Task<()>>,
     /// Keeps the query-event subscription tied to the state's lifetime.
     _subscription: Subscription,
 }
@@ -304,7 +319,9 @@ where
             unmatched: combobox.unmatched,
             size: combobox.size,
             style: combobox.style,
-            tasks: Vec::new(),
+            selected_icon: combobox.selected_icon,
+            rows_scroll: UniformListScrollHandle::new(),
+            task: None,
             _subscription: subscription,
         }
     }
@@ -331,7 +348,15 @@ where
 
     /// Replaces the value; reports it when it actually changed.
     pub fn set_selected(&mut self, value: Option<T>, window: &mut Window, cx: &mut Context<Self>) {
+        let changed = self.selected != value;
         self.set_value(value, window, cx);
+        if changed {
+            let label = self.selected_label().unwrap_or_default();
+            self.query
+                .update(cx, |query, cx| query.set_value_silent(label, window, cx));
+            self.refilter("");
+            cx.notify();
+        }
     }
 
     /// Replaces the choice list and re-runs the current filter.
@@ -385,7 +410,7 @@ where
                 cx.update(|window, cx| on_change(value, window, cx))
                     .log_err();
             });
-            self.tasks.push(task);
+            self.task.replace(task);
         }
         cx.notify();
     }
@@ -453,36 +478,22 @@ where
                         cx.update(|window, cx| on_create(text, window, cx))
                             .log_err();
                     });
-                    self.tasks.push(task);
+                    self.task.replace(task);
                 }
             }
         }
         cx.notify();
     }
 
-    /// Down and Up over the visible rows.
+    /// Down and Up over the visible rows, wrapping at the ends.
     fn move_highlight(&mut self, delta: i32, cx: &mut Context<Self>) {
         if self.visible.is_empty() {
             return;
         }
-
-        let count = self.visible.len();
-        let current = self.highlight.filter(|row| *row < count);
-        let next = match current {
-            Some(row) => match row.checked_add_signed(isize::try_from(delta).unwrap_or(0)) {
-                Some(next) if next < count => next,
-                Some(_) => 0,
-                None => count - 1,
-            },
-            None => {
-                if delta > 0 {
-                    0
-                } else {
-                    count - 1
-                }
-            }
-        };
-        self.highlight = Some(next);
+        let current = self.highlight.filter(|row| *row < self.visible.len());
+        let rows: Vec<usize> = (0..self.visible.len()).collect();
+        let next = wrapping_adjacent_selectable(&rows, current, delta > 0);
+        self.highlight = next;
         cx.notify();
     }
 
@@ -511,13 +522,12 @@ where
     T: Clone + PartialEq + 'static,
 {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (colors, radius, panel_border, shadows) = {
+        let (colors, radius, shadows) = {
             let theme = cx.theme();
 
             (
                 theme.colors,
                 theme.radius,
-                theme.colors.border,
                 theme.elevations.popover.shadows(),
             )
         };
@@ -608,6 +618,12 @@ where
                 Input::new((id.clone(), "query"), self.query.clone())
                     .placeholder(self.placeholder.clone())
                     .placeholder_when_focused(true)
+                    .fully_rounded(true)
+                    .when_some(self.selected_icon.clone(), |input, selected_icon| {
+                        input.when(self.selected.is_some(), |input| {
+                            input.prefix(selected_icon.size(self.size.icon_rems()))
+                        })
+                    })
                     .with_size(self.size),
             )
             .child(
@@ -620,96 +636,102 @@ where
                     .child(chevron),
             )
             .when(open, |wrapper| {
-                let rows: Vec<gpui::AnyElement> = self
-                    .visible
-                    .iter()
-                    .enumerate()
-                    .map(|(row, option_index)| {
-                        let Some((value, label)) = self.options.get(*option_index) else {
-                            return div().into_any_element();
-                        };
+                let visible = self.visible.clone();
+                let options = self.options.clone();
+                let highlight = self.highlight;
+                let selected = self.selected.clone();
+                let size = self.size;
+                let list_state = state.clone();
+                let rows_id = id.clone();
+                let radius_full = radius.full;
+                let foreground = colors.foreground;
 
-                        let highlighted = self.highlight == Some(row);
-                        let checked = self.selected.as_ref() == Some(value);
-                        let state = state.clone();
-                        let row_index = row;
+                // Rows are `control_height`, so the row height follows the size.
+                let row_height = size.control_height_rems().to_pixels(window.rem_size());
+                let count = visible.len();
 
-                        div()
-                            .id(("option", *option_index))
-                            .debug_selector({
-                                let id = id.clone();
-                                move || format!("{id}-option-{row}")
-                            })
-                            .role(Role::ListBoxOption)
-                            .aria_label(label.clone())
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_2()
-                            .py_1()
-                            .control_height(self.size)
-                            .control_text(self.size)
-                            .rounded(radius.sm)
-                            .when(highlighted, |row| row.bg(colors.muted))
-                            .when(!highlighted, |row| row.hover(|row| row.bg(colors.muted)))
-                            .on_mouse_move({
-                                let state = state.clone();
-                                move |_, _window, cx| {
-                                    if state.read(cx).highlight != Some(row_index) {
-                                        state.update(cx, |state, cx| {
-                                            state.highlight = Some(row_index);
-                                            cx.notify();
-                                        });
-                                    }
-                                }
-                            })
-                            .on_click({
-                                let state = state.clone();
-                                move |_, window, cx| {
-                                    state.update(cx, |state, cx| {
-                                        state.choose_row(row_index, window, cx)
-                                    });
-                                }
-                            })
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .child(label.clone()),
-                            )
-                            .when(checked, |row| {
-                                row.child(
-                                    icon(IconRole::Check)
-                                        .size(self.size.dense_icon_rems())
-                                        .color(colors.foreground),
-                                )
-                            })
-                            .into_any_element()
-                    })
-                    .collect();
+                let list_height = (row_height * count as f32)
+                    .max(row_height)
+                    .min(POPUP_MAX_HEIGHT);
 
-                let rows: gpui::AnyElement = if rows.is_empty() {
-                    div()
-                        .px_2()
-                        .py_1()
-                        .control_caption_text(self.size)
-                        .text_color(colors.muted_foreground)
-                        .child("No matches")
-                        .into_any_element()
+                let rows: gpui::AnyElement = if count == 0 {
+                    EmptyState::compact("No matches", cx).into_any_element()
                 } else {
-                    let scroll = window.use_keyed_state((id.clone(), "rows-scroll"), cx, |_, _| {
-                        ScrollHandle::new()
-                    });
+                    uniform_list((rows_id.clone(), "rows"), count, move |range, _, cx| {
+                        range
+                            .map(|row| {
+                                let Some(option_index) = visible.get(row).copied() else {
+                                    return div().into_any_element();
+                                };
+                                let Some((value, label)) = options.get(option_index) else {
+                                    return div().into_any_element();
+                                };
 
-                    ScrollArea::new((id.clone(), "rows"))
-                        .handle(scroll.read(cx).clone())
-                        .axes(crate::components::scroll_area::ScrollAxes::Vertical)
-                        .max_h(POPUP_MAX_HEIGHT)
-                        .children(rows)
-                        .into_any_element()
+                                let highlighted = highlight == Some(row);
+                                let checked = selected.as_ref() == Some(value);
+                                let state = list_state.clone();
+                                let row_index = row;
+
+                                div()
+                                    .id(("option", option_index))
+                                    .debug_selector({
+                                        let id = rows_id.clone();
+                                        move || format!("{id}-option-{row}")
+                                    })
+                                    .role(Role::ListBoxOption)
+                                    .aria_label(label.clone())
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1()
+                                    .h(row_height)
+                                    .control_text(size)
+                                    .rounded(radius_full)
+                                    .map(|row| paint_highlighted_row(cx, row, highlighted, false))
+                                    .on_mouse_move({
+                                        let state = state.clone();
+                                        move |_, _window, cx| {
+                                            if state.read(cx).highlight != Some(row_index) {
+                                                state.update(cx, |state, cx| {
+                                                    state.highlight = Some(row_index);
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }
+                                    })
+                                    .on_click({
+                                        let state = state.clone();
+                                        move |_, window, cx| {
+                                            state.update(cx, |state, cx| {
+                                                state.choose_row(row_index, window, cx)
+                                            });
+                                        }
+                                    })
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
+                                            .child(label.clone()),
+                                    )
+                                    .when(checked, |row| {
+                                        row.child(
+                                            icon(IconRole::Check)
+                                                .size(size.dense_icon_rems())
+                                                .color(foreground),
+                                        )
+                                    })
+                                    .into_any_element()
+                            })
+                            .collect()
+                    })
+                    .track_scroll(&self.rows_scroll)
+                    .h(list_height)
+                    .into_any_element()
                 };
 
                 let panel_bounds: Rc<RefCell<Option<Bounds<Pixels>>>> = Rc::new(RefCell::new(None));
@@ -719,64 +741,62 @@ where
                     .map(|bounds| bounds.size.width)
                     .unwrap_or(COMBOBOX_WIDTH);
 
-                let panel = v_flex()
-                    .id((id.clone(), "panel"))
-                    .debug_selector({
-                        let id = id.clone();
-                        move || format!("{id}-panel")
-                    })
-                    .w(popup_width)
-                    .p_1()
-                    .bg(colors.surface)
-                    .text_color(colors.foreground)
-                    .rounded(radius.overlay)
-                    .border_1()
-                    .border_color(panel_border)
-                    .shadow(shadows)
-                    .overflow_hidden()
-                    .child(rows)
-                    .child(
-                        canvas(
-                            {
-                                let cell = panel_bounds.clone();
-                                move |bounds, _window, _cx| *cell.borrow_mut() = Some(bounds)
-                            },
-                            {
-                                let state = state.clone();
-                                let panel_bounds = panel_bounds.clone();
-                                let wrapper_bounds = wrapper_bounds.clone();
-                                move |_, _, window, _cx| {
-                                    window.on_mouse_event({
-                                        let state = state.clone();
-                                        let panel_bounds = panel_bounds.clone();
-                                        let wrapper_bounds = wrapper_bounds.clone();
-                                        move |event: &MouseDownEvent, phase, _window, cx| {
-                                            if phase != gpui::DispatchPhase::Bubble {
-                                                return;
-                                            }
-                                            let on_panel =
-                                                panel_bounds.borrow().is_some_and(|bounds| {
-                                                    bounds.contains(&event.position)
-                                                });
-                                            let on_wrapper =
-                                                wrapper_bounds.borrow().is_some_and(|bounds| {
-                                                    bounds.contains(&event.position)
-                                                });
-                                            if on_panel || on_wrapper {
-                                                return;
-                                            }
-                                            state.update(cx, |state, cx| {
-                                                state.highlight = None;
-                                                cx.notify();
-                                            });
+                let panel = floating_panel(
+                    cx,
+                    radius.overlay,
+                    v_flex()
+                        .id((id.clone(), "panel"))
+                        .debug_selector({
+                            let id = id.clone();
+                            move || format!("{id}-panel")
+                        })
+                        .w(popup_width)
+                        .p_1()
+                        .text_color(colors.foreground),
+                    shadows,
+                )
+                .overflow_hidden()
+                .child(rows)
+                .child(
+                    canvas(
+                        {
+                            let cell = panel_bounds.clone();
+                            move |bounds, _window, _cx| *cell.borrow_mut() = Some(bounds)
+                        },
+                        {
+                            let state = state.clone();
+                            let panel_bounds = panel_bounds.clone();
+                            let wrapper_bounds = wrapper_bounds.clone();
+                            move |_, _, window, _cx| {
+                                window.on_mouse_event({
+                                    let state = state.clone();
+                                    let panel_bounds = panel_bounds.clone();
+                                    let wrapper_bounds = wrapper_bounds.clone();
+                                    move |event: &MouseDownEvent, phase, _window, cx| {
+                                        if phase != gpui::DispatchPhase::Bubble {
+                                            return;
                                         }
-                                    });
-                                }
-                            },
-                        )
-                        .absolute()
-                        .inset_0(),
-                    );
+                                        let on_panel = panel_bounds
+                                            .borrow()
+                                            .is_some_and(|bounds| bounds.contains(&event.position));
+                                        let on_wrapper = wrapper_bounds
+                                            .borrow()
+                                            .is_some_and(|bounds| bounds.contains(&event.position));
+                                        if on_panel || on_wrapper {
+                                            return;
+                                        }
+                                        state.update(cx, |state, cx| {
+                                            state.highlight = None;
+                                            cx.notify();
+                                        });
+                                    }
+                                });
+                            }
+                        },
+                    )
+                    .absolute()
+                    .inset_0(),
+                );
 
                 wrapper.child(
                     deferred(anchored().offset(point(px(0.), px(4.))).child(panel))

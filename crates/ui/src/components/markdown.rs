@@ -45,7 +45,7 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 
 use crate::components::button::{Button, ButtonVariant};
 use crate::components::checkbox::Checkbox;
-use crate::components::common::{Sizable as _, StyledExt as _};
+use crate::components::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use crate::components::highlight::{HighlightedCode, Language, highlight, plain};
 use crate::components::scrollbar::{Scrollbar, ScrollbarVisibility};
 use crate::components::utils::code_line;
@@ -853,10 +853,8 @@ pub fn bind_text_view_keys(cx: &mut App) {
 fn view_container(frame: &ViewFrame) -> Div {
     let clear_flag = frame.pressed_on_piece.clone();
 
-    div()
+    v_flex()
         .w_full()
-        .flex()
-        .flex_col()
         .key_context(TEXT_VIEW_CONTEXT)
         .track_focus(&frame.focus_handle)
         .on_action({
@@ -1470,15 +1468,13 @@ fn render_block(
 /// The shared block frame: ambient text style, spacing, quote bar.
 fn block_frame(quote: bool, top: Rems, bottom: Rems, id: &ElementId, cx: &App) -> Div {
     let theme = cx.theme();
-    div()
+    v_flex()
         .debug_selector({
             let id = id.clone();
             move || id.to_string()
         })
         .w_full()
-        .flex()
-        .flex_col()
-        .font_family(".SystemUIFont")
+        .font_family(theme.ui_font())
         .text_xs()
         .line_height(relative(BODY_LINE_HEIGHT))
         .text_color(theme.colors.foreground)
@@ -1714,9 +1710,7 @@ fn code_row(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let actions_row = div()
-        .flex()
-        .items_center()
+    let actions_row = h_flex()
         .justify_between()
         .pb_1()
         .when_some(language.cloned(), |row, language| {
@@ -1737,10 +1731,8 @@ fn code_row(
                 }),
         );
 
-    let plate = div()
+    let plate = v_flex()
         .w_full()
-        .flex()
-        .flex_col()
         .rounded(theme.radius.control)
         .bg(theme.colors.muted)
         .p_2()
@@ -1798,10 +1790,8 @@ fn table_row(
     let row_count = table.rows.len();
     let mut cell_ix = 0usize;
 
-    let grid = div()
+    let grid = v_flex()
         .w_full()
-        .flex()
-        .flex_col()
         .border_1()
         .border_color(colors.border)
         .rounded(theme.radius.control)

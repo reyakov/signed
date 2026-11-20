@@ -3,12 +3,11 @@ use gpui::{
     ScrollHandle, SharedString, Styled as _, Subscription, Window, div,
 };
 use metadata::ProfileDirectory;
-use nostr::prelude::{EventId, PublicKey};
+use nostr::prelude::EventId;
 use signed_core::GitEvent;
 use signed_state::RepoStore;
 use ui::avatar::Avatar;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
-use ui::empty_state::EmptyState;
 use ui::input::InputState;
 use ui::layout::panel::Panel;
 use ui::scroll_area::ScrollArea;
@@ -56,27 +55,23 @@ impl IssueDetailView {
     /// Track the issue author, everyone who commented and the repository owner.
     fn track_participants(&mut self, cx: &mut Context<Self>) {
         let store = self.store.read(cx);
-        let mut keys: Vec<PublicKey> = store
+        let author = store
             .issues
             .iter()
             .find(|issue| issue.id == self.issue_id)
-            .map(|issue| issue.pubkey)
-            .into_iter()
+            .map(|issue| issue.pubkey);
+        let owner = store.announcement.as_ref().map(|a| a.owner);
+        let comments: Vec<_> = store
+            .comments_of(&self.issue_id)
+            .map(|comment| comment.pubkey)
             .collect();
-
-        keys.extend(
-            store
-                .comments_of(&self.issue_id)
-                .map(|comment| comment.pubkey),
+        crate::shared::track_event_participants(
+            author,
+            owner,
+            comments.into_iter(),
+            &self.directory,
+            cx,
         );
-
-        if let Some(owner) = store.announcement.as_ref().map(|a| a.owner) {
-            keys.push(owner);
-        }
-
-        self.directory.update(cx, |directory, cx| {
-            directory.track(keys, cx);
-        });
     }
 }
 
@@ -97,17 +92,12 @@ impl Render for IssueDetailView {
         let store = self.store.read(cx);
 
         let Some(issue) = store.issues.iter().find(|issue| issue.id == self.issue_id) else {
-            let message = if store.loaded {
-                "Issue not found"
+            // A not-yet-loaded store is not the same as a missing issue.
+            return if store.loaded {
+                crate::shared::widgets::empty_state("Issue not found")
             } else {
-                "Loading issue..."
+                crate::shared::widgets::centered_spinner("issue-loading")
             };
-            return v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .child(EmptyState::new(message))
-                .into_any_element();
         };
 
         let (title, author, status, age, issue_id, content, pubkey) = {

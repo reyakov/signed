@@ -1,10 +1,11 @@
 use gpui::{
-    AnyElement, App, Context, IntoElement as _, ParentElement as _, SharedString, Styled as _,
-    Subscription, div,
+    AnyElement, App, AsyncApp, Context, Entity, IntoElement as _, ParentElement as _, SharedString,
+    Styled as _, Subscription, Task, div,
 };
 use signed_core::RepoAddr;
 use signed_state::{Backend, BackendEvent, PushStepStatus};
 use ui::common::{h_flex, v_flex};
+use ui::dialog::DialogHandle;
 use ui::icons::{Icon, IconRole};
 use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
@@ -125,4 +126,41 @@ pub fn push_steps_row(steps: &[PushStepStatus], cx: &App) -> Option<AnyElement> 
         .collect::<Vec<_>>();
 
     Some(v_flex().gap_1().children(rows).into_any_element())
+}
+
+/// Runs a dialog task to completion.
+pub fn run_dialog_task<T: 'static>(
+    task: Task<Result<T, anyhow::Error>>,
+    state: &Entity<DialogProgress>,
+    handle: &DialogHandle,
+    cx: &mut App,
+) {
+    let state = state.clone();
+    let handle = handle.clone();
+
+    run_dialog_task_with(
+        task,
+        cx,
+        move |_, cx| cx.update(|cx| handle.close(cx)),
+        move |error, cx| {
+            state.update(cx, |state, cx| {
+                state.fail(error.to_string());
+                cx.notify();
+            });
+        },
+    );
+}
+
+/// Runs a dialog task to completion, with explicit success and failure sinks.
+pub fn run_dialog_task_with<T: 'static>(
+    task: Task<Result<T, anyhow::Error>>,
+    cx: &mut App,
+    on_success: impl FnOnce(T, &mut AsyncApp) + 'static,
+    on_error: impl FnOnce(anyhow::Error, &mut AsyncApp) + 'static,
+) {
+    cx.spawn(async move |cx| match task.await {
+        Ok(value) => on_success(value, cx),
+        Err(error) => on_error(error, cx),
+    })
+    .detach();
 }

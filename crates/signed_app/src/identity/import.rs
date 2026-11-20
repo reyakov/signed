@@ -11,7 +11,7 @@ use ui::field::Field;
 use ui::input::{Input, InputState, InputStateEvent};
 use ui::theme::ActiveTheme as _;
 
-use crate::shared::progress::{DialogProgress, error_row};
+use crate::shared::progress::{DialogProgress, error_row, run_dialog_task_with};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Stage {
@@ -347,17 +347,17 @@ fn finish_import<T: 'static>(
     handle: &DialogHandle,
     cx: &mut App,
 ) {
-    let state = state.clone();
     let handle = handle.clone();
-
-    cx.spawn(async move |cx| match task.await {
-        Ok(_) => cx.update(|cx| handle.close(cx)),
-        Err(error) => {
+    let state = state.clone();
+    run_dialog_task_with(
+        task,
+        cx,
+        move |_, cx| cx.update(|cx| handle.close(cx)),
+        move |error, cx| {
             state.update(cx, |state, cx| {
                 state.progress.fail(error.to_string());
                 cx.notify();
             });
-        }
-    })
-    .detach();
+        },
+    );
 }

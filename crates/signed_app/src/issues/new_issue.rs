@@ -10,31 +10,41 @@ use ui::field::Field;
 use ui::input::{Input, InputState};
 use ui::theme::ActiveTheme as _;
 
+use crate::shared::progress::DialogProgress;
+
 pub struct NewIssueDialog {
     handle: DialogHandle,
     store: Entity<RepoStore>,
     subject: Entity<InputState>,
     content: Entity<InputState>,
+    state: Entity<DialogProgress>,
 }
 
 impl NewIssueDialog {
     pub fn new(store: Entity<RepoStore>, cx: &mut App) -> Entity<Self> {
         let subject = InputState::new(cx);
         let content = InputState::builder().multiline().build(cx);
+        let state = cx.new(|_| DialogProgress::default());
 
         cx.new(|_| Self {
             handle: DialogHandle::new(true),
             store,
             subject,
             content,
+            state,
         })
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
+        // The publish runs detached in the store; one submission per dialog.
+        if self.state.read(cx).busy {
+            return;
+        }
         let subject = self.subject.read(cx).value().to_string();
         let content = self.content.read(cx).value().to_string();
         let subject = (!subject.trim().is_empty()).then_some(subject);
 
+        self.state.update(cx, |state, _| state.begin());
         self.store.update(cx, |store, cx| {
             store.open_issue(subject, content, cx);
         });
@@ -48,6 +58,7 @@ impl Render for NewIssueDialog {
         let subject = self.subject.clone();
         let content = self.content.clone();
         let this = cx.entity().downgrade();
+        let action_state = self.state.clone();
 
         Dialog::new("new-issue-dialog")
             .handle(self.handle.clone())
@@ -72,11 +83,14 @@ impl Render for NewIssueDialog {
                     )
                     .into_any_element()
             })
-            .actions(move |_, _| {
+            .actions(move |_, cx| {
                 let this = this.clone();
+                let busy = action_state.read(cx).busy;
                 vec![
                     Button::new("create-issue")
                         .label("Create issue")
+                        .loading(busy)
+                        .disabled(busy)
                         .on_click(move |_, _, cx| {
                             crate::shared::log_dropped(this.update(cx, |this, cx| this.submit(cx)));
                         })

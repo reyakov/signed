@@ -23,6 +23,7 @@
 
 use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
@@ -353,15 +354,17 @@ impl InputBindings {
 }
 
 /// The shaped text: one wrapped line per buffer line, plus the mask map when masking.
+#[derive(Clone)]
 struct ShapedText {
     lines: Vec<ShapedLineEntry>,
     mask_map: Option<Vec<(usize, usize)>>,
 }
 
 /// One shaped source line and its first byte's offset in the display text.
+#[derive(Clone)]
 struct ShapedLineEntry {
     start: usize,
-    line: WrappedLine,
+    line: Arc<WrappedLine>,
 }
 
 /// The field's inner padding.
@@ -550,6 +553,18 @@ pub struct InputState {
     caret_epoch_started: Instant,
     /// The shaped line and element bounds, recorded during each paint.
     layout: Option<InputLayout>,
+    /// The last shaped buffer, reused while no shaping input changed.
+    shaped_cache: std::cell::RefCell<Option<(ShapeCacheKey, ShapedText)>>,
+}
+
+/// Everything `shape_text` consumes, for cache reuse between frames.
+#[derive(Clone, PartialEq)]
+struct ShapeCacheKey {
+    text: String,
+    wrap_width: Option<Pixels>,
+    font_size: Pixels,
+    font: Font,
+    color: gpui::Hsla,
 }
 
 impl EventEmitter<InputStateEvent> for InputState {}
@@ -645,6 +660,7 @@ impl InputState {
             caret_epoch: 0,
             caret_epoch_started: Instant::now(),
             layout: None,
+            shaped_cache: std::cell::RefCell::new(None),
         }
     }
 
@@ -1024,7 +1040,8 @@ impl InputState {
     }
 
     /// Shapes the masked or plain buffer, wrapping to `wrap_width` when set,
-    /// with the paint-time text style.
+    /// with the paint-time text style. Reuses the previous result while the
+    /// text, wrap width, and text style are unchanged.
     fn shape_current_text(&self, wrap_width: Option<Pixels>, window: &Window) -> ShapedText {
         let (text, mask_map) = if self.masked() {
             masked_display(&self.text)
@@ -1042,6 +1059,21 @@ impl InputState {
         };
 
         let font_size = text_style.font_size.to_pixels(window.rem_size());
+
+        let key = ShapeCacheKey {
+            text: text.clone(),
+            wrap_width,
+            font_size,
+            font: font.clone(),
+            color: text_style.color,
+        };
+
+        if let Some((cached_key, shaped)) = self.shaped_cache.borrow().as_ref()
+            && *cached_key == key
+        {
+            return shaped.clone();
+        }
+
         let runs = [TextRun {
             len: text.len(),
             font,
@@ -1062,14 +1094,19 @@ impl InputState {
                 let mut start = 0;
                 for line in shaped {
                     let end = start + line.len();
-                    lines.push(ShapedLineEntry { start, line });
+                    lines.push(ShapedLineEntry {
+                        start,
+                        line: Arc::new(line),
+                    });
                     start = end + '\n'.len_utf8();
                 }
             }
             Err(err) => log::warn!("shaping input text failed: {err}"),
         }
 
-        ShapedText { lines, mask_map }
+        let shaped = ShapedText { lines, mask_map };
+        *self.shaped_cache.borrow_mut() = Some((key, shaped.clone()));
+        shaped
     }
 
     /// Stores the paint geometry for hit-testing and the IME conversions.
@@ -2210,15 +2247,12 @@ impl RenderOnce for Input {
                 input.child(edge_zone("input-prefix", prefix))
             })
             .child(
-                div()
+                h_flex()
                     .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()
                     .overflow_hidden()
-                    .flex()
-                    .flex_row()
-                    .items_center()
                     .when_some(line_height, |region, line_height| {
                         region.items_start().line_height(line_height)
                     })
@@ -2616,12 +2650,63 @@ fn utf16_to_utf8_offset(text: &str, utf16_offset: usize) -> usize {
 
 /// Converts a UTF-8 byte range to a UTF-16 range.
 fn utf8_range_to_utf16(text: &str, range: Range<usize>) -> Range<usize> {
-    let start = text[..range.start].encode_utf16().count();
-    let end = start + text[range.start..range.end].encode_utf16().count();
+    // IME can supply reversed or off-boundary offsets; normalize both
+    // endpoints so the slicing below cannot panic.
+    let start = floor_to_char_boundary(text, range.start.min(range.end));
+    let end = floor_to_char_boundary(text, range.start.max(range.end));
+    let start = text[..start].encode_utf16().count();
+    let end = start + text[start..end].encode_utf16().count();
     start..end
 }
 
 /// Converts a UTF-16 range to a UTF-8 byte range.
 fn utf16_range_to_utf8(text: &str, range: Range<usize>) -> Range<usize> {
-    utf16_to_utf8_offset(text, range.start)..utf16_to_utf8_offset(text, range.end)
+    // IME can supply a reversed range; order the endpoints so the result
+    // slices cleanly.
+    let (start, end) = (range.start.min(range.end), range.start.max(range.end));
+    utf16_to_utf8_offset(text, start)..utf16_to_utf8_offset(text, end)
+}
+
+/// Floors `index` to the nearest char boundary at or below it.
+fn floor_to_char_boundary(text: &str, index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+    let mut index = index;
+    while !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::reversed_empty_ranges)] // The fixture is intentionally reversed.
+    fn utf16_range_to_utf8_orders_reversed_endpoints() {
+        // "héllo": h 0, é 1, l 2, l 3, o 4 in UTF-16 units.
+        let text = "héllo";
+        assert_eq!(utf16_range_to_utf8(text, 4..2), 3..5);
+        assert_eq!(utf16_range_to_utf8(text, 2..4), 3..5);
+    }
+
+    #[test]
+    #[allow(clippy::reversed_empty_ranges)] // The fixture is intentionally reversed.
+    fn utf8_range_to_utf16_floors_off_boundary_offsets() {
+        let text = "héllo";
+        // Byte 2 sits inside `é`; a reversed, off-boundary range must not panic.
+        let range = utf8_range_to_utf16(text, 4..2);
+        assert!(range.start <= range.end);
+        assert_eq!(range, 1..3);
+    }
+
+    #[test]
+    fn char_boundary_floor_clamps_to_len() {
+        // "héllo" is six bytes.
+        assert_eq!(floor_to_char_boundary("héllo", 7), 6);
+        assert_eq!(floor_to_char_boundary("héllo", 2), 1);
+        assert_eq!(floor_to_char_boundary("héllo", 0), 0);
+    }
 }

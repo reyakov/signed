@@ -10,7 +10,7 @@ use signed_core::RepoAddr;
 use signed_git::Repo;
 use signed_state::Backend;
 use ui::button::Button;
-use ui::common::v_flex;
+use ui::common::{ResultLogErr as _, v_flex};
 use ui::dialog::{Dialog, DialogHandle};
 use ui::field::Field;
 use ui::icons::{Icon, IconRole};
@@ -20,7 +20,7 @@ use ui::theme::ActiveTheme as _;
 
 use super::grasp_servers::{GraspServersState, grasp_servers_field, load_user_grasp_servers};
 use crate::repo::RepoDetailView;
-use crate::shared::progress::{DialogProgress, error_row, push_steps_row};
+use crate::shared::progress::{DialogProgress, error_row, push_steps_row, run_dialog_task_with};
 
 pub struct InitRepoDialog {
     handle: DialogHandle,
@@ -105,17 +105,26 @@ impl InitRepoDialog {
             .filter(|branch| !branch.is_empty());
 
         if name.is_empty() {
-            self.fail("Repository name is required", cx);
+            self.state.update(cx, |state, cx| {
+                state.fail("Repository name is required");
+                cx.notify();
+            });
             return;
         }
         if servers.is_empty() {
-            self.fail("Add at least one grasp server", cx);
+            self.state.update(cx, |state, cx| {
+                state.fail("Add at least one grasp server");
+                cx.notify();
+            });
             return;
         }
 
         let backend = Backend::global(cx);
         let Some(user) = backend.read(cx).current_user() else {
-            self.fail("Sign in to publish a repository", cx);
+            self.state.update(cx, |state, cx| {
+                state.fail("Sign in to publish a repository");
+                cx.notify();
+            });
             return;
         };
 
@@ -134,31 +143,25 @@ impl InitRepoDialog {
         let close = self.handle.clone();
         let handle = window.window_handle();
 
-        cx.spawn(async move |_this, cx| match task.await {
-            Ok(announcement) => {
+        run_dialog_task_with(
+            task,
+            cx,
+            move |announcement, cx| {
                 cx.update_window(handle, |_, _window, cx| {
                     close.close(cx);
                     if let Some(view) = view.upgrade() {
                         view.update(cx, |this, cx| this.apply_announcement(announcement, cx));
                     }
                 })
-                .ok();
-            }
-            Err(error) => {
+                .log_err();
+            },
+            move |error, cx| {
                 state.update(cx, |state, cx| {
                     state.fail(error.to_string());
                     cx.notify();
                 });
-            }
-        })
-        .detach();
-    }
-
-    fn fail(&mut self, message: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.state.update(cx, |state, cx| {
-            state.fail(message);
-            cx.notify();
-        });
+            },
+        );
     }
 }
 
@@ -271,9 +274,18 @@ fn load_branches(dialog: Entity<InitRepoDialog>, cx: &mut App) {
             })
             .await;
 
-        let Ok((branches, current)) = loaded else {
-            log::warn!("failed to list branches for the default branch selector");
-            return;
+        let (branches, current) = match loaded {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                log::warn!("failed to list branches for the default branch selector: {error}");
+                dialog.update(cx, |dialog, cx| {
+                    dialog.state.update(cx, |state, cx| {
+                        state.fail("Could not list the repository's branches");
+                        cx.notify();
+                    });
+                });
+                return;
+            }
         };
 
         dialog.update(cx, |dialog, cx| {

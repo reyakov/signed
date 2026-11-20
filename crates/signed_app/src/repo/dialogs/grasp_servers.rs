@@ -13,6 +13,8 @@ use ui::input::{Input, InputState};
 use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 
+use crate::shared::progress::error_row;
+
 /// State of the grasp-server section of a publish dialog, so async results can be rendered.
 #[derive(Default)]
 pub struct GraspServersState {
@@ -137,14 +139,7 @@ pub fn grasp_servers_field(
                             .child("Loading your grasp servers..."),
                     )
                 })
-                .when_some(error, |section, error| {
-                    section.child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().ramps.destructive.base)
-                            .child(error),
-                    )
-                })
+                .when_some(error_row(&error, cx), |section, error| section.child(error))
         })
         .into_any_element()
 }
@@ -155,6 +150,7 @@ fn render_server_row(
     state: Entity<GraspServersState>,
     cx: &App,
 ) -> AnyElement {
+    let relay = relay.clone();
     h_flex()
         .w_full()
         .gap_1()
@@ -168,7 +164,7 @@ fn render_server_row(
                 .text_color(cx.theme().colors.muted_foreground)
                 .text_xs()
                 .rounded(cx.theme().radius.control)
-                .child(server_host(relay)),
+                .child(server_host(&relay)),
         )
         .child(
             Button::new(SharedString::from(format!("remove-relay:{ix}")))
@@ -176,9 +172,12 @@ fn render_server_row(
                 .variant(ButtonVariant::Ghost)
                 .tooltip(Tooltip::text("Remove"))
                 .on_click(move |_, _, cx| {
+                    // A row's index can desync after a prior removal; match by value.
                     state.update(cx, |state, cx| {
-                        if ix < state.grasp_servers.len() {
-                            state.grasp_servers.remove(ix);
+                        if let Some(at) =
+                            state.grasp_servers.iter().position(|known| known == &relay)
+                        {
+                            state.grasp_servers.remove(at);
                             cx.notify();
                         }
                     });

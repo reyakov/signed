@@ -29,14 +29,17 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, Context, ElementId, Entity, InteractiveElement as _, IntoElement, KeyBinding,
-    MouseButton, ParentElement as _, Render, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, Window, actions,
-    canvas, deferred, div, relative, rems,
+    MouseButton, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
+    StyleRefinement, Styled as _, Subscription, UniformListScrollHandle, Window, actions, canvas,
+    deferred, div, relative, rems, uniform_list,
 };
 
-use crate::components::common::{DIALOG_LAYER, StyledExt as _, h_flex, v_flex};
+use crate::components::common::{
+    DIALOG_LAYER, StyledExt as _, floating_panel, h_flex, paint_highlighted_row, v_flex,
+    wrapping_adjacent_selectable,
+};
+use crate::components::empty_state::EmptyState;
 use crate::components::input::{Input, InputState, InputStateEvent};
-use crate::components::scroll_area::{ScrollArea, ScrollAxes};
 use crate::icons::Icon;
 use crate::theme::{ActiveTheme as _, POPUP_MAX_HEIGHT};
 
@@ -211,6 +214,8 @@ pub struct CommandPaletteState {
     /// The highlighted row, when the palette is open.
     highlight: Option<usize>,
     open: bool,
+    /// The row list's scroll, kept across frames while the palette is open.
+    rows_scroll: UniformListScrollHandle,
     /// Keeps the query-event subscription tied to the state's lifetime.
     _subscription: Subscription,
 }
@@ -239,6 +244,7 @@ impl CommandPaletteState {
             matches,
             highlight: None,
             open: false,
+            rows_scroll: UniformListScrollHandle::new(),
             _subscription: subscription,
         }
     }
@@ -320,17 +326,9 @@ impl CommandPaletteState {
         if self.matches.is_empty() {
             return;
         }
-        let count = self.matches.len();
-        let next = match self.highlight {
-            Some(row) => match row.checked_add_signed(isize::try_from(delta).unwrap_or(0)) {
-                Some(next) if next < count => next,
-                Some(_) => 0,
-                None => count - 1,
-            },
-            None if delta > 0 => 0,
-            None => count - 1,
-        };
-        self.highlight = Some(next);
+        let rows: Vec<usize> = (0..self.matches.len()).collect();
+        let next = wrapping_adjacent_selectable(&rows, self.highlight, delta > 0);
+        self.highlight = next;
         cx.notify();
     }
 
@@ -371,12 +369,11 @@ impl Render for CommandPaletteState {
             return div().into_any_element();
         }
 
-        let (colors, radius, panel_border, shadows, titlebar_height) = {
+        let (colors, radius, shadows, titlebar_height) = {
             let theme = cx.theme();
             (
                 theme.colors,
                 theme.radius,
-                theme.colors.border,
                 theme.elevations.dialog.shadows(),
                 theme.titlebar_height,
             )
@@ -386,157 +383,160 @@ impl Render for CommandPaletteState {
         let state = cx.entity();
         let query_focus = self.query.read(cx).focus_handle();
 
-        let rows: Vec<AnyElement> = self
-            .matches
-            .iter()
-            .enumerate()
-            .map(|(row, command)| {
-                let highlighted = self.highlight == Some(row);
-                let state = state.clone();
-                let row_index = row;
-
-                h_flex()
-                    .id((ElementId::from(command.id.clone()), "command"))
-                    .debug_selector({
-                        let id = id.clone();
-                        move || format!("{id}-command-{row}")
-                    })
-                    .role(Role::ListBoxOption)
-                    .aria_label(command.label.clone())
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .min_h_8()
-                    .text_sm()
-                    .line_height(relative(1.0))
-                    .rounded(radius.sm)
-                    .when(highlighted, |row| row.bg(colors.muted))
-                    .when(!highlighted, |row| row.hover(|row| row.bg(colors.muted)))
-                    .on_mouse_move({
-                        let state = state.clone();
-                        move |_, _window, cx| {
-                            if state.read(cx).highlight != Some(row_index) {
-                                state.update(cx, |state, cx| {
-                                    state.highlight = Some(row_index);
-                                    cx.notify();
-                                });
-                            }
-                        }
-                    })
-                    .on_click({
-                        let state = state.clone();
-                        move |_, window, cx| {
-                            state.update(cx, |state, cx| state.choose_row(row_index, window, cx));
-                        }
-                    })
-                    .when_some(command.icon.clone(), |row, icon| {
-                        row.child(icon.size(rems(1.0)).color(colors.foreground))
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(command.label.clone()),
-                    )
-                    .when_some(command.hint.clone(), |row, hint| {
-                        row.child(
-                            div()
-                                .flex_shrink_0()
-                                .text_xs()
-                                .text_color(colors.muted_foreground)
-                                .child(hint),
-                        )
-                    })
-                    .into_any_element()
-            })
-            .collect();
-
-        let rows: AnyElement = if rows.is_empty() {
-            div()
-                .px_2()
-                .py_1()
-                .text_xs()
-                .text_color(colors.muted_foreground)
-                .child("No matches")
-                .into_any_element()
+        let rows: AnyElement = if self.matches.is_empty() {
+            EmptyState::compact("No matches", cx).into_any_element()
         } else {
-            let scroll =
-                window.use_keyed_state((id.clone(), "rows-scroll"), cx, |_, _| ScrollHandle::new());
+            let matches = self.matches.clone();
+            let highlight = self.highlight;
+            let state = state.clone();
+            let rows_id = id.clone();
+            let radius_sm = radius.sm;
+            let foreground = colors.foreground;
+            let muted_foreground = colors.muted_foreground;
 
-            ScrollArea::new((id.clone(), "rows"))
-                .handle(scroll.read(cx).clone())
-                .axes(ScrollAxes::Vertical)
-                .max_h(POPUP_MAX_HEIGHT)
-                .children(rows)
-                .into_any_element()
+            // Rows are `min_h_8`, so the uniform row height is two rems.
+            let row_height = rems(2.0).to_pixels(window.rem_size());
+            let count = matches.len();
+            let list_height = (row_height * count as f32).min(POPUP_MAX_HEIGHT);
+
+            uniform_list((rows_id.clone(), "rows"), count, move |range, _, cx| {
+                range
+                    .map(|row| {
+                        let Some(command) = matches.get(row) else {
+                            return div().into_any_element();
+                        };
+
+                        let highlighted = highlight == Some(row);
+                        let row_index = row;
+
+                        h_flex()
+                            .id((ElementId::from(command.id.clone()), "command"))
+                            .debug_selector({
+                                let id = rows_id.clone();
+                                move || format!("{id}-command-{row}")
+                            })
+                            .role(Role::ListBoxOption)
+                            .aria_label(command.label.clone())
+                            .gap_2()
+                            .px_2()
+                            .py_1()
+                            .min_h_8()
+                            .text_sm()
+                            .line_height(relative(1.0))
+                            .rounded(radius_sm)
+                            .map(|row| paint_highlighted_row(cx, row, highlighted, false))
+                            .on_mouse_move({
+                                let state = state.clone();
+                                move |_, _window, cx| {
+                                    if state.read(cx).highlight != Some(row_index) {
+                                        state.update(cx, |state, cx| {
+                                            state.highlight = Some(row_index);
+                                            cx.notify();
+                                        });
+                                    }
+                                }
+                            })
+                            .on_click({
+                                let state = state.clone();
+                                move |_, window, cx| {
+                                    state.update(cx, |state, cx| {
+                                        state.choose_row(row_index, window, cx)
+                                    });
+                                }
+                            })
+                            .when_some(command.icon.clone(), |row, icon| {
+                                row.child(icon.size(rems(1.0)).color(foreground))
+                            })
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(command.label.clone()),
+                            )
+                            .when_some(command.hint.clone(), |row, hint| {
+                                row.child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_xs()
+                                        .text_color(muted_foreground)
+                                        .child(hint),
+                                )
+                            })
+                            .into_any_element()
+                    })
+                    .collect()
+            })
+            .track_scroll(&self.rows_scroll)
+            .h(list_height)
+            .into_any_element()
         };
 
-        let panel = v_flex()
-            .id((id.clone(), "panel"))
-            .debug_selector({
-                let id = id.clone();
-                move || format!("{id}-panel")
-            })
-            .key_context(COMMAND_PALETTE_CONTEXT)
-            .role(Role::Dialog)
-            .aria_label(self.name.clone())
-            .w_full()
-            .max_w(relative(0.6))
-            .p_2()
-            .gap_2()
-            .bg(colors.surface)
-            .text_color(colors.foreground)
-            .rounded(radius.overlay)
-            .border_1()
-            .border_color(panel_border)
-            .shadow(shadows)
-            .overflow_hidden()
-            .refine_style(&self.style)
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_action({
-                let state = state.clone();
-                move |_: &HighlightNext, _window, cx| {
-                    state.update(cx, |state, cx| state.move_highlight(1, cx));
-                }
-            })
-            .on_action({
-                let state = state.clone();
-                move |_: &HighlightPrevious, _window, cx| {
-                    state.update(cx, |state, cx| state.move_highlight(-1, cx));
-                }
-            })
-            .on_action({
-                let state = state.clone();
-                move |_: &Choose, window, cx| {
-                    state.update(cx, |state, cx| state.choose(window, cx));
-                }
-            })
-            .on_action({
-                let state = state.clone();
-                move |_: &Dismiss, window, cx| {
-                    state.update(cx, |state, cx| state.dismiss(window, cx));
-                }
-            })
-            .child(
-                Input::new((id.clone(), "query"), self.query.clone())
-                    .placeholder(self.placeholder.clone()),
-            )
-            .child(rows)
-            .child(
-                canvas(|_, _, _| {}, {
-                    let focus = query_focus.clone();
-                    move |_, _, window, cx| {
-                        if !focus.contains_focused(window, cx) {
-                            window.focus(&focus, cx);
-                        }
-                    }
+        let panel = floating_panel(
+            cx,
+            radius.overlay,
+            v_flex()
+                .id((id.clone(), "panel"))
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("{id}-panel")
                 })
-                .absolute()
-                .inset_0(),
-            );
+                .key_context(COMMAND_PALETTE_CONTEXT)
+                .role(Role::Dialog)
+                .aria_label(self.name.clone())
+                .w_full()
+                .max_w(relative(0.6))
+                .p_2()
+                .gap_2()
+                .text_color(colors.foreground),
+            shadows,
+        )
+        .overflow_hidden()
+        .refine_style(&self.style)
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_action({
+            let state = state.clone();
+            move |_: &HighlightNext, _window, cx| {
+                state.update(cx, |state, cx| state.move_highlight(1, cx));
+            }
+        })
+        .on_action({
+            let state = state.clone();
+            move |_: &HighlightPrevious, _window, cx| {
+                state.update(cx, |state, cx| state.move_highlight(-1, cx));
+            }
+        })
+        .on_action({
+            let state = state.clone();
+            move |_: &Choose, window, cx| {
+                state.update(cx, |state, cx| state.choose(window, cx));
+            }
+        })
+        .on_action({
+            let state = state.clone();
+            move |_: &Dismiss, window, cx| {
+                state.update(cx, |state, cx| state.dismiss(window, cx));
+            }
+        })
+        .child(
+            Input::new((id.clone(), "query"), self.query.clone())
+                .placeholder(self.placeholder.clone()),
+        )
+        .child(rows)
+        .child(
+            canvas(|_, _, _| {}, {
+                let focus = query_focus.clone();
+                move |_, _, window, cx| {
+                    if !focus.contains_focused(window, cx) {
+                        window.focus(&focus, cx);
+                    }
+                }
+            })
+            .absolute()
+            .inset_0(),
+        );
 
         let scrim = div()
             .absolute()

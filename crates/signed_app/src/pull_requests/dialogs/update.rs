@@ -11,29 +11,39 @@ use ui::field::Field;
 use ui::input::{Input, InputState};
 use ui::theme::ActiveTheme as _;
 
+use crate::shared::progress::DialogProgress;
+
 pub struct UpdatePrDialog {
     handle: DialogHandle,
     store: Entity<RepoStore>,
     root: Event,
     patch: Entity<InputState>,
+    state: Entity<DialogProgress>,
 }
 
 impl UpdatePrDialog {
     pub fn new(store: Entity<RepoStore>, root: Event, cx: &mut App) -> Entity<Self> {
         let patch = InputState::builder().multiline().build(cx);
+        let state = cx.new(|_| DialogProgress::default());
         cx.new(|_| Self {
             handle: DialogHandle::new(true),
             store,
             root,
             patch,
+            state,
         })
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
+        // The publish runs detached in the store; one submission per dialog.
+        if self.state.read(cx).busy {
+            return;
+        }
         let patch = self.patch.read(cx).value().to_string();
         if patch.trim().is_empty() {
             return;
         }
+        self.state.update(cx, |state, _| state.begin());
         self.store.update(cx, |store, cx| {
             store.update_pull_request(&self.root, patch, cx);
         });
@@ -45,6 +55,7 @@ impl Render for UpdatePrDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let patch = self.patch.clone();
         let this = cx.entity().downgrade();
+        let action_state = self.state.clone();
 
         Dialog::new("update-pr-dialog")
             .handle(self.handle.clone())
@@ -65,11 +76,14 @@ impl Render for UpdatePrDialog {
                     )
                     .into_any_element()
             })
-            .actions(move |_, _| {
+            .actions(move |_, cx| {
                 let this = this.clone();
+                let busy = action_state.read(cx).busy;
                 vec![
                     Button::new("submit-update")
                         .label("Update pull request")
+                        .loading(busy)
+                        .disabled(busy)
                         .on_click(move |_, _, cx| {
                             crate::shared::log_dropped(this.update(cx, |this, cx| this.submit(cx)));
                         })

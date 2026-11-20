@@ -502,8 +502,13 @@ fn publishing_a_commit_advances_the_remote_tip() {
     assert!(status.ahead_commits.contains(&third));
 
     let second_refspec = format!("+{second}:{refname}");
-    repo.push_refspecs(&base_url, "npub1test", "my-repo", &[second_refspec.as_str()])
-        .expect("publish second");
+    repo.push_refspecs(
+        &base_url,
+        "npub1test",
+        "my-repo",
+        &[second_refspec.as_str()],
+    )
+    .expect("publish second");
     assert_eq!(
         git_in(&server_repo, &["rev-parse", refname.as_str()]).expect("server tip"),
         second

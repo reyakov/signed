@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Div, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, Stateful, Styled as _, div, px,
+    SharedString, Stateful, Styled as _, div,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::{Event, Kind, PublicKey};
@@ -101,11 +101,8 @@ pub fn thread(
                 .child(div().flex_1())
                 .when(unread, |this| {
                     this.child(
-                        div()
-                            .flex_shrink_0()
-                            .size_2()
-                            .rounded_full()
-                            .bg(cx.theme().colors.primary),
+                        ui::status_dot::StatusDot::new(("inbox-unread", ix))
+                            .variant(ui::status_dot::StatusDotVariant::Accent),
                     )
                 }),
         )
@@ -166,27 +163,4 @@ fn activity_phrase(kind: Kind) -> &'static str {
         Kind::GitStatusDraft => "drafted a status",
         _ => "did something",
     }
-}
-
-pub fn empty_state(message: &'static str, cx: &App) -> AnyElement {
-    v_flex()
-        .w_full()
-        .flex_1()
-        .min_h_0()
-        .items_center()
-        .justify_center()
-        .gap_2()
-        .py_8()
-        .child(
-            Icon::named(IconRole::Inbox)
-                .size(px(24.))
-                .color(cx.theme().colors.muted_foreground),
-        )
-        .child(
-            div()
-                .text_base()
-                .text_color(cx.theme().colors.muted_foreground)
-                .child(SharedString::from(message)),
-        )
-        .into_any_element()
 }

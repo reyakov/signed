@@ -20,6 +20,8 @@ use gpui::{
 };
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
+use crate::components::common::h_flex;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::icons::{IconRole, icon};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::theme::ActiveTheme as _;
@@ -106,11 +108,9 @@ impl RenderOnce for WindowControls {
             let client_decorated =
                 matches!(window.window_decorations(), Decorations::Client { .. });
 
-            div()
+            h_flex()
                 .flex_none()
-                .flex()
-                .flex_row()
-                .items_center()
+                .h_full()
                 .gap_1()
                 .when(client_decorated && controls.minimize, |row| {
                     row.child(circle_button(
@@ -274,7 +274,7 @@ fn caption_button(
                         .text_color(theme.colors.foreground)
                 })
         })
-        .child(icon(role).size(rems(0.75)))
+        .child(icon(role).size(crate::theme::OVERLAY_ICON_SIZE))
         .into_any_element()
 }
 
@@ -309,6 +309,6 @@ where
                     action(window, cx);
                 })
         })
-        .child(icon(role).size(rems(0.75)))
+        .child(icon(role).size(crate::theme::OVERLAY_ICON_SIZE))
         .into_any_element()
 }

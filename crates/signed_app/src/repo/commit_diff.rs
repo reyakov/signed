@@ -14,8 +14,6 @@ use ui::common::{StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::Panel;
 use ui::layout::resizable::{Resizable, ResizableState};
-use ui::scrollbar::Scrollbar;
-use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
 use ui::tree::{Tree, TreeItem};
 use utils::relative_time_secs;
@@ -257,18 +255,10 @@ impl DiffPane {
                     .track_scroll(&self.scroll_handle)
                     .size_full(),
                 )
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .bottom_0()
-                        .child(Scrollbar::vertical(
-                            "commit-diff-scroll",
-                            self.scroll_handle.clone(),
-                        )),
-                )
+                .child(crate::shared::widgets::scroll_overlay(
+                    "commit-diff-scroll",
+                    self.scroll_handle.clone(),
+                ))
                 .into_any_element()
         };
 
@@ -304,14 +294,12 @@ impl DiffPane {
                                 .gap_2()
                                 .text_xs()
                                 .child(
-                                    div()
-                                        .text_color(cx.theme().ramps.success.base)
-                                        .child(format!("+{}", file.insertions)),
+                                    Badge::new("file-insertions", format!("+ {}", file.insertions))
+                                        .variant(BadgeVariant::Success),
                                 )
                                 .child(
-                                    div()
-                                        .text_color(cx.theme().ramps.destructive.base)
-                                        .child(format!("-{}", file.deletions)),
+                                    Badge::new("file-deletions", format!("- {}", file.deletions))
+                                        .variant(BadgeVariant::Danger),
                                 ),
                         )
                     }),
@@ -334,7 +322,10 @@ impl Render for DiffPane {
                 Resizable::new("commit-diff-split", self.split.clone())
                     .axis(Axis::Horizontal)
                     .pane_with_min(tree, px(120.))
-                    .pane_with_min(detail, px(240.)),
+                    .pane_with_min(detail, px(240.))
+                    .flex_1()
+                    .min_w_0()
+                    .h_full(),
             )
     }
 }
@@ -381,6 +372,12 @@ impl CommitDiffView {
         }
     }
 
+    /// Reaps finished tasks, then queues another.
+    fn push_task(&mut self, task: Task<Result<(), anyhow::Error>>) {
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(task);
+    }
+
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.loading = true;
         self.error = None;
@@ -424,7 +421,7 @@ impl CommitDiffView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -513,12 +510,7 @@ impl Panel for CommitDiffView {
 impl Render for CommitDiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = if self.loading {
-            v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .child(Spinner::new("commit-diff-loading"))
-                .into_any_element()
+            crate::shared::widgets::centered_spinner("commit-diff-loading")
         } else if let Some(error) = self.error.clone() {
             empty_state(error)
         } else {

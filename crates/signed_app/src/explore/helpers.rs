@@ -13,6 +13,7 @@ use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
 use crate::repo::actions::open_repo_panel;
+use crate::repo::helpers::announcement_display_name;
 use crate::workspace::Workspace;
 
 const RECENT_COUNT: usize = 10;
@@ -62,11 +63,7 @@ pub(super) fn render_card(
     let workspace = workspace.clone();
     let announcement = announcement.clone();
 
-    let name = announcement
-        .name
-        .as_deref()
-        .map(SharedString::from)
-        .unwrap_or_else(|| SharedString::from(announcement.id.clone()));
+    let name = announcement_display_name(&announcement);
 
     let description = announcement
         .description

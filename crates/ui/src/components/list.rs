@@ -25,8 +25,9 @@ use gpui::{
     StyleRefinement, Styled as _, Window, div, rems,
 };
 
+use crate::common::focus_handle;
 use crate::components::common::{
-    StyledExt as _, nav_key, paint_selectable_row, selectable_label_color,
+    StyledExt as _, nav_key, paint_selectable_row, selectable_label_color, v_flex,
 };
 use crate::icons::Icon;
 use crate::theme::ActiveTheme as _;
@@ -172,7 +173,7 @@ impl RenderOnce for List {
             .map(|(index, _)| index)
             .collect();
 
-        let focus = crate::components::common::focus_handle(&self.id, window, cx);
+        let focus = focus_handle(&self.id, window, cx);
 
         let label = self
             .a11y_label
@@ -194,10 +195,8 @@ impl RenderOnce for List {
             })
             .collect();
 
-        div()
+        v_flex()
             .id(self.id)
-            .flex()
-            .flex_col()
             .gap_0p5()
             .text_sm()
             .refine_style(&self.style)

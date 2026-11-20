@@ -21,11 +21,11 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Div, ElementId, Global,
+    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Div, ElementId, Global, Hsla,
     InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Pixels,
     Point, Render, RenderOnce, Role, SharedString, Stateful, StatefulInteractiveElement as _,
-    StyleRefinement, Styled as _, TextOverflow, Window, canvas, div, linear_color_stop,
-    linear_gradient, px, rems,
+    StyleRefinement, Styled, TextOverflow, Window, canvas, div, linear_color_stop, linear_gradient,
+    px, rems,
 };
 
 use crate::components::button::{Button, ButtonVariant};
@@ -99,6 +99,13 @@ impl TabsMeasurements {
             .or_default()
             .tabs
             .insert(tab, measure);
+    }
+
+    /// Drops measurements for tabs no longer rendered in the strip.
+    fn retain_tabs(&mut self, key: &MeasureKey, rendered: &[String]) {
+        if let Some(strip) = self.strips.get_mut(key) {
+            strip.tabs.retain(|tab, _| rendered.contains(tab));
+        }
     }
 }
 
@@ -188,6 +195,64 @@ impl StripItem {
 /// The group chip's identity for one strip and kind.
 fn group_key(tabs_id: &ElementId, kind: &SharedString) -> ElementId {
     SharedString::from(format!("{tabs_id}-tabs-group-{kind}")).into()
+}
+
+/// The label color shared by strip tabs and group chips.
+fn tab_label_color(variant: TabsVariant, active: bool, disabled: bool, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    if disabled {
+        return theme.colors.muted_foreground;
+    }
+    match variant {
+        TabsVariant::Underline => {
+            if active {
+                theme.ramps.primary.base
+            } else {
+                theme.colors.foreground
+            }
+        }
+        TabsVariant::Pill => theme.colors.foreground,
+        TabsVariant::Titlebar => {
+            if active {
+                theme.colors.foreground
+            } else {
+                theme.colors.muted_foreground
+            }
+        }
+    }
+}
+
+/// The variant treatment shared by strip tabs and group chips.
+fn apply_tab_chrome<R>(row: R, variant: TabsVariant, active: bool, cx: &App) -> R
+where
+    R: Styled + IntoElement,
+{
+    let theme = cx.theme();
+    match variant {
+        TabsVariant::Underline => row
+            .px_2()
+            .py_1()
+            .rounded_tl(theme.radius.sm)
+            .rounded_tr(theme.radius.sm)
+            .border_b_2()
+            .border_color(gpui::transparent_black())
+            .when(active, |row| row.border_color(theme.ramps.primary.base)),
+        TabsVariant::Pill | TabsVariant::Titlebar => row
+            .h_8()
+            .px_2()
+            .pr_0p5()
+            .rounded(match variant {
+                TabsVariant::Titlebar => theme.radius.full,
+                _ => theme.radius.control,
+            })
+            .when(variant == TabsVariant::Titlebar, |row| {
+                row.bg(theme.colors.muted)
+            })
+            .when(active, |row| {
+                row.bg(theme.colors.background)
+                    .shadow(theme.elevations.control.shadows())
+            }),
+    }
 }
 
 /// The payload dragged when reordering a tab.
@@ -619,23 +684,7 @@ impl Tabs {
         let theme = cx.theme();
         let group_key = group_key(&tabs_id, &kind);
 
-        let label_color = match ctx.variant {
-            TabsVariant::Underline => {
-                if active {
-                    theme.ramps.primary.base
-                } else {
-                    theme.colors.foreground
-                }
-            }
-            TabsVariant::Pill => theme.colors.foreground,
-            TabsVariant::Titlebar => {
-                if active {
-                    theme.colors.foreground
-                } else {
-                    theme.colors.muted_foreground
-                }
-            }
-        };
+        let label_color = tab_label_color(ctx.variant, active, false, cx);
 
         let chip = div()
             .id((group_key.clone(), "group-tab"))
@@ -660,31 +709,7 @@ impl Tabs {
                     })
                 })
             })
-            .map(|chip| match ctx.variant {
-                TabsVariant::Underline => chip
-                    .px_2()
-                    .py_1()
-                    .rounded_tl(theme.radius.sm)
-                    .rounded_tr(theme.radius.sm)
-                    .border_b_2()
-                    .border_color(gpui::transparent_black())
-                    .when(active, |chip| chip.border_color(theme.ramps.primary.base)),
-                TabsVariant::Pill | TabsVariant::Titlebar => chip
-                    .h_8()
-                    .px_2()
-                    .pr_0p5()
-                    .rounded(match ctx.variant {
-                        TabsVariant::Titlebar => theme.radius.full,
-                        _ => theme.radius.control,
-                    })
-                    .when(ctx.variant == TabsVariant::Titlebar, |chip| {
-                        chip.bg(theme.colors.muted)
-                    })
-                    .when(active, |chip| {
-                        chip.bg(theme.colors.background)
-                            .shadow(theme.elevations.control.shadows())
-                    }),
-            })
+            .map(|chip| apply_tab_chrome(chip, ctx.variant, active, cx))
             .child(SharedString::from(format!("{kind} ({count})")))
             .when(ctx.variant.is_capsule(), |chip| {
                 chip.child(div().flex_none().w_4())
@@ -826,6 +851,17 @@ impl RenderOnce for Tabs {
             .unwrap_or(items.len());
         let overflow_items = items.split_off(inline_count);
 
+        // The strip records geometry per inline tab each frame; drop entries
+        // for tabs no longer rendered inline.
+        if cx.try_global::<TabsMeasurements>().is_some() {
+            let rendered: Vec<String> = items
+                .iter()
+                .map(|item| item.measure_key(&self.id))
+                .collect();
+            cx.global_mut::<TabsMeasurements>()
+                .retain_tabs(&measure_key, &rendered);
+        }
+
         let measure_frame = self.overflow_popover.then(|| MeasureFrame {
             key: measure_key.clone(),
             root_bounds: Rc::new(RefCell::new(None)),
@@ -951,6 +987,7 @@ impl RenderOnce for Tabs {
                     let Some(root_bounds) = measure_frame.map(|frame| frame.root_bounds) else {
                         return root.children(strip);
                     };
+
                     let container_canvas = canvas(
                         {
                             let key = measure_key.clone();
@@ -964,6 +1001,7 @@ impl RenderOnce for Tabs {
                     )
                     .absolute()
                     .inset(shadow_bleed);
+
                     let trigger_canvas = canvas(
                         {
                             let key = measure_key;
@@ -1029,32 +1067,7 @@ impl Tab {
         let active = selected || self.pinned;
 
         let theme = cx.theme();
-
-        let label_color = match ctx.variant {
-            TabsVariant::Underline => {
-                if self.disabled {
-                    theme.colors.muted_foreground
-                } else if active {
-                    theme.ramps.primary.base
-                } else {
-                    theme.colors.foreground
-                }
-            }
-            TabsVariant::Pill => {
-                if self.disabled {
-                    theme.colors.muted_foreground
-                } else {
-                    theme.colors.foreground
-                }
-            }
-            TabsVariant::Titlebar => {
-                if self.disabled || !active {
-                    theme.colors.muted_foreground
-                } else {
-                    theme.colors.foreground
-                }
-            }
-        };
+        let label_color = tab_label_color(ctx.variant, active, self.disabled, cx);
 
         let titlebar = ctx.variant == TabsVariant::Titlebar;
         let group = SharedString::from(format!("{}-tab-{}", ctx.id, self.key));
@@ -1143,36 +1156,10 @@ impl Tab {
                     })
                 })
             })
-            .map(|strip_tab| match ctx.variant {
-                TabsVariant::Underline => strip_tab
-                    .px_2()
-                    .py_1()
-                    .rounded_tl(theme.radius.sm)
-                    .rounded_tr(theme.radius.sm)
-                    .border_b_2()
-                    .border_color(gpui::transparent_black())
-                    .when(active, |strip_tab| {
-                        strip_tab.border_color(theme.ramps.primary.base)
-                    }),
-                TabsVariant::Pill | TabsVariant::Titlebar => strip_tab
-                    .h_8()
-                    .px_2()
-                    .pr_0p5()
-                    .rounded(match ctx.variant {
-                        TabsVariant::Titlebar => theme.radius.full,
-                        _ => theme.radius.control,
-                    })
-                    .when(titlebar, |strip_tab| {
-                        strip_tab
-                            .min_w(TAB_MIN_WIDTH)
-                            .max_w(TAB_MAX_WIDTH)
-                            .bg(theme.colors.muted)
-                    })
-                    .when(active, |strip_tab| {
-                        strip_tab
-                            .bg(theme.colors.background)
-                            .shadow(theme.elevations.control.shadows())
-                    }),
+            .map(|strip_tab| {
+                apply_tab_chrome(strip_tab, ctx.variant, active, cx).when(titlebar, |strip_tab| {
+                    strip_tab.min_w(TAB_MIN_WIDTH).max_w(TAB_MAX_WIDTH)
+                })
             })
             .when_some(self.lead.take(), |strip_tab, lead| strip_tab.child(lead))
             .child(label)

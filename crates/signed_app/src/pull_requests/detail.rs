@@ -1,13 +1,15 @@
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, UniformListScrollHandle,
-    WeakEntity, Window, div, uniform_list,
+    WeakEntity, Window, div,
 };
 use metadata::ProfileDirectory;
-use nostr::prelude::{EventId, Kind, PublicKey, Url};
+use nostr::prelude::{EventId, Kind, Url};
 use signed_core::{GitEvent, PullRequest, RepoAddr};
 use signed_git::{FileCommit, PatchParser};
 use signed_state::{Backend, Mirrors, RepoStore};
@@ -19,8 +21,6 @@ use ui::icons::{Icon, IconRole};
 use ui::input::InputState;
 use ui::layout::panel::Panel;
 use ui::scroll_area::ScrollArea;
-use ui::scrollbar::Scrollbar;
-use ui::spinner::Spinner;
 use ui::tabs::{Tab, Tabs};
 use ui::theme::ActiveTheme as _;
 use utils::relative_time;
@@ -28,7 +28,6 @@ use utils::relative_time;
 use super::dialogs;
 use crate::issues::helpers::{comment_form, comments_section, pr_roots, sidebar_section};
 use crate::repo::commit_diff::{CommitDiffView, DiffPane};
-use crate::repo::helpers::commit_row;
 use crate::shared::widgets::{empty_state, status_badge};
 use crate::workspace::Workspace;
 
@@ -54,7 +53,7 @@ pub struct PullRequestDetailView {
     worktree: Option<PathBuf>,
     description: SharedString,
     current_commit: Option<SharedString>,
-    commits: Vec<FileCommit>,
+    commits: Arc<Vec<FileCommit>>,
     loading: bool,
     error: Option<SharedString>,
     bound: Option<PrBinding>,
@@ -96,7 +95,7 @@ impl PullRequestDetailView {
             worktree: None,
             description: SharedString::default(),
             current_commit: None,
-            commits: Vec::new(),
+            commits: Arc::new(Vec::new()),
             loading: true,
             error: None,
             bound: None,
@@ -112,18 +111,23 @@ impl PullRequestDetailView {
 
     fn track_participants(&mut self, cx: &mut Context<Self>) {
         let store = self.store.read(cx);
-        let mut keys: Vec<PublicKey> = store
+        let author = store
             .pull_requests
             .iter()
             .find(|pr| pr.id == self.pr_id && pr.kind == Kind::GitPullRequest)
-            .map(|root| vec![root.pubkey])
-            .unwrap_or_default();
-        keys.extend(store.comments_of(&self.pr_id).map(|comment| comment.pubkey));
-        if let Some(owner) = store.announcement.as_ref().map(|a| a.owner) {
-            keys.push(owner);
-        }
-        self.directory
-            .update(cx, |directory, cx| directory.track(keys, cx));
+            .map(|root| root.pubkey);
+        let owner = store.announcement.as_ref().map(|a| a.owner);
+        let comments: Vec<_> = store
+            .comments_of(&self.pr_id)
+            .map(|comment| comment.pubkey)
+            .collect();
+        crate::shared::track_event_participants(
+            author,
+            owner,
+            comments.into_iter(),
+            &self.directory,
+            cx,
+        );
     }
 
     fn sync(&mut self, cx: &mut Context<Self>) {
@@ -179,6 +183,12 @@ impl PullRequestDetailView {
         }
         self.bound = Some(binding.clone());
         self.load_diff(binding, cx);
+    }
+
+    /// Reaps finished tasks, then queues another.
+    fn push_task(&mut self, task: gpui::Task<Result<(), anyhow::Error>>) {
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(task);
     }
 
     fn load_diff(&mut self, binding: PrBinding, cx: &mut Context<Self>) {
@@ -266,7 +276,7 @@ impl PullRequestDetailView {
                 }
                 this.loading = false;
                 this.worktree = worktree;
-                this.commits = commits;
+                this.commits = Arc::new(commits);
                 match diff {
                     Ok(diff) => this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx)),
                     Err(error) => this.error = Some(error.to_string().into()),
@@ -275,7 +285,7 @@ impl PullRequestDetailView {
             })?;
             Ok(())
         });
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn open_commit_diff(
@@ -443,54 +453,26 @@ impl PullRequestDetailView {
         if self.commits.is_empty() {
             return empty_state("No commits found");
         }
-        let commits = self.commits.clone();
+        let commits = Arc::clone(&self.commits);
         let worktree = self.worktree.clone();
         let view = cx.entity().downgrade();
 
-        v_flex()
-            .relative()
-            .flex_1()
-            .min_h_0()
-            .child(
-                uniform_list("pr-commits", commits.len(), move |range, _, cx| {
-                    range
-                        .map(|ix| {
-                            let commit = commits[ix].clone();
-                            let id = commit.id.clone();
-                            let worktree = worktree.clone();
-                            let view = view.clone();
-                            commit_row(
-                                ix,
-                                &commit,
-                                None,
-                                move |window, cx| {
-                                    if let Some(worktree) = worktree.clone() {
-                                        crate::shared::log_dropped(view.update(cx, |this, cx| {
-                                            this.open_commit_diff(worktree, &id, window, cx);
-                                        }));
-                                    }
-                                },
-                                cx,
-                            )
-                        })
-                        .collect()
-                })
-                .track_scroll(&self.commit_scroll_handle)
-                .size_full(),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .child(Scrollbar::vertical(
-                        "pr-commits-scroll",
-                        self.commit_scroll_handle.clone(),
-                    )),
-            )
-            .into_any_element()
+        crate::shared::event_list::commit_list(
+            "pr-commits",
+            "pr-commits-scroll",
+            commits,
+            self.commit_scroll_handle.clone(),
+            |_, _, _| None,
+            move |commit, window, cx| {
+                if let Some(worktree) = worktree.clone() {
+                    let id = commit.id.clone();
+                    crate::shared::log_dropped(view.update(cx, |this, cx| {
+                        this.open_commit_diff(worktree, &id, window, cx);
+                    }));
+                }
+            },
+            cx,
+        )
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -614,10 +596,5 @@ impl Render for PullRequestDetailView {
 }
 
 fn centered_spinner() -> AnyElement {
-    v_flex()
-        .size_full()
-        .items_center()
-        .justify_center()
-        .child(Spinner::new("pr-loading"))
-        .into_any_element()
+    crate::shared::widgets::centered_spinner("pr-loading")
 }

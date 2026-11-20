@@ -129,6 +129,38 @@ pub fn focus_ring(color: Hsla) -> Vec<BoxShadow> {
     ]
 }
 
+/// The shared floating-panel stack.
+#[must_use]
+pub fn floating_panel<R>(cx: &App, radius: Pixels, panel: R, shadows: Vec<BoxShadow>) -> R
+where
+    R: Styled + IntoElement,
+{
+    let theme = cx.theme();
+    panel.map(|panel| {
+        panel
+            .bg(theme.colors.surface)
+            .rounded(radius)
+            .border_1()
+            .border_color(theme.colors.border)
+            .shadow(shadows)
+    })
+}
+
+/// The next selectable row in the direction.
+pub fn wrapping_adjacent_selectable(
+    selectable: &[usize],
+    selected: Option<usize>,
+    forward: bool,
+) -> Option<usize> {
+    if selectable.is_empty() {
+        return None;
+    }
+
+    adjacent_selectable(selectable, selected, forward)
+        .or_else(|| forward.then(|| selectable.first().copied()).flatten())
+        .or_else(|| (!forward).then(|| selectable.last().copied()).flatten())
+}
+
 /// The next selectable row in the direction, or `None` at the ends.
 pub fn adjacent_selectable(
     selectable: &[usize],
@@ -193,6 +225,25 @@ where
             row
         } else if selected {
             row.bg(theme.ramps.primary.base)
+        } else {
+            row.hover(|row| row.bg(theme.colors.muted))
+        }
+    })
+}
+
+/// A row that highlights under the pointer, for lists driven by mouse move
+/// instead of selection.
+#[must_use]
+pub fn paint_highlighted_row<R>(cx: &App, row: R, highlighted: bool, disabled: bool) -> R
+where
+    R: IntoElement + Styled + StatefulInteractiveElement,
+{
+    let theme = cx.theme();
+    row.map(|row| {
+        if disabled {
+            row
+        } else if highlighted {
+            row.bg(theme.colors.muted)
         } else {
             row.hover(|row| row.bg(theme.colors.muted))
         }

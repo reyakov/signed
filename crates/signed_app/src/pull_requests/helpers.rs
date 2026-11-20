@@ -55,14 +55,6 @@ impl ForkCompare {
     }
 }
 
-pub fn fork_display_name(announcement: &Announcement) -> SharedString {
-    announcement
-        .name
-        .as_deref()
-        .map(SharedString::from)
-        .unwrap_or_else(|| SharedString::from(announcement.id.clone()))
-}
-
 pub fn shorten_owner(owner: &PublicKey) -> String {
     owner.to_hex().chars().take(10).collect()
 }
@@ -121,7 +113,11 @@ pub fn source_menu_items(
             } else {
                 SharedString::from(format!("by {}", shorten_owner(&candidate.owner)))
             };
-            let title = format!("{} — {}", fork_display_name(&candidate), subtitle);
+            let title = format!(
+                "{} — {}",
+                crate::repo::helpers::announcement_display_name(&candidate),
+                subtitle
+            );
             let target = view.clone();
             let checked = active_fork == Some(candidate.addr());
             let announcement = candidate;

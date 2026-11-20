@@ -663,34 +663,37 @@ impl RepoStore {
         merge_base: Option<String>,
         push_from: Option<PathBuf>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Task<Result<(), Error>> {
         self.last_error = None;
         self.last_warning = None;
 
         let Some(addr) = self.addr.clone() else {
             self.not_announced(cx);
-            return;
+            return Task::ready(Err(Error::msg(
+                "This repository is not published to Nostr yet",
+            )));
         };
 
         let series = PatchSeries::parse(&patch);
 
         if let Some(oversized) = series.oversized_length() {
-            self.last_error = Some(format!(
+            let message = format!(
                 "patch too large ({} bytes; NIP-34 suggests keeping each patch under {} bytes)",
                 oversized, MAX_PATCH_EVENT_BYTES
-            ));
+            );
+            self.last_error = Some(message.clone());
             cx.notify();
-            return;
+            return Task::ready(Err(Error::msg(message)));
         }
 
         // The tip of the series is its last commit; `git format-patch` orders
         // patches oldest first.
         let Some(current_commit) = series.tip_commit() else {
-            self.last_error = Some(
-                "Patch must be `git format-patch` output with a `From <commit-id>` header".into(),
-            );
+            let message =
+                "Patch must be `git format-patch` output with a `From <commit-id>` header";
+            self.last_error = Some(message.into());
             cx.notify();
-            return;
+            return Task::ready(Err(Error::msg(message)));
         };
 
         let backend = Backend::global(cx);
@@ -700,9 +703,10 @@ impl RepoStore {
         };
 
         let Some(user) = user else {
-            self.last_error = Some("Sign in to open a pull request".into());
+            let message = "Sign in to open a pull request";
+            self.last_error = Some(message.into());
             cx.notify();
-            return;
+            return Task::ready(Err(Error::msg(message)));
         };
         let author_npub = user.to_bech32().unwrap();
 
@@ -733,7 +737,7 @@ impl RepoStore {
                 .collect()
         };
 
-        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let root_patch = match publish_patch_series(
                 &client,
                 &signer,
@@ -919,8 +923,7 @@ impl RepoStore {
             }
 
             Ok(())
-        });
-        self.tasks.push(task);
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -956,7 +959,7 @@ impl RepoStore {
             };
 
             this.update(cx, |this, cx| {
-                this.open_pull_request(
+                let task = this.open_pull_request(
                     subject,
                     description,
                     branch_name,
@@ -966,6 +969,7 @@ impl RepoStore {
                     Some(repo_path),
                     cx,
                 );
+                this.tasks.push(task);
             })
         })
     }

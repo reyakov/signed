@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Error;
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity,
@@ -11,6 +12,7 @@ use metadata::ProfileDirectory;
 use nostr::prelude::{Event, EventId, Kind, PublicKey, Timestamp};
 use signed_core::{InboxItem, InboxReadState, RepoAddr};
 use signed_state::{Backend, BackendEvent, Inbox, RefreshGate, RefreshRequest, RepoListStore};
+use ui::alert::{Alert, AlertSeverity, AlertStyle};
 use ui::button::Button;
 use ui::common::{StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
@@ -19,9 +21,11 @@ use ui::scroll_area::ScrollArea;
 
 mod helpers;
 
-use helpers::{empty_section_row, empty_state, repo_header, thread};
+use helpers::{empty_section_row, repo_header, thread};
 
 use crate::repo::actions::{RepoItem, open_repo_item};
+use crate::repo::helpers::announcement_display_name;
+use crate::shared::widgets::empty_state;
 use crate::workspace::Workspace;
 
 const MAX_SUB_ACTIVITIES: usize = 5;
@@ -50,6 +54,8 @@ pub struct InboxView {
     refresh: RefreshGate,
     tasks: Vec<Task<Result<(), Error>>>,
     directory: Entity<ProfileDirectory>,
+    /// The last refresh failure, shown inline until the next refresh succeeds.
+    error: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -92,6 +98,7 @@ impl InboxView {
             refresh: RefreshGate::default(),
             tasks: vec![],
             directory: ProfileDirectory::new(cx),
+            error: None,
             _subscriptions: subscriptions,
         }
     }
@@ -164,6 +171,12 @@ impl InboxView {
         self.run_refresh(cx);
     }
 
+    /// Reaps finished tasks, then queues another.
+    fn push_task(&mut self, task: Task<Result<(), Error>>) {
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(task);
+    }
+
     fn run_refresh(&mut self, cx: &mut Context<Self>) {
         self.refresh.begin();
         let backend = Backend::global(cx);
@@ -178,12 +191,16 @@ impl InboxView {
         let state = self.state.clone();
         let work = cx.background_spawn(async move { Inbox::query(&client, me, &state).await });
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.push_task(cx.spawn(async move |this, cx| {
             let (threads, _unread_count) = match work.await {
                 Ok(results) => results,
                 Err(error) => {
                     log::warn!("inbox refresh failed: {error}");
-                    return this.update(cx, |this, _cx| this.refresh.abort());
+                    return this.update(cx, |this, cx| {
+                        this.error = Some(error.to_string().into());
+                        this.refresh.abort();
+                        cx.notify();
+                    });
                 }
             };
 
@@ -193,6 +210,7 @@ impl InboxView {
                     return false;
                 }
                 this.threads = Arc::new(threads);
+                this.error = None;
                 this.rebuild(cx);
                 cx.notify();
                 this.refresh.finish()
@@ -427,6 +445,24 @@ impl Render for InboxView {
                             .on_click(cx.listener(|this, _, _, cx| this.mark_all_read(cx))),
                     ),
             )
+            .when_some(self.error.clone(), |this, error| {
+                let weak = cx.entity().downgrade();
+                this.child(
+                    Alert::new("inbox-error")
+                        .severity(AlertSeverity::Danger)
+                        .title("Inbox")
+                        .message(error)
+                        .style(AlertStyle::Inline)
+                        .on_dismiss(move |cx| {
+                            if let Err(error) = weak.update(cx, |this, cx| {
+                                this.error = None;
+                                cx.notify();
+                            }) {
+                                log::warn!("failed to dismiss inbox error: {error}");
+                            }
+                        }),
+                )
+            })
             .child(
                 div()
                     .relative()
@@ -434,7 +470,7 @@ impl Render for InboxView {
                     .min_h_0()
                     .px_4()
                     .child(if rows.is_empty() {
-                        empty_state("You're all caught up.", cx)
+                        empty_state("You're all caught up.")
                     } else {
                         ScrollArea::new("inbox-scroll")
                             .flex_1()
@@ -455,12 +491,6 @@ fn repo_name(addr: Option<&RepoAddr>, cx: &App) -> SharedString {
         .announcements
         .iter()
         .find(|announcement| announcement.addr() == *addr)
-        .map(|announcement| {
-            announcement
-                .name
-                .as_deref()
-                .map(SharedString::from)
-                .unwrap_or_else(|| SharedString::from(announcement.id.clone()))
-        })
+        .map(announcement_display_name)
         .unwrap_or_else(|| SharedString::from("Untitled"))
 }

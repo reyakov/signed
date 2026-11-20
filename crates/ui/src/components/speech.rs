@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Context, ElementId, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    App, Context, Div, ElementId, Entity, EventEmitter, Hsla, InteractiveElement as _, IntoElement,
     ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
     StyleRefinement, Styled, Subscription, Task, WeakEntity, Window, div, relative, rems,
 };
@@ -719,6 +719,32 @@ impl Sizable for SpeechButton {
     }
 }
 
+/// The waveform bar elements for a dictation control's level history.
+fn waveform_bars<'a>(
+    levels: &'a [f32],
+    size: Size,
+    cx: &'a App,
+    bar_color: impl Fn(f32) -> Hsla + 'a,
+) -> impl IntoIterator<Item = Div> + 'a {
+    let theme = cx.theme();
+    let bar_height = move |level: f32| {
+        if theme.accessibility.reduce_motion {
+            STILL_HEIGHT
+        } else {
+            DOT_HEIGHT + (1.0 - DOT_HEIGHT) * level
+        }
+    };
+
+    levels.iter().map(move |level| {
+        div()
+            .flex_none()
+            .w(rems(size.dense_icon_rems().0 / 4.0))
+            .h(relative(bar_height(*level)))
+            .rounded(theme.radius.full)
+            .bg(bar_color(*level))
+    })
+}
+
 impl RenderOnce for SpeechButton {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let unsupported = !self.speech.read(cx).has_recognizer();
@@ -726,7 +752,7 @@ impl RenderOnce for SpeechButton {
             return div().into_any_element();
         }
 
-        let (status, unavailable, capturing, reduce_motion, bars) = {
+        let (status, unavailable, capturing, bars) = {
             let state = self.speech.read(cx);
             let status = state.status();
             let levels = state.levels();
@@ -735,7 +761,6 @@ impl RenderOnce for SpeechButton {
                 status,
                 unsupported || !state.is_available(cx),
                 status.is_capturing(),
-                cx.theme().accessibility.reduce_motion,
                 levels[tail_start..].to_vec(),
             )
         };
@@ -762,6 +787,7 @@ impl RenderOnce for SpeechButton {
         };
 
         let foreground = colors.foreground;
+        let bar_color = |_| theme.ramps.primary.base;
 
         h_flex()
             .id(id.clone())
@@ -785,26 +811,12 @@ impl RenderOnce for SpeechButton {
                     .color(foreground)
                     .into_any_element()
             } else if capturing {
-                let bar_height = |level: f32| {
-                    if reduce_motion {
-                        STILL_HEIGHT
-                    } else {
-                        DOT_HEIGHT + (1.0 - DOT_HEIGHT) * level
-                    }
-                };
                 h_flex()
                     .id(("speech-bars", self.speech.entity_id()))
                     .h(size.icon_rems())
                     .items_end()
                     .gap_0p5()
-                    .children(bars.iter().map(|level| {
-                        div()
-                            .flex_none()
-                            .w(rems(size.dense_icon_rems().0 / 4.0))
-                            .h(relative(bar_height(*level)))
-                            .rounded(theme.radius.full)
-                            .bg(theme.ramps.primary.base)
-                    }))
+                    .children(waveform_bars(&bars, size, cx, bar_color))
                     .group_hover(group.clone(), |style| style.invisible())
                     .into_any_element()
             } else {
@@ -877,22 +889,19 @@ impl RenderOnce for SpeechWaveform {
         if !self.speech.read(cx).status().is_capturing() {
             return div().into_any_element();
         }
-        let (levels, reduce_motion) = {
+        let levels = {
             let state = self.speech.read(cx);
-            (
-                state.levels().to_vec(),
-                cx.theme().accessibility.reduce_motion,
-            )
+            state.levels().to_vec()
         };
 
         let theme = cx.theme();
         let colors = theme.colors;
         let size = self.size;
-        let bar_height = |level: f32| {
-            if reduce_motion {
-                STILL_HEIGHT
+        let bar_color = |level: f32| {
+            if level <= 0.0 {
+                colors.muted_foreground
             } else {
-                DOT_HEIGHT + (1.0 - DOT_HEIGHT) * level
+                theme.ramps.primary.base
             }
         };
 
@@ -904,18 +913,7 @@ impl RenderOnce for SpeechWaveform {
             .h(size.icon_rems())
             .w(SPEECH_WAVEFORM_WIDTH)
             .overflow_hidden()
-            .children(levels.iter().map(|level| {
-                div()
-                    .flex_none()
-                    .w(rems(size.dense_icon_rems().0 / 4.0))
-                    .h(relative(bar_height(*level)))
-                    .rounded(theme.radius.full)
-                    .bg(if *level <= 0.0 {
-                        colors.muted_foreground
-                    } else {
-                        theme.ramps.primary.base
-                    })
-            }))
+            .children(waveform_bars(&levels, size, cx, bar_color))
             .refine_style(&self.style)
             .into_any_element()
     }
@@ -948,11 +946,19 @@ impl AudioInput for Microphone {
         };
         let device_channels = stream_config.channels.max(1) as usize;
 
-        let (sender, receiver) = flume::unbounded::<Vec<i16>>();
+        let (sender, receiver) = flume::unbounded::<Result<Vec<i16>, String>>();
         let converter = Arc::new(Mutex::new(Resampler::new(
             config.sample_rate() as f32 / format.sample_rate().max(1) as f32,
         )));
-        let error_handler = |error| log::warn!("microphone stream error: {error}");
+        let error_handler = {
+            let sender = sender.clone();
+            move |error: cpal::Error| {
+                log::warn!("microphone stream error: {error}");
+                if sender.send(Err(error.to_string())).is_err() {
+                    log::debug!("speech session closed before its stream error arrived");
+                }
+            }
+        };
 
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => device.build_input_stream(
@@ -1002,8 +1008,24 @@ impl AudioInput for Microphone {
         stream.play().map_err(SpeechError::input)?;
 
         let task = cx.spawn(async move |cx| {
-            while let Ok(samples) = receiver.recv_async().await {
-                cx.update(|cx| sink.push(samples, cx));
+            while let Ok(message) = receiver.recv_async().await {
+                match message {
+                    Ok(samples) => cx.update(|cx| sink.push(samples, cx)),
+                    Err(message) => {
+                        let error = SpeechError::input(message);
+                        let state = sink.state.clone();
+                        let generation = sink.generation;
+                        cx.update(move |cx| {
+                            if let Some(state) = state.upgrade() {
+                                state.update(cx, |state, cx| {
+                                    state.apply(generation, cx, |state, cx| {
+                                        state.report_error(error, cx)
+                                    })
+                                });
+                            }
+                        });
+                    }
+                }
             }
         });
 
@@ -1021,14 +1043,20 @@ impl Microphone {
         device_channels: usize,
         format: AudioFormat,
         converter: Arc<Mutex<Resampler>>,
-        sender: flume::Sender<Vec<i16>>,
+        sender: flume::Sender<Result<Vec<i16>, String>>,
     ) -> impl FnMut(&[T], &cpal::InputCallbackInfo) + Send + 'static
     where
         T: Copy + 'static,
     {
         move |data: &[T], _: &cpal::InputCallbackInfo| {
-            let Ok(mut converter) = converter.lock() else {
-                return;
+            // A panic while resampling poisons the lock; the phase is
+            // approximate anyway, so recover and keep the stream alive.
+            let mut converter = match converter.lock() {
+                Ok(converter) => converter,
+                Err(poisoned) => {
+                    log::warn!("microphone resampler lock was poisoned; recovering");
+                    poisoned.into_inner()
+                }
             };
 
             let mut mono = Vec::with_capacity(data.len() / device_channels + 1);
@@ -1052,7 +1080,7 @@ impl Microphone {
                 }
             }
 
-            if sender.send(samples).is_err() {
+            if sender.send(Ok(samples)).is_err() {
                 log::debug!("speech session closed before its audio arrived");
             }
         }

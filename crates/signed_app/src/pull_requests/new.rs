@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 
+use std::sync::Arc;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, UniformListScrollHandle,
-    WeakEntity, Window, div, px, uniform_list,
+    WeakEntity, Window, div, px,
 };
 use signed_state::{CheckoutsStore, RepoStore};
 use ui::button::Button;
@@ -14,14 +16,11 @@ use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
 use ui::layout::panel::Panel;
 use ui::menu::Menu;
-use ui::scrollbar::Scrollbar;
-use ui::spinner::Spinner;
 use ui::tabs::{Tab, Tabs};
-use ui::theme::ActiveTheme as _;
 
-use super::helpers::{ForkCompare, fork_display_name, truncate_label};
+use super::helpers::{ForkCompare, truncate_label};
 use crate::repo::commit_diff::{CommitDiffView, DiffPane};
-use crate::repo::helpers::commit_row;
+use crate::shared::progress::error_row;
 use crate::shared::widgets::empty_state;
 use crate::workspace::Workspace;
 
@@ -41,7 +40,7 @@ pub struct NewPullRequestView {
     subject: Entity<InputState>,
     description: Entity<InputState>,
     pub(super) merge_base: Option<String>,
-    pub(super) commits: Option<Vec<signed_git::FileCommit>>,
+    pub(super) commits: Option<Arc<Vec<signed_git::FileCommit>>>,
     pub(super) loading: bool,
     pub(super) error: Option<SharedString>,
     submitting: bool,
@@ -159,6 +158,12 @@ impl NewPullRequestView {
         }
     }
 
+    /// Reaps finished tasks, then queues another.
+    pub(super) fn push_task(&mut self, task: gpui::Task<Result<(), anyhow::Error>>) {
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(task);
+    }
+
     fn submit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.submitting || self.loading {
             return;
@@ -210,7 +215,7 @@ impl NewPullRequestView {
             );
             Ok(())
         });
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn open_commit_diff(&mut self, commit_id: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -264,7 +269,9 @@ impl NewPullRequestView {
         let active_fork = self.fork.as_ref().map(|fork| fork.announcement.addr());
         let can_submit = self.submit_enabled(cx);
         let source_label = match &self.fork {
-            Some(fork) => truncate_label(&fork_display_name(&fork.announcement)),
+            Some(fork) => truncate_label(&crate::repo::helpers::announcement_display_name(
+                &fork.announcement,
+            )),
             None => self.repo_path.as_ref().map_or_else(
                 || SharedString::from("No source"),
                 |path| truncate_label(&path.display().to_string()),
@@ -368,12 +375,7 @@ impl NewPullRequestView {
 
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.loading {
-            return v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .child(Spinner::new("new-pr-loading"))
-                .into_any_element();
+            return crate::shared::widgets::centered_spinner("new-pr-loading");
         }
         if !self.has_source() {
             return empty_state("Choose a local checkout or an announced fork to compare");
@@ -394,50 +396,23 @@ impl NewPullRequestView {
         if commits.is_empty() {
             return empty_state("No commits between the branches");
         }
-        let commits = commits.clone();
+        let commits = Arc::clone(commits);
         let view = cx.entity().downgrade();
 
-        v_flex()
-            .relative()
-            .flex_1()
-            .min_h_0()
-            .child(
-                uniform_list("new-pr-commits", commits.len(), move |range, _, cx| {
-                    range
-                        .map(|ix| {
-                            let commit = commits[ix].clone();
-                            let id = commit.id.clone();
-                            let view = view.clone();
-                            commit_row(
-                                ix,
-                                &commit,
-                                None,
-                                move |window, cx| {
-                                    crate::shared::log_dropped(view.update(cx, |this, cx| {
-                                        this.open_commit_diff(&id, window, cx);
-                                    }));
-                                },
-                                cx,
-                            )
-                        })
-                        .collect()
-                })
-                .track_scroll(&self.scroll_handle)
-                .size_full(),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .child(Scrollbar::vertical(
-                        "new-pr-commits-scroll",
-                        self.scroll_handle.clone(),
-                    )),
-            )
-            .into_any_element()
+        crate::shared::event_list::commit_list(
+            "new-pr-commits",
+            "new-pr-commits-scroll",
+            commits,
+            self.scroll_handle.clone(),
+            |_, _, _| None,
+            move |commit, window, cx| {
+                let id = commit.id.clone();
+                crate::shared::log_dropped(view.update(cx, |this, cx| {
+                    this.open_commit_diff(&id, window, cx);
+                }));
+            },
+            cx,
+        )
     }
 }
 
@@ -472,14 +447,7 @@ impl Render for NewPullRequestView {
                                     .rows(3)
                                     .placeholder("Describe..."),
                             )
-                            .when_some(self.error.clone(), |this, error| {
-                                this.child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().ramps.destructive.base)
-                                        .child(error),
-                                )
-                            }),
+                            .when_some(error_row(&self.error, cx), |this, error| this.child(error)),
                     )
                     .child(self.render_tabs(cx)),
             )

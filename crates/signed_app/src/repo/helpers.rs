@@ -9,10 +9,9 @@ use gpui::{
 use metadata::ProfileDirectory;
 use nostr::prelude::{RelayUrl, ToBech32};
 use signed_core::Announcement;
-use signed_git::{DiffHunk, DiffLine, DiffLineKind, FileCommit, FileDiff, Repo};
+use signed_git::{DiffHunk, DiffLine, DiffLineKind, FileCommit, FileDiff, Repo, WorktreeSnapshot};
 use signed_state::{Nip34Binding, RepoListStore, RepoStore};
 use ui::avatar::Avatar;
-use ui::clipboard::ClipboardButton;
 use ui::combobox::ComboboxState;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
@@ -20,11 +19,35 @@ use ui::theme::ActiveTheme as _;
 use utils::relative_time_secs;
 
 use super::RepoDetailView;
-use crate::shared::tree::{TreeItemSeed, build_tree_items};
+use crate::shared::tree::{TreeItemSeed, build_tree_items, sorted_worktree_paths};
 
 const GUTTER_WIDTH: f32 = 44.;
 pub const DIFF_ROW_HEIGHT: f32 = 20.;
 pub const COMMIT_ROW_HEIGHT: f32 = 56.;
+
+/// The announcement's name, falling back to its id.
+pub fn announcement_display_name(announcement: &Announcement) -> SharedString {
+    announcement
+        .name
+        .as_deref()
+        .map(SharedString::from)
+        .unwrap_or_else(|| SharedString::from(announcement.id.clone()))
+}
+
+/// The first eight hex characters of an object id, for row labels.
+pub fn short_id(hex: &str) -> SharedString {
+    SharedString::from(hex.get(..8).unwrap_or(hex).to_owned())
+}
+
+/// Snapshots the worktree and derives the explorer's tree rows and paths.
+pub(super) fn snapshot_worktree(
+    worktree: PathBuf,
+) -> Result<(WorktreeSnapshot, Vec<TreeItemSeed>, Vec<String>), Error> {
+    let snapshot = Repo::open(&worktree)?.snapshot()?;
+    let tree = build_tree_items(&snapshot.entries);
+    let paths = sorted_worktree_paths(&snapshot.entries);
+    Ok((snapshot, tree, paths))
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum DiffRow {
@@ -67,32 +90,7 @@ pub(super) fn clone_group(
                 .font_semibold()
                 .child(SharedString::from(label)),
         )
-        .child(clone_row(id, command.clone(), cx))
-        .into_any_element()
-}
-
-/// One copyable clone command with its text visible next to the copy icon.
-pub(super) fn clone_row(id: SharedString, command: SharedString, cx: &App) -> AnyElement {
-    h_flex()
-        .h_8()
-        .px_2()
-        .gap_2()
-        .min_w_0()
-        .bg(cx.theme().colors.secondary)
-        .rounded(cx.theme().radius.control)
-        .text_color(cx.theme().colors.secondary_foreground)
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .font_family(cx.theme().mono_font)
-                .text_xs()
-                .child(command.clone()),
-        )
-        .child(ClipboardButton::new(id, command).xsmall())
+        .child(crate::shared::widgets::clone_row(id, command.clone(), cx))
         .into_any_element()
 }
 
@@ -193,13 +191,7 @@ pub fn repo_display_name(store: &RepoStore) -> SharedString {
     store
         .announcement
         .as_ref()
-        .map(|announcement| {
-            announcement
-                .name
-                .as_deref()
-                .map(SharedString::from)
-                .unwrap_or_else(|| SharedString::from(announcement.id.clone()))
-        })
+        .map(announcement_display_name)
         .unwrap_or_default()
 }
 
@@ -253,12 +245,7 @@ pub(super) fn source_hash(text: &str) -> u64 {
 }
 
 pub(super) fn preview_spinner() -> AnyElement {
-    v_flex()
-        .size_full()
-        .items_center()
-        .justify_center()
-        .child(ui::spinner::Spinner::new("repo-preview-spinner"))
-        .into_any_element()
+    crate::shared::widgets::centered_spinner("repo-preview-spinner")
 }
 
 /// The kit grammar for a path; only four languages are supported.
@@ -330,7 +317,11 @@ pub(super) fn render_diff_row(hunks: &[DiffHunk], row: DiffRow, cx: &App) -> Any
                 old_start, old_lines, new_start, new_lines
             )))
             .into_any_element(),
-        DiffRow::Line { hunk, line } => render_diff_line(&hunks[hunk].lines[line], cx),
+        DiffRow::Line { hunk, line } => match hunks.get(hunk).and_then(|h| h.lines.get(line)) {
+            Some(line) => render_diff_line(line, cx),
+            // A stale row index renders as a blank row rather than panicking.
+            None => div().w_full().h(px(DIFF_ROW_HEIGHT)).into_any_element(),
+        },
     }
 }
 

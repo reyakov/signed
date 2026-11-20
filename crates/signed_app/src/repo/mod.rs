@@ -38,14 +38,14 @@ pub mod history;
 pub mod refs;
 
 use files::RepoFilesView;
-use helpers::{RepoData, load_repo_data};
+use helpers::{RepoData, announcement_display_name, load_repo_data, snapshot_worktree};
 use history::RepoHistoryView;
 use refs::RefSwitcher;
 
 use crate::issues::IssuesView;
 use crate::pull_requests::PullRequestsView;
 use crate::shared::log_dropped;
-use crate::shared::tree::{build_tree_items, sorted_worktree_paths};
+use crate::shared::tree::sorted_worktree_paths;
 use crate::workspace::Workspace;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -685,12 +685,7 @@ impl RepoDetailView {
 
         let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move {
-                    let snapshot = Repo::open(&worktree)?.snapshot()?;
-                    let tree = build_tree_items(&snapshot.entries);
-                    let paths = sorted_worktree_paths(&snapshot.entries);
-                    Ok::<_, Error>((snapshot, tree, paths))
-                })
+                .background_spawn(async move { snapshot_worktree(worktree) })
                 .await;
 
             this.update(cx, |this, cx| {
@@ -734,12 +729,7 @@ impl RepoDetailView {
 
         let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move {
-                    let snapshot = Repo::open(&worktree)?.snapshot()?;
-                    let tree = build_tree_items(&snapshot.entries);
-                    let paths = sorted_worktree_paths(&snapshot.entries);
-                    Ok::<_, Error>((snapshot, tree, paths))
-                })
+                .background_spawn(async move { snapshot_worktree(worktree) })
                 .await;
 
             this.update(cx, |this, cx| match result {
@@ -838,7 +828,7 @@ impl RepoDetailView {
                 match result {
                     Ok(()) => {
                         if let Some(tag) = &tag {
-                            let short = commit.chars().take(7).collect::<String>();
+                            let short = crate::repo::helpers::short_id(&commit);
                             let (title, body) = match store.read(cx).last_push_warning.clone() {
                                 Some(warning) => ("Sync partially failed", warning),
                                 None => ("Sync complete", format!("Synced up to {short}")),
@@ -1047,11 +1037,7 @@ impl Panel for RepoDetailView {
             return SharedString::from(name.to_string_lossy().into_owned());
         }
         if let Some(announcement) = store.announcement.as_ref() {
-            return announcement
-                .name
-                .as_deref()
-                .map(SharedString::from)
-                .unwrap_or_else(|| SharedString::from(announcement.id.clone()));
+            return announcement_display_name(announcement);
         }
         SharedString::from("Repository")
     }

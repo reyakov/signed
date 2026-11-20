@@ -493,6 +493,12 @@ impl RepoFilesView {
             .into_any_element()
     }
 
+    /// Reaps finished tasks, then queues another.
+    fn push_task(&mut self, task: Task<Result<(), Error>>) {
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(task);
+    }
+
     fn open_file(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.selected_file = Some(path.into());
 
@@ -528,7 +534,14 @@ impl RepoFilesView {
             return;
         };
 
+        // Tree paths originate from git, so symlink escapes are accepted; only
+        // crafted components are rejected, and visibly.
         if unsafe_path {
+            self.files.insert(
+                path.to_string(),
+                FileContent::Failed("Cannot open file".into()),
+            );
+            cx.notify();
             return;
         }
 
@@ -600,7 +613,7 @@ impl RepoFilesView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn drop_preview_of(&mut self, path: &str) {
@@ -705,6 +718,6 @@ impl RepoFilesView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        self.push_task(task);
     }
 }

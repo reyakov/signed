@@ -1,21 +1,19 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, UniformListScrollHandle, WeakEntity, Window, div, px, uniform_list,
+    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Subscription, UniformListScrollHandle, WeakEntity, Window, div,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::{Kind, PublicKey};
 use signed_core::GitEvent;
 use signed_state::RepoStore;
+use std::rc::Rc;
 use ui::alert::{Alert, AlertSeverity};
-use ui::avatar::Avatar;
-use ui::common::{Sizable as _, h_flex, v_flex};
+use ui::common::v_flex;
 use ui::dropdown_menu::DropdownMenu;
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::Panel;
 use ui::menu::MenuItem;
-use ui::scrollbar::Scrollbar;
 use ui::segmented::{Segmented, SegmentedOption};
 use ui::theme::ActiveTheme as _;
 use utils::relative_time;
@@ -32,10 +30,9 @@ pub use new::NewPullRequestView;
 pub use send_patch::SendPatchView;
 
 use crate::issues::helpers::{StatusCounts, filter_by_status};
-use crate::shared::widgets::{empty_state, status_badge};
+use crate::repo::helpers::short_id;
+use crate::shared::event_list::{EventList, EventRow};
 use crate::workspace::Workspace;
-
-const ROW_HEIGHT: f32 = 73.;
 
 pub struct PullRequestsView {
     workspace: WeakEntity<Workspace>,
@@ -198,14 +195,9 @@ impl PullRequestsView {
         let menu_open_weak = cx.entity().downgrade();
         let patch_weak = cx.entity().downgrade();
 
-        h_flex()
-            .px_4()
-            .w_full()
-            .gap_3()
-            .border_b_1()
-            .border_color(cx.theme().colors.border)
-            .bg(cx.theme().colors.muted)
-            .child(
+        crate::shared::event_list::filter_toolbar(
+            cx,
+            [
                 Segmented::new("pr-filter", self.filter)
                     .options(vec![
                         SegmentedOption::new(
@@ -241,10 +233,9 @@ impl PullRequestsView {
                         }) {
                             log::warn!("failed to switch PR filter: {error}");
                         }
-                    }),
-            )
-            .child(div().flex_1())
-            .child(
+                    })
+                    .into_any_element(),
+                div().flex_1().into_any_element(),
                 DropdownMenu::new("new-pr-actions")
                     .label("New")
                     .icon(Icon::named(IconRole::GitPullRequest))
@@ -271,9 +262,10 @@ impl PullRequestsView {
                                 }));
                             }
                         })]
-                    }),
-            )
-            .into_any_element()
+                    })
+                    .into_any_element(),
+            ],
+        )
     }
 }
 
@@ -286,7 +278,6 @@ impl Panel for PullRequestsView {
 impl Render for PullRequestsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filter = self.filter;
-        let count = self.visible_prs.len();
         let visible = self.visible_prs.clone();
         let directory = self.directory.clone();
         let store = self.store.clone();
@@ -300,9 +291,60 @@ impl Render for PullRequestsView {
         let dismiss_warning_store = self.store.clone();
         let dismiss_error_store = self.store.clone();
 
+        let rows = visible
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, &pr_ix)| {
+                // The store re-read per frame can shrink below a captured index.
+                let pr = store.read(cx).pull_requests.get(pr_ix)?;
+                let profile = directory.read(cx).profile(&pr.pubkey, cx);
+                let pr_id = pr.id;
+                let id_hex = pr.id.to_hex();
+                let status = store.read(cx).status_of(pr);
+
+                let on_click: crate::shared::event_list::EventHandler = {
+                    let workspace = workspace.clone();
+                    let store = store.clone();
+                    Rc::new(move |_, window, cx| {
+                        let id = SharedString::from(format!("pr:{pr_id}"));
+                        let workspace_for_build = workspace.clone();
+                        let store = store.clone();
+                        crate::shared::panels::open_detail(
+                            &workspace,
+                            id,
+                            move |window, cx| {
+                                cx.new(|cx| {
+                                    PullRequestDetailView::new(
+                                        workspace_for_build.clone(),
+                                        store.clone(),
+                                        pr_id,
+                                        window,
+                                        cx,
+                                    )
+                                })
+                            },
+                            window,
+                            cx,
+                        );
+                    })
+                };
+
+                Some(EventRow {
+                    id: ix.into(),
+                    status,
+                    title: pr.activity_subject().into(),
+                    author: profile.name(),
+                    picture: profile.picture(),
+                    pubkey: pr.pubkey,
+                    short_id: short_id(&id_hex),
+                    age: SharedString::from(relative_time(pr.created_at)),
+                    on_click,
+                })
+            })
+            .collect();
+
         v_flex()
             .size_full()
-            .child(self.render_header(cx))
             .when_some(last_warning, |this, warning| {
                 this.child(
                     Alert::new("pr-warning")
@@ -326,127 +368,12 @@ impl Render for PullRequestsView {
                 )
             })
             .child(
-                v_flex()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .when(count > 0, |this| {
-                        this.child(
-                            uniform_list("prl", count, move |range, _, cx| {
-                                range
-                                    .map(|ix| {
-                                        let pr_ix = visible[ix];
-                                        let pr = &store.read(cx).pull_requests[pr_ix];
-                                        let pr_id = pr.id;
-                                        let title = pr.activity_subject();
-                                        let id_hex = pr.id.to_hex();
-                                        let age = relative_time(pr.created_at);
-                                        let status = store.read(cx).status_of(pr);
-                                        let profile = directory.read(cx).profile(&pr.pubkey, cx);
-                                        let author = profile.name();
-                                        let workspace = workspace.clone();
-                                        let store = store.clone();
-
-                                        h_flex()
-                                            .id(ix)
-                                            .w_full()
-                                            .h(px(ROW_HEIGHT))
-                                            .gap_4()
-                                            .px_4()
-                                            .border_b_1()
-                                            .border_color(cx.theme().colors.border)
-                                            .hover(|this| this.bg(cx.theme().colors.muted_hover))
-                                            .on_click(move |_, window, cx| {
-                                                let id = SharedString::from(format!("pr:{pr_id}"));
-                                                let workspace_for_build = workspace.clone();
-                                                let store = store.clone();
-                                                crate::shared::panels::open_detail(
-                                                    &workspace,
-                                                    id,
-                                                    move |window, cx| {
-                                                        cx.new(|cx| {
-                                                            PullRequestDetailView::new(
-                                                                workspace_for_build.clone(),
-                                                                store.clone(),
-                                                                pr_id,
-                                                                window,
-                                                                cx,
-                                                            )
-                                                        })
-                                                    },
-                                                    window,
-                                                    cx,
-                                                );
-                                            })
-                                            .child(status_badge(status))
-                                            .child(
-                                                v_flex()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .gap_1()
-                                                    .child(
-                                                        div()
-                                                            .text_base()
-                                                            .text_ellipsis()
-                                                            .whitespace_nowrap()
-                                                            .child(title),
-                                                    )
-                                                    .child(
-                                                        h_flex()
-                                                            .gap_2()
-                                                            .text_xs()
-                                                            .child(
-                                                                h_flex()
-                                                                    .gap_1()
-                                                                    .child(
-                                                                        Avatar::new(pr.pubkey)
-                                                                            .name(author.clone())
-                                                                            .picture(
-                                                                                profile.picture(),
-                                                                            )
-                                                                            .small(),
-                                                                    )
-                                                                    .child(div().child(author)),
-                                                            )
-                                                            .child(SharedString::from("opened"))
-                                                            .child(
-                                                                div()
-                                                                    .text_color(
-                                                                        cx.theme()
-                                                                            .colors
-                                                                            .muted_foreground,
-                                                                    )
-                                                                    .child(SharedString::from(
-                                                                        &id_hex[..8],
-                                                                    )),
-                                                            )
-                                                            .child(SharedString::from(age)),
-                                                    ),
-                                            )
-                                            .into_any_element()
-                                    })
-                                    .collect()
-                            })
-                            .track_scroll(&self.scroll_handle)
-                            .size_full(),
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .right_0()
-                                .bottom_0()
-                                .child(Scrollbar::vertical(
-                                    "prl-scroll",
-                                    self.scroll_handle.clone(),
-                                )),
-                        )
-                    })
-                    .when(count == 0, |this| {
-                        this.child(empty_state(filter.empty_message()))
-                    }),
+                EventList::new("prl")
+                    .toolbar(self.render_header(cx))
+                    .scroll_handle(self.scroll_handle.clone())
+                    .rows(rows)
+                    .empty_message(filter.empty_message())
+                    .render(cx),
             )
             .into_any_element()
     }

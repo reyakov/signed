@@ -69,3 +69,6 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -11,6 +11,7 @@
 //!     .picture(Some("https://example.com/ada.png"));
 //! ```
 
+use std::collections::HashMap;
 use std::fmt::Display;
 
 use gpui::{
@@ -211,7 +212,23 @@ impl RenderOnce for PixelAvatar {
     }
 }
 
+// Computed identicon patterns per seed, so avatars do not reroll their PRNG every frame.
+thread_local! {
+    static PATTERN_CACHE: std::cell::RefCell<HashMap<u64, [u8; GRID_SIZE * GRID_SIZE]>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
 fn pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
+    let cached = PATTERN_CACHE.with(|cache| cache.borrow().get(&seed).copied());
+    if let Some(cached) = cached {
+        return cached;
+    }
+    let computed = compute_pattern(seed);
+    PATTERN_CACHE.with(|cache| cache.borrow_mut().insert(seed, computed));
+    computed
+}
+
+fn compute_pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
     let mut rng = PixelRng::new(seed);
     let mut pattern = [0u8; GRID_SIZE * GRID_SIZE];
     let mut filled = 0usize;

@@ -1,5 +1,6 @@
 use gpui::{App, AppContext as _, Entity, SharedString, WeakEntity, Window};
 use ui::combobox::{Combobox, ComboboxState};
+use ui::icons::{IconRole, icon};
 
 use super::RepoDetailView;
 use super::helpers::sync_selector;
@@ -19,6 +20,7 @@ impl RefSwitcher {
             ComboboxState::new(
                 Combobox::new("branch-select", "Branch", Vec::new())
                     .placeholder("Branch")
+                    .selected_icon(icon(IconRole::GitBranch))
                     .on_change(move |value, window, cx| {
                         if let Some(name) = value
                             && let Err(error) = branch_view.update(cx, |this, cx| {

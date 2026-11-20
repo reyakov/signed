@@ -1,24 +1,24 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Error;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Task, UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
+    Styled as _, Task, UniformListScrollHandle, WeakEntity, Window, div,
 };
-use signed_git::{CommitList, Repo};
+use signed_git::{CommitList, FileCommit, Repo};
 use signed_state::{Backend, RepoStore, SyncStatusDirectory};
+use ui::alert::{Alert, AlertSeverity, AlertStyle};
 use ui::button::{Button, ButtonVariant};
 use ui::common::{Sizable as _, v_flex};
 use ui::icons::{Icon, IconRole};
-use ui::scrollbar::Scrollbar;
-use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 
 use super::RepoDetailView;
 use super::commit_diff::CommitDiffView;
-use super::helpers::commit_row;
+use crate::shared::event_list::commit_list;
 use crate::shared::panels;
 use crate::workspace::Workspace;
 
@@ -28,8 +28,12 @@ pub struct RepoHistoryView {
     detail: WeakEntity<RepoDetailView>,
     sync_directory: Entity<SyncStatusDirectory>,
     worktree: Option<PathBuf>,
-    all_commits: Option<CommitList>,
+    all_commits: Option<Arc<CommitList>>,
     loading_all_commits: bool,
+    /// The loaded commit list, shared with the render without a per-frame copy.
+    commits: Arc<Vec<FileCommit>>,
+    /// The last load failure, shown instead of the empty list.
+    error: Option<SharedString>,
     scroll_handle: UniformListScrollHandle,
     tasks: Vec<Task<Result<(), Error>>>,
 }
@@ -49,6 +53,8 @@ impl RepoHistoryView {
             worktree: None,
             all_commits: None,
             loading_all_commits: false,
+            commits: Arc::new(Vec::new()),
+            error: None,
             scroll_handle: UniformListScrollHandle::new(),
             tasks: Vec::new(),
         }
@@ -74,6 +80,12 @@ impl RepoHistoryView {
         self.load(cx);
     }
 
+    /// Reaps finished tasks, then queues another.
+    fn push_task(&mut self, task: Task<Result<(), Error>>) {
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(task);
+    }
+
     fn load(&mut self, cx: &mut Context<Self>) {
         if self.loading_all_commits || self.all_commits.is_some() {
             return;
@@ -93,8 +105,13 @@ impl RepoHistoryView {
                 .await;
 
             this.update(cx, |this, cx| {
-                if let Ok(list) = result {
-                    this.all_commits = Some(list);
+                match result {
+                    Ok(list) => {
+                        this.commits = Arc::new(list.commits.clone());
+                        this.all_commits = Some(Arc::new(list));
+                        this.error = None;
+                    }
+                    Err(error) => this.error = Some(error.to_string().into()),
                 }
                 this.loading_all_commits = false;
                 cx.notify();
@@ -103,7 +120,7 @@ impl RepoHistoryView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     pub fn open_commit_diff(
@@ -140,22 +157,39 @@ impl Render for RepoHistoryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(list) = self.all_commits.as_ref() else {
             return if self.loading_all_commits {
+                crate::shared::widgets::centered_spinner("commits-loading")
+            } else if let Some(error) = self.error.clone() {
+                let weak = cx.entity().downgrade();
                 v_flex()
                     .size_full()
                     .items_center()
                     .justify_center()
-                    .child(Spinner::new("commits-loading"))
+                    .child(
+                        Alert::new("commits-error")
+                            .severity(AlertSeverity::Danger)
+                            .title("Failed to load commits")
+                            .message(error)
+                            .style(AlertStyle::Inline)
+                            .on_dismiss(move |cx| {
+                                if let Err(error) = weak.update(cx, |this, cx| {
+                                    this.error = None;
+                                    cx.notify();
+                                }) {
+                                    log::warn!("failed to dismiss commits error: {error}");
+                                }
+                            }),
+                    )
                     .into_any_element()
             } else {
                 crate::shared::widgets::empty_state("Failed to load commits")
             };
         };
 
-        if list.commits.is_empty() {
+        if self.commits.is_empty() {
             return crate::shared::widgets::empty_state("No commits found");
         }
 
-        let commits = list.commits.clone();
+        let commits = Arc::clone(&self.commits);
         let shown = commits.len();
         let total = list.total;
         let view = cx.entity().downgrade();
@@ -180,70 +214,60 @@ impl Render for RepoHistoryView {
 
         let pushing = self.store.read(cx).pushing;
 
+        let list = commit_list(
+            "commits",
+            "commits-scroll",
+            commits,
+            self.scroll_handle.clone(),
+            move |ix, commit, _| {
+                ahead
+                    .iter()
+                    .find(|(id, _)| id.starts_with(commit.id.as_str()))
+                    .map(|(ahead_id, path)| {
+                        let detail = detail.clone();
+                        let path = path.clone();
+                        let target = ahead_id.clone();
+                        let short = commit.id.clone();
+
+                        Button::new(("sync-commit", ix))
+                            .label("Sync")
+                            .icon(Icon::named(IconRole::ArrowUp))
+                            .variant(ButtonVariant::Secondary)
+                            .small()
+                            .disabled(pushing)
+                            .tooltip(Tooltip::text(format!("Sync up to {short}")))
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                if let Some(detail) = detail.upgrade() {
+                                    detail.update(cx, |this, cx| {
+                                        this.sync_checkout_commit(
+                                            path.clone(),
+                                            target.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }
+                            })
+                            .into_any_element()
+                    })
+            },
+            move |commit, window, cx| {
+                if let Err(error) = view.update(cx, |this, cx| {
+                    this.open_commit_diff(&commit.id, window, cx);
+                }) {
+                    log::warn!("failed to open commit diff: {error}");
+                }
+            },
+            cx,
+        );
+
         v_flex()
             .relative()
             .flex_1()
             .w_full()
             .min_h_0()
-            .child(
-                uniform_list("commits", shown, move |range, _, cx| {
-                    range
-                        .map(|ix| {
-                            let commit = commits[ix].clone();
-                            let id = commit.id.clone();
-                            let view = view.clone();
-
-                            let action = ahead
-                                .iter()
-                                .find(|(id, _)| id.starts_with(commit.id.as_str()))
-                                .map(|(ahead, path)| {
-                                    let detail = detail.clone();
-                                    let path = path.clone();
-                                    let target = ahead.clone();
-                                    let short = commit.id.clone();
-
-                                    Button::new(("sync-commit", ix))
-                                        .label("Sync")
-                                        .icon(Icon::named(IconRole::ArrowUp))
-                                        .variant(ButtonVariant::Secondary)
-                                        .small()
-                                        .disabled(pushing)
-                                        .tooltip(Tooltip::text(format!("Sync up to {short}")))
-                                        .on_click(move |_, window, cx| {
-                                            cx.stop_propagation();
-                                            if let Some(detail) = detail.upgrade() {
-                                                detail.update(cx, |this, cx| {
-                                                    this.sync_checkout_commit(
-                                                        path.clone(),
-                                                        target.clone(),
-                                                        window,
-                                                        cx,
-                                                    );
-                                                });
-                                            }
-                                        })
-                                        .into_any_element()
-                                });
-
-                            commit_row(
-                                ix,
-                                &commit,
-                                action,
-                                move |window, cx| {
-                                    if let Err(error) = view.update(cx, |this, cx| {
-                                        this.open_commit_diff(&id, window, cx);
-                                    }) {
-                                        log::warn!("failed to open commit diff: {error}");
-                                    }
-                                },
-                                cx,
-                            )
-                        })
-                        .collect()
-                })
-                .track_scroll(&self.scroll_handle)
-                .size_full(),
-            )
+            .child(list)
             .when(shown < total, |this| {
                 this.child(
                     div()
@@ -254,18 +278,6 @@ impl Render for RepoHistoryView {
                         .child(format!("Showing {shown} of {total} commits")),
                 )
             })
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .child(Scrollbar::vertical(
-                        "commits-scroll",
-                        self.scroll_handle.clone(),
-                    )),
-            )
             .into_any_element()
     }
 }

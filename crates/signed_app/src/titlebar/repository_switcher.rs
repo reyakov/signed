@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -50,7 +51,7 @@ impl RepositoryEntry {
 pub(crate) struct RepositorySwitcher {
     search: Entity<InputState>,
     directory: Entity<ProfileDirectory>,
-    entries: Vec<RepositoryEntry>,
+    entries: Arc<Vec<RepositoryEntry>>,
     open: bool,
     on_open: OpenHandler,
     on_create: CreateHandler,
@@ -71,7 +72,7 @@ impl RepositorySwitcher {
         Self {
             search,
             directory,
-            entries: Vec::new(),
+            entries: Arc::new(Vec::new()),
             open: false,
             on_open: Rc::new(on_open),
             on_create: Rc::new(on_create),
@@ -81,7 +82,7 @@ impl RepositorySwitcher {
     }
 
     pub(super) fn set_entries(&mut self, entries: Vec<RepositoryEntry>, cx: &mut Context<Self>) {
-        self.entries = entries;
+        self.entries = Arc::new(entries);
         cx.notify();
     }
 
@@ -97,7 +98,7 @@ impl Render for RepositorySwitcher {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = *cx.theme();
         let weak = cx.entity().downgrade();
-        let entries = self.entries.clone();
+        let entries = Arc::clone(&self.entries);
         let search = self.search.clone();
         let directory = self.directory.clone();
 
@@ -147,15 +148,19 @@ impl Render for RepositorySwitcher {
                     }
                 });
 
-                let visible: Vec<RepositoryEntry> = entries
-                    .iter()
-                    .filter(|entry| query.is_empty() || entry.label.to_lowercase().contains(&query))
-                    .cloned()
-                    .collect();
+                let visible: Arc<Vec<RepositoryEntry>> = Arc::new(
+                    entries
+                        .iter()
+                        .filter(|entry| {
+                            query.is_empty() || entry.label.to_lowercase().contains(&query)
+                        })
+                        .cloned()
+                        .collect(),
+                );
 
                 let row_height = rems(2.0).to_pixels(window.rem_size()) + px(2.);
                 let list_height = (row_height * visible.len() as f32).min(px(280.));
-                let list_entries = visible.clone();
+                let list_entries = Arc::clone(&visible);
                 let list_directory = directory.clone();
                 let list_weak = row_weak.clone();
                 let list_on_open = on_open.clone();
@@ -218,7 +223,7 @@ impl Render for RepositorySwitcher {
                                                         .h(row_height)
                                                         .px_3()
                                                         .gap_2()
-                                                        .rounded(theme.radius.control)
+                                                        .rounded(theme.radius.full)
                                                         .text_sm()
                                                         .hover(|row| row.bg(theme.colors.muted))
                                                         .child(entry.avatar(&list_directory, cx))

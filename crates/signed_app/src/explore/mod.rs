@@ -14,7 +14,6 @@ use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState, InputStateEvent};
 use ui::layout::panel::Panel;
-use ui::scrollbar::Scrollbar;
 use ui::segmented::{Segmented, SegmentedOption};
 use ui::theme::ActiveTheme as _;
 
@@ -22,6 +21,7 @@ use crate::shared::panels;
 use crate::workspace::Workspace;
 
 const COLUMNS: usize = 2;
+// Name row, avatar strip, meta row, and their borders and gaps, in px.
 const CARD_HEIGHT: f32 = 40. + 64. + 48. + 2. + 6.;
 
 pub struct ExploreView {
@@ -153,29 +153,23 @@ impl ExploreView {
                     ),
             )
             .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .bottom_0()
-                    .pl_4()
-                    .pb_4()
-                    .child(
-                        Segmented::new("explore-filter", filter)
-                            .options(vec![
-                                SegmentedOption::new(RepoFilter::All, "All")
-                                    .icon(Icon::named(IconRole::Grid).small().color(muted)),
-                                SegmentedOption::new(RepoFilter::Recent, "Recent")
-                                    .icon(Icon::named(IconRole::Clock).small().color(muted)),
-                            ])
-                            .on_change(move |filter, _, cx| {
-                                if let Err(error) = weak.update(cx, |this, cx| {
-                                    this.filter = filter;
-                                    this.rebuild_rows(cx);
-                                }) {
-                                    log::warn!("failed to change explore filter: {error}");
-                                }
-                            }),
-                    ),
+                div().absolute().left_0().bottom_0().pl_4().pb_4().child(
+                    Segmented::new("explore-filter", filter)
+                        .options(vec![
+                            SegmentedOption::new(RepoFilter::All, "All")
+                                .icon(Icon::named(IconRole::Grid).small().color(muted)),
+                            SegmentedOption::new(RepoFilter::Recent, "Recent")
+                                .icon(Icon::named(IconRole::Clock).small().color(muted)),
+                        ])
+                        .on_change(move |filter, _, cx| {
+                            if let Err(error) = weak.update(cx, |this, cx| {
+                                this.filter = filter;
+                                this.rebuild_rows(cx);
+                            }) {
+                                log::warn!("failed to change explore filter: {error}");
+                            }
+                        }),
+                ),
             )
             .into_any_element()
     }
@@ -262,14 +256,9 @@ impl Render for ExploreView {
                 })
                 .size_full(),
             )
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .bottom_0()
-                    .child(Scrollbar::vertical("explore-scroll", scroll_handle)),
-            )
+            .child(crate::shared::widgets::scroll_overlay(
+                "explore-scroll",
+                scroll_handle,
+            ))
     }
 }

@@ -25,7 +25,7 @@ use gpui::{
 };
 
 use crate::components::common::{
-    StyledExt as _, nav_key, paint_selectable_row, selectable_label_color,
+    StyledExt as _, nav_key, paint_selectable_row, selectable_label_color, v_flex,
 };
 use crate::icons::{Icon, IconRole, icon};
 use crate::theme::ActiveTheme as _;
@@ -36,6 +36,9 @@ type ChangeHandler = Rc<dyn Fn(Option<usize>, &mut Window, &mut App)>;
 type DisclosureHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 /// The visible row builder, run during render.
 type ItemsFn = Box<dyn Fn(&mut Window, &mut App) -> Vec<TreeItem>>;
+
+/// The deepest indent the tree paints, bounding misbuilt item trees.
+const TREE_MAX_DEPTH: usize = 16;
 
 /// One row of a [`Tree`].
 #[derive(Clone)]
@@ -280,10 +283,8 @@ impl RenderOnce for Tree {
             })
             .collect();
 
-        div()
+        v_flex()
             .id(self.id)
-            .flex()
-            .flex_col()
             .gap_0p5()
             .text_sm()
             .refine_style(&self.style)
@@ -362,7 +363,7 @@ impl TreeItem {
         let label_color = selectable_label_color(cx, selected, self.disabled);
         let disabled = self.disabled;
 
-        let depth = u32::try_from(self.depth).unwrap_or(u32::MAX) as f32;
+        let depth = self.depth.min(TREE_MAX_DEPTH) as f32;
         let indent = rems(0.75 * if self.depth == 0 { 0.5 } else { depth + 1.0 });
 
         div()
@@ -402,8 +403,8 @@ impl TreeItem {
                     }
                 })
             })
-            .children((0..self.depth).map(|level| {
-                let step = u32::try_from(level).unwrap_or(u32::MAX) as f32;
+            .children((0..self.depth.min(TREE_MAX_DEPTH)).map(|level| {
+                let step = level as f32;
                 div()
                     .absolute()
                     .left(rems(0.75 * (step + 0.5)))

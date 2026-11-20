@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, AnyView, App, Axis, Div, ElementId, Entity, IntoElement, ParentElement as _,
-    Render, RenderOnce, SharedString, StyleRefinement, Styled as _, Window, div, px,
+    Render, RenderOnce, SharedString, StyleRefinement, Styled as _, Window, div,
 };
 
 use crate::components::tabs::Tab;
 use crate::layout::StyledExt as _;
 use crate::layout::resizable::{Resizable, ResizableState};
-use crate::theme::ActiveTheme as _;
+use crate::theme::{ActiveTheme as _, RESIZE_HANDLE_WIDTH};
 
 /// A user-defined panel the row can show.
 #[allow(unused_variables)]
@@ -186,7 +186,7 @@ impl gpui::Styled for PanelRow {
 impl RenderOnce for PanelRow {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let id = self.id.clone();
-        let gutter = px(8.);
+        let gutter = RESIZE_HANDLE_WIDTH;
 
         let main = island(
             div()

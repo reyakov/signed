@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use gpui::{App, AppContext as _, Context, PathPromptOptions, SharedString, Window};
 use nostr::prelude::Url;
@@ -8,6 +9,19 @@ use signed_state::{Backend, CheckoutsStore, Mirrors, RepoListStore};
 
 use super::NewPullRequestView;
 use crate::pull_requests::helpers::ForkCompare;
+
+/// The announced head when listed, else `main`, else the first branch.
+fn preferred_branch(branches: &[String], announced: Option<String>) -> String {
+    announced
+        .filter(|branch| branches.contains(branch))
+        .or_else(|| {
+            branches
+                .iter()
+                .find(|branch| branch.as_str() == "main")
+                .cloned()
+        })
+        .unwrap_or_else(|| branches[0].clone())
+}
 
 impl NewPullRequestView {
     pub(super) fn has_source(&self) -> bool {
@@ -56,7 +70,7 @@ impl NewPullRequestView {
                 })?;
                 Ok(())
             });
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     pub(crate) fn apply_folder_path(
@@ -93,7 +107,7 @@ impl NewPullRequestView {
                 })?;
                 Ok(())
             });
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn apply_checkout(
@@ -126,12 +140,7 @@ impl NewPullRequestView {
         }
 
         let announced = self.store.read(cx).head.clone();
-        let base = announced
-            .as_ref()
-            .filter(|branch| branches.contains(branch))
-            .cloned()
-            .or_else(|| branches.iter().find(|branch| *branch == "main").cloned())
-            .unwrap_or_else(|| branches[0].clone());
+        let base = preferred_branch(&branches, announced);
         let compare = current
             .filter(|branch| branches.contains(branch))
             .unwrap_or_else(|| base.clone());
@@ -266,7 +275,7 @@ impl NewPullRequestView {
             }
             Ok(())
         });
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn apply_fork(
@@ -299,16 +308,7 @@ impl NewPullRequestView {
         }
 
         let announced = self.store.read(cx).head.clone();
-        let base = announced
-            .filter(|branch| base_branches.contains(branch))
-            .map(SharedString::from)
-            .or_else(|| {
-                base_branches
-                    .iter()
-                    .find(|branch| branch.as_str() == "main")
-                    .map(|branch| SharedString::from(branch.clone()))
-            })
-            .unwrap_or_else(|| SharedString::from(base_branches[0].clone()));
+        let base = preferred_branch(&base_branches, announced);
         let compare = compare_branches
             .iter()
             .find(|branch| branch.as_str() == "main")
@@ -321,7 +321,7 @@ impl NewPullRequestView {
             mirror_path,
         });
         self.error = None;
-        self.base = base;
+        self.base = SharedString::from(base);
         self.compare = compare;
         self.branches = base_branches.into_iter().map(SharedString::from).collect();
         self.sync_selectors(window, cx);
@@ -378,7 +378,7 @@ impl NewPullRequestView {
                 match result {
                     Ok((merge_base, commits, diff)) => {
                         this.merge_base = Some(merge_base);
-                        this.commits = Some(commits);
+                        this.commits = Some(Arc::new(commits));
                         this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx));
                     }
                     Err(error) => {
@@ -392,6 +392,6 @@ impl NewPullRequestView {
             })?;
             Ok(())
         });
-        self.tasks.push(task);
+        self.push_task(task);
     }
 }

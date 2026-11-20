@@ -164,3 +164,10 @@ impl MaterialTokens {
         }
     }
 }
+
+/// Windows paints its caption close-button hover red in every theme.
+pub const WINDOWS_CLOSE_HOVER: Hsla = hsla(0.986043, 0.863406, 0.488235, 1.0);
+/// The close-button hover dimmed while pressed.
+pub const WINDOWS_CLOSE_PRESSED: Hsla = hsla(0.986043, 0.863406, 0.488235, 0.8);
+/// The close glyph's color over the red hover.
+pub const WINDOWS_CLOSE_FOREGROUND: Hsla = gpui::white();

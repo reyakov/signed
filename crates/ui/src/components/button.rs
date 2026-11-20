@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AnyView, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement,
+    AnyElement, AnyView, App, ClickEvent, ElementId, Hsla, InteractiveElement as _, IntoElement,
     ParentElement, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
     StyleRefinement, Styled as _, Window, canvas, relative, transparent_black,
 };
@@ -45,6 +45,65 @@ pub enum ButtonVariant {
     Ghost,
     /// The destructive action.
     Destructive,
+}
+
+/// The variant colors a button paints with, resolved from the active theme.
+pub struct ButtonChrome {
+    /// The resting background, `None` for unpainted variants like `Ghost`.
+    pub background: Option<Hsla>,
+    pub foreground: Hsla,
+    pub hover: Hsla,
+    pub pressed: Hsla,
+    pub border: Hsla,
+    pub hover_border: Hsla,
+    pub pressed_border: Hsla,
+}
+
+impl ButtonVariant {
+    /// The variant's colors from the active theme.
+    pub fn chrome(&self, cx: &App) -> ButtonChrome {
+        let theme = cx.theme();
+        let colors = theme.colors;
+        let ramps = theme.ramps;
+        match self {
+            Self::Primary => ButtonChrome {
+                background: Some(ramps.primary.base),
+                foreground: colors.primary_foreground,
+                hover: ramps.primary.hover,
+                pressed: ramps.primary.pressed,
+                border: ramps.primary.base,
+                hover_border: ramps.primary.hover,
+                pressed_border: ramps.primary.pressed,
+            },
+            Self::Secondary => ButtonChrome {
+                background: Some(colors.surface),
+                foreground: colors.foreground,
+                hover: colors.muted,
+                pressed: colors.muted_hover,
+                border: colors.border,
+                hover_border: colors.border,
+                pressed_border: colors.border,
+            },
+            Self::Ghost => ButtonChrome {
+                background: None,
+                foreground: colors.foreground,
+                hover: colors.muted_hover,
+                pressed: ramps.secondary.pressed,
+                border: transparent_black(),
+                hover_border: transparent_black(),
+                pressed_border: transparent_black(),
+            },
+            Self::Destructive => ButtonChrome {
+                background: Some(ramps.destructive.base),
+                foreground: colors.destructive_foreground,
+                hover: ramps.destructive.hover,
+                pressed: ramps.destructive.pressed,
+                border: ramps.destructive.base,
+                hover_border: ramps.destructive.hover,
+                pressed_border: ramps.destructive.pressed,
+            },
+        }
+    }
 }
 
 /// Which edge the button's content aligns to.
@@ -100,7 +159,7 @@ impl Button {
             disabled: false,
             loading: false,
             padded: true,
-            fully_rounded: false,
+            fully_rounded: true,
             full_width: false,
             side: ButtonSide::default(),
             tab_stop: true,
@@ -179,7 +238,7 @@ impl Button {
         self
     }
 
-    /// Renders the button as a circle instead of the control radius.
+    /// Overrides the pill shape; buttons are fully rounded by default.
     pub fn fully_rounded(mut self, fully_rounded: bool) -> Self {
         self.fully_rounded = fully_rounded;
         self
@@ -236,13 +295,21 @@ impl Sizable for Button {
 
 impl RenderOnce for Button {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let theme = cx.theme();
-        let colors = theme.colors;
-        let ramps = theme.ramps;
+        let ButtonChrome {
+            background,
+            foreground,
+            hover,
+            pressed,
+            border,
+            hover_border,
+            pressed_border,
+        } = self.variant.chrome(cx);
 
         let radius = if self.fully_rounded {
+            let theme = cx.theme();
             theme.radius.full
         } else {
+            let theme = cx.theme();
             theme.radius.control
         };
 
@@ -256,52 +323,7 @@ impl RenderOnce for Button {
 
         let is_round_child = is_child_only && self.fully_rounded;
         let icon_trailing = self.side == ButtonSide::Right;
-
-        let (background, foreground, hover, pressed) = match self.variant {
-            ButtonVariant::Primary => (
-                Some(ramps.primary.base),
-                colors.primary_foreground,
-                ramps.primary.hover,
-                ramps.primary.pressed,
-            ),
-            ButtonVariant::Secondary => (
-                Some(colors.surface),
-                colors.foreground,
-                colors.muted,
-                colors.muted_hover,
-            ),
-            ButtonVariant::Ghost => (
-                None,
-                colors.foreground,
-                colors.muted_hover,
-                ramps.secondary.pressed,
-            ),
-            ButtonVariant::Destructive => (
-                Some(ramps.destructive.base),
-                colors.destructive_foreground,
-                ramps.destructive.hover,
-                ramps.destructive.pressed,
-            ),
-        };
-
-        let (border, hover_border, pressed_border) = match self.variant {
-            ButtonVariant::Primary => (
-                ramps.primary.base,
-                ramps.primary.hover,
-                ramps.primary.pressed,
-            ),
-            ButtonVariant::Secondary => (colors.border, colors.border, colors.border),
-            ButtonVariant::Ghost => (
-                transparent_black(),
-                transparent_black(),
-                transparent_black(),
-            ),
-            ButtonVariant::Destructive => (
-                ramps.destructive.base,
-                ramps.destructive.hover,
-                ramps.destructive.pressed,
-            ),
-        };
+        let ring = cx.theme().colors.ring;
 
         h_flex()
             .id(self.id.clone())
@@ -334,7 +356,7 @@ impl RenderOnce for Button {
             .when_some(a11y_label, |button, label| button.aria_label(label))
             .child(
                 h_flex()
-                    .gap_2()
+                    .gap_1()
                     .when(self.full_width, |content| content.flex_1())
                     .when(self.loading, |content| content.invisible())
                     .map(|content| {
@@ -381,7 +403,7 @@ impl RenderOnce for Button {
                     .tab_stop(self.tab_stop)
                     .hover(move |style| style.bg(hover).border_color(hover_border))
                     .active(move |style| style.bg(pressed).border_color(pressed_border))
-                    .focus_visible(|style| style.shadow(focus_ring(colors.ring)))
+                    .focus_visible(|style| style.shadow(focus_ring(ring)))
                     .when_some(on_click, |button, on_click| {
                         button.on_click(move |event, window, cx| on_click(event, window, cx))
                     })

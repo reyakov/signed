@@ -31,7 +31,7 @@ use gpui::{
     px,
 };
 
-use crate::components::common::{OVERLAY_LAYER, StyledExt as _, v_flex};
+use crate::components::common::{OVERLAY_LAYER, StyledExt as _, floating_panel, v_flex};
 use crate::theme::{ActiveTheme as _, POPOVER_MIN_WIDTH};
 
 /// Reports the next open state of a [`Popover`]: `true` to open, `false` to close.
@@ -124,14 +124,13 @@ impl gpui::Styled for Popover {
 
 impl RenderOnce for Popover {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let (colors, radius, shadows, enter_duration, panel_border) = {
+        let (colors, radius, shadows, enter_duration) = {
             let theme = cx.theme();
             (
                 theme.colors,
                 theme.radius,
                 theme.elevations.popover.shadows(),
                 theme.motion.overlay,
-                theme.colors.border,
             )
         };
 
@@ -197,60 +196,60 @@ impl RenderOnce for Popover {
                 let focus = crate::components::common::focus_handle(&self.id, window, cx);
                 let content = self.content.map(|content| content(window, cx));
 
-                let panel = v_flex()
-                    .id("popover-panel")
-                    .debug_selector(|| "popover-panel".to_string())
-                    .occlude()
-                    .track_focus(&focus)
-                    .role(Role::Dialog)
-                    .aria_label(label)
-                    .min_w(POPOVER_MIN_WIDTH)
-                    .bg(colors.surface)
-                    .text_color(colors.surface_foreground)
-                    .rounded(radius.overlay)
-                    .border_1()
-                    .border_color(panel_border)
-                    .shadow(shadows)
-                    .overflow_hidden()
-                    .on_mouse_down_out({
-                        let on_change = on_change.clone();
-                        let trigger_bounds = trigger_bounds.clone();
-                        move |event, window, cx| {
-                            if trigger_bounds
-                                .borrow()
-                                .is_some_and(|bounds| bounds.contains(&event.position))
-                            {
-                                return;
-                            }
+                let panel = floating_panel(
+                    cx,
+                    radius.overlay,
+                    v_flex()
+                        .id("popover-panel")
+                        .debug_selector(|| "popover-panel".to_string())
+                        .occlude()
+                        .track_focus(&focus)
+                        .role(Role::Dialog)
+                        .aria_label(label)
+                        .min_w(POPOVER_MIN_WIDTH)
+                        .text_color(colors.surface_foreground),
+                    shadows,
+                )
+                .overflow_hidden()
+                .on_mouse_down_out({
+                    let on_change = on_change.clone();
+                    let trigger_bounds = trigger_bounds.clone();
+                    move |event, window, cx| {
+                        if trigger_bounds
+                            .borrow()
+                            .is_some_and(|bounds| bounds.contains(&event.position))
+                        {
+                            return;
+                        }
+                        if let Some(on_change) = &on_change {
+                            on_change(false, window, cx);
+                        }
+                    }
+                })
+                .on_key_down({
+                    let on_change = on_change.clone();
+                    move |event: &KeyDownEvent, window, cx| {
+                        if event.keystroke.key == "escape" {
                             if let Some(on_change) = &on_change {
                                 on_change(false, window, cx);
                             }
+                            cx.stop_propagation();
                         }
-                    })
-                    .on_key_down({
-                        let on_change = on_change.clone();
-                        move |event: &KeyDownEvent, window, cx| {
-                            if event.keystroke.key == "escape" {
-                                if let Some(on_change) = &on_change {
-                                    on_change(false, window, cx);
-                                }
-                                cx.stop_propagation();
+                    }
+                })
+                .when_some(content, |panel, content| panel.child(content))
+                .child(
+                    canvas(|_, _, _| {}, {
+                        let focus = focus;
+                        move |_, _, window, cx| {
+                            if !focus.contains_focused(window, cx) {
+                                window.focus(&focus, cx);
                             }
                         }
                     })
-                    .when_some(content, |panel, content| panel.child(content))
-                    .child(
-                        canvas(|_, _, _| {}, {
-                            let focus = focus;
-                            move |_, _, window, cx| {
-                                if !focus.contains_focused(window, cx) {
-                                    window.focus(&focus, cx);
-                                }
-                            }
-                        })
-                        .absolute()
-                        .inset_0(),
-                    );
+                    .absolute()
+                    .inset_0(),
+                );
 
                 wrapper.child(
                     deferred(anchored().offset(point(Pixels::ZERO, px(4.))).child(

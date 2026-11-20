@@ -71,6 +71,20 @@ impl EmptyState {
         self.action = Some(action.into_any_element());
         self
     }
+
+    /// A compact inline caption for popups with nothing to show.
+    #[must_use]
+    pub fn compact<L>(label: L, cx: &App) -> gpui::Div
+    where
+        L: Into<SharedString>,
+    {
+        div()
+            .px_2()
+            .py_1()
+            .text_xs()
+            .text_color(cx.theme().colors.muted_foreground)
+            .child(label.into())
+    }
 }
 
 impl gpui::Styled for EmptyState {

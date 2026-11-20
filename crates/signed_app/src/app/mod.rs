@@ -131,7 +131,7 @@ impl Render for AppRoot {
         div()
             .relative()
             .size_full()
-            .font_family(".SystemUIFont")
+            .font_family(cx.theme().ui_font())
             .text_color(cx.theme().colors.foreground)
             .key_context(REPOSITORY_KEY_CONTEXT)
             .on_action(cx.listener(|this, action: &SwitchRepository, window, cx| {

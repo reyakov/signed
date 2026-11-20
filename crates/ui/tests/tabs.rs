@@ -62,6 +62,68 @@ fn strip_window(
     cx
 }
 
+struct CloseHarness {
+    closed: Rc<RefCell<Vec<usize>>>,
+}
+
+impl Render for CloseHarness {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let closed = self.closed.clone();
+        div().size_full().child(
+            Tabs::new("strip")
+                .variant(TabsVariant::Pill)
+                .tabs(move |_, _| {
+                    vec![
+                        Tab::new("a", "Alpha").closeable(true),
+                        Tab::new("b", "Beta").closeable(true),
+                    ]
+                })
+                .on_close(move |index, _, _| closed.borrow_mut().push(index)),
+        )
+    }
+}
+
+#[gpui::test]
+fn a_pinned_tab_draws_inline_and_selects_itself(cx: &mut TestAppContext) {
+    let changed = Rc::new(RefCell::new(Vec::new()));
+    let mut cx = strip_window(cx, changed.clone(), Rc::new(RefCell::new(Vec::new())), true);
+
+    let delta = cx
+        .debug_bounds("strip-tab-Delta")
+        .expect("a pinned tab draws itself");
+    cx.simulate_click(delta.center(), Modifiers::none());
+    cx.run_until_parked();
+
+    assert_eq!(
+        changed.borrow().as_slice(),
+        &[3],
+        "clicking the pinned tab reports its index"
+    );
+}
+
+#[gpui::test]
+fn a_closeable_tab_reports_its_close(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let closed = Rc::new(RefCell::new(Vec::new()));
+    let window = cx.open_window(size(px(800.), px(600.)), |_, _| CloseHarness {
+        closed: closed.clone(),
+    });
+    let mut cx = VisualTestContext::from_window(window.into(), cx);
+    cx.run_until_parked();
+
+    let close = cx
+        .debug_bounds("strip-close-Alpha")
+        .expect("a closeable tab draws its close control");
+    cx.simulate_click(close.center(), Modifiers::none());
+    cx.run_until_parked();
+
+    assert_eq!(
+        closed.borrow().as_slice(),
+        &[0],
+        "the close control reports the tab's index"
+    );
+}
+
 #[gpui::test]
 fn same_kind_tabs_collapse_into_one_group(cx: &mut TestAppContext) {
     let mut cx = strip_window(

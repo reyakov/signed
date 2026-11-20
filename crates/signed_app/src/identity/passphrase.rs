@@ -11,7 +11,7 @@ use ui::field::Field;
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState, InputStateEvent};
 
-use crate::shared::progress::{DialogProgress, error_row, push_steps_row};
+use crate::shared::progress::{DialogProgress, error_row, push_steps_row, run_dialog_task};
 
 pub struct PassphraseDialog {
     handle: DialogHandle,
@@ -64,19 +64,7 @@ impl PassphraseDialog {
 
         let backend = Backend::global(cx);
         let task = backend.update(cx, |backend, cx| backend.restore_with_passphrase(&pass, cx));
-        let state = self.state.clone();
-        let handle = self.handle.clone();
-
-        cx.spawn(async move |_this, cx| match task.await {
-            Ok(_) => cx.update(|cx| handle.close(cx)),
-            Err(error) => {
-                state.update(cx, |state, cx| {
-                    state.fail(error.to_string());
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
+        run_dialog_task(task, &self.state, &self.handle, cx);
     }
 }
 

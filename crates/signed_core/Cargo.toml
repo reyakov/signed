@@ -8,3 +8,6 @@ publish.workspace = true
 nostr.workspace = true
 serde.workspace = true
 utils = { path = "../utils" }
+
+[lints]
+workspace = true

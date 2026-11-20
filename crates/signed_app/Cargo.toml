@@ -20,3 +20,6 @@ nostr.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 log.workspace = true
+
+[lints]
+workspace = true

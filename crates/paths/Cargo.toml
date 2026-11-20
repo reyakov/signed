@@ -6,3 +6,6 @@ publish.workspace = true
 
 [dependencies]
 dirs = "6"
+
+[lints]
+workspace = true

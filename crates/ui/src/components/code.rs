@@ -84,6 +84,12 @@ impl SelectionPoint {
     }
 }
 
+/// The source-derived part of one rendered line, cached between frames.
+struct CodeLineLayout {
+    text: String,
+    roles: Vec<Role>,
+}
+
 /// Retained state for a code view.
 ///
 /// Build one in a [`gpui::Entity`], render the entity, and call its setters
@@ -93,6 +99,8 @@ pub struct CodeViewState {
     source: SharedString,
     language: Language,
     code: HighlightedCode,
+    /// Per-line layout cache, rebuilt whenever the source changes.
+    line_layouts: Vec<CodeLineLayout>,
     handle: UniformListScrollHandle,
     /// The hovered line, driving the active-line wash and number emphasis.
     active_line: Option<usize>,
@@ -113,12 +121,14 @@ impl CodeViewState {
     {
         let source = source.into();
         let code = highlight(&source, language);
+        let line_layouts = Self::layout(&code);
 
         Self {
             id: id.into(),
             source,
             language,
             code,
+            line_layouts,
             handle: UniformListScrollHandle::new(),
             active_line: None,
             selection: None,
@@ -137,6 +147,7 @@ impl CodeViewState {
         let source = source.into();
 
         self.code = highlight(&source, language);
+        self.line_layouts = Self::layout(&self.code);
         self.source = source;
         self.language = language;
         self.selection = None;
@@ -145,17 +156,16 @@ impl CodeViewState {
         cx.notify();
     }
 
-    /// Replaces one line's text and re-highlights the file. `line_ix` past
-    /// the end clamps to the last line, and the replacement may span
-    /// multiple lines.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the source is empty, which leaves no line to replace.
+    /// Replaces one line's text and re-highlights the file.
     pub fn update_line<T>(&mut self, line_ix: usize, text: T, cx: &mut Context<Self>)
     where
         T: AsRef<str>,
     {
+        // An empty source has no line to replace.
+        if self.source.is_empty() {
+            return;
+        }
+
         let trailing_newline = self.source.ends_with('\n');
         let mut lines: Vec<String> = self.source.lines().map(str::to_string).collect();
         let line_ix = line_ix.min(lines.len().saturating_sub(1));
@@ -170,8 +180,35 @@ impl CodeViewState {
         self.source = (lines.join("\n") + if trailing_newline { "\n" } else { "" }).into();
 
         self.code = highlight(&self.source, self.language);
+        self.line_layouts = Self::layout(&self.code);
         self.selection = None;
         cx.notify();
+    }
+
+    /// The cached per-line text and roles for the highlighted source.
+    fn layout(code: &HighlightedCode) -> Vec<CodeLineLayout> {
+        code.lines
+            .iter()
+            .map(|line| {
+                let mut text = String::new();
+                for span in &line.spans {
+                    text.push_str(&span.text);
+                }
+
+                let char_count = text.chars().count();
+                let mut roles = vec![Role::Text; char_count];
+                let mut offset = 0usize;
+                for span in &line.spans {
+                    let chars = span.text.chars().count();
+                    for slot in &mut roles[offset..offset + chars] {
+                        *slot = span.role;
+                    }
+                    offset += chars;
+                }
+
+                CodeLineLayout { text, roles }
+            })
+            .collect()
     }
 
     /// The source text the view renders.
@@ -500,24 +537,10 @@ fn render_row(
     line_height: Pixels,
     cx: &App,
 ) -> gpui::AnyElement {
-    let line = code.code().lines.get(line_ix);
-
-    let mut text = String::new();
-    for span in line.map_or(&[][..], |line| line.spans.as_slice()) {
-        text.push_str(&span.text);
-    }
-
+    let layout = code.line_layouts.get(line_ix);
+    let text = layout.map_or("", |layout| layout.text.as_str());
+    let roles = layout.map_or(&[][..], |layout| layout.roles.as_slice());
     let char_count = text.chars().count();
-    let mut roles = vec![Role::Text; char_count];
-    let mut offset = 0usize;
-
-    for span in line.map_or(&[][..], |line| line.spans.as_slice()) {
-        let chars = span.text.chars().count();
-        for slot in &mut roles[offset..offset + chars] {
-            *slot = span.role;
-        }
-        offset += chars;
-    }
 
     let mut selected = vec![false; char_count];
 

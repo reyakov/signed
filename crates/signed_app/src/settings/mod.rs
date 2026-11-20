@@ -60,6 +60,7 @@ impl Render for SettingsDialog {
 
         Dialog::new("settings-dialog")
             .handle(self.handle.clone())
+            .width(px(600.))
             .height(px(560.))
             .title("Settings")
             .content(move |_, cx| {

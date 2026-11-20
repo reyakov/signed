@@ -14,7 +14,8 @@ use gpui::{
 
 use crate::layout::{StyledExt as _, focus_handle, focus_ring};
 use crate::theme::{
-    ActiveTheme as _, BORDER_WIDTH, DISABLED_OPACITY, HAIRLINE_WIDTH, RESIZE_KEYBOARD_STEP,
+    ActiveTheme as _, BORDER_WIDTH, DISABLED_OPACITY, HAIRLINE_WIDTH, RESIZE_HANDLE_WIDTH,
+    RESIZE_KEYBOARD_STEP,
 };
 
 /// How far one keyboard arrow step moves the seam.
@@ -111,7 +112,7 @@ impl RenderOnce for ResizeHandle {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let ring = theme.colors.ring;
-        let thickness = px(8.);
+        let thickness = RESIZE_HANDLE_WIDTH;
 
         let label = self
             .accessibility_label

@@ -187,6 +187,10 @@ impl ThemeDefinition {
 /// Parses `#rgb` or `#rrggbb` into an opaque color.
 pub(crate) fn parse_hex(value: &str) -> Option<Hsla> {
     let digits = value.strip_prefix('#')?;
+    // Lengths are byte lengths; non-ASCII input would panic the slicing below.
+    if !digits.is_ascii() {
+        return None;
+    }
     let expand = |channels: [f32; 3]| Some(expand_rgb([channels[0], channels[1], channels[2]]));
 
     match digits.len() {
@@ -218,4 +222,23 @@ pub(crate) fn parse_hex(value: &str) -> Option<Hsla> {
 
 fn expand_rgb([r, g, b]: [f32; 3]) -> Hsla {
     Hsla::from(Rgba { r, g, b, a: 1.0 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hex_rejects_non_ascii_digits() {
+        assert_eq!(parse_hex("#éa"), None);
+        assert_eq!(parse_hex("#éaabbcc"), None);
+    }
+
+    #[test]
+    fn parse_hex_resolves_three_and_six_digits() {
+        assert!(parse_hex("#abc").is_some());
+        assert!(parse_hex("#aabbcc").is_some());
+        assert_eq!(parse_hex("abc"), None);
+        assert_eq!(parse_hex("#ab"), None);
+    }
 }

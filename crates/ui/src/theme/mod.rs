@@ -16,10 +16,14 @@ mod system;
 
 use std::time::Duration;
 
-pub use colors::{ColorTokens, MaterialTokens};
+pub use colors::{
+    ColorTokens, MaterialTokens, WINDOWS_CLOSE_FOREGROUND, WINDOWS_CLOSE_HOVER,
+    WINDOWS_CLOSE_PRESSED,
+};
 pub use definition::ThemeDefinition;
 use gpui::{
-    App, Global, Hsla, Pixels, SpringConfig, WindowAppearance, WindowBackgroundAppearance, hsla, px,
+    App, Global, Hsla, Pixels, Rems, SpringConfig, WindowAppearance, WindowBackgroundAppearance,
+    px, rems,
 };
 pub use ramps::{AccentShades, Oklch};
 pub use resolve::{Ramps, ResolvedTheme};
@@ -27,6 +31,12 @@ pub use system::{AccessibilityPreferences, SourceKind, SystemTheme};
 
 /// The hairline width of the control border every button and field paints.
 pub const BORDER_WIDTH: Pixels = px(1.0);
+/// The side of glyphs inside titlebar overlay controls.
+pub const OVERLAY_ICON_SIZE: Rems = rems(0.75);
+/// The draggable width of a resize seam and its panel-row gutter.
+pub const RESIZE_HANDLE_WIDTH: Pixels = px(8.0);
+/// The gap between an anchored tooltip and its anchor.
+pub const TOOLTIP_ANCHOR_GAP: Pixels = px(4.0);
 /// The widest a titlebar tab grows before its label fades.
 pub const TAB_MAX_WIDTH: Pixels = px(240.0);
 /// The narrowest a titlebar tab shrinks, keeping short labels clear of the fade.
@@ -75,12 +85,6 @@ pub const WINDOW_RESIZE_INSET: Pixels = px(4.0);
 pub const TRAFFIC_LIGHT_PAD: Pixels = px(88.0);
 /// The width of a Windows caption button.
 pub const WINDOWS_CAPTION_WIDTH: Pixels = px(36.0);
-/// Windows paints its caption close-button hover red in every theme.
-pub const WINDOWS_CLOSE_HOVER: Hsla = hsla(0.986043, 0.863406, 0.488235, 1.0);
-/// The close-button hover dimmed while pressed.
-pub const WINDOWS_CLOSE_PRESSED: Hsla = hsla(0.986043, 0.863406, 0.488235, 0.8);
-/// The close glyph's color over the red hover.
-pub const WINDOWS_CLOSE_FOREGROUND: Hsla = gpui::white();
 /// The width a sidebar opens at.
 pub const SIDEBAR_DEFAULT_WIDTH: Pixels = px(240.0);
 /// The narrowest a sidebar may be dragged.
@@ -208,6 +212,11 @@ impl Theme {
     /// Reads the theme global. Panics before `init`.
     pub fn global(cx: &App) -> &Self {
         cx.global::<Self>()
+    }
+
+    /// The system UI family, for chrome surfaces.
+    pub fn ui_font(&self) -> &'static str {
+        ".SystemUIFont"
     }
 
     fn from_resolved(resolved: ResolvedTheme) -> Self {

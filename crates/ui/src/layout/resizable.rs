@@ -86,7 +86,9 @@ impl ResizableState {
                 .filter(|(j, _)| *j != ix)
                 .fold(px(0.), |sum, (_, min)| sum + *min);
             let ceiling = extent - floors;
-            size = size.min(ceiling);
+            // When the window is smaller than the other panes' floors, keep
+            // the floor rather than shrinking this pane below it.
+            size = size.min(ceiling.max(floor));
         }
 
         // Earlier panes hold the equal split they already render at,
@@ -107,6 +109,8 @@ impl ResizableState {
 
     /// Sets pane `ix`'s width, backfilling earlier panes.
     pub fn set_pane_width(&mut self, ix: usize, width: Pixels, cx: &mut Context<Self>) {
+        // Persisted layouts can carry negative sizes.
+        let width = width.max(PANE_MIN_SIZE);
         while self.sizes.len() <= ix {
             self.sizes.push(width);
         }
@@ -308,5 +312,32 @@ impl RenderOnce for Resizable {
                     .inset_0(),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn resize_never_stores_sub_floor_size(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ResizableState::default());
+        state.update(cx, |state, cx| {
+            // The measured extent is smaller than the other pane's floor.
+            state.set_measured(px(100.), cx);
+            state.resize(0, px(500.), &[px(48.), px(150.)], cx);
+            assert_eq!(state.sizes[0], px(48.));
+        });
+    }
+
+    #[gpui::test]
+    fn set_pane_width_clamps_negative_values(cx: &mut TestAppContext) {
+        let state = cx.new(|_| ResizableState::default());
+        state.update(cx, |state, cx| {
+            // Persisted layouts can carry negative sizes.
+            state.set_pane_width(0, px(-20.), cx);
+            assert_eq!(state.pane_size(0, 1), PANE_MIN_SIZE);
+        });
     }
 }

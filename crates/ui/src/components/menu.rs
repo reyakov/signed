@@ -25,14 +25,17 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, Bounds, BoxShadow, DefiniteLength,
-    DispatchPhase, ElementId, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, RenderOnce, Role,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
-    Window, anchored, canvas, deferred, div, ease_out_quint, point, px, relative, rems,
+    Animation, AnimationExt as _, AnyElement, App, Bounds, DefiniteLength, DispatchPhase,
+    ElementId, Entity, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, RenderOnce, Role, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window, anchored,
+    canvas, deferred, div, ease_out_quint, point, px, relative, rems,
 };
 
-use crate::components::common::{OVERLAY_LAYER, StyledExt as _, focus_handle, v_flex};
+use crate::components::common::{
+    OVERLAY_LAYER, StyledExt as _, floating_panel, focus_handle, v_flex,
+    wrapping_adjacent_selectable,
+};
 use crate::components::scroll_area::{ScrollArea, ScrollAxes};
 use crate::icons::{Icon, IconRole, icon as icon_glyph};
 use crate::theme::{ActiveTheme as _, MENU_MIN_WIDTH, POPUP_MAX_HEIGHT};
@@ -190,7 +193,6 @@ impl FluentBuilder for MenuItem {}
 /// Menu chrome styles.
 #[derive(Clone)]
 pub(crate) struct MenuChrome {
-    surface: gpui::Hsla,
     border: gpui::Hsla,
     foreground: gpui::Hsla,
     muted_foreground: gpui::Hsla,
@@ -199,9 +201,7 @@ pub(crate) struct MenuChrome {
     primary_foreground: gpui::Hsla,
     destructive: gpui::Hsla,
     destructive_foreground: gpui::Hsla,
-    radius_overlay: Pixels,
-    radius_sm: Pixels,
-    shadow: Vec<BoxShadow>,
+    radius_full: Pixels,
 }
 
 /// A floating menu of [`MenuItem`] rows anchored below its trigger.
@@ -227,7 +227,6 @@ impl MenuChrome {
         let theme = cx.theme();
         (
             Self {
-                surface: theme.colors.surface,
                 border: theme.colors.border,
                 foreground: theme.colors.foreground,
                 muted_foreground: theme.colors.muted_foreground,
@@ -236,9 +235,7 @@ impl MenuChrome {
                 primary_foreground: theme.colors.primary_foreground,
                 destructive: theme.ramps.destructive.base,
                 destructive_foreground: theme.colors.destructive_foreground,
-                radius_overlay: theme.radius.overlay,
-                radius_sm: theme.radius.sm,
-                shadow: theme.elevations.popover.shadows(),
+                radius_full: theme.radius.full,
             },
             theme.motion.overlay,
         )
@@ -688,110 +685,110 @@ fn menu_panel(
         })
         .collect();
 
-    v_flex()
-        .id("menu-panel")
-        .debug_selector(move || format!("{}-panel", params.debug_prefix))
-        .occlude()
-        .track_focus(focus)
-        .role(Role::Menu)
-        .aria_label(params.label)
-        .when_some(params.min_width, |panel, width| panel.min_w(width))
-        .when(params.min_width.is_none(), |panel| {
-            panel.min_w(MENU_MIN_WIDTH)
-        })
-        .p_1()
-        .bg(params.chrome.surface)
-        .text_color(params.chrome.foreground)
-        .rounded(params.chrome.radius_overlay)
-        .border_1()
-        .border_color(params.chrome.border)
-        .shadow(params.chrome.shadow.clone())
-        .overflow_hidden()
-        .on_mouse_down_out({
-            let on_dismiss = params.on_dismiss.clone();
-            let dismiss_bounds = params.dismiss_bounds.clone();
-            let flyout_stack = flyout_stack.clone();
+    floating_panel(
+        cx,
+        cx.theme().radius.overlay,
+        v_flex()
+            .id("menu-panel")
+            .debug_selector(move || format!("{}-panel", params.debug_prefix))
+            .occlude()
+            .track_focus(focus)
+            .role(Role::Menu)
+            .aria_label(params.label)
+            .when_some(params.min_width, |panel, width| panel.min_w(width))
+            .when(params.min_width.is_none(), |panel| {
+                panel.min_w(MENU_MIN_WIDTH)
+            })
+            .p_1()
+            .text_color(params.chrome.foreground),
+        cx.theme().elevations.popover.shadows(),
+    )
+    .overflow_hidden()
+    .on_mouse_down_out({
+        let on_dismiss = params.on_dismiss.clone();
+        let dismiss_bounds = params.dismiss_bounds.clone();
+        let flyout_stack = flyout_stack.clone();
 
-            move |event, window, cx| {
-                if dismiss_bounds
-                    .borrow()
+        move |event, window, cx| {
+            if dismiss_bounds
+                .borrow()
+                .is_some_and(|bounds| bounds.contains(&event.position))
+            {
+                return;
+            }
+
+            // Clicks inside any open flyout belong to that flyout.
+            if flyout_stack.borrow().iter().any(|cell| {
+                cell.borrow()
                     .is_some_and(|bounds| bounds.contains(&event.position))
-                {
-                    return;
-                }
-
-                // Clicks inside any open flyout belong to that flyout.
-                if flyout_stack.borrow().iter().any(|cell| {
-                    cell.borrow()
-                        .is_some_and(|bounds| bounds.contains(&event.position))
-                }) {
-                    return;
-                }
-
-                if let Some(on_dismiss) = &on_dismiss {
-                    on_dismiss(false, window, cx);
-                }
+            }) {
+                return;
             }
-        })
-        .on_key_down({
-            let items = params.items.clone();
-            let selection = selection.clone();
-            let set_flyout = set_flyout.clone();
-            let on_dismiss = params.on_dismiss.clone();
-            let on_activate = params.on_activate.clone();
-            let left_dismisses = params.is_flyout;
-            move |event: &KeyDownEvent, window, cx| {
-                handle_menu_key(
-                    event,
-                    MenuKeyEnv {
-                        items: &items,
-                        selection: &selection,
-                        set_flyout: &set_flyout,
-                        on_dismiss: &on_dismiss,
-                        on_activate: &on_activate,
-                        left_dismisses,
-                    },
-                    window,
-                    cx,
-                );
+
+            if let Some(on_dismiss) = &on_dismiss {
+                on_dismiss(false, window, cx);
             }
-        })
-        .child(
-            ScrollArea::new("menu-items")
-                .handle(scroll.read(cx).clone())
-                .axes(ScrollAxes::Vertical)
-                .max_h(POPUP_MAX_HEIGHT)
-                .child(v_flex().gap_0p5().children(rows)),
-        )
-        .child(
-            canvas(
-                {
-                    let bounds_sink = params.bounds_sink.cloned();
-                    move |bounds, _window, _cx| {
-                        if let Some(cell) = &bounds_sink {
-                            *cell.borrow_mut() = Some(bounds);
-                        }
-                    }
+        }
+    })
+    .on_key_down({
+        let items = params.items.clone();
+        let selection = selection.clone();
+        let set_flyout = set_flyout.clone();
+        let on_dismiss = params.on_dismiss.clone();
+        let on_activate = params.on_activate.clone();
+        let left_dismisses = params.is_flyout;
+        move |event: &KeyDownEvent, window, cx| {
+            handle_menu_key(
+                event,
+                MenuKeyEnv {
+                    items: &items,
+                    selection: &selection,
+                    set_flyout: &set_flyout,
+                    on_dismiss: &on_dismiss,
+                    on_activate: &on_activate,
+                    left_dismisses,
                 },
-                {
-                    let focus = focus.clone();
-                    let flyout_open = flyout_open.clone();
-                    move |_, _, window, cx| {
-                        if flyout_open.read(cx).is_none() && !focus.contains_focused(window, cx) {
-                            window.focus(&focus, cx);
-                        }
+                window,
+                cx,
+            );
+        }
+    })
+    .child(
+        ScrollArea::new("menu-items")
+            .handle(scroll.read(cx).clone())
+            .axes(ScrollAxes::Vertical)
+            .max_h(POPUP_MAX_HEIGHT)
+            .child(v_flex().gap_0p5().children(rows)),
+    )
+    .child(
+        canvas(
+            {
+                let bounds_sink = params.bounds_sink.cloned();
+                move |bounds, _window, _cx| {
+                    if let Some(cell) = &bounds_sink {
+                        *cell.borrow_mut() = Some(bounds);
                     }
-                },
-            )
-            .absolute()
-            .inset_0(),
+                }
+            },
+            {
+                let focus = focus.clone();
+                let flyout_open = flyout_open.clone();
+                move |_, _, window, cx| {
+                    if flyout_open.read(cx).is_none() && !focus.contains_focused(window, cx) {
+                        window.focus(&focus, cx);
+                    }
+                }
+            },
         )
-        .with_animation(
-            "menu-enter",
-            Animation::new(params.enter_duration).with_easing(ease_out_quint()),
-            |panel, delta| panel.opacity(delta),
-        )
-        .into_any_element()
+        .absolute()
+        .inset_0(),
+    )
+    .with_animation(
+        "menu-enter",
+        Animation::new(params.enter_duration).with_easing(ease_out_quint()),
+        |panel, delta| panel.opacity(delta),
+    )
+    .into_any_element()
 }
 
 /// Renders one menu row.
@@ -968,7 +965,7 @@ fn row_shell(
         .px_4()
         .text_sm()
         .line_height(relative(1.0))
-        .rounded(chrome.radius_sm)
+        .rounded(chrome.radius_full)
         .map(|row| {
             if item.disabled {
                 row
@@ -1053,8 +1050,6 @@ fn handle_menu_key(event: &KeyDownEvent, env: MenuKeyEnv, window: &mut Window, c
         .collect();
 
     let current = *env.selection.read(cx);
-    let position =
-        current.and_then(|current| selectable.iter().position(|index| *index == current));
 
     match event.keystroke.key.as_str() {
         "down" | "up" | "home" | "end" => {
@@ -1062,19 +1057,15 @@ fn handle_menu_key(event: &KeyDownEvent, env: MenuKeyEnv, window: &mut Window, c
                 return;
             }
             let next = match event.keystroke.key.as_str() {
-                "down" => match position {
-                    Some(pos) => (pos + 1).min(selectable.len() - 1),
-                    None => 0,
-                },
-                "up" => match position {
-                    Some(pos) => pos.saturating_sub(1),
-                    None => selectable.len() - 1,
-                },
-                "home" => 0,
-                _ => selectable.len() - 1,
+                "down" => wrapping_adjacent_selectable(&selectable, current, true),
+                "up" => wrapping_adjacent_selectable(&selectable, current, false),
+                "home" => selectable.first().copied(),
+                _ => selectable.last().copied(),
             };
-            env.selection
-                .update(cx, |selection, _| *selection = Some(selectable[next]));
+            if let Some(next) = next {
+                env.selection
+                    .update(cx, |selection, _| *selection = Some(next));
+            }
         }
         "right" => {
             let opens = current

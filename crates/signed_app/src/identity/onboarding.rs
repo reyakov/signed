@@ -11,7 +11,7 @@ use ui::field::Field;
 use ui::input::{Input, InputState};
 use ui::theme::ActiveTheme as _;
 
-use crate::shared::progress::{DialogProgress, error_row};
+use crate::shared::progress::{DialogProgress, error_row, run_dialog_task};
 
 pub struct OnboardingDialog {
     handle: DialogHandle,
@@ -61,19 +61,7 @@ impl OnboardingDialog {
 
         let backend = Backend::global(cx);
         let task = backend.update(cx, |backend, cx| backend.create_identity(&name, &pass, cx));
-        let state = self.state.clone();
-        let handle = self.handle.clone();
-
-        cx.spawn(async move |_this, cx| match task.await {
-            Ok(_) => cx.update(|cx| handle.close(cx)),
-            Err(error) => {
-                state.update(cx, |state, cx| {
-                    state.fail(error.to_string());
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
+        run_dialog_task(task, &self.state, &self.handle, cx);
     }
 }
 

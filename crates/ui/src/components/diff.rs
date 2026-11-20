@@ -33,14 +33,17 @@ use gpui::{
     App, Context, ElementId, HighlightStyle, InteractiveElement as _, IntoElement,
     ListHorizontalSizingBehavior, ParentElement as _, Pixels, Render, ScrollStrategy, SharedString,
     StatefulInteractiveElement as _, Styled as _, TextStyle, UniformListScrollHandle, Window, div,
-    point, rems, uniform_list,
+    point, px, rems, uniform_list,
 };
 use similar::{Change, ChangeTag, TextDiff};
 
 use crate::components::highlight::{HighlightedCode, Language, Line, Role, highlight};
 use crate::components::scrollbar::{Scrollbar, ScrollbarHandle, ScrollbarVisibility};
 use crate::components::utils::{gutter_cell, wash, wash_gutter, wash_strong};
-use crate::theme::{ActiveTheme as _, BORDER_WIDTH, CODE_GUTTER_WIDTH, MONO_ADVANCE_RATIO};
+use crate::theme::{ActiveTheme as _, CODE_GUTTER_WIDTH, CODE_LINE_HEIGHT, MONO_ADVANCE_RATIO};
+
+/// The left change-indicator bar's width, four hairlines.
+const CHANGE_BAR_WIDTH: Pixels = px(4.0);
 
 /// What a diff row did to the file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -525,7 +528,7 @@ fn render_row(
     let mono_font = theme.mono_font;
     let colors = theme.colors;
     let ramps = theme.ramps;
-    let line_height = text_size * 1.5;
+    let line_height = text_size * CODE_LINE_HEIGHT;
     let char_width = text_size * MONO_ADVANCE_RATIO;
 
     let frame = div()
@@ -563,7 +566,7 @@ fn render_row(
                     row_element.child(
                         div()
                             .flex_none()
-                            .border_l(BORDER_WIDTH * 4.0)
+                            .border_l(CHANGE_BAR_WIDTH)
                             .border_color(gpui::transparent_black()),
                     )
                 },
@@ -689,9 +692,7 @@ fn render_row(
                     _ => wash_strong(change_color),
                 })
                 .when(options.indicators == DiffIndicators::Bars, |number| {
-                    number
-                        .border_l(BORDER_WIDTH * 4.0)
-                        .border_color(change_color)
+                    number.border_l(CHANGE_BAR_WIDTH).border_color(change_color)
                 }),
             )
         })
@@ -702,7 +703,7 @@ fn render_row(
                     div()
                         .h_full()
                         .flex_none()
-                        .border_l(BORDER_WIDTH * 4.0)
+                        .border_l(CHANGE_BAR_WIDTH)
                         .border_color(change_color),
                 )
             },

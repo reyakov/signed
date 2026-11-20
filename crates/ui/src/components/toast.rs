@@ -25,7 +25,8 @@ use gpui::{
 
 use crate::components::button::{Button, ButtonVariant};
 use crate::components::common::{
-    DismissHandler, ResultLogErr as _, Sizable as _, StyledExt as _, TOAST_LAYER,
+    DismissHandler, ResultLogErr as _, Sizable as _, StyledExt as _, TOAST_LAYER, floating_panel,
+    v_flex,
 };
 use crate::icons::{Icon, IconRole};
 use crate::theme::{ActiveTheme as _, TOAST_MAX_WIDTH};
@@ -132,8 +133,10 @@ pub struct Toasts {
     current: Option<ToastEntry>,
     exiting: Option<ToastEntry>,
     next_id: usize,
-    /// Pending dismiss and fade timers; held so they die with the store.
-    tasks: Vec<Task<()>>,
+    /// The pending auto-dismiss timer, replaced on each push.
+    dismiss_task: Option<Task<()>>,
+    /// The pending fade timer, replaced on each exit.
+    fade_task: Option<Task<()>>,
 }
 
 impl Toasts {
@@ -157,7 +160,7 @@ impl Toasts {
                 this.update(cx, |toasts, cx| toasts.dismiss(id, cx))
                     .log_err();
             });
-            self.tasks.push(task);
+            self.dismiss_task.replace(task);
         }
 
         id
@@ -210,7 +213,7 @@ impl Toasts {
             this.update(cx, |toasts, cx| toasts.finish_exit(cx))
                 .log_err();
         });
-        self.tasks.push(task);
+        self.fade_task.replace(task);
     }
 
     fn finish_exit(&mut self, cx: &mut Context<Self>) {
@@ -252,14 +255,12 @@ impl RenderOnce for ToastsView {
         let current = self.toasts.read(cx).current.clone();
 
         deferred(
-            div()
+            v_flex()
                 .id(self.id)
                 .absolute()
                 .left_0()
                 .bottom_4()
                 .w_full()
-                .flex()
-                .flex_col()
                 .items_center()
                 .when_some(exiting, |column, entry| {
                     let id = entry.id;
@@ -286,80 +287,77 @@ impl ToastEntry {
     /// The rendered pill for this toast.
     fn pill(&self, toasts: &Entity<Toasts>, cx: &App) -> gpui::Stateful<gpui::Div> {
         let theme = cx.theme();
-        let surface = theme.colors.surface;
-        let border = theme.colors.border;
         let foreground = theme.colors.foreground;
         let radius = theme.radius.full;
-        let shadows = theme.elevations.popover.shadows();
         let toast = &self.toast;
         let toasts = toasts.clone();
         let id = self.id;
 
-        div()
-            .id(("toast", id))
-            .debug_selector(|| "toast-pill".to_string())
-            .role(Role::Alert)
-            .aria_label(toast.message.clone())
-            .max_w(TOAST_MAX_WIDTH)
-            .flex()
-            .items_center()
-            .gap_2()
-            .py_1p5()
-            .px_3()
-            .bg(surface)
-            .border_1()
-            .border_color(border)
-            .rounded(radius)
-            .shadow(shadows.clone())
-            .refine_style(&toast.style)
-            .when_some(toast.icon.clone(), |pill, icon| {
-                pill.child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .child(icon.size(rems(1.0)).color(foreground)),
-                )
-            })
-            .child(
+        floating_panel(
+            cx,
+            radius,
+            div()
+                .id(("toast", id))
+                .debug_selector(|| "toast-pill".to_string())
+                .role(Role::Alert)
+                .aria_label(toast.message.clone())
+                .max_w(TOAST_MAX_WIDTH)
+                .flex()
+                .items_center()
+                .gap_2()
+                .py_1p5()
+                .px_3(),
+            theme.elevations.popover.shadows(),
+        )
+        .refine_style(&toast.style)
+        .when_some(toast.icon.clone(), |pill, icon| {
+            pill.child(
                 div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .truncate()
-                    .text_sm()
-                    .text_color(foreground)
-                    .child(toast.message.clone()),
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .child(icon.size(rems(1.0)).color(foreground)),
             )
-            .when_some(toast.action.clone(), |pill, action| {
-                let toasts = toasts.clone();
-                pill.child(
-                    div().flex_none().child(
-                        Button::new(("toast-action", id))
-                            .label(action.label.clone())
-                            .variant(ButtonVariant::Primary)
-                            .small()
-                            .on_click(move |_, _window, cx| {
-                                (action.handler)(cx);
-                                toasts.update(cx, |toasts, cx| {
-                                    toasts.dismiss(id, cx);
-                                });
-                            }),
-                    ),
-                )
-            })
-            .child(
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .truncate()
+                .text_sm()
+                .text_color(foreground)
+                .child(toast.message.clone()),
+        )
+        .when_some(toast.action.clone(), |pill, action| {
+            let toasts = toasts.clone();
+            pill.child(
                 div().flex_none().child(
-                    Button::new(("toast-close", id))
-                        .icon(IconRole::Close)
-                        .variant(ButtonVariant::Ghost)
+                    Button::new(("toast-action", id))
+                        .label(action.label.clone())
+                        .variant(ButtonVariant::Primary)
                         .small()
-                        .accessibility_label("Dismiss")
                         .on_click(move |_, _window, cx| {
+                            (action.handler)(cx);
                             toasts.update(cx, |toasts, cx| {
                                 toasts.dismiss(id, cx);
                             });
                         }),
                 ),
             )
+        })
+        .child(
+            div().flex_none().child(
+                Button::new(("toast-close", id))
+                    .icon(IconRole::Close)
+                    .variant(ButtonVariant::Ghost)
+                    .small()
+                    .accessibility_label("Dismiss")
+                    .on_click(move |_, _window, cx| {
+                        toasts.update(cx, |toasts, cx| {
+                            toasts.dismiss(id, cx);
+                        });
+                    }),
+            ),
+        )
     }
 }

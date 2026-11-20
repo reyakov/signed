@@ -378,9 +378,7 @@ impl RenderOnce for Sidebar {
                     .handle(scroll.read(cx).clone())
                     .h_full()
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
+                        v_flex()
                             .gap_0p5()
                             .when(padded, |content| content.p_2())
                             .children(children),

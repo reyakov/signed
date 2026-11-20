@@ -221,7 +221,6 @@ where
         let open_for_items = open.clone();
 
         let rest_border = if is_open { ring } else { border };
-        let hover_border = rest_border;
 
         let selected_index = self.selected.as_ref().and_then(|value| {
             self.options
@@ -282,7 +281,7 @@ where
                     } else {
                         muted_foreground
                     })
-                    .hover(|style| style.bg(muted).border_color(hover_border))
+                    .hover(|style| style.bg(muted).border_color(rest_border))
                     .child(trigger_text.clone())
                     .child(
                         icon(IconRole::ChevronDown)

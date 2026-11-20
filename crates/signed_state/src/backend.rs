@@ -418,19 +418,22 @@ impl Backend {
 
                 let relays: Vec<(RelayUrl, Option<RelayMetadata>)> = [
                     (
-                        RelayUrl::parse("wss://relay.primal.net").unwrap(),
+                        RelayUrl::parse("wss://relay.primal.net")
+                            .expect("hardcoded relay URL parses"),
                         Some(RelayMetadata::Read),
                     ),
                     (
-                        RelayUrl::parse("wss://relay.ditto.pub").unwrap(),
+                        RelayUrl::parse("wss://relay.ditto.pub")
+                            .expect("hardcoded relay URL parses"),
                         Some(RelayMetadata::Read),
                     ),
                     (
-                        RelayUrl::parse("wss://relay.nostr.net").unwrap(),
+                        RelayUrl::parse("wss://relay.nostr.net")
+                            .expect("hardcoded relay URL parses"),
                         Some(RelayMetadata::Write),
                     ),
                     (
-                        RelayUrl::parse("wss://nos.lol").unwrap(),
+                        RelayUrl::parse("wss://nos.lol").expect("hardcoded relay URL parses"),
                         Some(RelayMetadata::Write),
                     ),
                 ]

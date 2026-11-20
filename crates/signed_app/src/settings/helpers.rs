@@ -118,6 +118,7 @@ pub fn grasp_servers_editor(input: &Entity<InputState>, cx: &App) -> AnyElement 
     v_flex()
         .gap_2()
         .children(servers.iter().enumerate().map(|(ix, server)| {
+            let server = server.clone();
             h_flex()
                 .gap_1()
                 .child(
@@ -129,7 +130,7 @@ pub fn grasp_servers_editor(input: &Entity<InputState>, cx: &App) -> AnyElement 
                         .text_color(cx.theme().colors.muted_foreground)
                         .text_xs()
                         .rounded(cx.theme().radius.control)
-                        .child(display_server(server)),
+                        .child(display_server(&server)),
                 )
                 .child(
                     Button::new(format!("settings-remove-server:{ix}"))
@@ -142,7 +143,16 @@ pub fn grasp_servers_editor(input: &Entity<InputState>, cx: &App) -> AnyElement 
                                 store.update(cx, |store, cx| {
                                     store.edit(
                                         |settings| {
-                                            settings.grasp_servers.default_servers.remove(ix);
+                                            // A row's index can desync after a prior
+                                            // removal; match by value.
+                                            if let Some(at) = settings
+                                                .grasp_servers
+                                                .default_servers
+                                                .iter()
+                                                .position(|known| known == &server)
+                                            {
+                                                settings.grasp_servers.default_servers.remove(at);
+                                            }
                                         },
                                         cx,
                                     );
@@ -218,6 +228,7 @@ pub fn scan_paths_editor(cx: &App) -> AnyElement {
     v_flex()
         .gap_2()
         .children(scan_paths.iter().enumerate().map(|(ix, path)| {
+            let path = path.clone();
             h_flex()
                 .gap_1()
                 .child(
@@ -241,7 +252,16 @@ pub fn scan_paths_editor(cx: &App) -> AnyElement {
                             store.update(cx, |store, cx| {
                                 store.edit(
                                     |settings| {
-                                        settings.local_repos.scan_paths.remove(ix);
+                                        // A row's index can desync after a prior
+                                        // removal; match by value.
+                                        if let Some(at) = settings
+                                            .local_repos
+                                            .scan_paths
+                                            .iter()
+                                            .position(|known| known == &path)
+                                        {
+                                            settings.local_repos.scan_paths.remove(at);
+                                        }
                                     },
                                     cx,
                                 );

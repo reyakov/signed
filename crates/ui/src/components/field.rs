@@ -143,9 +143,7 @@ impl RenderOnce for Field {
         };
 
         let content = if self.variant == FieldVariant::Row {
-            div()
-                .flex()
-                .flex_col()
+            v_flex()
                 .gap_1()
                 .child(
                     h_flex()
@@ -160,9 +158,7 @@ impl RenderOnce for Field {
                 })
                 .when_some(error, |field, error| field.child(error))
         } else {
-            div()
-                .flex()
-                .flex_col()
+            v_flex()
                 .gap_2()
                 .child(
                     v_flex()

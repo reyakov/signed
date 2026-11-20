@@ -88,6 +88,7 @@ pub fn open_repo_item(
                 cx,
             );
         }
-        RepoItem::Patch => {}
+        // Opening a patch series directly is not a feature.
+        _ => {}
     }
 }

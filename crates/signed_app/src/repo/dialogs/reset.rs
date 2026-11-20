@@ -1,25 +1,31 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
     Styled as _, Window, div, px,
 };
 use signed_state::RepoStore;
 use ui::button::{Button, ButtonVariant};
-use ui::common::v_flex;
+use ui::common::{ResultLogErr as _, v_flex};
 use ui::dialog::{Dialog, DialogHandle};
 use ui::theme::ActiveTheme as _;
+
+use crate::shared::progress::{DialogProgress, error_row};
 
 pub struct ResetRemoteDialog {
     handle: DialogHandle,
     store: Entity<RepoStore>,
     deleted: Vec<String>,
+    state: Entity<DialogProgress>,
 }
 
 impl ResetRemoteDialog {
     pub fn new(store: Entity<RepoStore>, deleted: Vec<String>, cx: &mut App) -> Entity<Self> {
+        let state = cx.new(|_| DialogProgress::default());
         cx.new(|_| Self {
             handle: DialogHandle::new(true),
             store,
             deleted,
+            state,
         })
     }
 }
@@ -30,12 +36,16 @@ impl Render for ResetRemoteDialog {
         let store = self.store.clone();
         let cancel_close = self.handle.clone();
         let confirm_close = self.handle.clone();
+        let content_state = self.state.clone();
+        let action_state = self.state.clone();
 
         Dialog::new("reset-remote-dialog")
             .handle(self.handle.clone())
             .min_width(px(480.))
             .title("Reset remote to local")
             .content(move |_, cx| {
+                let progress = content_state.read(cx);
+
                 v_flex()
                     .gap_2()
                     .child(
@@ -60,12 +70,15 @@ impl Render for ResetRemoteDialog {
                             }))
                             .into_any_element()
                     })
+                    .when_some(error_row(&progress.error, cx), |el, error| el.child(error))
                     .into_any_element()
             })
-            .actions(move |_, _| {
+            .actions(move |_, cx| {
+                let busy = action_state.read(cx).busy;
                 let store = store.clone();
                 let cancel_close = cancel_close.clone();
                 let confirm_close = confirm_close.clone();
+                let confirm_state = action_state.clone();
 
                 let cancel: AnyElement = Button::new("cancel-reset-remote")
                     .label("Cancel")
@@ -76,15 +89,26 @@ impl Render for ResetRemoteDialog {
                 let confirm: AnyElement = Button::new("confirm-reset-remote")
                     .label("Reset remote")
                     .variant(ButtonVariant::Destructive)
-                    .on_click(move |_, _, cx| {
+                    .loading(busy)
+                    .disabled(busy)
+                    .on_click(move |_, window, cx| {
                         let task = store.update(cx, |store, cx| store.reset_repository(cx));
-                        cx.spawn(async move |_cx| {
-                            if let Err(error) = task.await {
-                                log::error!("failed to reset remote: {error:#}");
+                        let state = confirm_state.clone();
+                        let close = confirm_close.clone();
+                        let handle = window.window_handle();
+                        cx.spawn(async move |cx| match task.await {
+                            Ok(()) => {
+                                cx.update_window(handle, |_, _, cx| close.close(cx))
+                                    .log_err();
+                            }
+                            Err(error) => {
+                                state.update(cx, |state, cx| {
+                                    state.fail(error.to_string());
+                                    cx.notify();
+                                });
                             }
                         })
                         .detach();
-                        confirm_close.close(cx);
                     })
                     .into_any_element();
 

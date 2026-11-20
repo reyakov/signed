@@ -5,12 +5,13 @@ use gpui::{
 };
 use signed_state::RepoStore;
 use ui::button::Button;
-use ui::common::{h_flex, v_flex};
+use ui::common::{ResultLogErr as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
 use ui::layout::panel::Panel;
 use ui::theme::ActiveTheme as _;
 
+use crate::shared::progress::error_row;
 use crate::workspace::Workspace;
 
 pub struct SendPatchView {
@@ -65,7 +66,7 @@ impl SendPatchView {
         self.error = None;
         cx.notify();
 
-        let sync_error = self.store.update(cx, |store, cx| {
+        let task = self.store.update(cx, |store, cx| {
             store.open_pull_request(
                 (!subject.is_empty()).then_some(subject),
                 description,
@@ -75,22 +76,30 @@ impl SendPatchView {
                 None,
                 None,
                 cx,
-            );
-            store.last_error.clone()
+            )
         });
 
-        if let Some(error) = sync_error {
-            self.submitting = false;
-            self.error = Some(error.into());
-            cx.notify();
-            return;
-        }
-
-        let panel_id = self.panel_id.clone();
-        crate::shared::log_dropped(
-            self.workspace
-                .update(cx, |workspace, cx| workspace.close_detail(&panel_id, cx)),
-        );
+        cx.spawn(async move |this, cx| match task.await {
+            Ok(()) => {
+                this.update(cx, |this, cx| {
+                    let panel_id = this.panel_id.clone();
+                    crate::shared::log_dropped(
+                        this.workspace
+                            .update(cx, |workspace, cx| workspace.close_detail(&panel_id, cx)),
+                    );
+                })
+                .log_err();
+            }
+            Err(error) => {
+                this.update(cx, |this, cx| {
+                    this.submitting = false;
+                    this.error = Some(error.to_string().into());
+                    cx.notify();
+                })
+                .log_err();
+            }
+        })
+        .detach();
     }
 
     fn render_footer(&self, cx: &Context<Self>) -> AnyElement {
@@ -159,14 +168,7 @@ impl Render for SendPatchView {
                             .rows(12)
                             .placeholder("diff --git a/file.txt b/file.txt"),
                     )
-                    .when_some(self.error.clone(), |this, error| {
-                        this.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().ramps.destructive.base)
-                                .child(error),
-                        )
-                    }),
+                    .when_some(error_row(&self.error, cx), |this, error| this.child(error)),
             )
             .child(self.render_footer(cx))
     }

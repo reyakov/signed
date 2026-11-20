@@ -12,3 +12,6 @@ nostr-lmdb.workspace = true
 
 anyhow.workspace = true
 webbrowser.workspace = true
+
+[lints]
+workspace = true

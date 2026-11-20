@@ -33,11 +33,12 @@ use gpui::{
 };
 
 use crate::components::button::{Button, ButtonVariant};
-use crate::components::common::{DIALOG_LAYER, Sizable, StyledExt as _, v_flex};
+use crate::components::common::{
+    DIALOG_LAYER, Sizable, StyledExt as _, floating_panel, h_flex, v_flex,
+};
 use crate::components::grain::grain;
 use crate::components::scroll_area::ScrollArea;
 use crate::icons::IconRole;
-use crate::layout::h_flex;
 use crate::theme::{ActiveTheme as _, DIALOG_MIN_WIDTH};
 
 /// Requests the dialog's close: `false` closes.
@@ -98,6 +99,7 @@ pub struct Dialog {
     content: Option<ContentFn>,
     actions: Option<ActionsFn>,
     min_width: Option<DefiniteLength>,
+    width: Option<DefiniteLength>,
     height: Option<DefiniteLength>,
     style: StyleRefinement,
 }
@@ -122,6 +124,7 @@ impl Dialog {
             content: None,
             actions: None,
             min_width: None,
+            width: None,
             height: None,
             style: StyleRefinement::default(),
         }
@@ -217,6 +220,15 @@ impl Dialog {
         self
     }
 
+    /// Sets the panel's fixed width, capped at 90% of the window.
+    pub fn width<W>(mut self, width: W) -> Self
+    where
+        W: Into<DefiniteLength>,
+    {
+        self.width = Some(width.into());
+        self
+    }
+
     /// Sets the panel's height, body content taller than the panel scrolls.
     pub fn height<H>(mut self, height: H) -> Self
     where
@@ -255,13 +267,12 @@ impl RenderOnce for Dialog {
             })
         });
 
-        let (scrim_color, border, foreground, surface, radius, shadows, enter_duration) = {
+        let (scrim_color, foreground, background, radius, shadows, enter_duration) = {
             let theme = cx.theme();
             (
                 theme.colors.overlay,
-                theme.colors.border,
                 theme.colors.foreground,
-                theme.colors.surface,
+                theme.colors.background,
                 theme.radius.overlay,
                 theme.elevations.dialog.shadows(),
                 theme.motion.overlay,
@@ -297,112 +308,116 @@ impl RenderOnce for Dialog {
             .read(cx)
             .clone();
 
-        let panel = v_flex()
-            .id("dialog-panel")
-            .track_focus(&focus)
-            .role(role)
-            .aria_label(label)
-            .when_some(self.min_width, |panel, width| panel.min_w(width))
-            .when(self.min_width.is_none(), |panel| {
-                panel.min_w(DIALOG_MIN_WIDTH)
-            })
-            .max_w(relative(0.9))
-            .when_some(height, |panel, height| panel.h(height))
-            .bg(surface)
-            .text_color(foreground)
-            .rounded(radius)
-            .border_1()
-            .border_color(border)
-            .shadow(shadows)
-            .overflow_hidden()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_key_down({
-                let on_change = on_change.clone();
-                move |event: &KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape"
-                        && !alert
-                        && close_on_escape
-                        && let Some(on_change) = &on_change
-                    {
-                        on_change(false, window, cx);
-                    }
-                    cx.stop_propagation();
+        let panel = floating_panel(
+            cx,
+            radius,
+            v_flex()
+                .id("dialog-panel")
+                .track_focus(&focus)
+                .role(role)
+                .aria_label(label)
+                .when_some(self.width, |panel, width| panel.w(width))
+                .when(self.width.is_none() && self.min_width.is_none(), |panel| {
+                    panel.min_w(DIALOG_MIN_WIDTH)
+                })
+                .when_some(self.min_width, |panel, width| panel.min_w(width))
+                .max_w(relative(0.9))
+                .when_some(height, |panel, height| panel.h(height))
+                .text_color(foreground),
+            shadows,
+        )
+        // The panel behind the dialog is `background` (pure white/black), so
+        // the dialog matches it instead of the muted `surface` tint.
+        .bg(background)
+        .overflow_hidden()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_key_down({
+            let on_change = on_change.clone();
+            move |event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape"
+                    && !alert
+                    && close_on_escape
+                    && let Some(on_change) = &on_change
+                {
+                    on_change(false, window, cx);
+                }
+                cx.stop_propagation();
+            }
+        })
+        .when(self.title.is_some() || show_close, |panel| {
+            panel.child(
+                h_flex()
+                    .h_12()
+                    .px_2()
+                    .gap_2()
+                    .justify_between()
+                    .when(show_close, |row| row.child(div().w_7()))
+                    .when_some(self.title.clone(), |row, title| {
+                        row.child(
+                            div()
+                                .flex_1()
+                                .text_center()
+                                .text_sm()
+                                .font_semibold()
+                                .child(title),
+                        )
+                    })
+                    .when(show_close, |row| {
+                        row.child(
+                            Button::new("dialog-close")
+                                .icon(IconRole::Close)
+                                .variant(ButtonVariant::Ghost)
+                                .small()
+                                .debug_selector(|| "dialog-close".to_string())
+                                .accessibility_label("Close")
+                                .on_click({
+                                    let on_change = on_change.clone();
+                                    move |_, window, cx| {
+                                        if let Some(on_change) = &on_change {
+                                            on_change(false, window, cx);
+                                        }
+                                    }
+                                }),
+                        )
+                    }),
+            )
+        })
+        .when_some(content, |panel, content| {
+            panel.map(|this| {
+                if height.is_some() {
+                    this.child(
+                        ScrollArea::new("dialog-content")
+                            .handle(scroll)
+                            .flex_1()
+                            .min_h_0()
+                            .child(div().p_2().child(content)),
+                    )
+                } else {
+                    this.child(div().p_2().child(content))
                 }
             })
-            .when(self.title.is_some() || show_close, |panel| {
-                panel.child(
-                    h_flex()
-                        .h_12()
-                        .px_2()
-                        .gap_2()
-                        .justify_between()
-                        .when(show_close, |row| row.child(div().w_7()))
-                        .when_some(self.title.clone(), |row, title| {
-                            row.child(
-                                div()
-                                    .flex_1()
-                                    .text_center()
-                                    .text_sm()
-                                    .font_semibold()
-                                    .child(title),
-                            )
-                        })
-                        .when(show_close, |row| {
-                            row.child(
-                                Button::new("dialog-close")
-                                    .icon(IconRole::Close)
-                                    .variant(ButtonVariant::Ghost)
-                                    .small()
-                                    .debug_selector(|| "dialog-close".to_string())
-                                    .accessibility_label("Close")
-                                    .on_click({
-                                        let on_change = on_change.clone();
-                                        move |_, window, cx| {
-                                            if let Some(on_change) = &on_change {
-                                                on_change(false, window, cx);
-                                            }
-                                        }
-                                    }),
-                            )
-                        }),
-                )
-            })
-            .when_some(content, |panel, content| {
-                panel.map(|this| {
-                    if height.is_some() {
-                        this.child(
-                            ScrollArea::new("dialog-content")
-                                .handle(scroll)
-                                .flex_1()
-                                .min_h_0()
-                                .child(div().p_2().child(content)),
-                        )
-                    } else {
-                        this.child(div().p_2().child(content))
+        })
+        .when_some(actions, |panel, actions| {
+            panel.child(
+                h_flex()
+                    .px_2()
+                    .h_12()
+                    .justify_end()
+                    .gap_2()
+                    .children(actions),
+            )
+        })
+        .child(
+            canvas(|_, _, _| {}, {
+                move |_, _, window, cx| {
+                    if !focus.contains_focused(window, cx) {
+                        window.focus(&focus, cx);
                     }
-                })
+                }
             })
-            .when_some(actions, |panel, actions| {
-                panel.child(
-                    h_flex()
-                        .px_2()
-                        .h_12()
-                        .justify_end()
-                        .gap_2()
-                        .children(actions),
-                )
-            })
-            .child(
-                canvas(|_, _, _| {}, {
-                    move |_, _, window, cx| {
-                        if !focus.contains_focused(window, cx) {
-                            window.focus(&focus, cx);
-                        }
-                    }
-                })
-                .absolute()
-                .inset_0(),
-            );
+            .absolute()
+            .inset_0(),
+        );
 
         let scrim = div()
             .absolute()
