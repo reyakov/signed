@@ -3,16 +3,41 @@ use std::sync::Arc;
 use gpui::*;
 use gpui_platform::application;
 use settings::SettingsStore;
-use ui::Assets;
 use ui::theme::{ActiveTheme as _, Theme};
 
 actions!(signed, [Quit]);
+
+#[derive(rust_embed::RustEmbed)]
+#[folder = "assets"]
+#[exclude = "*.DS_Store"]
+struct BackgroundAssets;
+
+/// Serves app artwork plus the ui crate's icon set.
+struct AppAssets;
+
+impl AssetSource for AppAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if path.starts_with("backgrounds/") {
+            return Ok(BackgroundAssets::get(path).map(|file| file.data));
+        }
+        ui::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        let mut files: Vec<SharedString> = BackgroundAssets::iter()
+            .filter(|file| file.starts_with(path))
+            .map(SharedString::from)
+            .collect();
+        files.extend(ui::Assets.list(path)?);
+        Ok(files)
+    }
+}
 
 fn main() {
     tracing_subscriber::fmt::init();
 
     application()
-        .with_assets(Assets)
+        .with_assets(AppAssets)
         .with_http_client(Arc::new(reqwest_client::ReqwestClient::new()))
         .run(move |cx| {
             ui::init(cx);

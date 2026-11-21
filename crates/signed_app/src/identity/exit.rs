@@ -1,6 +1,6 @@
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    Styled as _, Window, div,
+    Styled as _, Window, div, px,
 };
 use signed_state::Backend;
 use ui::button::{Button, ButtonVariant};
@@ -22,20 +22,22 @@ impl ExitDialog {
 
 impl Render for ExitDialog {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        const WARNING: &str = "You will be signed out on this device and will need to sign in again on the next session.";
+
         let cancel_close = self.handle.clone();
         let confirm_close = self.handle.clone();
 
         Dialog::new("exit-dialog")
             .handle(self.handle.clone())
+            .width(px(420.))
             .title("Exit Signed?")
             .content(|_, cx| {
                 v_flex()
                     .child(
-                        div().text_base()
+                        div()
+                            .text_sm()
                             .text_color(cx.theme().colors.muted_foreground)
-                            .child(
-                                "You will be signed out on this device and will need to sign in again on the next session.",
-                            ),
+                            .child(WARNING),
                     )
                     .into_any_element()
             })

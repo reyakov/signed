@@ -1,19 +1,20 @@
 //! The panel row: the window's main content, island-style over the app
-//! background. It can split once into two half-width panels with a drag
-//! divider between them; dragging the seam resizes the panels and a
-//! double-click restores the half split.
+//! background. It can split once into two panels with a drag divider
+//! between them; the divider opens at half the row or at a set width
+//! ([`PanelRow::split_at`]), and dragging it can be disabled
+//! ([`PanelRow::resizable`]). A double-click restores the half split.
 
 use std::sync::Arc;
 
 use gpui::{
     AnyElement, AnyView, App, Axis, Div, ElementId, Entity, IntoElement, ParentElement as _,
-    Render, RenderOnce, SharedString, StyleRefinement, Styled as _, Window, div,
+    Pixels, Render, RenderOnce, SharedString, StyleRefinement, Styled as _, Window, div,
 };
 
 use crate::components::tabs::Tab;
 use crate::layout::StyledExt as _;
 use crate::layout::resizable::{Resizable, ResizableState};
-use crate::theme::{ActiveTheme as _, RESIZE_HANDLE_WIDTH};
+use crate::theme::{ActiveTheme as _, PANE_MIN_SIZE, RESIZE_HANDLE_WIDTH};
 
 /// A user-defined panel the row can show.
 #[allow(unused_variables)]
@@ -141,6 +142,9 @@ pub struct PanelRow {
     id: ElementId,
     main: Option<AnyElement>,
     split: Option<AnyElement>,
+    /// The main pane's width when split; `None` splits the row in half.
+    split_width: Option<Pixels>,
+    resizable: bool,
     style: StyleRefinement,
 }
 
@@ -154,6 +158,8 @@ impl PanelRow {
             id: id.into(),
             main: None,
             split: None,
+            split_width: None,
+            resizable: true,
             style: StyleRefinement::default(),
         }
     }
@@ -173,6 +179,22 @@ impl PanelRow {
         P: PanelView,
     {
         self.split = Some(panel.view().cached(content_style()).into_any_element());
+        self
+    }
+
+    /// Splits the row with the main pane at `width`, the split pane beside it.
+    pub fn split_at<P>(mut self, panel: P, width: Pixels) -> Self
+    where
+        P: PanelView,
+    {
+        self.split_width = Some(width);
+        self.split = Some(panel.view().cached(content_style()).into_any_element());
+        self
+    }
+
+    /// Whether the divider can be dragged to resize the panels. Defaults to true.
+    pub fn resizable(mut self, resizable: bool) -> Self {
+        self.resizable = resizable;
         self
     }
 }
@@ -197,26 +219,42 @@ impl RenderOnce for PanelRow {
 
         let row = match self.split {
             Some(split) => {
-                let sizes = window.with_element_namespace(id.clone(), |window| {
-                    window
-                        .use_keyed_state("panel-sizes", cx, |_, _| ResizableState::default())
-                        .clone()
-                });
+                let split = island(div().size_full().child(split), cx);
                 let extent = window.viewport_size().width - gutter * 2.0;
 
-                if sizes.read(cx).sizes().is_empty() {
-                    sizes.update(cx, |state, cx| {
-                        state.set_pane_width(0, (extent - gutter) / 2.0, cx)
-                    });
-                }
+                let main_width = self
+                    .split_width
+                    .unwrap_or((extent - gutter) / 2.0)
+                    .max(PANE_MIN_SIZE);
 
-                div().w_full().h_full().child(
-                    Resizable::new((id.clone(), "split"), sizes)
-                        .axis(Axis::Horizontal)
-                        .pane(main)
-                        .pane(island(div().size_full().child(split), cx))
-                        .h_full(),
-                )
+                if !self.resizable {
+                    div()
+                        .w_full()
+                        .h_full()
+                        .flex()
+                        .flex_row()
+                        .child(div().flex_none().w(main_width).h_full().child(main))
+                        .child(div().flex_none().w(gutter))
+                        .child(div().flex_1().min_w_0().h_full().child(split))
+                } else {
+                    let sizes = window.with_element_namespace(id.clone(), |window| {
+                        window
+                            .use_keyed_state("panel-sizes", cx, |_, _| ResizableState::default())
+                            .clone()
+                    });
+
+                    if sizes.read(cx).sizes().is_empty() {
+                        sizes.update(cx, |state, cx| state.set_pane_width(0, main_width, cx));
+                    }
+
+                    div().w_full().h_full().child(
+                        Resizable::new((id.clone(), "split"), sizes)
+                            .axis(Axis::Horizontal)
+                            .pane(main)
+                            .pane(split)
+                            .h_full(),
+                    )
+                }
             }
             None => div().w_full().h_full().child(main),
         };

@@ -5,7 +5,7 @@ mod sign_in;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, Styled as _, Subscription, Window, div,
+    Render, Styled as _, Subscription, Window, div, px,
 };
 use helpers::apply_appearance;
 use settings::SettingsStore;
@@ -34,6 +34,7 @@ pub struct AppRoot {
     titlebar: Entity<TitlebarView>,
     toasts: Entity<Toasts>,
     sign_in: Entity<SignedOutView>,
+    explore: Entity<ExploreView>,
     empty: Entity<PlaceholderView>,
     passphrase: Option<Entity<PassphraseDialog>>,
     _subscriptions: Vec<Subscription>,
@@ -48,6 +49,7 @@ impl AppRoot {
 
         let toasts = cx.new(|_| Toasts::default());
         let sign_in = cx.new(|_| SignedOutView::new());
+        let explore = cx.new(|cx| ExploreView::new(workspace.downgrade(), cx));
         let empty = cx.new(|_| PlaceholderView::new("Select a repository"));
 
         let backend = Backend::global(cx);
@@ -95,6 +97,7 @@ impl AppRoot {
             titlebar,
             toasts,
             sign_in,
+            explore,
             empty,
             passphrase: None,
             _subscriptions: subscriptions,
@@ -166,6 +169,7 @@ impl Render for AppRoot {
                             })
                             .when(!main.is_some() && !signed_in, |row| {
                                 row.main(self.sign_in.clone())
+                                    .split_at(self.explore.clone(), px(300.))
                             }),
                     )
                     .toasts(self.toasts.clone()),

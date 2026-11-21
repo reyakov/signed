@@ -7111,6 +7111,7 @@ dependencies = [
  "metadata",
  "paths",
  "reqwest_client",
+ "rust-embed",
  "settings",
  "signed_app",
  "signed_state",

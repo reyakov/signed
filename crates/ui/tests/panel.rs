@@ -4,8 +4,8 @@
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Render, SharedString, Styled as _, TestAppContext, VisualTestContext, Window, div, point, px,
-    size,
+    Pixels, Render, SharedString, Styled as _, TestAppContext, VisualTestContext, Window, div,
+    point, px, size,
 };
 use ui::common::v_flex;
 use ui::layout::panel::{Panel, PanelRow, PanelView};
@@ -45,23 +45,36 @@ impl Panel for TagView {
 
 struct PanelHarness {
     split: bool,
+    split_width: Option<Pixels>,
+    resizable: bool,
     main: Entity<TagView>,
     split_view: Entity<TagView>,
 }
 
 impl Render for PanelHarness {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let panel = PanelRow::new("panel-harness").main(self.main.clone());
-        let panel = if self.split {
-            panel.split(self.split_view.clone())
-        } else {
-            panel
+        let panel = PanelRow::new("panel-harness")
+            .main(self.main.clone())
+            .resizable(self.resizable);
+        let panel = match self.split_width {
+            Some(width) => panel.split_at(self.split_view.clone(), width),
+            None if self.split => panel.split(self.split_view.clone()),
+            None => panel,
         };
         div().size_full().child(panel)
     }
 }
 
 fn panel_window(cx: &mut TestAppContext, split: bool) -> VisualTestContext {
+    split_window(cx, split, None, true)
+}
+
+fn split_window(
+    cx: &mut TestAppContext,
+    split: bool,
+    split_width: Option<Pixels>,
+    resizable: bool,
+) -> VisualTestContext {
     let (main, split_view) = cx.update(|cx| {
         Theme::init(cx);
         let main = cx.new(|_| TagView::new("panel-test-main"));
@@ -72,6 +85,8 @@ fn panel_window(cx: &mut TestAppContext, split: bool) -> VisualTestContext {
     let window = cx.open_window(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), |_, _| {
         PanelHarness {
             split,
+            split_width,
+            resizable,
             main,
             split_view,
         }
@@ -118,6 +133,66 @@ fn split_makes_two_half_width_panels(cx: &mut TestAppContext) {
     assert!(main.right() <= split.left());
     assert!(split.right() <= px(WINDOW_WIDTH));
     assert!(main.size.height >= px(WINDOW_HEIGHT - 40.0));
+}
+
+/// A split opened at a width lays the main pane out at exactly that width.
+#[gpui::test]
+fn split_at_opens_the_main_pane_at_the_width(cx: &mut TestAppContext) {
+    let mut cx = split_window(cx, true, Some(px(300.0)), true);
+
+    let main = cx
+        .debug_bounds("panel-test-main")
+        .expect("main panel laid out");
+    let split = cx
+        .debug_bounds("panel-test-split")
+        .expect("split panel laid out");
+
+    // The marker fills the island's content box, which extends under the
+    // overlay border to the full pane width.
+    assert_eq!(main.size.width, px(300.0));
+    assert!(main.right() <= split.left());
+    assert!(split.size.width > px(300.0));
+    assert!(split.right() <= px(WINDOW_WIDTH));
+}
+
+/// With resizing disabled there is no divider and drags over the seam do nothing.
+#[gpui::test]
+fn a_static_split_ignores_drags(cx: &mut TestAppContext) {
+    let mut cx = split_window(cx, true, Some(px(300.0)), false);
+
+    let before = cx
+        .debug_bounds("panel-test-main")
+        .expect("main panel laid out");
+    assert_eq!(before.size.width, px(300.0));
+    assert!(
+        cx.debug_bounds("resize-handle").is_none(),
+        "a static split has no divider"
+    );
+
+    cx.simulate_event(MouseDownEvent {
+        position: point(px(320.0), px(400.0)),
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(MouseMoveEvent {
+        position: point(px(420.0), px(400.0)),
+        pressed_button: Some(MouseButton::Left),
+        modifiers: Modifiers::default(),
+    });
+    cx.simulate_event(MouseUpEvent {
+        position: point(px(420.0), px(400.0)),
+        button: MouseButton::Left,
+        modifiers: Modifiers::default(),
+        click_count: 1,
+    });
+    cx.run_until_parked();
+
+    let after = cx
+        .debug_bounds("panel-test-main")
+        .expect("main panel laid out after the drag");
+    assert_eq!(after, before);
 }
 
 #[gpui::test]
