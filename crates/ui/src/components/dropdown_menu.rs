@@ -285,7 +285,6 @@ impl RenderOnce for DropdownMenu {
                     h_flex().absolute().inset_0().justify_center().child(
                         Spinner::new((self.id.clone(), "spinner"))
                             .with_size(self.size)
-                            .variant(crate::components::spinner::SpinnerVariant::Icon)
                             .color(foreground),
                     ),
                 )

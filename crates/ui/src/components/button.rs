@@ -25,7 +25,6 @@ use crate::components::common::{
 };
 use crate::components::spinner::Spinner;
 use crate::icons::Icon;
-use crate::spinner::SpinnerVariant;
 use crate::theme::{ActiveTheme as _, DISABLED_OPACITY, Size};
 
 /// The single activation handler, shared by pointer, Enter, and Space.
@@ -382,7 +381,6 @@ impl RenderOnce for Button {
                     h_flex().absolute().inset_0().justify_center().child(
                         Spinner::new((self.id.clone(), "spinner"))
                             .with_size(self.size)
-                            .variant(SpinnerVariant::Icon)
                             .color(foreground),
                     ),
                 )

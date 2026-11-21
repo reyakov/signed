@@ -36,7 +36,7 @@ use gpui::{
 };
 
 use crate::components::common::{ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex};
-use crate::components::spinner::{Spinner, SpinnerVariant};
+use crate::components::spinner::Spinner;
 use crate::components::tooltip::Tooltip;
 use crate::icons::{IconRole, icon};
 use crate::theme::{ActiveTheme as _, DISABLED_OPACITY, SPEECH_WAVEFORM_WIDTH, Size};
@@ -807,7 +807,6 @@ impl RenderOnce for SpeechButton {
             .child(if stopping {
                 Spinner::new(("speech-spinner", self.speech.entity_id()))
                     .with_size(self.size)
-                    .variant(SpinnerVariant::Icon)
                     .color(foreground)
                     .into_any_element()
             } else if capturing {
