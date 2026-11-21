@@ -145,7 +145,9 @@ impl RepoHistoryView {
             &workspace,
             id,
             move |window, cx| {
-                cx.new(|cx| CommitDiffView::new(worktree.clone(), commit_id.clone(), window, cx))
+                cx.new(|cx| {
+                    CommitDiffView::new(worktree.clone(), commit_id.clone(), true, window, cx)
+                })
             },
             window,
             cx,
@@ -227,7 +229,7 @@ impl Render for RepoHistoryView {
                         let detail = detail.clone();
                         let path = path.clone();
                         let target = ahead_id.clone();
-                        let short = commit.id.clone();
+                        let short = super::helpers::short_id(&commit.id);
 
                         Button::new(("sync-commit", ix))
                             .label("Sync")

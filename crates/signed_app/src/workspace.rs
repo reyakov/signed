@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, Context, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, div,
 };
@@ -205,38 +206,38 @@ impl Render for Workspace {
             .collect();
 
         let weak = cx.entity().downgrade();
-        let close_weak = weak.clone();
-
-        let tabs = Tabs::new("signed-detail-tabs")
-            .variant(TabsVariant::Pill)
-            .overflow_scroll(true)
-            .selected(selected)
-            .tabs(move |_, cx| {
-                details
-                    .iter()
-                    .map(|(id, view)| match view {
-                        Some(view) => view.tab(id.clone().into(), cx).closeable(true),
-                        None => Tab::new(id.clone(), id.clone()).closeable(true),
-                    })
-                    .collect()
-            })
-            .on_change(move |index, _, cx| {
-                log_dropped(weak.update(cx, |workspace, cx| {
-                    workspace.activate_detail_at(index, cx);
-                }));
-            })
-            .on_close(move |index, _, cx| {
-                log_dropped(close_weak.update(cx, |workspace, cx| {
-                    workspace.close_detail_at(index, cx);
-                }));
-            });
-
         let body = self.active_detail().map(|view| view.view());
 
         v_flex()
             .size_full()
             .gap_2()
-            .child(tabs)
+            .when(self.details.len() > 1, |this| {
+                let close_weak = weak.clone();
+                let tabs = Tabs::new("signed-detail-tabs")
+                    .variant(TabsVariant::Pill)
+                    .overflow_scroll(true)
+                    .selected(selected)
+                    .tabs(move |_, cx| {
+                        details
+                            .iter()
+                            .map(|(id, view)| match view {
+                                Some(view) => view.tab(id.clone().into(), cx).closeable(true),
+                                None => Tab::new(id.clone(), id.clone()).closeable(true),
+                            })
+                            .collect()
+                    })
+                    .on_change(move |index, _, cx| {
+                        log_dropped(weak.update(cx, |workspace, cx| {
+                            workspace.activate_detail_at(index, cx);
+                        }));
+                    })
+                    .on_close(move |index, _, cx| {
+                        log_dropped(close_weak.update(cx, |workspace, cx| {
+                            workspace.close_detail_at(index, cx);
+                        }));
+                    });
+                this.child(tabs)
+            })
             .child(div().flex_1().min_h_0().w_full().children(body))
     }
 }

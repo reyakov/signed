@@ -326,6 +326,8 @@ impl RenderOnce for Button {
 
         h_flex()
             .id(self.id.clone())
+            .refine_style(&self.style)
+            .flex_shrink_0()
             .when_some(self.debug_selector, |button, selector| {
                 button.debug_selector(move || selector())
             })
@@ -351,7 +353,6 @@ impl RenderOnce for Button {
             .border_color(border)
             .when_some(background, |button, background| button.bg(background))
             .text_color(foreground)
-            .refine_style(&self.style)
             .when_some(a11y_label, |button, label| button.aria_label(label))
             .child(
                 h_flex()

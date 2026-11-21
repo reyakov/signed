@@ -181,3 +181,95 @@ impl RenderOnce for Badge {
             })
     }
 }
+
+/// A pill pairing a green additions segment with a red deletions segment.
+#[derive(IntoElement)]
+#[must_use]
+pub struct GroupedBadge {
+    id: ElementId,
+    insertions: usize,
+    deletions: usize,
+    style: StyleRefinement,
+}
+
+impl GroupedBadge {
+    /// Creates a grouped badge from insertion and deletion counts.
+    pub fn new<I>(id: I, insertions: usize, deletions: usize) -> Self
+    where
+        I: Into<ElementId>,
+    {
+        Self {
+            id: id.into(),
+            insertions,
+            deletions,
+            style: StyleRefinement::default(),
+        }
+    }
+}
+
+impl gpui::Styled for GroupedBadge {
+    fn style(&mut self) -> &mut gpui::StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl RenderOnce for GroupedBadge {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
+
+        let additions = (
+            theme.ramps.success.base.opacity(0.2),
+            theme.ramps.success.base,
+        );
+
+        let deletions = (
+            theme.ramps.destructive.base.opacity(0.2),
+            theme.ramps.destructive.base,
+        );
+
+        h_flex()
+            .id(self.id.clone())
+            .debug_selector({
+                let id = self.id.clone();
+                move || format!("{id}")
+            })
+            .flex_none()
+            .text_xs()
+            .font_medium()
+            .when(self.insertions > 0, |group| {
+                group.child(
+                    h_flex()
+                        .justify_center()
+                        .h_5()
+                        .px_1p5()
+                        .bg(additions.0)
+                        .text_color(additions.1)
+                        .debug_selector({
+                            let id = self.id.clone();
+                            move || format!("{id}-additions")
+                        })
+                        .when(self.deletions == 0, |segment| segment.rounded_full())
+                        .when(self.deletions > 0, |segment| segment.rounded_l_full())
+                        .child(SharedString::from(format!("+{}", self.insertions))),
+                )
+            })
+            .when(self.deletions > 0, |group| {
+                group.child(
+                    h_flex()
+                        .justify_center()
+                        .h_5()
+                        .px_1p5()
+                        .bg(deletions.0)
+                        .text_color(deletions.1)
+                        .debug_selector({
+                            let id = self.id.clone();
+                            move || format!("{id}-deletions")
+                        })
+                        .when(self.insertions == 0, |segment| segment.rounded_full())
+                        .when(self.insertions > 0, |segment| segment.rounded_r_full())
+                        .child(SharedString::from(format!("-{}", self.deletions))),
+                )
+            })
+            .refine_style(&self.style)
+    }
+}

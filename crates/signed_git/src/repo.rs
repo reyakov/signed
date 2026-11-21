@@ -10,7 +10,7 @@ use gix::progress::Discard;
 use nostr::prelude::*;
 
 use crate::GixResultExt as _;
-use crate::diff::{CommitDiff, DiffStatus, FileDiff, HunkCollector};
+use crate::diff::{CommitDiff, DiffStatus, FileDiff, HunkCollector, PatchCollector};
 use crate::history::{CommitList, FileCommit, MAX_LISTED_COMMITS};
 use crate::nip34::{GraspSignals, Nip34Binding, Nip34Json, Nip34Kind};
 use crate::sync::{RefSync, RepoSyncStatus};
@@ -479,6 +479,151 @@ impl Repo {
             None => None,
         };
         Self::tree_diff(self, old_tree.as_ref(), &new_tree)
+    }
+
+    /// Produces the unified diff patch text of a commit against its first parent.
+    pub fn commit_patch(&self, id: &str) -> Result<String> {
+        use gix::diff::blob::platform::prepare_diff::Operation;
+        use gix::object::tree::diff::Change;
+        use gix::objs::tree::EntryKind;
+
+        let commit_id = self.inner.rev_parse_single(id.as_bytes())?;
+        let commit = commit_id.object()?.into_commit();
+        let new_tree = commit.tree()?;
+        let old_tree = match commit.parent_ids().next() {
+            Some(parent) => Some(parent.object()?.into_commit().tree()?),
+            None => None,
+        };
+
+        let changes = self
+            .inner
+            .diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
+
+        let mut cache = self.inner.diff_resource_cache_for_tree_diff()?;
+        let mut patch = String::new();
+
+        for change in changes {
+            let attached = Change::from_change_ref(change.to_ref(), &self.inner, &self.inner);
+
+            let (path, old_path, status, mode) = match attached {
+                Change::Addition {
+                    location,
+                    entry_mode,
+                    ..
+                } if !matches!(entry_mode.kind(), EntryKind::Tree | EntryKind::Commit) => {
+                    (location.to_owned(), None, DiffStatus::Added, entry_mode)
+                }
+                Change::Deletion {
+                    location,
+                    entry_mode,
+                    ..
+                } if !matches!(entry_mode.kind(), EntryKind::Tree | EntryKind::Commit) => {
+                    (location.to_owned(), None, DiffStatus::Deleted, entry_mode)
+                }
+                Change::Modification {
+                    location,
+                    previous_entry_mode,
+                    entry_mode,
+                    ..
+                } if !matches!(entry_mode.kind(), EntryKind::Tree | EntryKind::Commit)
+                    && !matches!(
+                        previous_entry_mode.kind(),
+                        EntryKind::Tree | EntryKind::Commit
+                    ) =>
+                {
+                    (location.to_owned(), None, DiffStatus::Modified, entry_mode)
+                }
+                Change::Rewrite {
+                    location,
+                    source_location,
+                    source_entry_mode,
+                    entry_mode,
+                    copy,
+                    ..
+                } if !matches!(entry_mode.kind(), EntryKind::Tree | EntryKind::Commit)
+                    && !matches!(
+                        source_entry_mode.kind(),
+                        EntryKind::Tree | EntryKind::Commit
+                    ) =>
+                {
+                    let status = if copy {
+                        DiffStatus::Copied
+                    } else {
+                        DiffStatus::Renamed
+                    };
+                    (
+                        location.to_owned(),
+                        Some(source_location.to_owned()),
+                        status,
+                        entry_mode,
+                    )
+                }
+                _ => continue,
+            };
+
+            let old = String::from_utf8_lossy(old_path.as_ref().unwrap_or(&path)).into_owned();
+            let new = String::from_utf8_lossy(&path).into_owned();
+            patch.push_str(&format!("diff --git a/{old} b/{new}\n"));
+
+            match status {
+                DiffStatus::Added => {
+                    patch.push_str(&format!("new file mode {:o}\n", mode.value()));
+                }
+                DiffStatus::Deleted => {
+                    patch.push_str(&format!("deleted file mode {:o}\n", mode.value()));
+                }
+                DiffStatus::Renamed => {
+                    patch.push_str(&format!("rename from {old}\nrename to {new}\n"));
+                }
+                DiffStatus::Copied => {
+                    patch.push_str(&format!("copy from {old}\ncopy to {new}\n"));
+                }
+                DiffStatus::Modified => {}
+            }
+
+            if status == DiffStatus::Added {
+                patch.push_str("--- /dev/null\n");
+            } else {
+                patch.push_str(&format!("--- a/{old}\n"));
+            }
+
+            if status == DiffStatus::Deleted {
+                patch.push_str("+++ /dev/null\n");
+            } else {
+                patch.push_str(&format!("+++ b/{new}\n"));
+            }
+
+            let platform = attached.diff(&mut cache)?;
+            platform
+                .resource_cache
+                .options
+                .skip_internal_diff_if_external_is_configured = true;
+
+            let outcome = platform.resource_cache.prepare_diff().into_anyhow()?;
+
+            match outcome.operation {
+                Operation::InternalDiff { algorithm } => {
+                    let input = outcome.interned_input();
+                    let diff = gix::diff::blob::diff_with_slider_heuristics(algorithm, &input);
+                    let text = gix::diff::blob::UnifiedDiff::new(
+                        &diff,
+                        &input,
+                        PatchCollector::new(),
+                        Default::default(),
+                    )
+                    .consume()?;
+                    patch.push_str(&text);
+                }
+                Operation::SourceOrDestinationIsBinary => {
+                    patch.push_str(&format!("Binary files a/{old} and b/{new} differ\n"));
+                }
+                Operation::ExternalCommand { .. } => {
+                    unreachable!("external diff drivers are disabled")
+                }
+            }
+        }
+
+        Ok(patch)
     }
 
     /// Diffs the trees of `base` and `tip` directly, files sorted by path.
@@ -1808,6 +1953,44 @@ mod tests {
         std::fs::write(path.join("nip34.json"), b"not json").expect("write");
 
         assert!(binding_of(&path).is_none());
+    }
+
+    #[test]
+    fn commit_patch_applies_cleanly_to_parent() {
+        let (dir, path) = init_repo();
+        git(&path, &["config", "user.name", "Test Author"]);
+        git(&path, &["config", "user.email", "test@example.com"]);
+        std::fs::write(path.join("file.txt"), "one\n").expect("write");
+        git(&path, &["add", "."]);
+        git(&path, &["commit", "-q", "-m", "first"]);
+        std::fs::write(path.join("file.txt"), "two\n").expect("write");
+        std::fs::write(path.join("file2.txt"), "added\n").expect("write");
+        git(&path, &["add", "."]);
+        git(&path, &["commit", "-q", "-m", "second"]);
+
+        let patch = Repo::open(&path)
+            .expect("open repo")
+            .commit_patch("HEAD")
+            .expect("commit patch");
+        assert!(patch.contains("diff --git a/file.txt b/file.txt"));
+        assert!(patch.contains("diff --git a/file2.txt b/file2.txt"));
+        assert!(patch.contains("--- /dev/null"));
+        assert!(patch.contains("+added"));
+
+        let patch_path = dir.path().join("head.patch");
+        std::fs::write(&patch_path, &patch).expect("write patch");
+        git(&path, &["checkout", "-q", "--detach", "HEAD~1"]);
+        git(
+            &path,
+            &["apply", patch_path.to_str().expect("utf8 patch path")],
+        );
+
+        let applied = std::fs::read_to_string(path.join("file.txt")).expect("read");
+        assert_eq!(applied, "two\n");
+        assert_eq!(
+            std::fs::read_to_string(path.join("file2.txt")).expect("read"),
+            "added\n"
+        );
     }
 
     #[test]

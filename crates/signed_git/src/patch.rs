@@ -3,7 +3,7 @@ use diffy::patch_set::{FileOperation, FilePatch, ParseOptions, PatchSet};
 use diffy::{Hunk, Line};
 
 use crate::diff::{CommitDiff, DiffHunk, DiffLineKind, DiffStatus, FileDiff, HunkBuilder};
-use crate::history::FileCommit;
+use crate::history::{FileCommit, format_commit_date};
 
 pub struct PatchParser;
 
@@ -37,6 +37,10 @@ impl PatchParser {
             .into_iter()
             .filter(|message| !message.id.is_empty())
             .map(|message| {
+                let time = message
+                    .header("Date")
+                    .and_then(|value| gix::date::parse(value.trim(), None).ok());
+
                 FileCommit::new(
                     message.id.to_string(),
                     message
@@ -48,11 +52,9 @@ impl PatchParser {
                         .header("From")
                         .map(Self::name_from_address)
                         .unwrap_or_default(),
-                    message
-                        .header("Date")
-                        .and_then(|value| gix::date::parse(value.trim(), None).ok())
-                        .map(|time| time.seconds)
-                        .unwrap_or(0),
+                    time.map(|time| time.seconds).unwrap_or(0),
+                    time.map(format_commit_date).unwrap_or_default(),
+                    Vec::new(),
                 )
             })
             .collect()

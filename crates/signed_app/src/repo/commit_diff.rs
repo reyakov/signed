@@ -3,54 +3,91 @@ use std::path::PathBuf;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Axis, Context, Entity, IntoElement, ParentElement as _,
-    Render, ScrollStrategy, SharedString, Styled as _, Task, UniformListScrollHandle, Window, div,
-    px, uniform_list,
+    AnyElement, App, AppContext as _, Axis, Context, Entity, EventEmitter, InteractiveElement as _,
+    IntoElement, ListAlignment, ListState, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
+    list, px,
 };
-use signed_git::{CommitDiff, DiffStatus, FileCommit, FileDiff, Repo};
-use ui::badge::{Badge, BadgeVariant};
+use signed_git::{CommitDiff, FileCommit, FileDiff, Repo};
+use ui::avatar::Avatar;
+use ui::badge::GroupedBadge;
+use ui::button::{Button, ButtonVariant};
 use ui::clipboard::ClipboardButton;
-use ui::common::{StyledExt as _, h_flex, v_flex};
+use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::Panel;
 use ui::layout::resizable::{Resizable, ResizableState};
+use ui::separator::Separator;
+use ui::switch::Switch;
 use ui::theme::ActiveTheme as _;
+use ui::toggle::Toggle;
+use ui::tooltip::Tooltip;
 use ui::tree::{Tree, TreeItem};
 use utils::relative_time_secs;
 
-use super::helpers::{DiffRow, diff_rows, render_diff_row};
+use super::helpers::{DiffRow, co_authors, diff_rows, render_diff_row, short_id};
 use crate::shared::tree::{TreeItemSeed, TreeRow, build_tree_items, collect_expanded, flatten};
-use crate::shared::widgets::empty_state;
+use crate::shared::widgets::{centered_spinner, empty_state, scroll_overlay};
+
+/// Emitted when the user activates the Download commit button.
+pub enum DiffPaneEvent {
+    DownloadCommit,
+}
+
+impl EventEmitter<DiffPaneEvent> for DiffPane {}
+
+/// One virtualized row of the multi-file diff list.
+#[derive(Clone)]
+enum PaneRow {
+    Header {
+        file_index: usize,
+        gap: bool,
+        expanded: bool,
+    },
+    Note {
+        message: SharedString,
+        last: bool,
+    },
+    Line {
+        file_index: usize,
+        row: DiffRow,
+        last: bool,
+    },
+}
 
 pub struct DiffPane {
     diff: Option<CommitDiff>,
     seeds: Vec<TreeItemSeed>,
     expanded: HashSet<String>,
     rows: Vec<TreeRow>,
-    selected_file: Option<SharedString>,
     selected_index: Option<usize>,
-    /// Rows of the selected file's diff, hunk headers and lines.
-    diff_rows: Vec<DiffRow>,
-    scroll_handle: UniformListScrollHandle,
+    tree_visible: bool,
     split: Entity<ResizableState>,
+    expanded_files: HashSet<String>,
+    pane_rows: Vec<PaneRow>,
+    list: ListState,
+    wrap: bool,
+    downloadable: bool,
 }
 
 impl DiffPane {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let split = ResizableState::new(cx);
+        split.update(cx, |split, cx| split.set_sizes([px(260.)], cx));
+
         Self {
             diff: None,
             seeds: Vec::new(),
             expanded: HashSet::new(),
             rows: Vec::new(),
-            selected_file: None,
             selected_index: None,
-            diff_rows: Vec::new(),
-            scroll_handle: UniformListScrollHandle::new(),
-            split: {
-                let split = ResizableState::new(cx);
-                split.update(cx, |split, cx| split.set_sizes([px(260.)], cx));
-                split
-            },
+            tree_visible: false,
+            split,
+            expanded_files: HashSet::new(),
+            pane_rows: Vec::new(),
+            list: ListState::new(0, ListAlignment::Top, px(320.)),
+            wrap: false,
+            downloadable: false,
         }
     }
 
@@ -65,26 +102,16 @@ impl DiffPane {
             .map(|file| PathBuf::from(&file.path))
             .collect();
         paths.sort();
+
         self.seeds = build_tree_items(&paths);
         self.expanded = collect_expanded(&self.seeds);
         self.rows = flatten(&self.seeds, &self.expanded);
-
-        let first = diff
-            .files
-            .first()
-            .map(|file| SharedString::from(file.path.as_str()));
-
-        self.selected_file = first.clone();
-        self.selected_index = first
-            .as_ref()
-            .and_then(|path| self.rows.iter().position(|row| row.id == path.as_ref()));
+        self.selected_index = None;
         self.diff = Some(diff);
 
-        if let Some(path) = first {
-            self.set_diff_rows(path.as_ref());
-        } else {
-            self.diff_rows.clear();
-        }
+        self.expanded_files.clear();
+        self.rebuild_rows();
+        self.list = ListState::new(self.pane_rows.len(), ListAlignment::Top, px(320.));
         cx.notify();
     }
 
@@ -93,28 +120,129 @@ impl DiffPane {
         self.seeds.clear();
         self.expanded.clear();
         self.rows.clear();
-        self.selected_file = None;
         self.selected_index = None;
-        self.diff_rows.clear();
+        self.expanded_files.clear();
+        self.pane_rows.clear();
+        self.list = ListState::new(0, ListAlignment::Top, px(320.));
         cx.notify();
     }
 
-    fn select_file(&mut self, path: &str, cx: &mut Context<Self>) {
-        self.selected_file = Some(path.into());
+    pub fn set_tree_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        self.tree_visible = visible;
+        cx.notify();
+    }
+
+    pub fn set_downloadable(&mut self, downloadable: bool, cx: &mut Context<Self>) {
+        self.downloadable = downloadable;
+        cx.notify();
+    }
+
+    pub fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
+        self.wrap = !self.wrap;
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    fn toggle_file(&mut self, path: &str, cx: &mut Context<Self>) {
+        if !self.expanded_files.remove(path) {
+            self.expanded_files.insert(path.to_owned());
+        }
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    fn all_expanded(&self) -> bool {
+        self.diff.as_ref().is_some_and(|diff| {
+            !diff.files.is_empty()
+                && diff
+                    .files
+                    .iter()
+                    .all(|file| self.expanded_files.contains(&file.path))
+        })
+    }
+
+    fn toggle_all_files(&mut self, cx: &mut Context<Self>) {
+        if self.all_expanded() {
+            self.expanded_files.clear();
+        } else if let Some(diff) = self.diff.as_ref() {
+            self.expanded_files = diff.files.iter().map(|file| file.path.clone()).collect();
+        }
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    fn select_tree_file(&mut self, path: &str, cx: &mut Context<Self>) {
         self.selected_index = self.rows.iter().position(|row| row.id == path);
-        self.set_diff_rows(path);
+        if self.expanded_files.insert(path.to_owned()) {
+            self.rebuild_rows();
+        }
+
+        let header_index = self.pane_rows.iter().position(|row| match row {
+            PaneRow::Header { file_index, .. } => self
+                .diff
+                .as_ref()
+                .and_then(|diff| diff.files.get(*file_index))
+                .is_some_and(|file| file.path == path),
+            _ => false,
+        });
+        if let Some(header_index) = header_index {
+            self.list.scroll_to_reveal_item(header_index);
+        }
         cx.notify();
     }
 
-    fn set_diff_rows(&mut self, path: &str) {
+    fn rebuild_rows(&mut self) {
         let Some(diff) = self.diff.as_ref() else {
+            self.pane_rows.clear();
+            self.list.reset(0);
             return;
         };
-        let Some(file) = diff.files.iter().find(|file| file.path == path) else {
-            return;
-        };
-        self.diff_rows = diff_rows(file);
-        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+
+        let mut pane_rows = Vec::new();
+        for (file_index, file) in diff.files.iter().enumerate() {
+            let expanded = self.expanded_files.contains(&file.path);
+            pane_rows.push(PaneRow::Header {
+                file_index,
+                gap: file_index > 0,
+                expanded,
+            });
+
+            if !expanded {
+                continue;
+            }
+
+            if file.binary {
+                pane_rows.push(PaneRow::Note {
+                    message: SharedString::from("Diff not available"),
+                    last: true,
+                });
+                continue;
+            }
+
+            if file.hunks.is_empty() {
+                pane_rows.push(PaneRow::Note {
+                    message: SharedString::from("No content changes"),
+                    last: true,
+                });
+                continue;
+            }
+
+            let rows = diff_rows(file);
+            let last_row = rows.len().saturating_sub(1);
+
+            pane_rows.extend(
+                rows.into_iter()
+                    .enumerate()
+                    .map(|(row_index, row)| PaneRow::Line {
+                        file_index,
+                        row,
+                        last: row_index == last_row,
+                    }),
+            );
+        }
+
+        self.pane_rows = pane_rows;
+        self.list.reset(self.pane_rows.len());
     }
 
     fn toggle_folder(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -123,9 +251,8 @@ impl DiffPane {
         }
         self.rows = flatten(&self.seeds, &self.expanded);
         self.selected_index = self
-            .selected_file
-            .as_ref()
-            .and_then(|path| self.rows.iter().position(|row| row.id == path.as_ref()));
+            .selected_index
+            .and_then(|index| self.rows.get(index).map(|_| index));
         cx.notify();
     }
 
@@ -195,138 +322,298 @@ impl DiffPane {
         if expandable {
             self.toggle_folder(&id, cx);
         } else {
-            self.select_file(&id, cx);
+            self.select_tree_file(&id, cx);
         }
     }
 
-    fn render_detail_column(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let view = cx.entity().downgrade();
+        let (insertions, deletions) = self.diff().map_or((0, 0), |diff| {
+            (
+                diff.files.iter().map(|file| file.insertions).sum(),
+                diff.files.iter().map(|file| file.deletions).sum(),
+            )
+        });
+        let files = self.diff().map_or(0, |diff| diff.files.len());
+        let all_expanded = self.all_expanded();
+
+        h_flex()
+            .h_12()
+            .px_2()
+            .gap_2()
+            .flex_none()
+            .border_b_1()
+            .border_color(cx.theme().colors.border)
+            .child(
+                Toggle::new("toggle-tree")
+                    .icon(Icon::named(IconRole::PanelLeft))
+                    .pressed(self.tree_visible)
+                    .accessibility_label("Toggle file tree")
+                    .on_change({
+                        let view = view.clone();
+                        move |pressed, _, cx| {
+                            if let Err(error) =
+                                view.update(cx, |this, cx| this.set_tree_visible(pressed, cx))
+                            {
+                                log::warn!("failed to toggle file tree: {error}");
+                            }
+                        }
+                    }),
+            )
+            .when(insertions > 0 || deletions > 0, |this| {
+                this.child(GroupedBadge::new(
+                    "toolbar-diff-stats",
+                    insertions,
+                    deletions,
+                ))
+            })
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().colors.muted_foreground)
+                    .child(format!("{files} changed files")),
+            )
+            .child(div().flex_1())
+            .child(
+                Switch::new("wrap-lines")
+                    .label("Wrap")
+                    .checked(self.wrap)
+                    .small()
+                    .on_change({
+                        let view = view.clone();
+                        move |checked, _, cx| {
+                            if let Err(error) = view.update(cx, |this, cx| {
+                                if checked != this.wrap {
+                                    this.toggle_wrap(cx);
+                                }
+                            }) {
+                                log::warn!("failed to toggle wrap: {error}");
+                            }
+                        }
+                    }),
+            )
+            .child(
+                Button::new("expand-all")
+                    .label(if all_expanded { "Collapse" } else { "Expand" })
+                    .icon(Icon::named(IconRole::UnfoldVertical))
+                    .variant(ButtonVariant::Ghost)
+                    .small()
+                    .on_click({
+                        let view = view;
+                        move |_, _, cx| {
+                            if let Err(error) =
+                                view.update(cx, |this, cx| this.toggle_all_files(cx))
+                            {
+                                log::warn!("failed to toggle all diff files: {error}");
+                            }
+                        }
+                    }),
+            )
+            .when(self.downloadable, |this| {
+                this.child(
+                    Button::new("download")
+                        .label("Download")
+                        .icon(Icon::named(IconRole::Download))
+                        .variant(ButtonVariant::Ghost)
+                        .tooltip(Tooltip::text("Download commit"))
+                        .small()
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            cx.emit(DiffPaneEvent::DownloadCommit);
+                        })),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn render_file_list(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(diff) = self.diff.as_ref() else {
             return empty_state("No changes");
         };
-        let Some(path) = self.selected_file.clone() else {
-            return if diff.files.is_empty() {
-                empty_state("No files changed")
-            } else {
-                empty_state("Select a file")
-            };
-        };
-        let Some(file) = diff.files.iter().find(|file| file.path == path.as_ref()) else {
-            return empty_state("File not found");
-        };
-        self.render_file_diff(file, cx)
-    }
 
-    fn render_file_diff(&self, file: &FileDiff, cx: &App) -> AnyElement {
-        let status_label = match file.status {
-            DiffStatus::Added => "A",
-            DiffStatus::Modified => "M",
-            DiffStatus::Deleted => "D",
-            DiffStatus::Renamed => "R",
-            DiffStatus::Copied => "C",
-        };
-        let status_color = match file.status {
-            DiffStatus::Added => cx.theme().ramps.success.base,
-            DiffStatus::Modified => cx.theme().ramps.info.base,
-            DiffStatus::Deleted => cx.theme().ramps.destructive.base,
-            DiffStatus::Renamed | DiffStatus::Copied => cx.theme().colors.muted_foreground,
-        };
-        let title = match &file.old_path {
-            Some(old) => format!("{old} → {}", file.path),
-            None => file.path.clone(),
-        };
+        let files = diff.files.clone();
+        let pane_rows = self.pane_rows.clone();
+        let wrap = self.wrap;
+        let view = cx.entity().downgrade();
 
-        let body: AnyElement = if file.binary {
-            empty_state("Diff not available")
-        } else if file.hunks.is_empty() {
-            empty_state("No content changes")
-        } else {
-            let hunks = file.hunks.clone();
-            let rows = self.diff_rows.clone();
-
-            v_flex()
-                .size_full()
-                .relative()
-                .child(
-                    uniform_list("commit-diff-rows", rows.len(), move |range, _, cx| {
-                        range
-                            .map(|ix| render_diff_row(&hunks, rows[ix], cx))
-                            .collect()
-                    })
-                    .track_scroll(&self.scroll_handle)
-                    .size_full(),
-                )
-                .child(crate::shared::widgets::scroll_overlay(
-                    "commit-diff-scroll",
-                    self.scroll_handle.clone(),
-                ))
-                .into_any_element()
-        };
-
-        v_flex()
+        div()
+            .relative()
             .flex_1()
-            .min_w_0()
+            .min_h_0()
             .h_full()
+            .debug_selector(|| "commit-diff-files-list".to_owned())
             .child(
-                h_flex()
-                    .px_3()
-                    .h_9()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_medium()
-                            .text_color(status_color)
-                            .child(status_label),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_xs()
-                            .font_medium()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(title),
-                    )
-                    .when(!file.binary, |this| {
-                        this.child(
-                            h_flex()
-                                .gap_2()
-                                .text_xs()
-                                .child(
-                                    Badge::new("file-insertions", format!("+ {}", file.insertions))
-                                        .variant(BadgeVariant::Success),
-                                )
-                                .child(
-                                    Badge::new("file-deletions", format!("- {}", file.deletions))
-                                        .variant(BadgeVariant::Danger),
-                                ),
-                        )
-                    }),
+                list(self.list.clone(), move |ix, _, cx| {
+                    match pane_rows.get(ix) {
+                        Some(row) => render_pane_row(row, &files, &view, wrap, cx),
+                        None => div().into_any_element(),
+                    }
+                })
+                .size_full()
+                .p_2(),
             )
-            .child(div().flex_1().min_h_0().child(body))
+            .child(scroll_overlay("commit-diff-files", self.list.clone()))
             .into_any_element()
+    }
+}
+
+fn render_pane_row(
+    row: &PaneRow,
+    files: &[FileDiff],
+    pane: &WeakEntity<DiffPane>,
+    wrap: bool,
+    cx: &App,
+) -> AnyElement {
+    let border = cx.theme().colors.border;
+    let surface = cx.theme().colors.surface;
+
+    match row {
+        PaneRow::Header {
+            file_index,
+            gap,
+            expanded,
+        } => {
+            let Some(file) = files.get(*file_index) else {
+                return div().into_any_element();
+            };
+            let path = file.path.clone();
+            let title = match &file.old_path {
+                Some(old) => SharedString::from(format!("{old} → {}", file.path)),
+                None => SharedString::from(file.path.clone()),
+            };
+
+            div()
+                .w_full()
+                .when(*gap, |this| this.pt_2())
+                .child(
+                    h_flex()
+                        .id(("file-header", *file_index))
+                        .debug_selector(move || format!("commit-diff-file-card-{file_index}"))
+                        .h_10()
+                        .px_2()
+                        .gap_2()
+                        .bg(surface)
+                        .border_1()
+                        .border_color(border)
+                        .cursor_pointer()
+                        .hover(|this| this.bg(cx.theme().colors.muted_hover))
+                        .when(*expanded, |this| this.rounded_t_lg().border_b_0())
+                        .when(!*expanded, |this| this.rounded_lg())
+                        .child(
+                            Icon::named(if *expanded {
+                                IconRole::ChevronDown
+                            } else {
+                                IconRole::ChevronRight
+                            })
+                            .color(cx.theme().colors.muted_foreground),
+                        )
+                        .child(div().min_w_0().truncate().text_sm().child(title))
+                        .when(file.insertions > 0 || file.deletions > 0, |this| {
+                            this.child(GroupedBadge::new(
+                                ("file-diff-stats", *file_index),
+                                file.insertions,
+                                file.deletions,
+                            ))
+                        })
+                        .child(div().flex_1())
+                        .child(
+                            Button::new(("view-file", *file_index))
+                                .label("View file")
+                                .icon(Icon::named(IconRole::Eye))
+                                .variant(ButtonVariant::Ghost)
+                                .small()
+                                .on_click(|_, _, cx| cx.stop_propagation()),
+                        )
+                        .on_click({
+                            let pane = pane.clone();
+                            move |_, _, cx| {
+                                if let Err(error) =
+                                    pane.update(cx, |this, cx| this.toggle_file(&path, cx))
+                                {
+                                    log::warn!("failed to toggle diff file: {error}");
+                                }
+                            }
+                        }),
+                )
+                .into_any_element()
+        }
+        PaneRow::Note { message, last, .. } => div()
+            .w_full()
+            .border_x_1()
+            .border_color(border)
+            .bg(surface)
+            .px_3()
+            .py_2()
+            .text_xs()
+            .text_color(cx.theme().colors.muted_foreground)
+            .when(*last, |this| this.border_b_1().rounded_b_lg())
+            .child(message.clone())
+            .into_any_element(),
+        PaneRow::Line {
+            file_index,
+            row,
+            last,
+        } => {
+            let Some(file) = files.get(*file_index) else {
+                return div().into_any_element();
+            };
+            div()
+                .w_full()
+                .border_x_1()
+                .border_color(border)
+                .bg(surface)
+                .when(*last, |this| this.border_b_1().rounded_b_lg())
+                .child(render_diff_row(&file.hunks, *row, wrap, cx))
+                .into_any_element()
+        }
     }
 }
 
 impl Render for DiffPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tree = self.render_tree_column(cx);
-        let detail = self.render_detail_column(cx);
+        if self.diff.is_none() {
+            return empty_state("No changes");
+        }
 
-        h_flex()
+        let diff = self.diff.as_ref().expect("diff checked above");
+
+        if diff.files.is_empty() {
+            return empty_state("No files changed");
+        }
+
+        let toolbar = self.render_toolbar(cx);
+        let file_list = self.render_file_list(cx);
+
+        let content = if self.tree_visible {
+            let tree = self.render_tree_column(cx);
+            h_flex()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    Resizable::new("commit-diff-split", self.split.clone())
+                        .axis(Axis::Horizontal)
+                        .pane_with_min(tree, px(120.))
+                        .pane_with_min(file_list, px(240.))
+                        .flex_1()
+                        .min_w_0()
+                        .h_full(),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(file_list)
+                .into_any_element()
+        };
+
+        v_flex()
             .size_full()
             .min_h_0()
             .bg(cx.theme().colors.background)
-            .child(
-                Resizable::new("commit-diff-split", self.split.clone())
-                    .axis(Axis::Horizontal)
-                    .pane_with_min(tree, px(120.))
-                    .pane_with_min(detail, px(240.))
-                    .flex_1()
-                    .min_w_0()
-                    .h_full(),
-            )
+            .child(toolbar)
+            .child(content)
+            .into_any_element()
     }
 }
 
@@ -338,16 +625,25 @@ pub struct CommitDiffView {
     error: Option<SharedString>,
     pane: Entity<DiffPane>,
     tasks: Vec<Task<Result<(), anyhow::Error>>>,
+    _download_subscription: Subscription,
 }
 
 impl CommitDiffView {
     pub fn new(
         worktree: PathBuf,
         commit_id: String,
+        downloadable: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let pane = cx.new(DiffPane::new);
+        let pane = cx.new(|cx| {
+            let mut pane = DiffPane::new(cx);
+            pane.set_downloadable(downloadable, cx);
+            pane
+        });
+        let subscription = cx.subscribe(&pane, |this, _, DiffPaneEvent::DownloadCommit, cx| {
+            this.download_patch(cx);
+        });
 
         let weak = cx.entity().downgrade();
         window.defer(cx, move |window, cx| {
@@ -364,11 +660,14 @@ impl CommitDiffView {
                 description: None,
                 author: String::new(),
                 time: 0,
+                date_label: String::new(),
+                parents: Vec::new(),
             },
             loading: true,
             error: None,
             pane,
             tasks: Vec::new(),
+            _download_subscription: subscription,
         }
     }
 
@@ -424,15 +723,59 @@ impl CommitDiffView {
         self.push_task(task);
     }
 
+    fn download_patch(&mut self, cx: &mut Context<Self>) {
+        let worktree = self.worktree.clone();
+        let id = self.commit.id.clone();
+
+        let suggested_name = format!("{}.patch", short_id(&id));
+        let prompt = cx.prompt_for_new_path(&worktree, Some(suggested_name.as_str()));
+
+        let task: Task<Result<(), anyhow::Error>> = cx.spawn(async move |this, cx| {
+            let destination = match prompt.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) => return Ok(()),
+                Ok(Err(error)) => {
+                    log::warn!("failed to open the commit patch save dialog: {error}");
+                    return Ok(());
+                }
+                Err(_) => return Ok(()),
+            };
+
+            let patch = cx
+                .background_spawn(async move {
+                    Repo::open(&worktree).and_then(|repo| repo.commit_patch(&id))
+                })
+                .await;
+
+            match patch {
+                Ok(patch) => {
+                    if let Err(error) = std::fs::write(&destination, patch) {
+                        log::warn!("failed to write commit patch: {error}");
+                    }
+                }
+                Err(error) => log::warn!("failed to build commit patch: {error}"),
+            }
+
+            this.update(cx, |_, cx| cx.notify())?;
+            Ok(())
+        });
+
+        self.push_task(task);
+    }
+
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let commit = &self.commit;
-        let (files, insertions, deletions) = self.pane.read(cx).diff().map_or((0, 0, 0), |diff| {
-            (
-                diff.files.len(),
-                diff.files.iter().map(|file| file.insertions).sum(),
-                diff.files.iter().map(|file| file.deletions).sum(),
-            )
-        });
+        let muted = cx.theme().colors.muted_foreground;
+
+        let row = |label: &'static str, value: AnyElement| -> AnyElement {
+            h_flex()
+                .h_6()
+                .gap_2()
+                .text_xs()
+                .child(div().w_20().flex_none().text_color(muted).child(label))
+                .child(div().flex_1().min_w_0().child(value))
+                .into_any_element()
+        };
 
         v_flex()
             .flex_none()
@@ -443,55 +786,100 @@ impl CommitDiffView {
             .border_b_1()
             .border_color(cx.theme().colors.border)
             .child(
-                v_flex()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_semibold()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(commit.summary.clone()),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .text_base()
-                            .child(SharedString::from(format!("{} committed", commit.author)))
-                            .child(
-                                h_flex()
-                                    .gap_1()
-                                    .text_color(cx.theme().colors.muted_foreground)
-                                    .child(SharedString::from(&commit.id))
-                                    .child(ClipboardButton::new("commit-id", &commit.id)),
-                            )
-                            .child(
-                                div()
-                                    .text_color(cx.theme().colors.muted_foreground)
-                                    .child(relative_time_secs(commit.time)),
-                            ),
-                    ),
+                div()
+                    .min_w_0()
+                    .font_semibold()
+                    .truncate()
+                    .text_ellipsis()
+                    .child(SharedString::from(commit.summary.clone())),
             )
             .when_some(commit.description.as_ref(), |this, description| {
-                this.child(div().text_base().child(SharedString::from(description)))
+                this.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().colors.muted_foreground)
+                        .child(SharedString::from(description)),
+                )
             })
-            .child(
+            .child(Separator::horizontal())
+            .child(row(
+                "Author",
                 h_flex()
                     .gap_2()
-                    .text_xs()
-                    .child(Badge::new("commit-files", format!("{files} files changed")))
-                    .when(insertions > 0, |this| {
-                        this.child(
-                            Badge::new("commit-insertions", format!("+ {insertions}"))
-                                .variant(BadgeVariant::Success),
-                        )
-                    })
-                    .when(deletions > 0, |this| {
-                        this.child(
-                            Badge::new("commit-deletions", format!("- {deletions}"))
-                                .variant(BadgeVariant::Danger),
-                        )
+                    .child(
+                        Avatar::new(commit.author.clone())
+                            .name(commit.author.clone())
+                            .small(),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .child(SharedString::from(commit.author.clone())),
+                    )
+                    .into_any_element(),
+            ))
+            .children(
+                commit
+                    .description
+                    .as_ref()
+                    .map_or_else(Vec::new, |description| {
+                        co_authors(description)
+                            .into_iter()
+                            .map(|name| {
+                                row(
+                                    "Co-author",
+                                    h_flex()
+                                        .gap_2()
+                                        .child(Avatar::new(name.clone()).name(name.clone()).small())
+                                        .child(div().truncate().text_ellipsis().child(name))
+                                        .into_any_element(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
                     }),
             )
+            .child(row(
+                "Date",
+                h_flex()
+                    .gap_2()
+                    .child(relative_time_secs(commit.time))
+                    .when(!commit.date_label.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .text_color(muted)
+                                .child(SharedString::from(format!("({})", commit.date_label))),
+                        )
+                    })
+                    .into_any_element(),
+            ))
+            .child(row(
+                "Commit",
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_ellipsis()
+                            .truncate()
+                            .child(SharedString::from(commit.id.clone())),
+                    )
+                    .child(ClipboardButton::new("commit-id", &commit.id).xsmall())
+                    .into_any_element(),
+            ))
+            .children(commit.parents.iter().enumerate().map(|(ix, parent)| {
+                row(
+                    "Parent",
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_ellipsis()
+                                .truncate()
+                                .child(SharedString::from(parent.clone())),
+                        )
+                        .child(ClipboardButton::new(("commit-parent", ix), parent).xsmall())
+                        .into_any_element(),
+                )
+            }))
             .into_any_element()
     }
 }
@@ -509,8 +897,8 @@ impl Panel for CommitDiffView {
 
 impl Render for CommitDiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body: AnyElement = if self.loading {
-            crate::shared::widgets::centered_spinner("commit-diff-loading")
+        let body = if self.loading {
+            centered_spinner("commit-diff-loading")
         } else if let Some(error) = self.error.clone() {
             empty_state(error)
         } else {

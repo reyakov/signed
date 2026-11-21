@@ -39,6 +39,29 @@ pub fn short_id(hex: &str) -> SharedString {
     SharedString::from(hex.get(..8).unwrap_or(hex).to_owned())
 }
 
+/// The co-author names credited in a commit body, deduplicated in order.
+pub(super) fn co_authors(description: &str) -> Vec<SharedString> {
+    let mut names: Vec<SharedString> = Vec::new();
+    for line in description.lines() {
+        let trimmed = line.trim();
+        if !trimmed.to_lowercase().starts_with("co-authored-by:") {
+            continue;
+        }
+        let name = trimmed
+            .split_once(':')
+            .map(|(_, value)| value.trim())
+            .unwrap_or_default()
+            .split('<')
+            .next()
+            .unwrap_or_default()
+            .trim();
+        if !name.is_empty() && !names.iter().any(|existing| existing.as_ref() == name) {
+            names.push(SharedString::from(name.to_owned()));
+        }
+    }
+    names
+}
+
 /// Snapshots the worktree and derives the explorer's tree rows and paths.
 pub(super) fn snapshot_worktree(
     worktree: PathBuf,
@@ -295,7 +318,12 @@ pub(super) fn diff_rows(file: &FileDiff) -> Vec<DiffRow> {
     rows
 }
 
-pub(super) fn render_diff_row(hunks: &[DiffHunk], row: DiffRow, cx: &App) -> AnyElement {
+pub(super) fn render_diff_row(
+    hunks: &[DiffHunk],
+    row: DiffRow,
+    wrap: bool,
+    cx: &App,
+) -> AnyElement {
     match row {
         DiffRow::Hunk {
             old_start,
@@ -318,14 +346,14 @@ pub(super) fn render_diff_row(hunks: &[DiffHunk], row: DiffRow, cx: &App) -> Any
             )))
             .into_any_element(),
         DiffRow::Line { hunk, line } => match hunks.get(hunk).and_then(|h| h.lines.get(line)) {
-            Some(line) => render_diff_line(line, cx),
+            Some(line) => render_diff_line(line, wrap, cx),
             // A stale row index renders as a blank row rather than panicking.
             None => div().w_full().h(px(DIFF_ROW_HEIGHT)).into_any_element(),
         },
     }
 }
 
-fn render_diff_line(line: &DiffLine, cx: &App) -> AnyElement {
+fn render_diff_line(line: &DiffLine, wrap: bool, cx: &App) -> AnyElement {
     let bg = match line.kind {
         DiffLineKind::Addition => Some(cx.theme().ramps.success.base.opacity(0.2)),
         DiffLineKind::Deletion => Some(cx.theme().ramps.destructive.base.opacity(0.2)),
@@ -335,7 +363,8 @@ fn render_diff_line(line: &DiffLine, cx: &App) -> AnyElement {
 
     h_flex()
         .w_full()
-        .h(px(DIFF_ROW_HEIGHT))
+        .when(wrap, |row| row.min_h(px(DIFF_ROW_HEIGHT)))
+        .when(!wrap, |row| row.h(px(DIFF_ROW_HEIGHT)))
         .font_family(cx.theme().mono_font)
         .text_xs()
         .when_some(bg, |this, bg| this.bg(bg))
@@ -361,9 +390,10 @@ fn render_diff_line(line: &DiffLine, cx: &App) -> AnyElement {
             div()
                 .flex_1()
                 .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
                 .text_color(cx.theme().colors.foreground)
+                .when(!wrap, |content| {
+                    content.overflow_hidden().whitespace_nowrap()
+                })
                 .child(line.text.clone()),
         )
         .into_any_element()
@@ -400,7 +430,7 @@ pub(crate) fn commit_row(
                                 .font_family(cx.theme().mono_font)
                                 .text_sm()
                                 .text_color(cx.theme().colors.muted_foreground)
-                                .child(commit.id.clone()),
+                                .child(short_id(&commit.id)),
                         )
                         .child(
                             div()

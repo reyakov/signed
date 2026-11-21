@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-
 use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -305,7 +304,9 @@ impl PullRequestDetailView {
             &workspace,
             id,
             move |window, cx| {
-                cx.new(|cx| CommitDiffView::new(worktree.clone(), commit_id.clone(), window, cx))
+                cx.new(|cx| {
+                    CommitDiffView::new(worktree.clone(), commit_id.clone(), false, window, cx)
+                })
             },
             window,
             cx,

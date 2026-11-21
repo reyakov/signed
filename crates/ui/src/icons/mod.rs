@@ -59,6 +59,9 @@ pub enum IconRole {
     ArrowUp,
     Inbox,
     Stack,
+    PanelLeft,
+    UnfoldVertical,
+    Download,
 }
 
 impl IconRole {
@@ -106,6 +109,9 @@ impl IconRole {
             Self::ArrowUp => "arrow-up",
             Self::Inbox => "inbox",
             Self::Stack => "stack",
+            Self::PanelLeft => "panel-left",
+            Self::UnfoldVertical => "unfold-vertical",
+            Self::Download => "download",
         }
     }
 

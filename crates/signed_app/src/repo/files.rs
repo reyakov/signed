@@ -16,6 +16,7 @@ use ui::theme::ActiveTheme as _;
 use ui::tree::{Tree, TreeItem};
 
 use super::helpers::{code_language, is_markdown_path, preview_spinner, source_hash};
+use crate::repo::helpers::short_id;
 use crate::shared::tree::{TreeItemSeed, TreeRow, collect_expanded, flatten};
 use crate::shared::widgets::empty_state;
 
@@ -367,7 +368,7 @@ impl RepoFilesView {
                                     div()
                                         .text_xs()
                                         .font_family(cx.theme().mono_font)
-                                        .child(commit.id.clone()),
+                                        .child(short_id(&commit.id)),
                                 )
                                 .child(
                                     div()

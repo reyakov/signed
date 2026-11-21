@@ -25,6 +25,8 @@ nostr-sdk = { git = "https://github.com/rust-nostr/nostr" }
 
 gix = { version = "0.88", default-features = false, features = ["sha1", "blocking-network-client", "blocking-http-transport-reqwest-rust-tls", "worktree-mutation", "status"] }
 
+jiff = "0.2"
+
 smol = "2"
 futures = "0.3"
 flume = { version = "0.11.1", default-features = false, features = ["async", "select"] }

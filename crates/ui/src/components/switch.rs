@@ -133,7 +133,7 @@ impl RenderOnce for Switch {
 
         h_flex()
             .id(self.id)
-            .gap_2()
+            .gap_1()
             .control_text(self.size)
             .refine_style(&self.style)
             .role(Role::Switch)
@@ -179,7 +179,11 @@ impl RenderOnce for Switch {
                             .left(inset)
                             .switch_knob(self.size)
                             .rounded(theme.radius.full)
-                            .bg(colors.primary_foreground)
+                            .bg(if self.checked {
+                                colors.primary_foreground
+                            } else {
+                                colors.muted_foreground
+                            })
                             .with_spring("switch-thumb", anim, move |thumb, offset| {
                                 thumb.left(inset + offset)
                             }),

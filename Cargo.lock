@@ -7159,6 +7159,7 @@ dependencies = [
  "gix-worktree",
  "gix-worktree-state",
  "ignore",
+ "jiff",
  "log",
  "nostr",
  "serde",

@@ -235,3 +235,53 @@ impl ConsumeHunk for HunkCollector<'_> {
     /// Marks the end of the unified diff stream.
     fn finish(self) {}
 }
+
+/// Collects hunks as unified-diff text for patch export.
+pub(crate) struct PatchCollector {
+    text: String,
+}
+
+impl PatchCollector {
+    pub(crate) fn new() -> Self {
+        Self {
+            text: String::new(),
+        }
+    }
+}
+
+impl ConsumeHunk for PatchCollector {
+    type Out = String;
+
+    fn consume_hunk(
+        &mut self,
+        header: HunkHeader,
+        lines: &[(GixLineKind, &[u8])],
+    ) -> std::io::Result<()> {
+        self.text.push_str(&format!(
+            "@@ -{},{} +{},{} @@\n",
+            header.before_hunk_start,
+            header.before_hunk_len,
+            header.after_hunk_start,
+            header.after_hunk_len,
+        ));
+
+        for (kind, content) in lines {
+            let prefix = match kind {
+                GixLineKind::Context => ' ',
+                GixLineKind::Remove => '-',
+                GixLineKind::Add => '+',
+            };
+            // Tokens may already carry the line's newline; emit exactly one.
+            let content = content.strip_suffix(b"\n").unwrap_or(content);
+            self.text.push(prefix);
+            self.text.push_str(&String::from_utf8_lossy(content));
+            self.text.push('\n');
+        }
+
+        Ok(())
+    }
+
+    fn finish(self) -> String {
+        self.text
+    }
+}

@@ -19,16 +19,23 @@ pub struct FileCommit {
     pub description: Option<String>,
     pub author: String,
     pub time: i64,
+    /// Human-readable absolute date in the commit's recorded offset, e.g.
+    /// "Nov 21, 2026 at 4:40 AM GMT+7"; empty when the date cannot be formatted.
+    pub date_label: String,
+    /// Full hex parent ids; empty for patch-parsed commits.
+    pub parents: Vec<String>,
 }
 
 impl FileCommit {
-    /// Creates a commit entry from its id, message parts, author, and timestamp.
+    /// Creates a commit entry from its id, message parts, author, timestamp, date label, and parents.
     pub fn new(
         id: String,
         summary: String,
         description: Option<String>,
         author: String,
         time: i64,
+        date_label: String,
+        parents: Vec<String>,
     ) -> Self {
         Self {
             id,
@@ -36,6 +43,8 @@ impl FileCommit {
             description,
             author,
             time,
+            date_label,
+            parents,
         }
     }
 
@@ -58,9 +67,10 @@ impl FileCommit {
 
         let author = commit.author().into_anyhow()?;
         let message = commit.message().into_anyhow()?;
+        let time = author.time().into_anyhow()?;
 
         Ok(FileCommit::new(
-            commit.id().shorten_or_id().to_string(),
+            commit.id().to_string(),
             String::from_utf8_lossy(message.title).trim().to_string(),
             if include_description {
                 message
@@ -71,7 +81,40 @@ impl FileCommit {
                 None
             },
             String::from_utf8_lossy(author.name).trim().to_string(),
-            author.time().into_anyhow()?.seconds,
+            time.seconds,
+            format_commit_date(time),
+            commit.parent_ids().map(|id| id.to_string()).collect(),
         ))
+    }
+}
+
+/// Formats a gix time as "Nov 21, 2026 at 4:40 AM GMT+7" in the commit's own offset.
+pub(crate) fn format_commit_date(time: gix::date::Time) -> String {
+    let Ok(timestamp) = jiff::Timestamp::from_second(time.seconds) else {
+        return String::new();
+    };
+    let Ok(offset) = jiff::tz::Offset::from_seconds(time.offset) else {
+        return String::new();
+    };
+    let datetime = offset.to_datetime(timestamp);
+
+    let label = datetime.strftime("%b %-d, %Y at %-I:%M %p").to_string();
+    format!("{label} {}", gmt_label(time.offset))
+}
+
+/// The GMT offset label for a seconds offset, e.g. "GMT", "GMT+7", "GMT-5:30".
+fn gmt_label(offset: i32) -> String {
+    if offset == 0 {
+        return "GMT".to_owned();
+    }
+
+    let sign = if offset < 0 { '-' } else { '+' };
+    let total_minutes = offset.abs() / 60;
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    if minutes == 0 {
+        format!("GMT{sign}{hours}")
+    } else {
+        format!("GMT{sign}{hours}:{minutes:02}")
     }
 }
