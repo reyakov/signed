@@ -55,8 +55,10 @@ pub struct RepoStore {
     // Covers NIP-22 comments and statuses without an `a` tag.
     root_fetches: HashSet<EventId>,
     synced_maintainers: HashSet<PublicKey>,
-    // In-flight tasks, cancelled when the store drops.
+    // Fire-and-forget publishes, reaped when the next one is queued.
     tasks: Vec<Task<Result<(), Error>>>,
+    // The latest refresh; assigning it cancels the previous one.
+    refresh_task: Option<Task<Result<(), Error>>>,
     _subscription: Option<Subscription>,
 }
 
@@ -108,6 +110,7 @@ impl RepoStore {
             root_fetches: HashSet::new(),
             synced_maintainers: HashSet::new(),
             tasks: Vec::new(),
+            refresh_task: None,
             _subscription: Some(subscription),
         }
     }
@@ -139,6 +142,7 @@ impl RepoStore {
             root_fetches: HashSet::new(),
             synced_maintainers: HashSet::new(),
             tasks: Vec::new(),
+            refresh_task: None,
             _subscription: None,
         }
     }
@@ -580,7 +584,7 @@ impl RepoStore {
             Ok(())
         });
 
-        self.tasks.push(task);
+        self.refresh_task = Some(task);
     }
 
     pub fn status_of(&self, root: &Event) -> RepoStatus {
@@ -652,7 +656,7 @@ impl RepoStore {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "mirrors the PR event")]
     pub fn open_pull_request(
         &mut self,
         subject: Option<String>,
@@ -708,12 +712,13 @@ impl RepoStore {
             cx.notify();
             return Task::ready(Err(Error::msg(message)));
         };
-        let author_npub = user.to_bech32().unwrap();
 
+        let author_npub = user.to_bech32().unwrap_or_else(|error| match error {});
         let owner = addr.public_key();
         let euc = self.announcement.as_ref().and_then(|a| a.euc.clone());
         let repo_id = addr.identifier().to_owned();
-        let base_npub = owner.to_bech32().unwrap();
+        let base_npub = owner.to_bech32().unwrap_or_else(|error| match error {});
+
         let push_relays = self
             .announcement
             .as_ref()
@@ -721,6 +726,7 @@ impl RepoStore {
             .unwrap_or_default();
 
         // GRASP-06 hosting falls back to the settings defaults.
+        //
         // That happens when the author has no published grasp list.
         let defaults: Vec<RelayUrl> = {
             let settings = settings::SettingsStore::global(cx).read(cx).settings();
@@ -752,17 +758,18 @@ impl RepoStore {
             {
                 Ok(event) => event,
                 Err(e) => {
-                    return this.update(cx, |this, cx| {
+                    this.update(cx, |this, cx| {
                         this.last_error = Some(e.to_string());
                         cx.notify();
-                    });
+                    })?;
+                    return Err(e);
                 }
             };
 
-            // GRASP-06 pushes the tip to the author's own grasp servers at
-            // `/prs/<author-npub>/<repo-id>.git`; contributing to another
-            // project never depends on that project's servers. Resolve the
-            // servers from the author's latest kind-10317 grasp list.
+            // GRASP-06 pushes the tip to the author's own grasp servers at `/prs/<author-npub>/<repo-id>.git`.
+            // Contributing to another project never depends on that project's servers.
+            //
+            // Resolve the servers from the author's latest grasp list.
             let author_servers = {
                 let query_client = client.clone();
                 let published = cx
@@ -790,6 +797,7 @@ impl RepoStore {
                 }
                 targets
             };
+
             let base_targets: Vec<(String, String)> = {
                 let mut targets = Vec::new();
                 for relay in &push_relays {
@@ -909,10 +917,11 @@ impl RepoStore {
             let pr_event = match publish_result {
                 Ok(event) => event,
                 Err(e) => {
-                    return this.update(cx, |this, cx| {
+                    this.update(cx, |this, cx| {
                         this.last_error = Some(e.to_string());
                         cx.notify();
-                    });
+                    })?;
+                    return Err(e);
                 }
             };
 
@@ -926,7 +935,7 @@ impl RepoStore {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "mirrors the PR event")]
     pub fn open_pull_request_from_refs(
         &mut self,
         repo_path: PathBuf,
@@ -939,8 +948,7 @@ impl RepoStore {
         cx: &mut Context<Self>,
     ) -> Task<Result<(), Error>> {
         cx.spawn(async move |this, cx| {
-            // Regenerate at submit time so the published patch covers the
-            // current tip of the compare branch.
+            // Regenerate at submit time so the published patch covers the current tip of the compare branch.
             let patch = cx
                 .background_spawn({
                     let repo_path = repo_path.clone();
@@ -958,8 +966,9 @@ impl RepoStore {
                 Err(error) => bail!("Failed to generate the patch: {error}"),
             };
 
+            let (done, finished) = flume::bounded::<Result<(), Error>>(1);
             this.update(cx, |this, cx| {
-                let task = this.open_pull_request(
+                let publish = this.open_pull_request(
                     subject,
                     description,
                     branch_name,
@@ -969,8 +978,20 @@ impl RepoStore {
                     Some(repo_path),
                     cx,
                 );
-                this.tasks.push(task);
-            })
+
+                // The store owns the publish so it outlives the panel that requested it.
+                this.tasks.push(cx.spawn(async move |_this, _cx| {
+                    if done.send(publish.await).is_err() {
+                        log::debug!("pull request publish finished after its panel closed");
+                    }
+                    Ok::<(), Error>(())
+                }));
+            })?;
+
+            finished
+                .recv_async()
+                .await
+                .map_err(|_| anyhow::anyhow!("the pull request publish was dropped"))?
         })
     }
 
@@ -1104,6 +1125,7 @@ impl RepoStore {
 
             Ok(())
         });
+
         self.tasks.push(task);
     }
 
@@ -1238,12 +1260,15 @@ impl RepoStore {
         cx.notify();
 
         cx.spawn(async move |this, cx| {
+            // Cancellation releases the busy flag too, not only completion.
+            let guard = cx.on_drop(&this, |this, cx| {
+                this.pushing = false;
+                this.push_steps.clear();
+                cx.notify();
+            });
             let result = push.await;
 
             this.update(cx, |this, cx| {
-                this.pushing = false;
-                this.push_steps.clear();
-
                 match &result {
                     Ok(outcome) => {
                         this.last_error = None;
@@ -1273,6 +1298,7 @@ impl RepoStore {
                 cx.notify();
             })?;
 
+            guard.abort();
             result.map(|_| ())
         })
     }
@@ -1331,11 +1357,14 @@ impl RepoStore {
         };
 
         cx.spawn(async move |this, cx| {
+            // Cancellation releases the busy flag too, not only completion.
+            let guard = cx.on_drop(&this, |this, cx| {
+                this.cloning = false;
+                cx.notify();
+            });
             let result = clone.await;
 
             this.update(cx, |this, cx| {
-                this.cloning = false;
-
                 match &result {
                     Ok(()) => {
                         let checkouts = CheckoutsStore::global(cx);
@@ -1350,6 +1379,8 @@ impl RepoStore {
 
                 cx.notify();
             })?;
+
+            guard.abort();
 
             result
         })
@@ -1410,6 +1441,7 @@ impl RepoStore {
 
             Ok(())
         });
+
         self.tasks.push(task);
     }
 }
@@ -1453,7 +1485,7 @@ fn resolve_statuses(
 }
 
 /// Publish a patch series as a sequence of `git/patch` events.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "independent inputs")]
 async fn publish_patch_series<S>(
     client: &Client,
     signer: &S,

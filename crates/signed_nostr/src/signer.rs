@@ -33,7 +33,15 @@ impl UniversalSigner {
         <T as AsyncSignEvent>::Error: Error + Send + Sync + 'static,
         <T as AsyncNip44>::Error: Error + Send + Sync + 'static,
     {
-        *self.inner.write().expect("RwLock poisoned") = Arc::new(InnerSignerImpl(new_signer));
+        *self
+            .inner
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = Arc::new(InnerSignerImpl(new_signer));
+    }
+
+    /// A poisoned lock still holds a usable signer, so it is recovered instead of panicking.
+    fn inner(&self) -> Arc<dyn InnerSigner> {
+        Arc::clone(&self.inner.read().unwrap_or_else(|error| error.into_inner()))
     }
 }
 
@@ -119,7 +127,7 @@ impl AsyncGetPublicKey for UniversalSigner {
     fn get_public_key_async(
         &self,
     ) -> Pin<Box<dyn Future<Output = Result<PublicKey, Self::Error>> + Send + '_>> {
-        let inner = self.inner.read().expect("RwLock poisoned").clone();
+        let inner = self.inner();
         Box::pin(async move { inner.get_public_key_async().await })
     }
 }
@@ -131,7 +139,7 @@ impl AsyncSignEvent for UniversalSigner {
         &self,
         unsigned: UnsignedEvent,
     ) -> Pin<Box<dyn Future<Output = Result<Event, Self::Error>> + Send + '_>> {
-        let inner = self.inner.read().expect("RwLock poisoned").clone();
+        let inner = self.inner();
         Box::pin(async move { inner.sign_event_async(unsigned).await })
     }
 }
@@ -144,7 +152,7 @@ impl AsyncNip44 for UniversalSigner {
         public_key: &'a PublicKey,
         content: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, Self::Error>> + Send + 'a>> {
-        let inner = self.inner.read().expect("RwLock poisoned").clone();
+        let inner = self.inner();
         Box::pin(async move { inner.nip44_encrypt_async(public_key, content).await })
     }
 
@@ -153,7 +161,7 @@ impl AsyncNip44 for UniversalSigner {
         public_key: &'a PublicKey,
         payload: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<String, Self::Error>> + Send + 'a>> {
-        let inner = self.inner.read().expect("RwLock poisoned").clone();
+        let inner = self.inner();
         Box::pin(async move { inner.nip44_decrypt_async(public_key, payload).await })
     }
 }

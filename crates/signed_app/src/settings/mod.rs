@@ -1,5 +1,6 @@
 mod helpers;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
     Window, px,
@@ -9,6 +10,7 @@ use helpers::{
     scan_paths_editor, setting_block, setting_row,
 };
 use settings::SettingsStore;
+use ui::alert::{Alert, AlertSeverity};
 use ui::common::v_flex;
 use ui::dialog::{Dialog, DialogHandle};
 use ui::input::InputState;
@@ -64,8 +66,19 @@ impl Render for SettingsDialog {
             .height(px(560.))
             .title("Settings")
             .content(move |_, cx| {
+                let error = SettingsStore::global(cx).read(cx).error.clone();
+
                 v_flex()
                     .gap_4()
+                    .when_some(error, |this, error| {
+                        this.child(
+                            Alert::new("settings-error")
+                                .severity(AlertSeverity::Danger)
+                                .style(ui::alert::AlertStyle::Inline)
+                                .title("Settings are not saved")
+                                .message(error),
+                        )
+                    })
                     .child(setting_row(
                         cx,
                         "Appearance",

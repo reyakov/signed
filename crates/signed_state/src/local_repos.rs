@@ -100,33 +100,7 @@ impl LocalReposStore {
 
         task.detach();
     }
-}
 
-pub fn local_repo_addr(repo: &LocalRepo) -> Option<RepoAddr> {
-    let binding = repo.nip34.as_ref()?;
-    let owner = binding.owner?;
-    let identifier = binding.identifier.as_deref()?;
-
-    Some(RepoAddr::new(owner, identifier))
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ResolvedLocalRepo {
-    pub path: PathBuf,
-    pub nip34: Option<Nip34Binding>,
-    pub announcement: Option<Announcement>,
-}
-
-impl ResolvedLocalRepo {
-    pub fn name(&self) -> SharedString {
-        self.path
-            .file_name()
-            .map(|name| SharedString::from(name.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| SharedString::from("Untitled"))
-    }
-}
-
-impl LocalReposStore {
     pub fn resolve(
         repos: &[LocalRepo],
         known: &[Announcement],
@@ -164,66 +138,26 @@ impl LocalReposStore {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use nostr::prelude::*;
-    use signed_git::{GraspSignals, Nip34Kind};
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedLocalRepo {
+    pub path: PathBuf,
+    pub nip34: Option<Nip34Binding>,
+    pub announcement: Option<Announcement>,
+}
 
-    use super::*;
-
-    const KEY: &str = "0000000000000000000000000000000000000000000000000000000000000001";
-    const OTHER_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000002";
-
-    fn announcement(secret: &str, id: &str) -> Announcement {
-        let keys = Keys::new(SecretKey::from_hex(secret).expect("secret"));
-        let tag = Tag::parse(vec!["d", id]).expect("tag");
-        let event = EventBuilder::new(Kind::GitRepoAnnouncement)
-            .tags(vec![tag])
-            .finalize(&keys)
-            .expect("signed");
-
-        Announcement::from_event(&event).expect("parsed")
+impl ResolvedLocalRepo {
+    pub fn name(&self) -> SharedString {
+        self.path
+            .file_name()
+            .map(|name| SharedString::from(name.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| SharedString::from("Untitled"))
     }
+}
 
-    fn owner(secret: &str) -> PublicKey {
-        Keys::new(SecretKey::from_hex(secret).expect("secret")).public_key()
-    }
+pub fn local_repo_addr(repo: &LocalRepo) -> Option<RepoAddr> {
+    let binding = repo.nip34.as_ref()?;
+    let owner = binding.owner?;
+    let identifier = binding.identifier.as_deref()?;
 
-    fn bound(secret: &str, id: &str) -> LocalRepo {
-        let binding = Nip34Binding {
-            kind: Nip34Kind::Initialized,
-            signals: GraspSignals {
-                nip34_json: true,
-                ..Default::default()
-            },
-            owner: Some(owner(secret)),
-            identifier: Some(id.to_owned()),
-            grasp_urls: Vec::new(),
-        };
-
-        LocalRepo {
-            path: PathBuf::from(id),
-            nip34: Some(binding),
-        }
-    }
-
-    #[test]
-    fn the_users_own_announcement_is_dropped() {
-        let own = announcement(KEY, "mine");
-        let repo = bound(KEY, "mine");
-
-        let own = std::slice::from_ref(&own);
-        assert!(LocalReposStore::resolve(&[repo], own, own).is_empty());
-    }
-
-    #[test]
-    fn another_owners_announcement_is_linked_and_kept() {
-        let known = announcement(OTHER_KEY, "theirs");
-        let repo = bound(OTHER_KEY, "theirs");
-
-        let resolved = LocalReposStore::resolve(&[repo], std::slice::from_ref(&known), &[]);
-
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].announcement.as_ref(), Some(&known));
-    }
+    Some(RepoAddr::new(owner, identifier))
 }

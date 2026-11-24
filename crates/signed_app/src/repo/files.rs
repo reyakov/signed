@@ -71,6 +71,8 @@ pub struct RepoFilesView {
     pending_commits: Vec<String>,
     loading_commits: bool,
     tasks: Vec<Task<Result<(), Error>>>,
+    /// Bumped when the previews are cleared, so loads started before it are dropped.
+    generation: u64,
 }
 
 impl EventEmitter<RepoFilesEvent> for RepoFilesView {}
@@ -96,6 +98,7 @@ impl RepoFilesView {
             pending_commits: Vec::new(),
             loading_commits: false,
             tasks: Vec::new(),
+            generation: 0,
         }
     }
 
@@ -173,6 +176,7 @@ impl RepoFilesView {
         self.md = None;
         self.code = None;
         self.readme_name = None;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Refresh after the mirror caught up with the remote.
@@ -523,8 +527,7 @@ impl RepoFilesView {
             return;
         };
 
-        // Tree paths originate from git, so symlink escapes are accepted; only
-        // crafted components are rejected, and visibly.
+        // Tree paths originate from git, so symlink escapes are accepted.
         if unsafe_path {
             self.files.insert(
                 path.to_string(),
@@ -538,6 +541,8 @@ impl RepoFilesView {
         let path = path.to_string();
 
         self.load_commit(&path, cx);
+
+        let generation = self.generation;
 
         let task: Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
             let path_for_read = path.clone();
@@ -567,6 +572,9 @@ impl RepoFilesView {
                 .await;
 
             this.update_in(cx, |this, _window, cx| {
+                if generation != this.generation {
+                    return;
+                }
                 this.loading_files.remove(&path);
 
                 match content {
@@ -677,7 +685,9 @@ impl RepoFilesView {
         };
 
         self.loading_commits = true;
+
         let paths = std::mem::take(&mut self.pending_commits);
+        let generation = self.generation;
 
         let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let rels: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
@@ -688,13 +698,19 @@ impl RepoFilesView {
                 .await;
 
             this.update(cx, |this, cx| {
+                if generation != this.generation {
+                    return;
+                }
                 this.loading_commits = false;
 
-                if let Ok(found) = result {
-                    for (path, commit) in found {
-                        this.commits
-                            .insert(path.to_string_lossy().into_owned(), commit);
+                match result {
+                    Ok(found) => {
+                        for (path, commit) in found {
+                            this.commits
+                                .insert(path.to_string_lossy().into_owned(), commit);
+                        }
                     }
+                    Err(error) => log::warn!("failed to load the last commits: {error}"),
                 }
 
                 if !this.pending_commits.is_empty() {

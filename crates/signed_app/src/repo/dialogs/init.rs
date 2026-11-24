@@ -179,9 +179,12 @@ impl Render for InitRepoDialog {
         let folder = self.local_path.display().to_string();
         let branches = self.branches.clone();
         let selected_branch = self.selected_branch.clone();
+        let busy = state.read(cx).busy;
 
         Dialog::new("init-repo-dialog")
             .handle(self.handle.clone())
+            .close_on_escape(!busy)
+            .close_on_backdrop(!busy)
             .min_width(px(520.))
             .title("Initialize repository")
             .content(move |_, cx| {

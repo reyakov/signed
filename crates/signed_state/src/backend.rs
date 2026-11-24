@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Error, anyhow, bail};
 use bitcoin_hashes::sha1::Hash as Sha1Hash;
-use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Global, Task, TaskExt};
+use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Global, Task};
 use nostr::event::IntoEventBuilder;
 use nostr::nips::nip19::Nip19Coordinate;
 use nostr_connect::prelude::*;
@@ -26,6 +26,7 @@ use crate::state::{GitPushMode, GitPushPolicy, GitRef, PushStepStatus, SyncState
 
 pub const USER_KEYRING: &str = "Signed Safe Storage";
 const PUMP_DEBOUNCE: Duration = Duration::from_millis(200);
+const MAX_SEEN_EVENT_IDS: usize = 65_536;
 
 #[derive(Debug, Clone)]
 pub enum BackendEvent {
@@ -58,6 +59,8 @@ pub struct Backend {
     inbox: Entity<Inbox>,
     passphrase_required: bool,
     pushing_repos: Entity<HashSet<RepoAddr>>,
+    /// Bumped by every explicit identity action, results from an older session are dropped.
+    session: u64,
 }
 
 struct GlobalBackend(Entity<Backend>);
@@ -169,6 +172,7 @@ impl Backend {
             inbox: cx.new(|_| Inbox::default()),
             passphrase_required: false,
             pushing_repos: cx.new(|_| HashSet::new()),
+            session: 0,
         }
     }
 
@@ -179,12 +183,17 @@ impl Backend {
         }
 
         let user = cx.read_credentials(USER_KEYRING);
+        let session = self.session;
 
         let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let content = match user.await {
                 Ok(Some((_username, secret))) => String::from_utf8(secret)?,
                 _ => {
-                    this.update(cx, |_this, cx| cx.emit(BackendEvent::SignerRequired))?;
+                    this.update(cx, |this, cx| {
+                        if this.session == session {
+                            cx.emit(BackendEvent::SignerRequired);
+                        }
+                    })?;
                     return Ok(());
                 }
             };
@@ -193,7 +202,7 @@ impl Backend {
                 if content.starts_with("nsec1") {
                     let keys = Keys::new(SecretKey::parse(&content)?);
                     this.update(cx, |this, cx| {
-                        this.set_signer(keys, cx);
+                        this.set_signer(keys, session, cx);
                     })?;
                 } else if content.starts_with("bunker://") {
                     let (base, keys) = extract_master_key(&content)?;
@@ -203,16 +212,20 @@ impl Backend {
                         .build()?;
 
                     this.update(cx, |this, cx| {
-                        this.set_signer(signer, cx);
+                        this.set_signer(signer, session, cx);
                     })?;
                 } else if content.starts_with("ncryptsec1") {
                     this.update(cx, |this, cx| {
-                        this.passphrase_required = true;
-                        cx.emit(BackendEvent::PassphraseRequired);
+                        if this.session == session {
+                            this.passphrase_required = true;
+                            cx.emit(BackendEvent::PassphraseRequired);
+                        }
                     })?;
                 } else {
-                    this.update(cx, |_this, cx| {
-                        cx.emit(BackendEvent::SignerRequired);
+                    this.update(cx, |this, cx| {
+                        if this.session == session {
+                            cx.emit(BackendEvent::SignerRequired);
+                        }
                     })?;
                 }
 
@@ -221,9 +234,11 @@ impl Backend {
             .await;
 
             if let Err(e) = result {
-                this.update(cx, |_this, cx| {
-                    cx.emit(BackendEvent::error(e.to_string()));
-                    cx.emit(BackendEvent::SignerRequired);
+                this.update(cx, |this, cx| {
+                    if this.session == session {
+                        cx.emit(BackendEvent::error(e.to_string()));
+                        cx.emit(BackendEvent::SignerRequired);
+                    }
                 })?;
             }
 
@@ -237,6 +252,7 @@ impl Backend {
         password: &str,
         cx: &mut Context<Self>,
     ) -> Task<Result<PublicKey, Error>> {
+        let session = self.supersede_session();
         let password = password.to_owned();
         let user = cx.read_credentials(USER_KEYRING);
 
@@ -260,7 +276,9 @@ impl Backend {
             let keys = decrypt_task.await?;
             let public_key = keys.public_key();
 
-            this.update(cx, |this, cx| this.set_signer(keys, cx))?;
+            this.update(cx, |this, cx| {
+                this.set_signer(keys, session, cx);
+            })?;
 
             Ok(public_key)
         })
@@ -283,6 +301,7 @@ impl Backend {
         }
 
         let password = password.to_owned();
+        let session = self.supersede_session();
 
         cx.spawn(async move |this, cx| {
             let job = cx.background_spawn(async move {
@@ -300,7 +319,9 @@ impl Backend {
             });
             write.await?;
 
-            this.update(cx, |this, cx| this.set_signer(keys, cx))?;
+            this.update(cx, |this, cx| {
+                this.set_signer(keys, session, cx);
+            })?;
 
             Ok(public_key)
         })
@@ -313,13 +334,13 @@ impl Backend {
         password: &str,
         cx: &mut Context<Self>,
     ) -> Task<Result<PublicKey, Error>> {
-        let ncryptsec = ncryptsec.trim().to_owned();
-
         if password.is_empty() {
             return Task::ready(Err(anyhow!("Passphrase must not be empty")));
         }
 
+        let ncryptsec = ncryptsec.trim().to_owned();
         let password = password.to_owned();
+        let session = self.supersede_session();
 
         cx.spawn(async move |this, cx| {
             let stored = ncryptsec.clone();
@@ -337,7 +358,9 @@ impl Backend {
             });
             write.await?;
 
-            this.update(cx, |this, cx| this.set_signer(keys, cx))?;
+            this.update(cx, |this, cx| {
+                this.set_signer(keys, session, cx);
+            })?;
 
             Ok(public_key)
         })
@@ -359,6 +382,7 @@ impl Backend {
         let keys = Keys::generate();
         let credential = with_master_key(&uri_string, &keys);
         let write = cx.write_credentials(USER_KEYRING, "bunker", credential.as_bytes());
+        let session = self.supersede_session();
 
         cx.spawn(async move |this, cx| {
             let signer = NostrConnect::builder(connect_uri, keys)
@@ -369,7 +393,9 @@ impl Backend {
             let public_key = signer.get_public_key_async().await?;
             write.await?;
 
-            this.update(cx, |this, cx| this.set_signer(signer, cx))?;
+            this.update(cx, |this, cx| {
+                this.set_signer(signer, session, cx);
+            })?;
 
             Ok(public_key)
         })
@@ -384,12 +410,14 @@ impl Backend {
         let name = name.trim().to_owned();
         let password = password.to_owned();
 
-        if name.is_empty() || name.len() > 255 {
+        if name.is_empty() || name.chars().count() > 255 {
             return Task::ready(Err(anyhow!("Name must be 1-255 characters")));
         }
         if password.is_empty() {
             return Task::ready(Err(anyhow!("Passphrase must not be empty")));
         }
+
+        let session = self.supersede_session();
 
         cx.spawn(async move |this, cx| {
             let job = cx.background_spawn(async move {
@@ -409,6 +437,9 @@ impl Backend {
             write.await?;
 
             this.update(cx, |this, cx| {
+                if this.session != session {
+                    return;
+                }
                 this.signer.swap_inner(keys);
                 this.current_user = Some(public_key);
                 this.bootstrap_user(public_key, cx);
@@ -449,11 +480,13 @@ impl Backend {
                     .map(|url| RelayUrl::parse(url).expect("valid relay URL"))
                     .collect();
 
-                for builder in [
+                let publishes = [
                     RelayList::new(relays).into_event_builder(),
                     metadata,
                     GitUserGraspList { grasp_servers }.into_event_builder(),
-                ] {
+                ]
+                .into_iter()
+                .map(|builder| {
                     let client = this.client.clone();
                     let signer = this.signer.clone();
                     cx.background_spawn(async move {
@@ -472,8 +505,21 @@ impl Backend {
 
                         Ok::<(), anyhow::Error>(())
                     })
-                    .detach();
-                }
+                })
+                .collect::<Vec<_>>();
+
+                cx.spawn(async move |this, cx| {
+                    if let Err(error) = futures::future::try_join_all(publishes).await {
+                        this.update(cx, |_this, cx| {
+                            cx.emit(BackendEvent::error(format!(
+                                "identity created, but publishing it failed: {error}"
+                            )));
+                        })?;
+                    }
+
+                    Ok::<(), anyhow::Error>(())
+                })
+                .detach();
             })?;
 
             Ok(public_key)
@@ -976,10 +1022,8 @@ impl Backend {
             });
             let events = events.await?;
 
-            this.update(cx, |this, cx| {
-                this.retract_events(&events, cx);
-            })
-            .ok();
+            let deletions = this.update(cx, |this, cx| this.retract_events(&events, cx))?;
+            futures::future::try_join_all(deletions).await?;
 
             Ok(())
         })
@@ -1061,6 +1105,9 @@ impl Backend {
     }
 
     pub fn sign_out(&mut self, cx: &mut Context<Self>) {
+        self.supersede_session();
+        // Nothing may be signed with the identity the user just left.
+        self.signer.swap_inner(Keys::generate());
         self.current_user = None;
         self.passphrase_required = false;
 
@@ -1068,7 +1115,19 @@ impl Backend {
             inbox.reset(cx);
         });
 
-        cx.delete_credentials(USER_KEYRING).detach_and_log_err(cx);
+        let delete = cx.delete_credentials(USER_KEYRING);
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = delete.await {
+                this.update(cx, |_this, cx| {
+                    cx.emit(BackendEvent::error(format!(
+                        "failed to remove the stored credential: {error}"
+                    )));
+                })?;
+            }
+
+            Ok::<(), Error>(())
+        })
+        .detach();
         cx.emit(BackendEvent::SignerChanged);
         cx.emit(BackendEvent::SignerRequired);
         cx.notify();
@@ -1103,7 +1162,12 @@ impl Backend {
         });
     }
 
-    fn set_signer<T>(&mut self, new_signer: T, cx: &mut Context<Self>)
+    fn supersede_session(&mut self) -> u64 {
+        self.session += 1;
+        self.session
+    }
+
+    fn set_signer<T>(&mut self, new_signer: T, session: u64, cx: &mut Context<Self>)
     where
         T: AsyncGetPublicKey + AsyncSignEvent + AsyncNip44 + 'static,
         <T as AsyncGetPublicKey>::Error: std::error::Error + Send + Sync + 'static,
@@ -1114,6 +1178,9 @@ impl Backend {
             match new_signer.get_public_key_async().await {
                 Ok(public_key) => {
                     this.update(cx, |this, cx| {
+                        if this.session != session {
+                            return;
+                        }
                         this.signer.swap_inner(new_signer);
                         this.current_user = Some(public_key);
                         this.passphrase_required = false;
@@ -1243,24 +1310,31 @@ impl Backend {
     }
 
     // Each target gets its own deletion event.
-    fn retract_events(&mut self, events: &[Event], cx: &mut Context<Self>) {
-        for event in events.iter().cloned() {
-            let client = self.client.clone();
-            let signer = self.signer.clone();
+    fn retract_events(
+        &mut self,
+        events: &[Event],
+        cx: &mut Context<Self>,
+    ) -> Vec<Task<Result<(), Error>>> {
+        events
+            .iter()
+            .cloned()
+            .map(|event| {
+                let client = self.client.clone();
+                let signer = self.signer.clone();
 
-            cx.background_spawn(async move {
-                let builder = EventDeletionRequest::new().id(event.id);
-                let deletion = builder.finalize_async(&signer).await?;
-                let output = client.send_event(&deletion).broadcast().await?;
+                cx.background_spawn(async move {
+                    let builder = EventDeletionRequest::new().id(event.id);
+                    let deletion = builder.finalize_async(&signer).await?;
+                    let output = client.send_event(&deletion).broadcast().await?;
 
-                if output.success.is_empty() {
-                    bail!("deletion event not accepted by any relay");
-                }
+                    if output.success.is_empty() {
+                        bail!("deletion event not accepted by any relay");
+                    }
 
-                Ok::<(), Error>(())
+                    Ok::<(), Error>(())
+                })
             })
-            .detach_and_log_err(cx);
-        }
+            .collect()
     }
 }
 
@@ -1287,8 +1361,7 @@ fn build_announcement(
     }
 }
 
-/// Announces a repository and pushes its state to grasp servers,
-/// or retracts the announcement if the push fails.
+/// Announces a repository and pushes its state to grasp, retracting the announcement on failure.
 async fn announce_and_push_or_retract<S, P>(
     client: &Client,
     signer: &S,
@@ -1355,6 +1428,10 @@ impl UpdateEvent {
                     };
 
                     if seen.insert(event.id) {
+                        // Bounded, so a long session does not keep every event id.
+                        if seen.len() >= MAX_SEEN_EVENT_IDS {
+                            seen.clear();
+                        }
                         return Some(update);
                     }
                 }

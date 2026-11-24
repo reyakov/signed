@@ -25,10 +25,6 @@ impl RepoAddr {
             .collect()
     }
 
-    pub fn kind(&self) -> Kind {
-        self.0.kind
-    }
-
     pub fn public_key(&self) -> PublicKey {
         self.0.public_key
     }

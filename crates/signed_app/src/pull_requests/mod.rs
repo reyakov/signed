@@ -353,7 +353,10 @@ impl Render for PullRequestsView {
                         .title("Pull request warning")
                         .message(warning)
                         .on_dismiss(move |cx| {
-                            dismiss_warning_store.update(cx, |store, _| store.last_warning = None);
+                            dismiss_warning_store.update(cx, |store, cx| {
+                                store.last_warning = None;
+                                cx.notify();
+                            });
                         }),
                 )
             })
@@ -364,7 +367,10 @@ impl Render for PullRequestsView {
                         .title("Pull request error")
                         .message(error)
                         .on_dismiss(move |cx| {
-                            dismiss_error_store.update(cx, |store, _| store.last_error = None);
+                            dismiss_error_store.update(cx, |store, cx| {
+                                store.last_error = None;
+                                cx.notify();
+                            });
                         }),
                 )
             })

@@ -320,6 +320,7 @@ impl ProfileDirectory {
             Ok::<_, anyhow::Error>(Profile::latest_profiles(events))
         });
 
+        self.tasks.retain(|task| !task.is_ready());
         self.tasks.push(cx.spawn(async move |this, cx| {
             let loaded = work.await;
 
@@ -335,6 +336,12 @@ impl ProfileDirectory {
                     }
                     Err(e) => {
                         log::warn!("failed to load profiles from the database: {e}");
+                        // A failed query must not pin these keys forever.
+                        this.with_pending(|pending| {
+                            for key in &keys {
+                                pending.remove(key);
+                            }
+                        });
                         keys
                     }
                 };

@@ -366,21 +366,11 @@ impl CheckoutsStore {
             let (statuses, push_statuses) =
                 CheckoutsStore::compute_statuses(&associations, &requested, &push_requested, true);
 
-            Ok::<_, Error>((associations, statuses, push_statuses))
+            (associations, statuses, push_statuses)
         });
 
         cx.spawn(async move |this, cx| {
-            let (associations, statuses, push_statuses) = match work.await {
-                Ok(results) => results,
-                Err(_) => {
-                    return this.update(cx, |this, cx| {
-                        this.refresh.abort();
-                        if poll {
-                            this.schedule_local_pass(cx);
-                        }
-                    });
-                }
-            };
+            let (associations, statuses, push_statuses) = work.await;
 
             let again = this.update(cx, |this, cx| {
                 let associations_changed = this.by_repo != associations;
@@ -412,7 +402,7 @@ impl CheckoutsStore {
                 }
             })?;
 
-            Ok(())
+            Ok::<(), Error>(())
         })
         .detach();
     }
@@ -480,15 +470,11 @@ impl CheckoutsStore {
         let push_requested: Vec<RepoAddr> = self.push_requested.iter().cloned().collect();
 
         let work = cx.background_spawn(async move {
-            let (statuses, push_statuses) =
-                CheckoutsStore::compute_statuses(&associations, &requested, &push_requested, false);
-            Ok::<_, Error>((statuses, push_statuses))
+            CheckoutsStore::compute_statuses(&associations, &requested, &push_requested, false)
         });
 
         cx.spawn(async move |this, cx| {
-            let Ok((statuses, push_statuses)) = work.await else {
-                return Ok(());
-            };
+            let (statuses, push_statuses) = work.await;
 
             this.update(cx, |this, cx| {
                 if this.refresh.running() || this.debounce_pending {

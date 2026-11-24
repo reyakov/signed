@@ -264,6 +264,14 @@ impl RepoDetailView {
                 this.track_sync_status(cx);
                 if !this.repo_started && store.read(cx).announcement.is_some() {
                     this.load_repo(window, cx);
+                } else if this.loading
+                    && store.read(cx).loaded
+                    && store.read(cx).announcement.is_none()
+                    && store.read(cx).path.is_none()
+                {
+                    // The store finished loading with nothing to clone from.
+                    this.loading = false;
+                    this.error = Some("Repository announcement not found".into());
                 }
                 cx.notify();
             }));
@@ -623,21 +631,24 @@ impl RepoDetailView {
         let Some(worktree) = self.worktree.clone() else {
             return;
         };
-
         let name = name.into();
-        let previous_branch = self.refs.branch_select.read(cx).selected().cloned();
-        let previous_tag = self.refs.tag_select.read(cx).selected().cloned();
+
+        // Restored if the checkout fails while HEAD stays detached.
+        let previous_tag = match kind {
+            RefKind::Branch => self.refs.tag_select.read(cx).selected().cloned(),
+            RefKind::Tag => None,
+        };
 
         match kind {
             RefKind::Branch => {
                 self.refs
                     .tag_select
-                    .update(cx, |state, cx| state.set_selected(None, window, cx));
+                    .update(cx, |state, cx| state.set_selected_silent(None, window, cx));
             }
             RefKind::Tag => {
                 self.refs
                     .branch_select
-                    .update(cx, |state, cx| state.set_selected(None, window, cx));
+                    .update(cx, |state, cx| state.set_selected_silent(None, window, cx));
             }
         }
 
@@ -646,36 +657,42 @@ impl RepoDetailView {
 
         let checkout_name = name.clone();
         let task: Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
-            let result = cx
+            let outcome = cx
                 .background_spawn(async move {
                     let repo = Repo::open(&worktree);
-                    match kind {
+                    // A failed checkout leaves HEAD alone; report the branch it is still on.
+                    let current = repo.as_ref().ok().and_then(|repo| repo.current_branch());
+                    let checkout = match kind {
                         RefKind::Branch => {
                             repo.and_then(|repo| repo.checkout_branch(&checkout_name))
                         }
                         RefKind::Tag => repo.and_then(|repo| repo.checkout_tag(&checkout_name)),
+                    };
+                    match checkout {
+                        Ok(()) => Ok(current),
+                        Err(error) => Err((error, current)),
                     }
                 })
                 .await;
 
             this.update_in(cx, |this, window, cx| {
-                match result {
-                    Ok(()) => this.reload_worktree(cx),
-                    Err(error) => {
+                match outcome {
+                    Ok(_) => this.reload_worktree(cx),
+                    Err((error, current)) => {
                         this.error = Some(format!("Failed to check out {name}: {error}").into());
                         this.refs.switching_ref = false;
+
+                        let detached = current.is_none();
                         this.refs.restore_selection(
                             &this.refs.branch_select,
-                            &previous_branch,
+                            &current.map(Into::into),
                             window,
                             cx,
                         );
-                        this.refs.restore_selection(
-                            &this.refs.tag_select,
-                            &previous_tag,
-                            window,
-                            cx,
-                        );
+
+                        let tag = if detached { previous_tag } else { None };
+                        this.refs
+                            .restore_selection(&this.refs.tag_select, &tag, window, cx);
                     }
                 }
                 cx.notify();
@@ -890,6 +907,8 @@ impl RepoDetailView {
 
         let probe = cx.background_spawn(async move {
             let mut deleted: Vec<String> = Vec::new();
+            // A server that cannot be listed may still hold refs the reset deletes.
+            let mut unreachable: Vec<String> = Vec::new();
             let repo = Repo::open(&mirror)?;
 
             let local: HashSet<String> = repo
@@ -900,26 +919,33 @@ impl RepoDetailView {
                 .collect();
 
             for url in &urls {
-                let Ok(remote_refs) = repo.ls_remote(url) else {
-                    continue;
-                };
-                for (name, _) in remote_refs {
-                    if !local.contains(&name) && !deleted.contains(&name) {
-                        deleted.push(name);
+                match repo.ls_remote(url) {
+                    Ok(remote_refs) => {
+                        for (name, _) in remote_refs {
+                            if !local.contains(&name) && !deleted.contains(&name) {
+                                deleted.push(name);
+                            }
+                        }
                     }
+                    Err(_) => unreachable.push(url.clone()),
                 }
             }
 
             deleted.sort();
-            Ok::<_, Error>(deleted)
+            Ok::<_, Error>((deleted, unreachable))
         });
 
         cx.spawn_in(window, async move |this, cx| {
-            let deleted = probe.await;
+            let probe = probe.await;
 
-            this.update_in(cx, |this, _window, cx| match deleted {
-                Ok(deleted) => {
-                    this.reset = Some(dialogs::reset::ResetRemoteDialog::new(store, deleted, cx));
+            this.update_in(cx, |this, _window, cx| match probe {
+                Ok((deleted, unreachable)) => {
+                    this.reset = Some(dialogs::reset::ResetRemoteDialog::new(
+                        store,
+                        deleted,
+                        unreachable,
+                        cx,
+                    ));
                     cx.notify();
                 }
                 Err(error) => {

@@ -67,9 +67,10 @@ impl PatchParser {
         let mut headers_closed = false;
 
         let mut offset = 0usize;
-        for line in patch.lines() {
+        for raw in patch.split_inclusive('\n') {
             let line_start = offset;
-            offset += line.len() + 1;
+            offset += raw.len();
+            let line = raw.trim_end_matches(['\r', '\n']);
 
             let is_envelope = line
                 .strip_prefix("From ")
@@ -78,7 +79,8 @@ impl PatchParser {
 
             if is_envelope {
                 if let Some((start, id, headers)) = current.take() {
-                    messages.push(Envelope::new(&patch[start..], id, headers));
+                    // A message runs until the next envelope starts.
+                    messages.push(Envelope::new(&patch[start..line_start], id, headers));
                 }
 
                 let id = line

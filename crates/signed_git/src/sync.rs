@@ -25,11 +25,6 @@ pub struct RepoSyncStatus {
 }
 
 impl RepoSyncStatus {
-    /// True when every branch matches the Nostr state.
-    pub fn in_sync(&self) -> bool {
-        self.refs.iter().all(|(_, sync)| *sync == RefSync::InSync)
-    }
-
     /// Maps branch short name to lowercase commit oid.
     pub(crate) fn branches(refs: &[(String, String)]) -> BTreeMap<&str, String> {
         refs.iter()

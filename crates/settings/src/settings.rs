@@ -49,11 +49,7 @@ impl Default for GraspServersSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LocalReposSettings {
-    /// The directories scanned for local git repositories,
-    /// Defaults:
-    ///
-    /// - `~/Desktop`
-    /// - `~/Documents`
+    /// Directories scanned for local git repositories. `~/Desktop` and `~/Documents` by default.
     pub scan_paths: Vec<PathBuf>,
 }
 
@@ -65,10 +61,7 @@ impl Default for LocalReposSettings {
     }
 }
 
-/// A remembered association between a local checkout folder and an announced repository,
-/// recorded when the user clones a repository or picks a folder in the New PR panel.
-///
-/// The panel can then prefill the folder later without asking again.
+/// A checkout folder paired with its announced repository, so the New PR panel can prefill it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct CheckoutRecord {

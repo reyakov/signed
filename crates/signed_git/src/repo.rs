@@ -594,16 +594,16 @@ impl Repo {
             }
 
             let platform = attached.diff(&mut cache)?;
-            platform
-                .resource_cache
-                .options
-                .skip_internal_diff_if_external_is_configured = true;
 
             let outcome = platform.resource_cache.prepare_diff().into_anyhow()?;
 
             match outcome.operation {
                 Operation::InternalDiff { algorithm } => {
-                    let input = outcome.interned_input();
+                    // Keep line endings so a missing final newline can be marked.
+                    let input = gix::diff::blob::InternedInput::new(
+                        outcome.old.intern_source(),
+                        outcome.new.intern_source(),
+                    );
                     let diff = gix::diff::blob::diff_with_slider_heuristics(algorithm, &input);
                     let text = gix::diff::blob::UnifiedDiff::new(
                         &diff,
@@ -719,10 +719,6 @@ impl Repo {
             };
 
             let platform = attached.diff(&mut cache)?;
-            platform
-                .resource_cache
-                .options
-                .skip_internal_diff_if_external_is_configured = true;
             let outcome = platform.resource_cache.prepare_diff().into_anyhow()?;
 
             let (binary, hunks, insertions, deletions) = match outcome.operation {
@@ -1180,13 +1176,14 @@ impl Repo {
         let (signature, mut time_buf) = Self::repository_signature();
         let signature = signature.to_ref(&mut time_buf);
 
+        // HEAD moves only once the worktree holds the new content.
+        self.force_checkout(&tree)?;
+
         self.move_head(
             signature,
             gix::refs::Target::Symbolic(branch),
             &format!("checkout: moving to {name}"),
         )?;
-
-        self.force_checkout(&tree)?;
 
         Ok(())
     }
@@ -1196,20 +1193,18 @@ impl Repo {
         let full = format!("refs/tags/{name}");
 
         let mut reference = self.inner.find_reference(&full)?;
-
         let commit = reference.peel_to_id()?;
         let tree = reference.peel_to_tree()?.id;
 
         let (signature, mut time_buf) = Self::repository_signature();
         let signature = signature.to_ref(&mut time_buf);
 
+        self.force_checkout(&tree)?;
         self.move_head(
             signature,
             gix::refs::Target::Object(commit.detach()),
             &format!("checkout: moving to {name}"),
         )?;
-
-        self.force_checkout(&tree)?;
 
         Ok(())
     }
@@ -1224,31 +1219,53 @@ impl Repo {
 
         let mut index = self.inner.index_from_tree(tree)?;
 
-        if let Ok(previous) = self.inner.index_or_empty() {
-            let keep: HashSet<PathBuf> = index
-                .entries()
-                .iter()
-                .map(|entry| {
-                    PathBuf::from(String::from_utf8_lossy(entry.path(&index)).into_owned())
-                })
-                .collect();
-            for entry in previous.entries() {
-                let rel = entry.path(&previous);
-                let rel = PathBuf::from(String::from_utf8_lossy(rel).into_owned());
+        // `overwrite_existing` below is `git checkout --force`; never discard uncommitted work.
+        if self.inner.is_dirty()? {
+            bail!("uncommitted changes would be overwritten; commit or stash them first");
+        }
 
-                if keep.contains(&rel) {
-                    continue;
-                }
+        let previous = self.inner.index_or_empty()?;
+        let tracked: HashSet<&gix::bstr::BStr> = previous
+            .entries()
+            .iter()
+            .map(|entry| entry.path(&previous))
+            .collect();
 
-                let path = workdir.join(&rel);
+        if let Some(path) = index
+            .entries()
+            .iter()
+            .map(|entry| entry.path(&index))
+            .find(|path| {
+                !tracked.contains(path) && workdir.join(gix::path::from_bstr(*path)).exists()
+            })
+        {
+            bail!(
+                "untracked file {} would be overwritten",
+                String::from_utf8_lossy(path)
+            );
+        }
 
-                match std::fs::remove_file(&path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(error)
-                            .with_context(|| format!("failed to remove {}", path.display()));
-                    }
+        let keep: HashSet<PathBuf> = index
+            .entries()
+            .iter()
+            .map(|entry| PathBuf::from(String::from_utf8_lossy(entry.path(&index)).into_owned()))
+            .collect();
+
+        for entry in previous.entries() {
+            let rel = entry.path(&previous);
+            let rel = PathBuf::from(String::from_utf8_lossy(rel).into_owned());
+
+            if keep.contains(&rel) {
+                continue;
+            }
+
+            let path = workdir.join(&rel);
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to remove {}", path.display()));
                 }
             }
         }
@@ -1436,10 +1453,7 @@ impl Repo {
         )
     }
 
-    /// Mirrors all branches and tags to the grasp repository at `base_url`.
-    ///
-    /// Force refspecs keep the server ref map following the local repository,
-    /// grasp authorizes pushes by ref map equality, not fast-forwards.
+    /// Mirrors branches and tags to `base_url` with force refspecs; grasp authorizes by ref map.
     pub fn push_all(&self, base_url: &str, owner: &str, repo_id: &str) -> Result<()> {
         self.push_refspecs(
             base_url,

@@ -81,12 +81,10 @@ impl AppRoot {
             Self::reset_to_explore(&app, window, cx);
         });
 
-        let appearance = settings.read(cx).settings().appearance;
-
         Self {
             panels,
             titlebar,
-            appearance,
+            appearance: settings.read(cx).settings().appearance,
             _subscriptions: subscriptions,
         }
     }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _, Subscription,
+    ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _,
     UniformListScrollHandle, WeakEntity, Window, div, px,
 };
 use nostr::prelude::Url;
@@ -56,7 +56,6 @@ pub struct NewPullRequestView {
     scroll_handle: UniformListScrollHandle,
     pub(super) tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
     source_open: bool,
-    _subscriptions: Vec<Subscription>,
 }
 
 impl NewPullRequestView {
@@ -159,7 +158,6 @@ impl NewPullRequestView {
             scroll_handle: UniformListScrollHandle::new(),
             tasks: Vec::new(),
             source_open: false,
-            _subscriptions: Vec::new(),
         }
     }
 
@@ -511,7 +509,9 @@ impl NewPullRequestView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.compare_generation = self.compare_generation.wrapping_add(1);
         self.fork = None;
+
         let Some((branches, current)) = info else {
             self.error = Some("The chosen folder is not a git repository".into());
             self.repo_path = None;
@@ -522,6 +522,7 @@ impl NewPullRequestView {
             cx.notify();
             return;
         };
+
         if branches.is_empty() {
             self.error = Some("The repository has no branches yet".into());
             self.repo_path = None;
@@ -682,6 +683,8 @@ impl NewPullRequestView {
         cx: &mut Context<Self>,
     ) {
         self.loading = false;
+        self.compare_generation = self.compare_generation.wrapping_add(1);
+
         let (base_branches, compare_branches) = match result {
             Ok(branches) => branches,
             Err(error) => {
@@ -690,11 +693,13 @@ impl NewPullRequestView {
                 return;
             }
         };
+
         if compare_branches.is_empty() {
             self.error = Some("The fork has no branches to compare".into());
             cx.notify();
             return;
         }
+
         if base_branches.is_empty() {
             self.error = Some("Could not list the target repository's branches.".into());
             cx.notify();
@@ -733,7 +738,7 @@ impl NewPullRequestView {
 
         self.loading = true;
         self.error = None;
-        self.compare_generation += 1;
+        self.compare_generation = self.compare_generation.wrapping_add(1);
         let generation = self.compare_generation;
         cx.notify();
 

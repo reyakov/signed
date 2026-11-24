@@ -167,13 +167,18 @@ impl Render for CreateRepoDialog {
         let desc_input = self.desc_input.clone();
         let folder_input = self.folder_input.clone();
         let relay_input = self.relay_input.clone();
+
         let state = self.state.clone();
+        let busy = state.read(cx).busy;
+
         let grasp_state = self.grasp_state.clone();
         let action_state = state.clone();
         let this = cx.entity().downgrade();
 
         Dialog::new("create-repo-dialog")
             .handle(self.handle.clone())
+            .close_on_escape(!busy)
+            .close_on_backdrop(!busy)
             .min_width(px(520.))
             .title("Create Repository")
             .content(move |_window, cx| {

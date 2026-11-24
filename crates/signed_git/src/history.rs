@@ -19,8 +19,7 @@ pub struct FileCommit {
     pub description: Option<String>,
     pub author: String,
     pub time: i64,
-    /// Human-readable absolute date in the commit's recorded offset, e.g.
-    /// "Nov 21, 2026 at 4:40 AM GMT+7"; empty when the date cannot be formatted.
+    /// Date in the commit's offset, e.g. "Nov 21, 2026 at 4:40 AM GMT+7".
     pub date_label: String,
     /// Full hex parent ids; empty for patch-parsed commits.
     pub parents: Vec<String>,

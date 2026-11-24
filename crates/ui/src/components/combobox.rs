@@ -272,6 +272,24 @@ where
         }
     }
 
+    /// Replaces the value without reporting it through `on_change`.
+    pub fn set_selected_silent(
+        &mut self,
+        value: Option<T>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected == value {
+            return;
+        }
+        self.selected = value;
+        let label = self.selected_label().unwrap_or_default();
+        self.query
+            .update(cx, |query, cx| query.set_value_silent(label, window, cx));
+        self.refilter("");
+        cx.notify();
+    }
+
     /// Replaces the choice list and re-runs the current filter.
     pub fn set_options(&mut self, options: Vec<ComboboxOption<T>>, cx: &mut Context<Self>) {
         self.options = options;

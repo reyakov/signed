@@ -728,22 +728,20 @@ impl CommitDiffView {
                 Err(_) => return Ok(()),
             };
 
-            let patch = cx
+            let saved = cx
                 .background_spawn(async move {
-                    Repo::open(&worktree).and_then(|repo| repo.commit_patch(&id))
+                    let patch = Repo::open(&worktree).and_then(|repo| repo.commit_patch(&id))?;
+                    std::fs::write(&destination, patch)?;
+                    Ok::<(), anyhow::Error>(())
                 })
                 .await;
 
-            match patch {
-                Ok(patch) => {
-                    if let Err(error) = std::fs::write(&destination, patch) {
-                        log::warn!("failed to write commit patch: {error}");
-                    }
-                }
-                Err(error) => log::warn!("failed to build commit patch: {error}"),
+            if let Err(error) = saved {
+                this.update(cx, |this, cx| {
+                    this.error = Some(format!("{error:#}").into());
+                    cx.notify();
+                })?;
             }
-
-            this.update(cx, |_, cx| cx.notify())?;
             Ok(())
         });
 

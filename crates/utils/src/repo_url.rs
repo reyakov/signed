@@ -1,7 +1,6 @@
 use nostr::prelude::*;
 
-/// Compare git URLs ignoring scheme, trailing `.git` and path slashes,
-/// so a grasp announce URL matches its https origin.
+/// Compares git URLs ignoring scheme, trailing `.git` and slashes, so grasp matches https.
 pub fn same_repo_url(a: &str, b: &str) -> bool {
     match (url_identity(a), url_identity(b)) {
         (Some(a), Some(b)) => a == b,

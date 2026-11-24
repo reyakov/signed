@@ -37,7 +37,8 @@ pub struct RepoHistoryView {
     /// The last load failure, shown instead of the empty list.
     error: Option<SharedString>,
     scroll_handle: UniformListScrollHandle,
-    tasks: Vec<Task<Result<(), Error>>>,
+    /// The latest walk, assigning it cancels the previous one.
+    load_task: Option<Task<Result<(), Error>>>,
 }
 
 impl RepoHistoryView {
@@ -58,7 +59,7 @@ impl RepoHistoryView {
             commits: Arc::new(Vec::new()),
             error: None,
             scroll_handle: UniformListScrollHandle::new(),
-            tasks: Vec::new(),
+            load_task: None,
         }
     }
 
@@ -80,12 +81,6 @@ impl RepoHistoryView {
         self.all_commits = None;
         self.loading_all_commits = false;
         self.load(cx);
-    }
-
-    /// Reaps finished tasks, then queues another.
-    fn push_task(&mut self, task: Task<Result<(), Error>>) {
-        self.tasks.retain(|task| !task.is_ready());
-        self.tasks.push(task);
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
@@ -122,7 +117,7 @@ impl RepoHistoryView {
             Ok(())
         });
 
-        self.push_task(task);
+        self.load_task = Some(task);
     }
 
     pub fn open_commit_diff(

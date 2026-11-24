@@ -50,7 +50,7 @@ fn main() {
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.set_app_identity("info.reya.signed", "Signed");
 
-            let store = cx.new(|cx| SettingsStore::new(paths::settings_file(), cx));
+            let store = cx.new(|_| SettingsStore::new(paths::settings_file()));
             SettingsStore::set_global(store.clone(), cx);
 
             let settings = store.read(cx).settings().clone();
@@ -64,12 +64,16 @@ fn main() {
                 tracing::warn!("failed to create repos dir: {error}");
             }
 
-            signed_state::init(
+            if let Err(error) = signed_state::init(
                 paths::nostr_dir(),
-                paths::repos_dir().clone(),
+                paths::repos_dir().to_path_buf(),
                 settings.local_repos.scan_paths.clone(),
                 cx,
-            );
+            ) {
+                tracing::error!("failed to initialize application state: {error:#}");
+                cx.quit();
+                return;
+            }
 
             metadata::init(cx);
 
@@ -106,6 +110,8 @@ fn main() {
                 signed_app::root(window, cx)
             }) {
                 tracing::error!("failed to open window: {error}");
+                cx.quit();
+                return;
             }
             cx.activate(true);
         });

@@ -271,11 +271,20 @@ impl ConsumeHunk for PatchCollector {
                 GixLineKind::Remove => '-',
                 GixLineKind::Add => '+',
             };
+
             // Tokens may already carry the line's newline; emit exactly one.
-            let content = content.strip_suffix(b"\n").unwrap_or(content);
+            let (content, terminated) = match content.strip_suffix(b"\n") {
+                Some(rest) => (rest, true),
+                None => (*content, false),
+            };
+
             self.text.push(prefix);
             self.text.push_str(&String::from_utf8_lossy(content));
             self.text.push('\n');
+
+            if !terminated {
+                self.text.push_str("\\ No newline at end of file\n");
+            }
         }
 
         Ok(())

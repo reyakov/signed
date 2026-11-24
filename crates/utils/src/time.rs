@@ -4,7 +4,7 @@ pub fn sort_newest_first(events: &mut [Event]) {
     events.sort_by(|a, b| {
         b.created_at
             .cmp(&a.created_at)
-            .then_with(|| b.id.to_hex().cmp(&a.id.to_hex()))
+            .then_with(|| b.id.cmp(&a.id))
     });
 }
 

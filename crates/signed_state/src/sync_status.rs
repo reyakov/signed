@@ -40,7 +40,9 @@ pub struct SyncStatusStore {
     pass_pending: bool,
     poll_pending: bool,
     sender: Sender<()>,
-    tasks: Vec<Task<Result<(), Error>>>,
+    _wake_task: Task<Result<(), Error>>,
+    pass_task: Option<Task<Result<(), Error>>>,
+    poll_task: Option<Task<Result<(), Error>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -96,7 +98,9 @@ impl SyncStatusStore {
             in_flight: false,
             pass_pending: false,
             poll_pending: false,
-            tasks: vec![task],
+            _wake_task: task,
+            pass_task: None,
+            poll_task: None,
             _subscriptions: subscriptions,
         }
     }
@@ -204,7 +208,7 @@ impl SyncStatusStore {
             Ok::<_, Error>(updates)
         });
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.pass_task = Some(cx.spawn(async move |this, cx| {
             // Reset the slot even on failure, or every later pass folds forever.
             let updates = match work.await {
                 Ok(updates) => updates,
@@ -240,7 +244,7 @@ impl SyncStatusStore {
         }
         self.poll_pending = true;
 
-        self.tasks.push(cx.spawn(async move |this, cx| {
+        self.poll_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SYNC_POLL).await;
 
             this.update(cx, |this, cx| {
@@ -319,9 +323,7 @@ impl SyncStatusDirectory {
             .unwrap_or(0)
     }
 
-    /// Commit ids missing on Nostr, mapped to the checkout that holds them.
-    ///
-    /// When `checkout` matches a tracked checkout, only that checkout contributes.
+    /// Commit ids missing on Nostr, mapped to their checkout; restricted to `checkout` if tracked.
     pub fn ahead_commits_of(
         &self,
         addr: &RepoAddr,
@@ -358,6 +360,10 @@ impl SyncStatusDirectory {
     }
 
     fn queue(&self, addr: &RepoAddr, cx: &App) {
+        if self.statuses.contains_key(addr) {
+            return;
+        }
+
         if self.with_pending(|pending| pending.insert(addr.clone())) {
             let store = SyncStatusStore::global(cx);
             store.read(cx).probe([addr.clone()]);

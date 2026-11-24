@@ -97,7 +97,7 @@ impl RefSwitcher {
         cx: &mut App,
     ) {
         select.update(cx, |state, cx| {
-            state.set_selected(previous.clone(), window, cx)
+            state.set_selected_silent(previous.clone(), window, cx)
         });
     }
 }

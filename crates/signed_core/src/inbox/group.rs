@@ -71,7 +71,7 @@ where
     items.sort_by(|a, b| {
         b.latest_activity()
             .cmp(&a.latest_activity())
-            .then_with(|| b.root.to_hex().cmp(&a.root.to_hex()))
+            .then_with(|| b.root.cmp(&a.root))
     });
 
     items

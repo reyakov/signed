@@ -443,7 +443,7 @@ pub(super) fn sync_selector(
         if let Some(value) = selected
             && (items_changed || selection_changed)
         {
-            state.set_selected(Some(value), window, cx);
+            state.set_selected_silent(Some(value), window, cx);
         }
     });
     *cached = items;

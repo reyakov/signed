@@ -72,9 +72,12 @@ impl Render for OnboardingDialog {
         let state = self.state.clone();
         let action_state = state.clone();
         let this = cx.entity().downgrade();
+        let busy = state.read(cx).busy;
 
         Dialog::new("onboarding-dialog")
             .handle(self.handle.clone())
+            .close_on_escape(!busy)
+            .close_on_backdrop(!busy)
             .min_width(px(520.))
             .title("Create identity")
             .content(move |_window, cx| {

@@ -223,8 +223,7 @@ impl RepoListStore {
                 }
             }
 
-            // Unbounded, unlike the windowed activity query above, so totals
-            // are exact.
+            // Unbounded, unlike the windowed activity query above, so totals are exact.
             let mut counts: HashMap<RepoAddr, RepoActivityCounts> = HashMap::new();
             let count_filter =
                 Filter::new().kinds([Kind::GitIssue, Kind::GitPullRequest, Kind::GitPatch]);
@@ -255,25 +254,33 @@ impl RepoListStore {
         cx.spawn(async move |this, cx| {
             let (announcements, last_activity, counts) = match work.await {
                 Ok(results) => results,
-                Err(_) => {
-                    return this.update(cx, |this, _cx| {
-                        this.refresh.abort();
-                    });
+                Err(error) => {
+                    log::warn!("failed to refresh the repository list: {error}");
+                    return this.update(cx, |this, _cx| this.refresh.abort());
                 }
             };
 
             let again = this.update(cx, |this, cx| {
+                let changed = *this.announcements != announcements
+                    || *this.last_activity != last_activity
+                    || *this.counts != counts;
+
                 this.announcements = Arc::new(announcements);
                 this.last_activity = Arc::new(last_activity);
                 this.counts = Arc::new(counts);
                 this.sync_own_repo_states(cx);
-                cx.notify();
+
+                if changed {
+                    cx.notify();
+                }
 
                 this.refresh.finish()
             })?;
 
             if again {
-                this.update(cx, |this, cx| this.refresh(cx))?;
+                this.update(cx, |this, cx| {
+                    this.refresh(cx);
+                })?;
             }
 
             Ok(())

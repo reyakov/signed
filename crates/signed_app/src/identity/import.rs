@@ -108,7 +108,7 @@ impl ImportDialog {
 }
 
 impl Render for ImportDialog {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.clone();
 
         let secret_input = self.secret_input.clone();
@@ -122,8 +122,12 @@ impl Render for ImportDialog {
         let action_repass = repass_input.clone();
         let action_close = self.handle.clone();
 
+        let busy = state.read(cx).progress.busy;
+
         Dialog::new("import-dialog")
             .handle(self.handle.clone())
+            .close_on_escape(!busy)
+            .close_on_backdrop(!busy)
             .min_width(px(520.))
             .title("Import identity")
             .content(move |_window, cx| {

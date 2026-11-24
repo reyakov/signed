@@ -282,7 +282,9 @@ impl SyncState {
 
         if !missing.is_empty() {
             let (mode, policy) = (self.mode.clone(), self.policy);
-            *self = Self::from_repo(&snapshot_path)?;
+            *self = cx
+                .background_spawn(async move { Self::from_repo(&snapshot_path) })
+                .await?;
             self.mode = mode;
             self.policy = policy;
         }
@@ -295,9 +297,7 @@ impl SyncState {
         Self::build(repo_id, &self.refs, self.head.as_deref())
     }
 
-    /// Push the state event and objects to the grasp servers.
-    ///
-    /// Calling `on_step` for each step.
+    /// Push the state event and objects to the grasp servers, calling `on_step` for each step.
     pub async fn push_to_grasps<P>(
         &self,
         client: &Client,
@@ -446,9 +446,7 @@ impl SyncState {
         Ok(outcome)
     }
 
-    /// Announce the repository and push the state and objects to the grasp servers.
-    ///
-    /// Both events are signed by the caller, so a failure at the call site can retract the announcement by id.
+    /// Announces the repository and pushes state and objects; the caller signs, so it can retract.
     pub async fn announce_and_push<P>(
         &self,
         client: &Client,

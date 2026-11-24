@@ -38,8 +38,13 @@ pub fn find_git_repos(root: &Path) -> Vec<LocalRepo> {
                 let Some(kind) = entry.file_type() else {
                     return true;
                 };
+
                 if !kind.is_dir() {
                     return true;
+                }
+
+                if entry.file_name() == std::ffi::OsStr::new(".git") {
+                    return false;
                 }
 
                 let dir = entry.path();

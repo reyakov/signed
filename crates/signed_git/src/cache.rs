@@ -29,9 +29,12 @@ impl GitCache {
 
     /// Returns the cache path for a repository address.
     pub fn repo_path(&self, addr: &RepoAddr) -> PathBuf {
-        self.root
-            .join(addr.public_key().to_hex())
-            .join(Self::sanitize_path_component(addr.identifier()))
+        let identifier = addr.identifier();
+        self.root.join(addr.public_key().to_hex()).join(format!(
+            "{}-{}",
+            Self::sanitize_path_component(identifier),
+            Self::identifier_suffix(identifier),
+        ))
     }
 
     /// Opens the cached repository, or `None` when it is not cloned yet.
@@ -101,6 +104,16 @@ impl GitCache {
         }
 
         sanitized
+    }
+
+    /// Distinct identifiers can sanitize alike, and an empty one is the owner directory.
+    fn identifier_suffix(id: &str) -> String {
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for byte in id.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        format!("{hash:016x}")
     }
 
     /// Returns the `owner/identifier` namespace used for fork checkouts.

@@ -36,14 +36,57 @@ pub fn init(
     repos_root: impl Into<PathBuf>,
     scan_paths: Vec<PathBuf>,
     cx: &mut App,
-) {
+) -> anyhow::Result<()> {
     // rustls uses the `aws_lc_rs` provider by default.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    if rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .is_err()
+    {
+        log::debug!("a crypto provider is already installed");
+    }
 
-    let backend = cx
+    let db_path = db_path.as_ref().to_path_buf();
+
+    let backend = match cx
         .foreground_executor()
-        .block_on(async move { NostrBackend::open(db_path.as_ref()).await });
-    let backend = backend.expect("failed to initialize nostr backend");
+        .block_on(NostrBackend::open(&db_path))
+    {
+        Ok(backend) => backend,
+        Err(error) => {
+            // A damaged or locked database must not keep the app from starting.
+            log::error!(
+                "failed to open the nostr database {}: {error:#}",
+                db_path.display()
+            );
+
+            let fallback = std::env::temp_dir()
+                .join("signed")
+                .join(format!("nostr-fallback-{}", std::process::id()));
+
+            let backend = std::fs::create_dir_all(&fallback)
+                .map_err(anyhow::Error::from)
+                .and_then(|()| {
+                    cx.foreground_executor()
+                        .block_on(NostrBackend::open(&fallback))
+                });
+
+            if backend.is_ok() {
+                cx.show_system_notification(gpui::SystemNotification {
+                    tag: "signed-nostr-db".into(),
+                    title: "Nostr cache unavailable".into(),
+                    body: format!(
+                        "{} could not be opened; this session uses a temporary cache",
+                        db_path.display()
+                    )
+                    .into(),
+                    actions: Vec::new(),
+                });
+            }
+
+            backend?
+        }
+    };
+
     let (client, signer) = (backend.client, backend.signer);
 
     Mirrors::install(repos_root);
@@ -53,4 +96,6 @@ pub fn init(
     LocalReposStore::set_global(cx.new(|cx| LocalReposStore::new(scan_paths, cx)), cx);
     CheckoutsStore::set_global(cx.new(CheckoutsStore::new), cx);
     SyncStatusStore::set_global(cx.new(SyncStatusStore::new), cx);
+
+    Ok(())
 }

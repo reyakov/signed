@@ -120,9 +120,7 @@ impl Inbox {
 
         Ok((items, unread_count))
     }
-}
 
-impl Inbox {
     fn inbox_state_d_tag(me: PublicKey) -> String {
         format!("signed-inbox-state:{}", me.to_hex())
     }
@@ -147,8 +145,7 @@ impl Inbox {
         }
     }
 
-    // Signed with a random key: the state is local-only, authorship does not
-    // matter and no key material needs to be kept.
+    // Signed with a random key: the state is local-only, authorship does not matter.
     async fn save_state(
         client: &Client,
         me: PublicKey,

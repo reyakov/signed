@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Opening a repository no longer runs a forced checkout of its worktree
+- Deleting a repository now waits until its deletion events are accepted by a relay
+
+### Fixed
+
+- Fix opening a local repository or switching its branch discarding uncommitted changes, a checkout now refuses to overwrite uncommitted edits or untracked files and leaves the branch untouched when it fails
+- Fix viewing a commit diff crashing when the repository configures an external diff driver
+- Fix an unreadable `settings.json` being replaced by defaults on the next settings change, the file is now left untouched and the error is shown in Settings
+- Fix the app panicking at startup when the nostr database or a platform directory cannot be opened, a damaged database now falls back to a temporary cache and startup failures quit cleanly
+- Fix a pending session restore replacing an identity that was just imported, or signing back in after signing out
+- Fix the New pull request panel closing as if the pull request was published when the patch or the pull request event failed to publish
+- Fix push and clone actions staying blocked with "already in progress" after their view closed mid-operation
+- Fix the reset remote dialog reporting no deleted refs while a grasp server was unreachable, the reset is now blocked until every server can be listed
+- Fix exported commit patches turning a file without a trailing newline into one with a newline
+- Fix each patch event of a multi-commit series repeating every later commit's patch, and series with CRLF line endings being split at the wrong offsets
+- Fix mirror cache directories colliding for repository identifiers that differ only in characters removed by sanitization
+- Fix profiles staying stuck after a failed database query, and a repository view showing "Cloning repository" forever when no announcement is found
+- Fix commit patch downloads failing silently and dismissed pull request alerts staying on screen
+- Fix busy dialogs being dismissed by Escape or a backdrop click while their task was still running
+
 ## v0.2.0 - 2026/10/21
 
 ### Added

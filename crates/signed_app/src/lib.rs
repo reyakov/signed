@@ -1,7 +1,7 @@
 mod app;
 mod explore;
 mod identity;
-#[allow(dead_code)] // temporarily unlinked while the shell migrates
+#[expect(dead_code, reason = "unlinked while the shell migrates")]
 mod inbox;
 mod issues;
 mod pull_requests;

@@ -45,7 +45,7 @@ pub fn empty_section_row(cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "one per column")]
 pub fn thread(
     prefix: &'static str,
     ix: usize,

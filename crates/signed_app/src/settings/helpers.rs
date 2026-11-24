@@ -13,7 +13,6 @@ use ui::select::{Select, SelectOption};
 use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 
-use crate::apply_appearance_mode;
 use crate::repo::dialogs::grasp_servers::{normalize_server, server_host};
 
 /// The title and description a settings row or block opens with.
@@ -80,7 +79,6 @@ pub fn appearance_select(cx: &App) -> Select<AppearanceMode> {
             SettingsStore::global(cx).update(cx, |store, cx| {
                 store.edit(|settings| settings.appearance = mode, cx);
             });
-            apply_appearance_mode(mode, cx);
         })
 }
 

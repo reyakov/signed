@@ -1,7 +1,7 @@
 mod profile;
 
 use gpui::{App, AppContext};
-pub use profile::{Profile, ProfileDirectory, ProfileEvent, ProfileStore};
+pub use profile::{Profile, ProfileDirectory, ProfileStore};
 
 /// Initialize the global profile store.
 pub fn init(cx: &mut App) {

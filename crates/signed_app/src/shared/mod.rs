@@ -21,8 +21,7 @@ pub fn log_dropped<T>(result: Result<T, anyhow::Error>) {
     }
 }
 
-/// Tracks a detail view's author, commenters, and repository owner for
-/// profile prefetch.
+/// Tracks a detail view's author, commenters, and owner for profile prefetch.
 pub fn track_event_participants(
     author: Option<PublicKey>,
     owner: Option<PublicKey>,
