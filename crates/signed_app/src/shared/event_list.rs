@@ -226,7 +226,6 @@ pub fn commit_list(
                         let on_click = on_click.clone();
                         let row_commit = commit.clone();
                         commit_row(
-                            ix,
                             &commit,
                             action,
                             move |window, cx| on_click(&row_commit, window, cx),
@@ -244,14 +243,13 @@ pub fn commit_list(
 
 /// One copyable commit summary row: id, subject, author, and age.
 pub(crate) fn commit_row(
-    ix: usize,
     commit: &FileCommit,
     action: Option<AnyElement>,
     on_click: impl Fn(&mut Window, &mut gpui::App) + 'static,
     cx: &gpui::App,
 ) -> gpui::AnyElement {
     h_flex()
-        .id(ix)
+        .id(commit.id.clone())
         .px_4()
         .h(px(COMMIT_ROW_HEIGHT))
         .w_full()

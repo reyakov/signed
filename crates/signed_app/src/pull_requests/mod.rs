@@ -295,8 +295,7 @@ impl Render for PullRequestsView {
 
         let rows = visible
             .iter()
-            .enumerate()
-            .filter_map(|(ix, &pr_ix)| {
+            .filter_map(|&pr_ix| {
                 // The store re-read per frame can shrink below a captured index.
                 let pr = store.read(cx).pull_requests.get(pr_ix)?;
                 let profile = directory.read(cx).profile(&pr.pubkey, cx);
@@ -332,7 +331,7 @@ impl Render for PullRequestsView {
                 };
 
                 Some(EventRow {
-                    id: ix.into(),
+                    id: SharedString::from(format!("pr:{id_hex}")).into(),
                     status,
                     title: pr.activity_subject().into(),
                     author: profile.name(),

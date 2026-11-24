@@ -10,13 +10,11 @@
 //! let column = v_flex().gap_2().child(row);
 //! ```
 
-use std::collections::HashMap;
-
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Bounds, BoxShadow, Div, ElementId, FocusHandle, FontWeight, Global, Hsla, IntoElement,
-    Pixels, Refineable as _, Rems, StatefulInteractiveElement, StyleRefinement, Styled, Window,
-    WindowId, div, px, rems,
+    App, BoxShadow, Div, ElementId, FocusHandle, FontWeight, Hsla, IntoElement, Pixels,
+    Refineable as _, Rems, SharedString, StatefulInteractiveElement, StyleRefinement, Styled,
+    Window, div, px, rems,
 };
 
 use crate::theme::{ActiveTheme as _, FOCUS_RING_ALPHA, FOCUS_RING_SPREAD, Size};
@@ -30,22 +28,6 @@ pub const TOAST_LAYER: usize = 3;
 
 /// A handler told to clean up after a dismissed surface.
 pub type DismissHandler = std::rc::Rc<dyn Fn(&mut gpui::App)>;
-
-/// The painted bounds of elements that tooltips anchor to, per window and element id.
-#[derive(Default)]
-struct AnchorBoundsRegistry(HashMap<(WindowId, ElementId), Bounds<Pixels>>);
-
-impl Global for AnchorBoundsRegistry {}
-
-impl AnchorBoundsRegistry {
-    fn record(&mut self, window: WindowId, id: ElementId, bounds: Bounds<Pixels>) {
-        self.0.insert((window, id), bounds);
-    }
-
-    fn get(&self, window: WindowId, id: &ElementId) -> Option<Bounds<Pixels>> {
-        self.0.get(&(window, id.clone())).copied()
-    }
-}
 
 /// A row whose children center on the cross axis.
 #[must_use]
@@ -112,20 +94,47 @@ pub fn focus_handle(id: &ElementId, window: &mut Window, cx: &mut App) -> FocusH
         .clone()
 }
 
-/// The last bounds an element painted at, in the given window.
-pub fn anchor_bounds(window: WindowId, id: &ElementId, cx: &App) -> Option<Bounds<Pixels>> {
-    cx.try_global::<AnchorBoundsRegistry>()
-        .and_then(|registry| registry.get(window, id))
-}
+/// Saves the focused handle while an overlay is open and restores it when the
+/// overlay closes, unless another surface already took focus.
+pub(crate) fn track_overlay_focus(
+    id: &ElementId,
+    overlay_focus: &FocusHandle,
+    open: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let was_open = window.use_keyed_state(
+        SharedString::from(format!("overlay-was-open:{id}")),
+        cx,
+        |_, _| false,
+    );
+    let previous = window.use_keyed_state(
+        SharedString::from(format!("overlay-previous-focus:{id}")),
+        cx,
+        |_, _| None::<FocusHandle>,
+    );
 
-/// A canvas prepaint closure recording the element's painted bounds.
-pub fn record_anchor_bounds(
-    id: ElementId,
-) -> impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static {
-    move |bounds, window, cx| {
-        let window_id = window.window_handle().window_id();
-        cx.default_global::<AnchorBoundsRegistry>()
-            .record(window_id, id.clone(), bounds);
+    let was_open_now = *was_open.read(cx);
+    if open && !was_open_now {
+        let focused = window.focused(cx);
+        previous.update(cx, |previous, _| *previous = focused);
+        was_open.update(cx, |was_open, _| *was_open = true);
+    } else if !open && was_open_now {
+        was_open.update(cx, |was_open, _| *was_open = false);
+        let Some(restore) = previous.update(cx, |previous, _| previous.take()) else {
+            return;
+        };
+        // Only take focus back from the closing overlay itself; a surface that
+        // replaced it owns focus now.
+        let overlay_focus = overlay_focus.clone();
+        window.defer(cx, move |window, cx| {
+            let holds_focus = window
+                .focused(cx)
+                .is_none_or(|current| current == overlay_focus);
+            if holds_focus && restore.is_rendered(window) {
+                window.focus(&restore, cx);
+            }
+        });
     }
 }
 

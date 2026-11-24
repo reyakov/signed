@@ -65,7 +65,6 @@ impl RepoFilter {
 }
 
 pub(super) fn render_card(
-    ix: usize,
     announcement: &Announcement,
     last_activity: Option<Timestamp>,
     announcements: &[Announcement],
@@ -98,7 +97,7 @@ pub(super) fn render_card(
     });
 
     v_flex()
-        .id(ix)
+        .id(SharedString::from(format!("repo-card:{}", announcement.id)))
         .flex_1()
         .h_full()
         .min_w_0()
@@ -113,6 +112,7 @@ pub(super) fn render_card(
                 .gap_2()
                 .child(
                     div()
+                        .flex_1()
                         .min_w_0()
                         .text_sm()
                         .font_semibold()

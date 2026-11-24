@@ -7,7 +7,7 @@ use gpui::{
     ParentElement as _, Render, Styled as _, Subscription, WeakEntity, Window, div,
 };
 use helpers::apply_appearance_mode;
-use settings::SettingsStore;
+use settings::{AppearanceMode, SettingsStore};
 use signed_state::{Backend, BackendEvent};
 use ui::common::{h_flex, v_flex};
 use ui::icons::IconRole;
@@ -28,7 +28,7 @@ use crate::titlebar::{
 pub struct AppRoot {
     panels: Entity<PanelStack>,
     titlebar: Entity<TitlebarView>,
-    passphrase: Option<Entity<PassphraseDialog>>,
+    appearance: AppearanceMode,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -66,9 +66,12 @@ impl AppRoot {
             },
         ));
 
-        subscriptions.push(cx.observe(&settings, |_this, store, cx| {
-            let settings = store.read(cx).settings().clone();
-            apply_appearance_mode(settings.appearance, cx);
+        subscriptions.push(cx.observe(&settings, |this, store, cx| {
+            let appearance = store.read(cx).settings().appearance;
+            if appearance != this.appearance {
+                this.appearance = appearance;
+                apply_appearance_mode(appearance, cx);
+            }
         }));
 
         window.defer(cx, move |window, cx| {
@@ -78,20 +81,18 @@ impl AppRoot {
             Self::reset_to_explore(&app, window, cx);
         });
 
+        let appearance = settings.read(cx).settings().appearance;
+
         Self {
             panels,
             titlebar,
-            passphrase: None,
+            appearance,
             _subscriptions: subscriptions,
         }
     }
 
     fn open_passphrase(&mut self, cx: &mut Context<Self>) {
-        if self.passphrase.is_some() {
-            return;
-        }
         let dialog = PassphraseDialog::new(cx);
-        self.passphrase = Some(dialog.clone());
         cx.open_dialog(dialog);
     }
 

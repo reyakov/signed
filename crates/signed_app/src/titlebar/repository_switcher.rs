@@ -211,7 +211,7 @@ impl Render for RepositorySwitcher {
 
                                                 Some(
                                                     h_flex()
-                                                        .id(("repo-switcher-entry", index))
+                                                        .id(entry.key.clone())
                                                         .role(Role::MenuItem)
                                                         .w_full()
                                                         .h(row_height)

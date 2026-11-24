@@ -127,7 +127,15 @@ pub(crate) fn sidebar_section(
                                 .picture(profile.picture())
                                 .small(),
                         )
-                        .child(div().text_base().text_ellipsis().child(name))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .whitespace_nowrap()
+                                .text_base()
+                                .text_ellipsis()
+                                .child(name),
+                        )
                         .into_any_element()
                 })),
         )

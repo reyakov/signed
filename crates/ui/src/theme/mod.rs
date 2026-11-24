@@ -35,8 +35,6 @@ pub const BORDER_WIDTH: Pixels = px(1.0);
 pub const OVERLAY_ICON_SIZE: Rems = rems(0.75);
 /// The draggable width of a resize seam and its panel-row gutter.
 pub const RESIZE_HANDLE_WIDTH: Pixels = px(8.0);
-/// The gap between an anchored tooltip and its anchor.
-pub const TOOLTIP_ANCHOR_GAP: Pixels = px(4.0);
 /// The widest a titlebar tab grows before its label fades.
 pub const TAB_MAX_WIDTH: Pixels = px(240.0);
 /// The narrowest a titlebar tab shrinks, keeping short labels clear of the fade.
@@ -69,8 +67,6 @@ pub const CODE_LINE_HEIGHT: f32 = 1.5;
 pub const POPUP_MAX_HEIGHT: Pixels = px(320.0);
 /// The widest a tooltip may grow.
 pub const TOOLTIP_MAX_WIDTH: Pixels = px(360.0);
-/// How far a tooltip sits from the pointer.
-pub const TOOLTIP_OFFSET: Pixels = px(1.0);
 /// The caret's thickness.
 pub const CARET_WIDTH: Pixels = px(1.5);
 /// The IME preedit underline's thickness.

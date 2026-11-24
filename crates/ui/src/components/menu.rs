@@ -33,7 +33,7 @@ use gpui::{
 };
 
 use crate::components::common::{
-    OVERLAY_LAYER, StyledExt as _, floating_panel, focus_handle, v_flex,
+    OVERLAY_LAYER, StyledExt as _, floating_panel, focus_handle, track_overlay_focus, v_flex,
     wrapping_adjacent_selectable,
 };
 use crate::components::scroll_area::{ScrollArea, ScrollAxes};
@@ -556,6 +556,9 @@ impl RenderOnce for Menu {
         let (chrome, enter_duration) = MenuChrome::read(cx);
         let trigger_bounds: Rc<RefCell<Option<Bounds<Pixels>>>> = Rc::new(RefCell::new(None));
         let on_change = self.on_change.clone();
+
+        let panel_focus = focus_handle(&(self.id.clone(), "panel").into(), window, cx);
+        track_overlay_focus(&self.id, &panel_focus, self.open, window, cx);
 
         let fallback_label = self
             .a11y_label

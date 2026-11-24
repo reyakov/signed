@@ -211,7 +211,13 @@ pub(super) fn fork_row(
         .text_base()
         .text_color(cx.theme().colors.muted_foreground)
         .child(Icon::named(IconRole::GitBranch).small())
-        .child(div().whitespace_nowrap().text_ellipsis().child(label));
+        .child(
+            div()
+                .min_w_0()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(label),
+        );
 
     Some(if clickable {
         row.id("fork-upstream")

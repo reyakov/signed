@@ -17,12 +17,10 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AnyView, App, ClickEvent, ElementId, Hsla, InteractiveElement as _, IntoElement,
     ParentElement, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled as _, Window, canvas, relative, transparent_black,
+    StyleRefinement, Styled as _, Window, relative, transparent_black,
 };
 
-use crate::components::common::{
-    ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex, record_anchor_bounds,
-};
+use crate::components::common::{ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex};
 use crate::components::spinner::Spinner;
 use crate::icons::Icon;
 use crate::theme::{ActiveTheme as _, DISABLED_OPACITY, Size};
@@ -386,11 +384,6 @@ impl RenderOnce for Button {
                     ),
                 )
             })
-            .child(
-                canvas(record_anchor_bounds(self.id.clone()), |_, _, _, _| {})
-                    .absolute()
-                    .inset_0(),
-            )
             .when(self.disabled, |button| button.opacity(DISABLED_OPACITY))
             .when_some(self.tooltip, |button, tooltip| {
                 button.tooltip(move |window, cx| tooltip(window, cx))

@@ -29,7 +29,9 @@ use gpui::{
     StyleRefinement, Styled as _, Window, div,
 };
 
-use crate::components::common::{StyledExt as _, floating_panel, v_flex};
+use crate::components::common::{
+    StyledExt as _, floating_panel, focus_handle, track_overlay_focus, v_flex,
+};
 use crate::components::menu::{
     ChangeHandler, TriggerBoundsCell, anchored_overlay, focus_capture, trigger_toggle,
 };
@@ -133,6 +135,10 @@ impl RenderOnce for Popover {
 
         let trigger_bounds: TriggerBoundsCell = Rc::new(RefCell::new(None));
 
+        // Keyboard focus rides the panel across frames.
+        let focus = focus_handle(&self.id, window, cx);
+        track_overlay_focus(&self.id, &focus, self.open, window, cx);
+
         let fallback_label = self
             .a11y_label
             .clone()
@@ -153,7 +159,6 @@ impl RenderOnce for Popover {
             .when(self.open, |wrapper| {
                 let on_change = self.on_change;
                 let label = fallback_label.clone();
-                let focus = crate::components::common::focus_handle(&self.id, window, cx);
                 let content = self.content.map(|content| content(window, cx));
 
                 wrapper.child(anchored_overlay(

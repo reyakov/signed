@@ -18,10 +18,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, DispatchPhase, ElementId, Entity, EntityId, IntoElement, ListState, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderOnce, ScrollEvent,
-    ScrollHandle, SharedString, Styled as _, Task, UniformListScrollHandle, Window, canvas, fill,
-    point,
+    App, Bounds, DispatchPhase, ElementId, Entity, EntityId, Hitbox, HitboxBehavior, IntoElement,
+    ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    RenderOnce, ScrollEvent, ScrollHandle, SharedString, Styled as _, Task,
+    UniformListScrollHandle, Window, canvas, fill, point,
 };
 
 use crate::components::common::ResultLogErr as _;
@@ -232,6 +232,98 @@ impl ScrollbarHandle for ListState {
     }
 }
 
+/// One frame's painted scrollbar: track, thumb, and the track's hitbox.
+struct Metrics {
+    viewport: Bounds<Pixels>,
+    thumb_bounds: Bounds<Pixels>,
+    track_bounds: Bounds<Pixels>,
+    track_length: Pixels,
+    thumb_length: Pixels,
+    max_offset: Pixels,
+    hitbox: Hitbox,
+}
+
+impl Metrics {
+    /// Measures the track and thumb, inserting the track's hitbox.
+    fn new(
+        handle: &dyn ScrollbarHandle,
+        axis: Axis,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Self> {
+        let theme = cx.theme();
+        let width = theme.scrollbar.width;
+        let inset = theme.scrollbar.inset;
+        let min_thumb = theme.scrollbar.min_thumb;
+
+        let viewport = handle.viewport();
+        let viewport_along = axis.viewport_along(&viewport);
+        let max_offset = axis.along(handle.max_offset());
+
+        if max_offset <= Pixels::ZERO || viewport_along <= Pixels::ZERO {
+            return None;
+        }
+
+        let track_length = viewport_along - inset * 2.0;
+        let (thumb_length, thumb_travel) = Scrollbar::thumb_geometry(
+            viewport_along,
+            viewport_along + max_offset,
+            axis.along(handle.offset()),
+            track_length,
+            min_thumb,
+        );
+
+        // The track strip is the thumb's rail plus the padding the thumb rides inside.
+        let (thumb_bounds, track_bounds) = match axis {
+            Axis::Vertical => {
+                let thumb_x = viewport.right() - width - inset;
+                (
+                    Bounds::from_corners(
+                        point(thumb_x, viewport.top() + inset + thumb_travel),
+                        point(
+                            thumb_x + width,
+                            viewport.top() + inset + thumb_travel + thumb_length,
+                        ),
+                    ),
+                    Bounds::from_corners(
+                        point(viewport.right() - width, viewport.top() + inset),
+                        point(viewport.right(), viewport.top() + inset + track_length),
+                    ),
+                )
+            }
+            Axis::Horizontal => {
+                let thumb_y = viewport.bottom() - width - inset;
+                (
+                    Bounds::from_corners(
+                        point(viewport.left() + inset + thumb_travel, thumb_y),
+                        point(
+                            viewport.left() + inset + thumb_travel + thumb_length,
+                            thumb_y + width,
+                        ),
+                    ),
+                    Bounds::from_corners(
+                        point(viewport.left() + inset, viewport.bottom() - width),
+                        point(viewport.left() + inset + track_length, viewport.bottom()),
+                    ),
+                )
+            }
+        };
+
+        // A covering surface that blocks mouse input keeps the track unhovered.
+        let hitbox = window.insert_hitbox(track_bounds, HitboxBehavior::Normal);
+
+        Some(Self {
+            viewport,
+            thumb_bounds,
+            track_bounds,
+            track_length,
+            thumb_length,
+            max_offset,
+            hitbox,
+        })
+    }
+}
+
 /// An overlay scrollbar, rendered over the scrolled surface.
 #[derive(IntoElement)]
 #[must_use]
@@ -244,13 +336,18 @@ pub struct Scrollbar {
 
 impl RenderOnce for Scrollbar {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        canvas(|_, _, _| {}, {
-            let handle = self.handle;
-            let axis = self.axis;
-            let visibility = self.visibility;
-            let id = self.id;
-            move |_, _, window, cx| Self::paint(&handle, axis, visibility, &id, window, cx)
-        })
+        let axis = self.axis;
+        let visibility = self.visibility;
+        let id = self.id;
+        let measured_handle = self.handle.clone();
+        let painted_handle = self.handle;
+
+        canvas(
+            move |_, window, cx| Metrics::new(measured_handle.as_ref(), axis, window, cx),
+            move |_, metrics, window, cx| {
+                Self::paint(&painted_handle, axis, visibility, &id, metrics, window, cx)
+            },
+        )
         .absolute()
         .inset_0()
     }
@@ -327,24 +424,28 @@ impl Scrollbar {
         axis: Axis,
         visibility: ScrollbarVisibility,
         id: &ElementId,
+        metrics: Option<Metrics>,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let Some(Metrics {
+            viewport,
+            thumb_bounds,
+            track_bounds,
+            track_length,
+            thumb_length,
+            max_offset,
+            hitbox,
+        }) = metrics
+        else {
+            return;
+        };
+
         let view = window.current_view();
         let theme = cx.theme();
 
         let color = theme.colors.scrollbar_thumb;
         let width = theme.scrollbar.width;
-        let inset = theme.scrollbar.inset;
-        let min_thumb = theme.scrollbar.min_thumb;
-
-        let viewport = handle.viewport();
-        let viewport_along = axis.viewport_along(&viewport);
-        let max_offset = axis.along(handle.max_offset());
-
-        if max_offset <= Pixels::ZERO || viewport_along <= Pixels::ZERO {
-            return;
-        }
 
         let autohide = match visibility {
             ScrollbarVisibility::Platform => theme.scrollbar.autohide,
@@ -354,51 +455,6 @@ impl Scrollbar {
 
         let autohide_state =
             autohide.then(|| Autohide::new(Self::state_key("autohide", id), window, cx));
-
-        let track_length = viewport_along - inset * 2.0;
-        let (thumb_length, thumb_travel) = Self::thumb_geometry(
-            viewport_along,
-            viewport_along + max_offset,
-            axis.along(handle.offset()),
-            track_length,
-            min_thumb,
-        );
-
-        // The track strip is the thumb's rail plus the padding the thumb rides inside.
-        let (thumb_bounds, track_bounds) = match axis {
-            Axis::Vertical => {
-                let thumb_x = viewport.right() - width - inset;
-                (
-                    Bounds::from_corners(
-                        point(thumb_x, viewport.top() + inset + thumb_travel),
-                        point(
-                            thumb_x + width,
-                            viewport.top() + inset + thumb_travel + thumb_length,
-                        ),
-                    ),
-                    Bounds::from_corners(
-                        point(viewport.right() - width, viewport.top() + inset),
-                        point(viewport.right(), viewport.top() + inset + track_length),
-                    ),
-                )
-            }
-            Axis::Horizontal => {
-                let thumb_y = viewport.bottom() - width - inset;
-                (
-                    Bounds::from_corners(
-                        point(viewport.left() + inset + thumb_travel, thumb_y),
-                        point(
-                            viewport.left() + inset + thumb_travel + thumb_length,
-                            thumb_y + width,
-                        ),
-                    ),
-                    Bounds::from_corners(
-                        point(viewport.left() + inset, viewport.bottom() - width),
-                        point(viewport.left() + inset + track_length, viewport.bottom()),
-                    ),
-                )
-            }
-        };
 
         let drag = window.use_keyed_state(Self::state_key("thumb-drag", id), cx, |_, _| Drag::None);
         let dragging = drag.read(cx).is_some();
@@ -430,6 +486,11 @@ impl Scrollbar {
             let autohide_state = autohide_state.clone();
             move |event: &MouseDownEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
+                    return;
+                }
+
+                // A covering surface blocks the pointer, so the track is not hovered.
+                if !hitbox.is_hovered_at(event.position, window) {
                     return;
                 }
 

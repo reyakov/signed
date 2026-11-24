@@ -559,11 +559,9 @@ fn render_pane_row(
 
 impl Render for DiffPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.diff.is_none() {
+        let Some(diff) = self.diff.as_ref() else {
             return EmptyState::centered("No changes");
-        }
-
-        let diff = self.diff.as_ref().expect("diff checked above");
+        };
 
         if diff.files.is_empty() {
             return EmptyState::centered("No files changed");
@@ -822,7 +820,9 @@ impl CommitDiffView {
                                     h_flex()
                                         .gap_2()
                                         .child(Avatar::new(name.clone()).name(name.clone()).small())
-                                        .child(div().truncate().text_ellipsis().child(name))
+                                        .child(
+                                            div().min_w_0().truncate().text_ellipsis().child(name),
+                                        )
                                         .into_any_element(),
                                 )
                             })
@@ -849,6 +849,7 @@ impl CommitDiffView {
                     .gap_2()
                     .child(
                         div()
+                            .min_w_0()
                             .text_ellipsis()
                             .truncate()
                             .child(SharedString::from(commit.id.clone())),
@@ -863,6 +864,7 @@ impl CommitDiffView {
                         .gap_2()
                         .child(
                             div()
+                                .min_w_0()
                                 .text_ellipsis()
                                 .truncate()
                                 .child(SharedString::from(parent.clone())),

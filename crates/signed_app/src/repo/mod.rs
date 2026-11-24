@@ -390,7 +390,7 @@ impl RepoDetailView {
                 Ok(())
             });
 
-            self.tasks.push(task);
+            self.push_task(task);
             return;
         }
 
@@ -509,7 +509,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn apply_repo_data(&mut self, data: RepoData, window: &mut Window, cx: &mut Context<Self>) {
@@ -609,7 +609,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn switch_ref<T>(&mut self, kind: RefKind, name: T, window: &mut Window, cx: &mut Context<Self>)
@@ -684,7 +684,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn reload_worktree(&mut self, cx: &mut Context<Self>) {
@@ -727,7 +727,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     /// Refresh the file explorer and previews after the mirror caught up with the remote.
@@ -758,6 +758,12 @@ impl RepoDetailView {
             Ok(())
         });
 
+        self.push_task(task);
+    }
+
+    /// Reaps finished tasks, then queues another.
+    fn push_task(&mut self, task: Task<Result<(), Error>>) {
+        self.tasks.retain(|task| !task.is_ready());
         self.tasks.push(task);
     }
 
@@ -766,7 +772,7 @@ impl RepoDetailView {
         cx.notify();
 
         let task = self.store.update(cx, |store, cx| store.push_repository(cx));
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn sync_notification_tag(addr: &RepoAddr) -> SharedString {
@@ -866,7 +872,7 @@ impl RepoDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn reset_remote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -932,7 +938,7 @@ impl RepoDetailView {
         let task = self
             .store
             .update(cx, |store, cx| store.delete_repository(cx));
-        self.tasks.push(task);
+        self.push_task(task);
     }
 
     fn render_files_tab(&self, cx: &App) -> AnyElement {
@@ -1122,7 +1128,13 @@ impl RepoDetailView {
                             .text_sm()
                             .font_semibold()
                             .child(avatar)
-                            .child(name),
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(name),
+                            ),
                     )
                     .child(
                         div()

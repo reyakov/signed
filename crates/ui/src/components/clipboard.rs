@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyView, App, ClipboardItem, ElementId, Entity, IntoElement, ParentElement as _, RenderOnce,
+    AnyView, App, ClipboardItem, ElementId, IntoElement, ParentElement as _, RenderOnce,
     SharedString, StyleRefinement, Styled as _, Task, Window, div,
 };
 
@@ -108,18 +108,17 @@ impl Sizable for ClipboardButton {
 /// The transient copied marker keyed per button.
 struct CopiedState {
     generation: u64,
-    tasks: Vec<Task<()>>,
+    task: Option<Task<()>>,
 }
 
 impl RenderOnce for ClipboardButton {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let copied: Entity<CopiedState> =
-            window.use_keyed_state((self.id.clone(), "clipboard-copied"), cx, |_, _| {
-                CopiedState {
-                    generation: 0,
-                    tasks: Vec::new(),
-                }
-            });
+        let copied = window.use_keyed_state((self.id.clone(), "clipboard-copied"), cx, |_, _| {
+            CopiedState {
+                generation: 0,
+                task: None,
+            }
+        });
         let is_copied = copied.read(cx).generation != 0;
 
         let selector = if is_copied {
@@ -172,7 +171,7 @@ impl RenderOnce for ClipboardButton {
                     });
 
                     copied.update(cx, |state, _| {
-                        state.tasks.push(task);
+                        state.task = Some(task);
                     });
 
                     // Invoke the callback after copying

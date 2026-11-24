@@ -294,7 +294,6 @@ impl Render for ExploreView {
                         };
                         let activity = last_activity.get(&announcement.addr()).copied();
                         cards.push(render_card(
-                            ix,
                             announcement,
                             activity,
                             &announcements,

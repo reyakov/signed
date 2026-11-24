@@ -182,8 +182,7 @@ impl Render for IssuesView {
 
         let rows = visible_issues
             .iter()
-            .enumerate()
-            .filter_map(|(ix, &issue_ix)| {
+            .filter_map(|&issue_ix| {
                 // The store re-read per frame can shrink below a captured index.
                 let issue = store.read(cx).issues.get(issue_ix)?;
                 let profile = directory.read(cx).profile(&issue.pubkey, cx);
@@ -210,7 +209,7 @@ impl Render for IssuesView {
                 };
 
                 Some(EventRow {
-                    id: ix.into(),
+                    id: SharedString::from(format!("issue:{id_hex}")).into(),
                     status,
                     title: issue.activity_subject().into(),
                     author: profile.name(),

@@ -340,6 +340,7 @@ impl RepoFilesView {
                     .text_color(cx.theme().colors.muted_foreground)
                     .child(
                         div()
+                            .min_w_0()
                             .text_xs()
                             .font_medium()
                             .text_ellipsis()

@@ -126,9 +126,18 @@ impl Root {
         cx.notify();
     }
 
-    /// Mounts a dialog view above the content.
+    /// Mounts a dialog view above the content, replacing an open dialog of the same view type.
     fn mount_dialog(&mut self, view: impl Into<AnyView>, cx: &mut Context<Self>) {
-        self.dialogs.push(view.into());
+        let view = view.into();
+        if let Some(existing) = self
+            .dialogs
+            .iter_mut()
+            .find(|dialog| dialog.entity_type() == view.entity_type())
+        {
+            *existing = view;
+        } else {
+            self.dialogs.push(view);
+        }
         cx.notify();
     }
 
