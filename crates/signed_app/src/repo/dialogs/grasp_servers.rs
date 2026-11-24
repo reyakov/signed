@@ -108,8 +108,7 @@ pub fn grasp_servers_field(
                     v_flex().gap_1().children(
                         servers
                             .iter()
-                            .enumerate()
-                            .map(|(ix, relay)| render_server_row(ix, relay, state.clone(), cx)),
+                            .map(|relay| render_server_row(relay, state.clone(), cx)),
                     ),
                 )
                 .child(
@@ -144,12 +143,7 @@ pub fn grasp_servers_field(
         .into_any_element()
 }
 
-fn render_server_row(
-    ix: usize,
-    relay: &RelayUrl,
-    state: Entity<GraspServersState>,
-    cx: &App,
-) -> AnyElement {
+fn render_server_row(relay: &RelayUrl, state: Entity<GraspServersState>, cx: &App) -> AnyElement {
     let relay = relay.clone();
     h_flex()
         .w_full()
@@ -167,19 +161,14 @@ fn render_server_row(
                 .child(server_host(&relay)),
         )
         .child(
-            Button::new(SharedString::from(format!("remove-relay:{ix}")))
+            Button::new(SharedString::from(format!("remove-relay:{relay}")))
                 .icon(Icon::named(IconRole::Close))
                 .variant(ButtonVariant::Ghost)
                 .tooltip(Tooltip::text("Remove"))
                 .on_click(move |_, _, cx| {
-                    // A row's index can desync after a prior removal; match by value.
                     state.update(cx, |state, cx| {
-                        if let Some(at) =
-                            state.grasp_servers.iter().position(|known| known == &relay)
-                        {
-                            state.grasp_servers.remove(at);
-                            cx.notify();
-                        }
+                        state.grasp_servers.retain(|known| known != &relay);
+                        cx.notify();
                     });
                 }),
         )

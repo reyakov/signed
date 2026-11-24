@@ -460,7 +460,14 @@ impl Tab {
                             .group_hover(group.clone(), |style| style.visible()),
                     )
             })
-            .when(!titlebar, |label| label.child(self.label.clone()));
+            .when(!titlebar, |label| {
+                label
+                    .min_w_0()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(self.label.clone())
+            });
 
         let strip_tab = div()
             .id((self.key.clone(), "tab"))
@@ -485,9 +492,9 @@ impl Tab {
                 })
             })
             .map(|strip_tab| {
-                apply_tab_chrome(strip_tab, ctx.variant, active, cx).when(titlebar, |strip_tab| {
-                    strip_tab.min_w(TAB_MIN_WIDTH).max_w(TAB_MAX_WIDTH)
-                })
+                apply_tab_chrome(strip_tab, ctx.variant, active, cx)
+                    .max_w(TAB_MAX_WIDTH)
+                    .when(titlebar, |strip_tab| strip_tab.min_w(TAB_MIN_WIDTH))
             })
             .when_some(self.lead.take(), |strip_tab, lead| strip_tab.child(lead))
             .child(label)

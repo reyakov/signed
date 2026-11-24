@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -57,15 +58,15 @@ enum PaneRow {
 }
 
 pub struct DiffPane {
-    diff: Option<CommitDiff>,
+    diff: Option<Arc<CommitDiff>>,
     seeds: Vec<TreeItemSeed>,
     expanded: HashSet<String>,
-    rows: Vec<TreeItem>,
+    rows: Arc<Vec<TreeItem>>,
     selected_index: Option<usize>,
     tree_visible: bool,
     split: Entity<ResizableState>,
     expanded_files: HashSet<String>,
-    pane_rows: Vec<PaneRow>,
+    pane_rows: Arc<Vec<PaneRow>>,
     list: ListState,
     wrap: bool,
     downloadable: bool,
@@ -74,18 +75,20 @@ pub struct DiffPane {
 impl DiffPane {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let split = ResizableState::new(cx);
-        split.update(cx, |split, cx| split.set_sizes([px(260.)], cx));
+        split.update(cx, |split, cx| {
+            split.set_sizes([px(260.)], cx);
+        });
 
         Self {
             diff: None,
             seeds: Vec::new(),
             expanded: HashSet::new(),
-            rows: Vec::new(),
+            rows: Arc::default(),
             selected_index: None,
             tree_visible: false,
             split,
             expanded_files: HashSet::new(),
-            pane_rows: Vec::new(),
+            pane_rows: Arc::default(),
             list: ListState::new(0, ListAlignment::Top, px(320.)),
             wrap: false,
             downloadable: false,
@@ -93,7 +96,7 @@ impl DiffPane {
     }
 
     pub fn diff(&self) -> Option<&CommitDiff> {
-        self.diff.as_ref()
+        self.diff.as_deref()
     }
 
     pub fn set_diff(&mut self, diff: CommitDiff, cx: &mut Context<Self>) {
@@ -106,9 +109,9 @@ impl DiffPane {
 
         self.seeds = TreeItemSeed::from_paths(&paths);
         self.expanded = TreeItemSeed::collect_expanded(&self.seeds);
-        self.rows = TreeItemSeed::flatten_all(&self.seeds, &self.expanded);
+        self.rows = Arc::new(TreeItemSeed::flatten_all(&self.seeds, &self.expanded));
         self.selected_index = None;
-        self.diff = Some(diff);
+        self.diff = Some(Arc::new(diff));
 
         self.expanded_files.clear();
         self.rebuild_rows();
@@ -120,10 +123,10 @@ impl DiffPane {
         self.diff = None;
         self.seeds.clear();
         self.expanded.clear();
-        self.rows.clear();
+        self.rows = Arc::default();
         self.selected_index = None;
         self.expanded_files.clear();
-        self.pane_rows.clear();
+        self.pane_rows = Arc::default();
         self.list = ListState::new(0, ListAlignment::Top, px(320.));
         cx.notify();
     }
@@ -197,7 +200,7 @@ impl DiffPane {
 
     fn rebuild_rows(&mut self) {
         let Some(diff) = self.diff.as_ref() else {
-            self.pane_rows.clear();
+            self.pane_rows = Arc::default();
             self.list.reset(0);
             return;
         };
@@ -245,7 +248,7 @@ impl DiffPane {
             );
         }
 
-        self.pane_rows = pane_rows;
+        self.pane_rows = Arc::new(pane_rows);
         self.list.reset(self.pane_rows.len());
     }
 
@@ -253,15 +256,17 @@ impl DiffPane {
         if !self.expanded.remove(id) {
             self.expanded.insert(id.to_owned());
         }
-        self.rows = TreeItemSeed::flatten_all(&self.seeds, &self.expanded);
+
+        self.rows = Arc::new(TreeItemSeed::flatten_all(&self.seeds, &self.expanded));
         self.selected_index = self
             .selected_index
             .and_then(|index| self.rows.get(index).map(|_| index));
+
         cx.notify();
     }
 
     fn render_tree_column(&self, cx: &mut Context<Self>) -> AnyElement {
-        let rows = self.rows.clone();
+        let rows = Arc::clone(&self.rows);
         let selected = self.selected_index;
         let view = cx.entity().downgrade();
         let change_view = view.clone();
@@ -273,7 +278,7 @@ impl DiffPane {
             .child(
                 Tree::new("commit-diff-tree")
                     .selected(selected)
-                    .items(move |_, _| rows.clone())
+                    .items(move |_, _| Arc::clone(&rows))
                     .on_change(move |index, window, cx| {
                         if let Some(index) = index
                             && let Err(error) = change_view.update(cx, |this, cx| {
@@ -419,8 +424,8 @@ impl DiffPane {
             return EmptyState::centered("No changes");
         };
 
-        let files = diff.files.clone();
-        let pane_rows = self.pane_rows.clone();
+        let diff = Arc::clone(diff);
+        let pane_rows = Arc::clone(&self.pane_rows);
         let wrap = self.wrap;
         let view = cx.entity().downgrade();
 
@@ -433,7 +438,7 @@ impl DiffPane {
             .child(
                 list(self.list.clone(), move |ix, _, cx| {
                     match pane_rows.get(ix) {
-                        Some(row) => render_pane_row(row, &files, &view, wrap, cx),
+                        Some(row) => render_pane_row(row, &diff.files, &view, wrap, cx),
                         None => div().into_any_element(),
                     }
                 })

@@ -75,18 +75,18 @@ impl ExploreView {
 
         let search_subscription = cx.subscribe(&search, |this, _search, event, cx| {
             if matches!(event, InputStateEvent::TextChanged) {
-                this.rebuild_rows(cx);
+                this.rebuild_rows(false, cx);
             }
         });
 
         let store_subscription = cx.observe(&store, |this, _store, cx| {
-            this.rebuild_rows(cx);
+            this.rebuild_rows(true, cx);
         });
 
         // The root and the stack are still being updated while this view is built.
         cx.defer(move |cx| {
             if let Err(error) = weak.update(cx, |this, cx| {
-                this.rebuild_rows(cx);
+                this.rebuild_rows(false, cx);
                 this.watch_stack(cx);
             }) {
                 log::warn!("failed to set up the explore panel: {error}");
@@ -107,7 +107,8 @@ impl ExploreView {
         }
     }
 
-    fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
+    /// `anchor` keeps the scroll position while the row count is unchanged.
+    fn rebuild_rows(&mut self, anchor: bool, cx: &mut Context<Self>) {
         let filter = self.filter;
         let query = self.search.read(cx).value().to_string();
         let store = self.store.read(cx);
@@ -125,7 +126,11 @@ impl ExploreView {
             directory.track(owners, cx);
         });
 
-        self.scroll_handle.reset(self.item_count());
+        let count = self.item_count();
+        if !anchor || count != self.scroll_handle.item_count() {
+            self.scroll_handle.reset(count);
+        }
+
         cx.notify();
     }
 
@@ -223,7 +228,7 @@ impl ExploreView {
                         .on_change(move |filter, _, cx| {
                             if let Err(error) = weak.update(cx, |this, cx| {
                                 this.filter = filter;
-                                this.rebuild_rows(cx);
+                                this.rebuild_rows(false, cx);
                             }) {
                                 log::warn!("failed to change explore filter: {error}");
                             }

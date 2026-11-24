@@ -2,10 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- Add a confirmation dialog before deleting a repository
+
 ### Changed
 
 - Opening a repository no longer runs a forced checkout of its worktree
 - Deleting a repository now waits until its deletion events are accepted by a relay
+- Keep the Explore list at its scroll position across background refreshes, a new search or filter still starts at the top
+- Reuse the rendered file tree, commit diffs, README previews and split pane instead of rebuilding them on every repaint
+- Truncate long tab and file tree labels with an ellipsis instead of letting them widen their row
 
 ### Fixed
 
@@ -23,6 +30,9 @@
 - Fix profiles staying stuck after a failed database query, and a repository view showing "Cloning repository" forever when no announcement is found
 - Fix commit patch downloads failing silently and dismissed pull request alerts staying on screen
 - Fix busy dialogs being dismissed by Escape or a backdrop click while their task was still running
+- Fix text typed into a field under a panel appearing up to a quarter second late
+- Fix an open dialog taking keyboard focus back from the command palette or a toast button on every repaint
+- Fix the remove button of a Settings or grasp server row carrying its hover state over to the next row after a removal
 
 ## v0.2.0 - 2026/10/21
 

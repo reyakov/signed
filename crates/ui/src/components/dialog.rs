@@ -312,6 +312,9 @@ impl RenderOnce for Dialog {
             .read(cx)
             .clone();
 
+        // The panel takes focus when it first paints, and again whenever nothing else holds it.
+        let painted = window.use_keyed_state((self.id.clone(), "dialog-painted"), cx, |_, _| false);
+
         deferred(
             root.flex()
                 .items_center()
@@ -442,8 +445,11 @@ impl RenderOnce for Dialog {
                     })
                     .child(
                         canvas(|_, _, _| {}, {
+                            let painted = painted.clone();
                             move |_, _, window, cx| {
-                                if !focus.contains_focused(window, cx) {
+                                let first_paint = painted
+                                    .update(cx, |painted, _| !std::mem::replace(painted, true));
+                                if first_paint || window.focused(cx).is_none() {
                                     window.focus(&focus, cx);
                                 }
                             }

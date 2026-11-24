@@ -33,16 +33,18 @@ pub struct IssueDetailView {
 impl IssueDetailView {
     pub fn new(store: Entity<RepoStore>, issue_id: EventId, cx: &mut Context<Self>) -> Self {
         let comment_input = InputState::builder().multiline().build(cx);
+        let directory = ProfileDirectory::new(cx);
+        let weak = cx.entity().downgrade();
 
         let subscription = cx.observe(&store, |this, _store, cx| {
             this.track_participants(cx);
             cx.notify();
         });
 
-        let directory = ProfileDirectory::new(cx);
-        let weak = cx.entity().downgrade();
         cx.defer(move |cx| {
-            log_dropped(weak.update(cx, |this, cx| this.track_participants(cx)));
+            log_dropped(weak.update(cx, |this, cx| {
+                this.track_participants(cx);
+            }));
         });
 
         Self {

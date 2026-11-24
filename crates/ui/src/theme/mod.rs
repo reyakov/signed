@@ -504,8 +504,12 @@ pub(crate) fn reapply(cx: &mut App) {
     let resolved = resolve::resolve(&system, preset.as_ref(), mode_override, custom);
 
     cx.set_reduce_motion(resolved.accessibility.reduce_motion);
-    cx.set_global(Theme::from_resolved(resolved));
-    cx.refresh_windows();
+    let theme = Theme::from_resolved(resolved);
+    let theme_changed = cx.try_global::<Theme>() != Some(&theme);
+    cx.set_global(theme);
+    if theme_changed {
+        cx.refresh_windows();
+    }
 }
 
 /// Forces a variant, independent of the OS. `None` follows the system.

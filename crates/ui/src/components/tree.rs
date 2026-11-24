@@ -3,14 +3,16 @@
 //! # Examples
 //!
 //! ```no_run
+//! use std::sync::Arc;
+//!
 //! use ui::tree::{Tree, TreeItem};
 //!
 //! let project = Tree::new("project")
 //!     .items(|_, _| {
-//!         vec![
+//!         Arc::new(vec![
 //!             TreeItem::new("src", "src").expandable(true).expanded(true),
 //!             TreeItem::new("main", "main.rs").depth(1),
-//!         ]
+//!         ])
 //!     })
 //!     .on_change(|_selected, _window, _cx| println!("selection changed"));
 //! ```
@@ -18,6 +20,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
@@ -37,7 +40,7 @@ type ChangeHandler = Rc<dyn Fn(Option<usize>, &mut Window, &mut App)>;
 /// The disclosure reporter, fired with the toggled row's index.
 type DisclosureHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 /// The visible row builder, run during render.
-type ItemsFn = Box<dyn Fn(&mut Window, &mut App) -> Vec<TreeItem>>;
+type ItemsFn = Box<dyn Fn(&mut Window, &mut App) -> Arc<Vec<TreeItem>>>;
 
 /// The deepest indent the tree paints, bounding misbuilt item trees.
 const TREE_MAX_DEPTH: usize = 16;
@@ -192,6 +195,10 @@ impl TreeItem {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .text_ellipsis()
                     .text_color(label_color)
                     .child(self.label.clone()),
             )
@@ -465,7 +472,7 @@ impl Tree {
     /// Sets the visible rows; the closure runs during render and must not mutate entities or notify.
     pub fn items<F>(mut self, items: F) -> Self
     where
-        F: Fn(&mut Window, &mut App) -> Vec<TreeItem> + 'static,
+        F: Fn(&mut Window, &mut App) -> Arc<Vec<TreeItem>> + 'static,
     {
         self.items = Some(Box::new(items));
         self
@@ -546,7 +553,7 @@ impl RenderOnce for Tree {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let items = match self.items {
             Some(build) => build(window, cx),
-            None => Vec::new(),
+            None => Arc::default(),
         };
 
         let selectable: Vec<usize> = items

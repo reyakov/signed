@@ -4,14 +4,14 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, UniformListScrollHandle,
-    WeakEntity, Window, div,
+    ParentElement as _, Render, SharedString, StyleRefinement, Styled as _, Subscription,
+    UniformListScrollHandle, WeakEntity, Window, div,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::{EventId, Kind, Url};
 use signed_core::{GitEvent, PullRequest, RepoAddr};
 use signed_git::{FileCommit, PatchParser};
-use signed_state::{Backend, Mirrors, RepoStore};
+use signed_state::{Backend, BackendEvent, Mirrors, RepoStore};
 use ui::avatar::Avatar;
 use ui::button::Button;
 use ui::clipboard::ClipboardButton;
@@ -20,15 +20,16 @@ use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::input::InputState;
 use ui::layout::panel::Panel;
+use ui::layout::root::RootContext as _;
 use ui::scroll_area::ScrollArea;
 use ui::spinner::Spinner;
 use ui::tabs::{Tab, Tabs};
 use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
-use super::dialogs;
 use crate::app::AppRoot;
 use crate::issues::helpers::{comment_form, comments_section, sidebar_section};
+use crate::pull_requests::dialogs::update::UpdatePrDialog;
 use crate::repo::commit_diff::{CommitDiffView, DiffPane};
 use crate::shared::event_list::commit_list;
 use crate::shared::log_dropped;
@@ -52,7 +53,6 @@ pub struct PullRequestDetailView {
     workspace: WeakEntity<AppRoot>,
     store: Entity<RepoStore>,
     pr_id: EventId,
-    update_dialog: Option<Entity<dialogs::update::UpdatePrDialog>>,
     comment_input: Entity<InputState>,
     worktree: Option<PathBuf>,
     description: SharedString,
@@ -67,7 +67,7 @@ pub struct PullRequestDetailView {
     commit_scroll_handle: UniformListScrollHandle,
     tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
     directory: Entity<ProfileDirectory>,
-    _subscription: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl PullRequestDetailView {
@@ -78,23 +78,35 @@ impl PullRequestDetailView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let pane = cx.new(DiffPane::new);
         let comment_input = InputState::builder().multiline().build(cx);
+        let directory = ProfileDirectory::new(cx);
+
+        let pane = cx.new(DiffPane::new);
         let weak = cx.entity().downgrade();
 
-        let subscription = cx.observe(&store, |this, _store, cx| {
+        let backend = Backend::global(cx);
+        let mut subscriptions = vec![];
+
+        subscriptions.push(cx.observe(&store, |this, _store, cx| {
             this.sync(cx);
-        });
+        }));
+
+        subscriptions.push(cx.subscribe(&backend, |_, _, event, cx| {
+            if matches!(event, BackendEvent::SignerChanged) {
+                cx.notify();
+            }
+        }));
 
         cx.defer(move |cx| {
-            log_dropped(weak.update(cx, |this, cx| this.sync(cx)));
+            log_dropped(weak.update(cx, |this, cx| {
+                this.sync(cx);
+            }));
         });
 
         Self {
             workspace,
             store,
             pr_id,
-            update_dialog: None,
             comment_input,
             worktree: None,
             description: SharedString::default(),
@@ -108,8 +120,8 @@ impl PullRequestDetailView {
             pane,
             commit_scroll_handle: UniformListScrollHandle::new(),
             tasks: Vec::new(),
-            directory: ProfileDirectory::new(cx),
-            _subscription: subscription,
+            directory,
+            _subscriptions: subscriptions,
         }
     }
 
@@ -445,10 +457,15 @@ impl PullRequestDetailView {
         if self.loading {
             return Spinner::centered("pr-loading");
         }
+
         if let Some(error) = self.error.clone() {
             return EmptyState::centered(error);
         }
-        self.pane.clone().into_any_element()
+
+        self.pane
+            .clone()
+            .cached(StyleRefinement::default().size_full().min_h_0())
+            .into_any_element()
     }
 
     fn render_commits(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -545,14 +562,11 @@ impl PullRequestDetailView {
                                             pr.id == this.pr_id && pr.kind == Kind::GitPullRequest
                                         })
                                         .cloned();
+
                                     if let Some(root) = root {
-                                        this.update_dialog =
-                                            Some(dialogs::update::UpdatePrDialog::new(
-                                                this.store.clone(),
-                                                root,
-                                                cx,
-                                            ));
-                                        cx.notify();
+                                        let dialog =
+                                            UpdatePrDialog::new(this.store.clone(), root, cx);
+                                        cx.open_dialog(dialog);
                                     }
                                 }));
                             },
@@ -597,7 +611,6 @@ impl Render for PullRequestDetailView {
             .size_full()
             .min_h_0()
             .child(self.render_header(cx))
-            .when_some(self.update_dialog.clone(), |el, view| el.child(view))
             .child(self.render_tabs(cx))
             .map(|this| match self.active_tab {
                 0 => this.child(self.render_discussion(cx)),

@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Error;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, IntoElement,
-    ParentElement as _, SharedString, Styled as _, Task, WeakEntity, Window, div, px,
+    ParentElement as _, Render, SharedString, StyleRefinement, Styled as _, Task, WeakEntity,
+    Window, div, px,
 };
 use signed_git::{FileCommit, Repo, WorktreeSnapshot};
 use ui::code::CodeViewState;
@@ -55,7 +57,7 @@ struct CodeView {
 pub struct RepoFilesView {
     seeds: Vec<TreeItemSeed>,
     expanded: HashSet<String>,
-    rows: Vec<TreeItem>,
+    rows: Arc<Vec<TreeItem>>,
     selected_index: Option<usize>,
     worktree: Option<PathBuf>,
     worktree_paths: Vec<String>,
@@ -82,7 +84,7 @@ impl RepoFilesView {
         Self {
             seeds: Vec::new(),
             expanded: HashSet::new(),
-            rows: Vec::new(),
+            rows: Arc::default(),
             selected_index: None,
             worktree: None,
             worktree_paths: Vec::new(),
@@ -121,7 +123,7 @@ impl RepoFilesView {
     }
 
     fn rebuild_rows(&mut self) {
-        self.rows = TreeItemSeed::flatten_all(&self.seeds, &self.expanded);
+        self.rows = Arc::new(TreeItemSeed::flatten_all(&self.seeds, &self.expanded));
         self.selected_index = self.selected_file.as_ref().and_then(|path| {
             self.rows
                 .iter()
@@ -253,7 +255,7 @@ impl RepoFilesView {
     }
 
     pub fn render_tree(&self, view: WeakEntity<Self>) -> AnyElement {
-        let rows = self.rows.clone();
+        let rows = Arc::clone(&self.rows);
         let selected = self.selected_index;
         let change_view = view.clone();
         let disclosure_view = view;
@@ -265,7 +267,7 @@ impl RepoFilesView {
             .child(
                 Tree::new("repo-tree")
                     .selected(selected)
-                    .items(move |_, _| rows.clone())
+                    .items(move |_, _| Arc::clone(&rows))
                     .on_change({
                         let view = change_view;
                         move |index, window, cx| {
@@ -434,7 +436,11 @@ impl RepoFilesView {
             .p_4()
             .size_full()
             .overflow_hidden()
-            .child(md.state.clone())
+            .child(
+                md.state
+                    .clone()
+                    .cached(StyleRefinement::default().size_full()),
+            )
             .into_any_element()
     }
 
@@ -482,7 +488,11 @@ impl RepoFilesView {
         div()
             .size_full()
             .overflow_hidden()
-            .child(code.state.clone())
+            .child(
+                code.state
+                    .clone()
+                    .cached(StyleRefinement::default().size_full()),
+            )
             .into_any_element()
     }
 
@@ -724,5 +734,11 @@ impl RepoFilesView {
         });
 
         self.push_task(task);
+    }
+}
+
+impl Render for RepoFilesView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_tree(cx.entity().downgrade())
     }
 }

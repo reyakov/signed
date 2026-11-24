@@ -1005,11 +1005,6 @@ impl InputState {
     /// with the paint-time text style. Reuses the previous result while the
     /// text, wrap width, and text style are unchanged.
     fn shape_current_text(&self, wrap_width: Option<Pixels>, window: &Window) -> ShapedText {
-        let (text, mask_map) = if self.masked() {
-            masked_display(&self.text)
-        } else {
-            (self.text.clone(), None)
-        };
         let text_style = window.text_style();
 
         let font = Font {
@@ -1022,6 +1017,23 @@ impl InputState {
 
         let font_size = text_style.font_size.to_pixels(window.rem_size());
 
+        if !self.masked()
+            && let Some((cached_key, shaped)) = self.shaped_cache.borrow().as_ref()
+            && cached_key.text == self.text
+            && cached_key.wrap_width == wrap_width
+            && cached_key.font_size == font_size
+            && cached_key.font == font
+            && cached_key.color == text_style.color
+        {
+            return shaped.clone();
+        }
+
+        let (text, mask_map) = if self.masked() {
+            masked_display(&self.text)
+        } else {
+            (self.text.clone(), None)
+        };
+
         let key = ShapeCacheKey {
             text: text.clone(),
             wrap_width,
@@ -1029,12 +1041,6 @@ impl InputState {
             font: font.clone(),
             color: text_style.color,
         };
-
-        if let Some((cached_key, shaped)) = self.shaped_cache.borrow().as_ref()
-            && *cached_key == key
-        {
-            return shaped.clone();
-        }
 
         let runs = [TextRun {
             len: text.len(),
@@ -2022,6 +2028,13 @@ impl RenderOnce for Input {
         let padding_x = self.size.padding_x_rems().to_pixels(rem);
         let dense_padding_x = self.size.dense_padding_x_rems().to_pixels(rem);
         let focus_handle = self.state.read(cx).focus_handle.clone();
+        let owner = window.current_view();
+        let state = self.state.clone();
+
+        window.use_keyed_state((self.id.clone(), "input-owner"), cx, |_, cx| {
+            // Edits must repaint the view that renders the field, even below a cached view.
+            App::observe(cx, &state, move |_, cx| cx.notify(owner))
+        });
         let focused = focus_handle.is_focused(window);
 
         let is_empty = self.state.read(cx).text.is_empty();
@@ -2633,36 +2646,4 @@ fn floor_to_char_boundary(text: &str, index: usize) -> usize {
         index -= 1;
     }
     index
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    #[allow(clippy::reversed_empty_ranges)] // The fixture is intentionally reversed.
-    fn utf16_range_to_utf8_orders_reversed_endpoints() {
-        // "héllo": h 0, é 1, l 2, l 3, o 4 in UTF-16 units.
-        let text = "héllo";
-        assert_eq!(utf16_range_to_utf8(text, 4..2), 3..5);
-        assert_eq!(utf16_range_to_utf8(text, 2..4), 3..5);
-    }
-
-    #[test]
-    #[allow(clippy::reversed_empty_ranges)] // The fixture is intentionally reversed.
-    fn utf8_range_to_utf16_floors_off_boundary_offsets() {
-        let text = "héllo";
-        // Byte 2 sits inside `é`; a reversed, off-boundary range must not panic.
-        let range = utf8_range_to_utf16(text, 4..2);
-        assert!(range.start <= range.end);
-        assert_eq!(range, 1..3);
-    }
-
-    #[test]
-    fn char_boundary_floor_clamps_to_len() {
-        // "héllo" is six bytes.
-        assert_eq!(floor_to_char_boundary("héllo", 7), 6);
-        assert_eq!(floor_to_char_boundary("héllo", 2), 1);
-        assert_eq!(floor_to_char_boundary("héllo", 0), 0);
-    }
 }

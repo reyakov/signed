@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::{SharedString, WeakEntity};
 use nostr::prelude::PublicKey;
@@ -66,27 +67,29 @@ pub fn truncate_label(label: &str) -> SharedString {
 
 pub fn source_menu_items(
     view: WeakEntity<NewPullRequestView>,
-    associated: Vec<PathBuf>,
+    associated: Arc<Vec<PathBuf>>,
     active_path: Option<PathBuf>,
-    candidates: Vec<Announcement>,
+    candidates: Arc<Vec<Announcement>>,
     user: Option<PublicKey>,
     active_fork: Option<RepoAddr>,
 ) -> Vec<MenuItem> {
     let mut items = Vec::new();
-    for path in associated {
+    for (index, path) in associated.iter().enumerate() {
         let label = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
 
         let target = view.clone();
-        let path_for_action = path.clone();
+        let associated = Arc::clone(&associated);
 
         items.push(
             MenuItem::new(truncate_label(&label))
-                .checked(active_path.as_ref() == Some(&path))
+                .checked(active_path.as_ref() == Some(path))
                 .handler(move |window, cx| {
-                    let path = path_for_action.clone();
+                    let Some(path) = associated.get(index).cloned() else {
+                        return;
+                    };
                     if let Err(error) =
                         target.update(cx, |this, cx| this.apply_folder_path(path, window, cx))
                     {
@@ -110,23 +113,25 @@ pub fn source_menu_items(
     if candidates.is_empty() {
         items.push(MenuItem::new("No announced forks of this repository").disabled(true));
     } else {
-        for candidate in candidates {
+        for (index, candidate) in candidates.iter().enumerate() {
             let subtitle = if Some(candidate.owner) == user {
                 SharedString::from("Your fork")
             } else {
                 SharedString::from(format!("by {}", shorten_owner(&candidate.owner)))
             };
 
-            let title = format!("{} — {}", announcement_display_name(&candidate), subtitle);
+            let title = format!("{} — {}", announcement_display_name(candidate), subtitle);
             let target = view.clone();
+            let candidates = Arc::clone(&candidates);
             let checked = active_fork == Some(candidate.addr());
-            let announcement = candidate;
 
             items.push(
                 MenuItem::new(truncate_label(&title))
                     .checked(checked)
                     .handler(move |window, cx| {
-                        let announcement = announcement.clone();
+                        let Some(announcement) = candidates.get(index).cloned() else {
+                            return;
+                        };
                         if let Err(error) =
                             target.update(cx, |this, cx| this.choose_fork(announcement, window, cx))
                         {

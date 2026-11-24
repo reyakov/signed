@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Window, div, px,
@@ -14,13 +16,13 @@ use utils::middle_truncate;
 
 pub struct AboutDialog {
     handle: DialogHandle,
-    announcement: Announcement,
+    announcement: Arc<Announcement>,
     directory: Entity<ProfileDirectory>,
 }
 
 impl AboutDialog {
     pub fn new(
-        announcement: Announcement,
+        announcement: Arc<Announcement>,
         directory: Entity<ProfileDirectory>,
         cx: &mut App,
     ) -> Entity<Self> {

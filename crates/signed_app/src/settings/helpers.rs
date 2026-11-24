@@ -141,25 +141,20 @@ pub fn grasp_servers_editor(input: &Entity<InputState>, cx: &App) -> AnyElement 
 
     v_flex()
         .gap_2()
-        .children(servers.iter().enumerate().map(|(ix, server)| {
+        .children(servers.iter().map(|server| {
             let server = server.clone();
             editor_value_row(
-                format!("settings-remove-server:{ix}"),
+                format!("settings-remove-server:{server}"),
                 display_server(&server),
                 move |cx| {
                     let store = SettingsStore::global(cx);
                     store.update(cx, |store, cx| {
                         store.edit(
                             |settings| {
-                                // A row's index can desync after a prior removal; match by value.
-                                if let Some(at) = settings
+                                settings
                                     .grasp_servers
                                     .default_servers
-                                    .iter()
-                                    .position(|known| known == &server)
-                                {
-                                    settings.grasp_servers.default_servers.remove(at);
-                                }
+                                    .retain(|known| known != &server);
                             },
                             cx,
                         );
@@ -233,25 +228,20 @@ pub fn scan_paths_editor(cx: &App) -> AnyElement {
 
     v_flex()
         .gap_2()
-        .children(scan_paths.iter().enumerate().map(|(ix, path)| {
+        .children(scan_paths.iter().map(|path| {
             let path = path.clone();
             editor_value_row(
-                format!("settings-remove-path:{ix}"),
+                format!("settings-remove-path:{}", path.display()),
                 SharedString::from(path.display().to_string()),
                 move |cx| {
                     let store = SettingsStore::global(cx);
                     store.update(cx, |store, cx| {
                         store.edit(
                             |settings| {
-                                // A row's index can desync after a prior removal; match by value.
-                                if let Some(at) = settings
+                                settings
                                     .local_repos
                                     .scan_paths
-                                    .iter()
-                                    .position(|known| known == &path)
-                                {
-                                    settings.local_repos.scan_paths.remove(at);
-                                }
+                                    .retain(|known| known != &path);
                             },
                             cx,
                         );

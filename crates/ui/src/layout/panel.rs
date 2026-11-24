@@ -401,19 +401,16 @@ impl PanelStack {
 
     /// The main stack's tab strip for the titlebar; `None` while the stack is empty.
     pub fn main_tabs(stack: Entity<Self>, cx: &App) -> Option<Tabs> {
-        let (id, panels, selected) = {
+        let (id, selected) = {
             let this = stack.read(cx);
             if this.main.is_empty() {
                 return None;
             }
-            (
-                this.id.clone(),
-                this.main.panels.clone(),
-                this.main.selected().unwrap_or(usize::MAX),
-            )
+            (this.id.clone(), this.main.selected().unwrap_or(usize::MAX))
         };
         let change = stack.downgrade();
         let close = change.clone();
+        let tabs = change.clone();
 
         Some(
             Tabs::new((id, "main-tabs"))
@@ -421,10 +418,15 @@ impl PanelStack {
                 .overflow_scroll(true)
                 .selected(selected)
                 .tabs(move |_, cx| {
-                    panels
-                        .iter()
-                        .map(|(id, panel)| panel.tab(id.clone().into(), cx).closeable(true))
-                        .collect()
+                    tabs.read_with(cx, |stack, cx| {
+                        stack
+                            .main
+                            .panels
+                            .iter()
+                            .map(|(id, panel)| panel.tab(id.clone().into(), cx).closeable(true))
+                            .collect()
+                    })
+                    .unwrap_or_default()
                 })
                 .on_change(move |index, _, cx| {
                     change
@@ -539,10 +541,10 @@ impl PanelStack {
 
     /// The split pane's content: the split stack's tabs over its shown panel.
     fn split_pane(&self, cx: &mut Context<Self>) -> AnyElement {
-        let panels: Vec<(SharedString, Arc<dyn PanelView>)> = self.split.panels.clone();
         let selected = self.split.selected().unwrap_or(usize::MAX);
         let change = cx.weak_entity();
         let close = change.clone();
+        let tabs = change.clone();
 
         v_flex()
             .size_full()
@@ -554,10 +556,17 @@ impl PanelStack {
                         .overflow_scroll(true)
                         .selected(selected)
                         .tabs(move |_, cx| {
-                            panels
-                                .iter()
-                                .map(|(id, panel)| panel.tab(id.clone().into(), cx).closeable(true))
-                                .collect()
+                            tabs.read_with(cx, |stack, cx| {
+                                stack
+                                    .split
+                                    .panels
+                                    .iter()
+                                    .map(|(id, panel)| {
+                                        panel.tab(id.clone().into(), cx).closeable(true)
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default()
                         })
                         .on_change(move |index, _, cx| {
                             change
@@ -574,11 +583,11 @@ impl PanelStack {
                 )
             })
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .children(self.split.active().map(|panel| panel.view())),
+                div().flex_1().min_h_0().w_full().children(
+                    self.split
+                        .active()
+                        .map(|panel| panel.view().cached(content_style()).into_any_element()),
+                ),
             )
             .into_any_element()
     }

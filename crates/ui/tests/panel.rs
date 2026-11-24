@@ -1,6 +1,8 @@
 //! The panel stack: the main island fills the window; splitting makes two
 //! half-width islands with a drag divider that resizes them.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
@@ -10,6 +12,7 @@ use gpui::{
     size,
 };
 use ui::common::v_flex;
+use ui::input::{Input, InputState};
 use ui::layout::panel::{Panel, PanelSlot, PanelStack, PanelView, SplitSide};
 use ui::tabs::Tabs;
 use ui::theme::Theme;
@@ -66,6 +69,28 @@ struct PanelHarness {
 impl Render for PanelHarness {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div().size_full().child(self.stack.clone())
+    }
+}
+
+/// A split panel that counts its renders around a field.
+struct FieldView {
+    input: Entity<InputState>,
+    renders: Rc<Cell<usize>>,
+}
+
+impl Render for FieldView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.renders.set(self.renders.get() + 1);
+        div()
+            .debug_selector(|| "panel-test-field".to_string())
+            .size_full()
+            .child(Input::new("split-field", self.input.clone()))
+    }
+}
+
+impl Panel for FieldView {
+    fn title(&self, _cx: &App) -> SharedString {
+        "Field".into()
     }
 }
 
@@ -987,5 +1012,51 @@ fn zoom_ends_when_another_split_panel_is_shown(cx: &mut TestAppContext) {
     assert!(
         cx.debug_bounds("panel-test-main").is_some(),
         "the split is back once another panel is shown"
+    );
+}
+
+/// The split panel is cached: it repaints for its own changes, not for other panels'.
+#[gpui::test]
+fn a_split_panel_repaints_for_its_own_changes_only(cx: &mut TestAppContext) {
+    let renders = Rc::new(Cell::new(0));
+    let (input, main, field) = cx.update(|cx| {
+        let input = InputState::new(cx);
+        let field = cx.new(|_| FieldView {
+            input: input.clone(),
+            renders: Rc::clone(&renders),
+        });
+        (input, tag(cx, "panel-test-main"), field)
+    });
+    let seeded_main = main.clone();
+    let seeded_field = field.clone();
+    let (mut cx, _stack) = stack_window(cx, move |stack, cx| {
+        stack.insert(PanelSlot::Main, "main", Arc::new(seeded_main), cx);
+        stack.insert(PanelSlot::Split, "split", Arc::new(seeded_field), cx);
+    });
+    let rendered = renders.get();
+
+    cx.update(|window, cx| input.update(cx, |input, cx| input.set_value("hey", window, cx)));
+    cx.run_until_parked();
+    let typed = cx.update(|_, cx| input.read(cx).value().to_string());
+    assert_eq!(typed, "hey");
+    assert!(
+        renders.get() > rendered,
+        "an edit in the split panel repaints it"
+    );
+
+    let rendered = renders.get();
+    cx.update(|_, cx| main.update(cx, |_, cx| cx.notify()));
+    cx.run_until_parked();
+    assert_eq!(
+        renders.get(),
+        rendered,
+        "another panel's change leaves the split panel as it was"
+    );
+
+    cx.update(|_, cx| field.update(cx, |_, cx| cx.notify()));
+    cx.run_until_parked();
+    assert!(
+        renders.get() > rendered,
+        "the split panel's own change repaints it"
     );
 }

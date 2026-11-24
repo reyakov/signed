@@ -1,4 +1,5 @@
-use gpui::prelude::FluentBuilder as _;
+use std::rc::Rc;
+
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Subscription, UniformListScrollHandle, WeakEntity, Window, div,
@@ -12,18 +13,17 @@ use ui::button::Button;
 use ui::common::v_flex;
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::Panel;
+use ui::layout::root::RootContext as _;
 use ui::segmented::{Segmented, SegmentedOption};
 use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
-use std::rc::Rc;
-
 use self::detail::IssueDetailView;
 use crate::app::AppRoot;
+use crate::issues::new_issue::NewIssueDialog;
 use crate::repo::helpers::short_id;
 use crate::shared::event_list::{EventHandler, EventList, EventRow, filter_toolbar};
-use crate::shared::log_dropped;
-use crate::shared::panels;
+use crate::shared::{log_dropped, panels};
 
 pub mod detail;
 pub(crate) mod helpers;
@@ -32,7 +32,6 @@ pub mod new_issue;
 pub struct IssuesView {
     workspace: WeakEntity<AppRoot>,
     store: Entity<RepoStore>,
-    new_issue: Option<Entity<new_issue::NewIssueDialog>>,
     filter: IssueFilter,
     visible_issues: Vec<usize>,
     counts: StatusCounts,
@@ -50,18 +49,20 @@ impl IssuesView {
         store: Entity<RepoStore>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let weak = cx.entity().downgrade();
         let subscription = cx.observe(&store, |this, _store, cx| {
             this.rebuild(cx);
         });
-        let weak = cx.entity().downgrade();
+
         cx.defer(move |cx| {
-            log_dropped(weak.update(cx, |this, cx| this.rebuild(cx)));
+            log_dropped(weak.update(cx, |this, cx| {
+                this.rebuild(cx);
+            }));
         });
 
         Self {
             workspace,
             store: store.clone(),
-            new_issue: None,
             filter: IssueFilter::Open,
             visible_issues: Vec::new(),
             counts: StatusCounts::default(),
@@ -73,8 +74,8 @@ impl IssuesView {
     }
 
     fn open_new_issue(&mut self, cx: &mut Context<Self>) {
-        self.new_issue = Some(new_issue::NewIssueDialog::new(self.store.clone(), cx));
-        cx.notify();
+        let dialog = NewIssueDialog::new(self.store.clone(), cx);
+        cx.open_dialog(dialog);
     }
 
     /// Total number of issues across all statuses, for the sidebar label.
@@ -230,7 +231,6 @@ impl Render for IssuesView {
 
         v_flex()
             .size_full()
-            .when_some(self.new_issue.clone(), |el, view| el.child(view))
             .child(
                 EventList::new("issues")
                     .toolbar(self.render_header(cx))

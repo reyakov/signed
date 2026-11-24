@@ -1,12 +1,14 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Error;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, SystemNotification, Task, WeakEntity, Window, div, px,
+    StyleRefinement, Styled as _, Subscription, SystemNotification, Task, WeakEntity, Window, div,
+    px,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::{PublicKey, Url};
@@ -22,10 +24,10 @@ use ui::badge::Badge;
 use ui::button::{Button, ButtonVariant};
 use ui::clipboard::CopyRow;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
-use ui::dialog::Dialog;
 use ui::dropdown_menu::DropdownMenu;
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::Panel;
+use ui::layout::root::RootContext as _;
 use ui::menu::MenuItem;
 use ui::popover::Popover;
 use ui::sidebar::{Sidebar, SidebarEntry};
@@ -53,6 +55,8 @@ use utils::relative_time_secs;
 use crate::app::AppRoot;
 use crate::issues::IssuesView;
 use crate::pull_requests::PullRequestsView;
+use crate::repo::dialogs::DeleteRepositoryDialog;
+use crate::repo::dialogs::init::InitRepoDialog;
 use crate::repo::helpers::{short_id, sorted_worktree_paths};
 use crate::shared::log_dropped;
 
@@ -72,12 +76,31 @@ pub enum RefKind {
     Tag,
 }
 
+/// The announcement and clone commands the repository header renders.
+struct AboutModel {
+    announcement: Arc<Announcement>,
+    git_commands: Arc<Vec<String>>,
+}
+
+impl AboutModel {
+    /// Rebuilds the model only when the store's announcement changed.
+    fn sync(header: &mut Option<Self>, store: &Entity<RepoStore>, cx: &App) {
+        let announcement = store.read(cx).announcement.as_ref();
+        if header.as_ref().map(|header| header.announcement.as_ref()) == announcement {
+            return;
+        }
+        *header = announcement.map(|announcement| Self {
+            announcement: Arc::new(announcement.clone()),
+            git_commands: Arc::new(announcement.clone_urls()),
+        });
+    }
+}
+
 pub struct RepoDetailView {
     pub(super) workspace: WeakEntity<AppRoot>,
     pub(super) store: Entity<RepoStore>,
-    about: Option<Entity<dialogs::about::AboutDialog>>,
-    init: Option<Entity<dialogs::init::InitRepoDialog>>,
-    reset: Option<Entity<dialogs::reset::ResetRemoteDialog>>,
+    /// The announcement data the header renders, synced from the store.
+    header: Option<AboutModel>,
     /// A repository opened by address alone starts without an announcement.
     repo_started: bool,
     /// The file explorer and preview.
@@ -103,8 +126,6 @@ pub struct RepoDetailView {
     sync_directory: Entity<SyncStatusDirectory>,
     /// Only a commit sync reports push steps; republish stays silent.
     sync_progress: bool,
-    /// The push error shown by the modal alert dialog.
-    sync_error: Option<SharedString>,
     pub(super) repo_menu_open: bool,
     pub(super) clone_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -199,6 +220,9 @@ impl RepoDetailView {
             }),
         ];
 
+        let mut header = None;
+        AboutModel::sync(&mut header, &store, cx);
+
         let store_for_attach = store.clone();
         window.defer(cx, move |window, cx| {
             log_dropped(weak.update(cx, |this, cx| {
@@ -210,9 +234,7 @@ impl RepoDetailView {
         Self {
             workspace,
             store: store.clone(),
-            about: None,
-            init: None,
-            reset: None,
+            header,
             repo_started: false,
             files,
             history,
@@ -228,7 +250,6 @@ impl RepoDetailView {
             directory: ProfileDirectory::new(cx),
             sync_directory,
             sync_progress: false,
-            sync_error: None,
             repo_menu_open: false,
             clone_open: false,
             _subscriptions: subscriptions,
@@ -260,6 +281,7 @@ impl RepoDetailView {
     ) {
         self._subscriptions
             .push(cx.observe_in(store, window, |this, store, window, cx| {
+                AboutModel::sync(&mut this.header, &store, cx);
                 this.track_profiles(cx);
                 this.track_sync_status(cx);
                 if !this.repo_started && store.read(cx).announcement.is_some() {
@@ -827,7 +849,6 @@ impl RepoDetailView {
         }
 
         self.error = None;
-        self.sync_error = None;
         self.sync_progress = true;
 
         let tag = store
@@ -879,7 +900,8 @@ impl RepoDetailView {
                             cx.dismiss_system_notification(tag.as_ref()).detach();
                         }
                         store.update(cx, |store, _| store.last_error = None);
-                        this.sync_error = Some(format!("{error:#}").into());
+                        let dialog = dialogs::SyncErrorDialog::new(format!("{error:#}").into(), cx);
+                        cx.open_dialog(dialog);
                     }
                 }
 
@@ -940,13 +962,9 @@ impl RepoDetailView {
 
             this.update_in(cx, |this, _window, cx| match probe {
                 Ok((deleted, unreachable)) => {
-                    this.reset = Some(dialogs::reset::ResetRemoteDialog::new(
-                        store,
-                        deleted,
-                        unreachable,
-                        cx,
-                    ));
-                    cx.notify();
+                    let dialog =
+                        dialogs::reset::ResetRemoteDialog::new(store, deleted, unreachable, cx);
+                    cx.open_dialog(dialog);
                 }
                 Err(error) => {
                     this.error = Some(error.to_string().into());
@@ -960,7 +978,7 @@ impl RepoDetailView {
     }
 
     /// Delete the repository from nostr, announcement, state and activity.
-    fn delete_repository(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn delete_repository(&mut self, cx: &mut Context<Self>) {
         let task = self
             .store
             .update(cx, |store, cx| store.delete_repository(cx));
@@ -974,7 +992,6 @@ impl RepoDetailView {
             } else {
                 "Cloning repository..."
             };
-
             return v_flex()
                 .flex_1()
                 .size_full()
@@ -1024,7 +1041,7 @@ impl RepoDetailView {
                     cx.notify();
                 }));
             })
-            .entries(move |_, cx| {
+            .entries(move |_, _| {
                 let mut entries = vec![
                     SidebarEntry::row("repo-nav-commits", "Commits")
                         .prefix(Icon::named(IconRole::GitCommit))
@@ -1053,7 +1070,10 @@ impl RepoDetailView {
                 entries.push(SidebarEntry::header("Files"));
 
                 entries.push(SidebarEntry::custom(
-                    files.read(cx).render_tree(files.downgrade()),
+                    files
+                        .clone()
+                        .cached(StyleRefinement::default().flex_1().min_h_0().w_full())
+                        .into_any_element(),
                 ));
 
                 entries
@@ -1078,7 +1098,6 @@ impl RepoDetailView {
         else {
             return;
         };
-
         actions::open_repo_panel(&self.workspace, &addr, None, window, cx);
     }
 
@@ -1087,13 +1106,9 @@ impl RepoDetailView {
         let Some(local_path) = self.store.read(cx).path.clone() else {
             return;
         };
-        self.init = Some(dialogs::init::InitRepoDialog::new(
-            local_path,
-            cx.entity().downgrade(),
-            window,
-            cx,
-        ));
-        cx.notify();
+        let view = cx.entity().downgrade();
+        let dialog = InitRepoDialog::new(local_path, view, window, cx);
+        cx.open_dialog(dialog);
     }
 
     pub(super) fn render_about(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1106,9 +1121,10 @@ impl RepoDetailView {
         let pushing = store.pushing;
         let cloning = store.cloning;
 
-        let Some(announcement) = store.announcement.clone() else {
+        let Some(header) = &self.header else {
             return div().into_any_element();
         };
+        let announcement = header.announcement.as_ref();
 
         let nip05 = self
             .directory
@@ -1119,23 +1135,22 @@ impl RepoDetailView {
             .clone()
             .filter(|nip05| !nip05.trim().is_empty());
 
-        let nostr_url = nostr_clone_url(&announcement, nip05.as_deref());
+        let nostr_url = nostr_clone_url(announcement, nip05.as_deref());
         let ngit_command = SharedString::from(format!("git clone {nostr_url}"));
         let nak_command = SharedString::from(format!("nak git clone {nostr_url}"));
-        let git_commands: Vec<String> = announcement.clone_urls();
 
         let name = repo_display_name(self.store.read(cx));
         let description = announcement.description();
         let avatar = Avatar::new(format!("{}:{}", announcement.owner, announcement.id));
 
-        let announcement_for_menu = announcement.clone();
+        let announcement_for_menu = Arc::clone(&header.announcement);
         let weak_menu_open = cx.entity().downgrade();
         let weak_menu_items = cx.entity().downgrade();
         let weak_clone = cx.entity().downgrade();
         let weak_download = cx.entity().downgrade();
         let ngit_for_popover = ngit_command.clone();
         let nak_for_popover = nak_command.clone();
-        let git_for_popover = git_commands.clone();
+        let git_for_popover = Arc::clone(&header.git_commands);
 
         h_flex()
             .p_6()
@@ -1170,7 +1185,7 @@ impl RepoDetailView {
                             .line_clamp(3)
                             .child(description),
                     )
-                    .when_some(fork_row(&announcement, cx), |this, row| this.child(row)),
+                    .when_some(fork_row(announcement, cx), |this, row| this.child(row)),
             )
             .child(
                 h_flex()
@@ -1280,20 +1295,21 @@ impl RepoDetailView {
                                 }
                             })
                             .items(move |_, cx| {
-                                let owner = backend.read(cx).current_user()
-                                    == Some(announcement_for_menu.owner);
+                                let current_user = backend.read(cx).current_user();
+                                let owner = current_user == Some(announcement_for_menu.owner);
 
                                 let mut items = vec![MenuItem::new("About").handler({
                                     let weak = weak_menu_items.clone();
-                                    let announcement = announcement_for_menu.clone();
+                                    let announcement = Arc::clone(&announcement_for_menu);
+
                                     move |_, cx| {
                                         if let Err(error) = weak.update(cx, |this, cx| {
-                                            this.about = Some(dialogs::about::AboutDialog::new(
-                                                announcement.clone(),
+                                            let dialog = dialogs::about::AboutDialog::new(
+                                                Arc::clone(&announcement),
                                                 this.directory.clone(),
                                                 cx,
-                                            ));
-                                            cx.notify();
+                                            );
+                                            cx.open_dialog(dialog);
                                         }) {
                                             log::warn!("failed to open about: {error}");
                                         }
@@ -1325,11 +1341,14 @@ impl RepoDetailView {
                                     items.push(MenuItem::new("Delete").destructive(true).handler(
                                         {
                                             let weak = weak_menu_items.clone();
-                                            move |window, cx| {
-                                                if let Err(error) = weak.update(cx, |this, cx| {
-                                                    this.delete_repository(window, cx);
+                                            move |_window, cx| {
+                                                if let Err(error) = weak.update(cx, |_, cx| {
+                                                    let view = cx.entity().downgrade();
+                                                    let dialog =
+                                                        DeleteRepositoryDialog::new(view, cx);
+                                                    cx.open_dialog(dialog);
                                                 }) {
-                                                    log::warn!("failed to delete: {error}");
+                                                    log::warn!("failed to ask to delete: {error}");
                                                 }
                                             }
                                         },
@@ -1553,9 +1572,6 @@ impl Panel for RepoDetailView {
 
 impl Render for RepoDetailView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let weak = cx.entity().downgrade();
-        let sync_weak = cx.entity().downgrade();
-
         let error = self.error.clone().or_else(|| {
             self.store
                 .read(cx)
@@ -1570,6 +1586,7 @@ impl Render for RepoDetailView {
             .child(self.render_about(cx))
             .child(self.render_metadata(cx))
             .when_some(error, |this, error| {
+                let weak = cx.entity().downgrade();
                 this.child(
                     Alert::new("repo-error")
                         .severity(AlertSeverity::Danger)
@@ -1605,38 +1622,5 @@ impl Render for RepoDetailView {
                             .child(self.render_pane(cx)),
                     ),
             )
-            .when_some(self.about.clone(), |el, view| el.child(view))
-            .when_some(self.init.clone(), |el, view| el.child(view))
-            .when_some(self.reset.clone(), |el, view| el.child(view))
-            .when_some(self.sync_error.clone(), |el, error| {
-                el.child(
-                    Dialog::new("sync-error-dialog")
-                        .alert(true)
-                        .open(true)
-                        .title("Sync failed")
-                        .content(move |_, cx| {
-                            div()
-                                .text_base()
-                                .text_color(cx.theme().colors.muted_foreground)
-                                .child(error.clone())
-                                .into_any_element()
-                        })
-                        .actions(move |_, _| {
-                            let sync_weak = sync_weak.clone();
-                            vec![
-                                Button::new("close-sync-error")
-                                    .label("Close")
-                                    .variant(ButtonVariant::Secondary)
-                                    .on_click(move |_, _, cx| {
-                                        log_dropped(sync_weak.update(cx, |this, cx| {
-                                            this.sync_error = None;
-                                            cx.notify();
-                                        }));
-                                    })
-                                    .into_any_element(),
-                            ]
-                        }),
-                )
-            })
     }
 }

@@ -4,13 +4,13 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _,
-    UniformListScrollHandle, WeakEntity, Window, div, px,
+    ParentElement as _, PathPromptOptions, Render, SharedString, StyleRefinement, Styled as _,
+    Subscription, UniformListScrollHandle, WeakEntity, Window, div, px,
 };
-use nostr::prelude::Url;
+use nostr::prelude::{PublicKey, Url};
 use signed_core::Announcement;
 use signed_git::{GitCache, Repo};
-use signed_state::{Backend, CheckoutsStore, Mirrors, RepoListStore, RepoStore};
+use signed_state::{Backend, BackendEvent, CheckoutsStore, Mirrors, RepoListStore, RepoStore};
 use ui::button::{Button, ButtonVariant};
 use ui::combobox::{Combobox, ComboboxState};
 use ui::common::{StyledExt as _, h_flex, v_flex};
@@ -56,6 +56,11 @@ pub struct NewPullRequestView {
     scroll_handle: UniformListScrollHandle,
     pub(super) tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
     source_open: bool,
+    /// The checkouts, forks, and user the source menu lists.
+    checkouts: Arc<Vec<PathBuf>>,
+    forks: Arc<Vec<Announcement>>,
+    user: Option<PublicKey>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl NewPullRequestView {
@@ -66,11 +71,15 @@ impl NewPullRequestView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let pane = cx.new(DiffPane::new);
+        let checkouts = CheckoutsStore::global(cx);
+        let repositories = RepoListStore::global(cx);
+        let backend = Backend::global(cx);
 
-        let weak = cx.entity().downgrade();
         let subject = InputState::new(cx);
         let description = InputState::builder().multiline().build(cx);
+
+        let pane = cx.new(DiffPane::new);
+        let weak = cx.entity().downgrade();
 
         let base_select = cx.new(|cx| {
             ComboboxState::new(
@@ -114,23 +123,42 @@ impl NewPullRequestView {
             )
         });
 
-        window.defer(cx, move |window, cx| {
-            log_dropped(weak.update(cx, |this, cx| {
-                let Some(addr) = this.store.read(cx).addr().cloned() else {
-                    return;
-                };
+        let mut subscriptions = vec![];
 
-                let Some(path) = CheckoutsStore::global(cx)
-                    .read(cx)
-                    .associations_of(&addr)
-                    .into_iter()
-                    .next()
-                else {
-                    return;
-                };
+        subscriptions.push(cx.observe(&checkouts, |this, _, cx| {
+            this.refresh_sources(cx);
+        }));
 
-                this.apply_folder_path(path, window, cx);
-            }));
+        subscriptions.push(cx.observe(&repositories, |this, _, cx| {
+            this.refresh_sources(cx);
+        }));
+
+        subscriptions.push(cx.observe(&store, |this, _, cx| {
+            this.refresh_sources(cx);
+        }));
+
+        subscriptions.push(cx.subscribe(&backend, |this, _, event, cx| {
+            if matches!(event, BackendEvent::SignerChanged) {
+                this.refresh_sources(cx);
+            }
+        }));
+
+        cx.defer_in(window, move |this, window, cx| {
+            let Some(addr) = this.store.read(cx).addr().cloned() else {
+                return;
+            };
+
+            let Some(path) = CheckoutsStore::global(cx)
+                .read(cx)
+                .associations_of(&addr)
+                .into_iter()
+                .next()
+            else {
+                return;
+            };
+
+            this.apply_folder_path(path, window, cx);
+            this.refresh_sources(cx);
         });
 
         Self {
@@ -158,6 +186,10 @@ impl NewPullRequestView {
             scroll_handle: UniformListScrollHandle::new(),
             tasks: Vec::new(),
             source_open: false,
+            checkouts: Arc::default(),
+            forks: Arc::default(),
+            user: None,
+            _subscriptions: subscriptions,
         }
     }
 
@@ -258,19 +290,17 @@ impl NewPullRequestView {
         let weak = cx.entity().downgrade();
         let weak_menu = cx.entity().downgrade();
         let source_view = cx.entity().downgrade();
-        let associated = self
-            .store
-            .read(cx)
-            .addr()
-            .map(|addr| CheckoutsStore::global(cx).read(cx).associations_of(addr))
-            .unwrap_or_default();
+        let associated = Arc::clone(&self.checkouts);
+
         let active_path = (self.fork.is_none())
             .then(|| self.repo_path.clone())
             .flatten();
-        let candidates = self.fork_candidates(cx);
+
+        let candidates = Arc::clone(&self.forks);
         let user = signed_state::Backend::global(cx).read(cx).current_user();
         let active_fork = self.fork.as_ref().map(|fork| fork.announcement.addr());
         let can_submit = self.submit_enabled(cx);
+
         let source_label = match &self.fork {
             Some(fork) => truncate_label(&announcement_display_name(&fork.announcement)),
             None => self.repo_path.as_ref().map_or_else(
@@ -379,14 +409,21 @@ impl NewPullRequestView {
         if self.loading {
             return Spinner::centered("new-pr-loading");
         }
+
         if !self.has_source() {
             return EmptyState::centered("Choose a local checkout or an announced fork to compare");
         }
+
         if self.commits.is_none() && self.error.is_some() {
             return EmptyState::centered("Nothing to compare");
         }
+
         match self.active_tab {
-            0 => self.pane.clone().into_any_element(),
+            0 => self
+                .pane
+                .clone()
+                .cached(StyleRefinement::default().size_full().min_h_0())
+                .into_any_element(),
             _ => self.render_commits(cx),
         }
     }
@@ -575,22 +612,51 @@ impl NewPullRequestView {
         });
     }
 
-    pub(super) fn fork_candidates(&self, cx: &App) -> Vec<Announcement> {
-        let Some(addr) = self.store.read(cx).addr().cloned() else {
-            return Vec::new();
+    /// Rebuilds the source menu's checkouts, forks, and user when their inputs changed.
+    fn refresh_sources(&mut self, cx: &mut Context<Self>) {
+        let (addr, euc) = {
+            let store = self.store.read(cx);
+            (
+                store.addr().cloned(),
+                store
+                    .announcement
+                    .as_ref()
+                    .and_then(|announcement| announcement.euc.clone()),
+            )
         };
-        let euc = self
-            .store
-            .read(cx)
-            .announcement
+
+        let checkouts = CheckoutsStore::global(cx);
+        let repositories = RepoListStore::global(cx);
+        let backend = Backend::global(cx);
+        let user = backend.read(cx).current_user();
+        let checkouts = addr
             .as_ref()
-            .and_then(|a| a.euc.clone());
-        let user = Backend::global(cx).read(cx).current_user();
-        let announcements = RepoListStore::global(cx).read(cx).announcements.clone();
-        Announcement::forks_in(&announcements, &addr, euc.as_deref(), user)
+            .map_or_else(Vec::new, |addr| checkouts.read(cx).associations_of(addr));
+
+        let forks: Vec<Announcement> = addr.as_ref().map_or_else(Vec::new, |addr| {
+            Announcement::forks_in(
+                &repositories.read(cx).announcements,
+                addr,
+                euc.as_deref(),
+                user,
+            )
             .into_iter()
             .cloned()
             .collect()
+        });
+
+        if self.user == user
+            && self.checkouts.as_slice() == checkouts.as_slice()
+            && self.forks.as_slice() == forks.as_slice()
+        {
+            return;
+        }
+
+        self.user = user;
+        self.checkouts = Arc::new(checkouts);
+        self.forks = Arc::new(forks);
+
+        cx.notify();
     }
 
     pub(crate) fn choose_fork(
