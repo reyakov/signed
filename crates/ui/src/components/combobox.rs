@@ -2,9 +2,8 @@
 //!
 //! The state is the view: [`ComboboxState`] owns the query field and the
 //! options, and the owner renders the entity itself. Typing filters, the
-//! arrow keys move a highlight, Enter commits, and what happens to unmatched
-//! text when the field loses focus is decided by [`UnmatchedText`], which
-//! reverts by default.
+//! arrow keys move a highlight, Enter commits, and unmatched text reverts to
+//! the chosen option's label (or empties the field) when focus is lost.
 //!
 //! # Examples
 //!
@@ -33,13 +32,12 @@ use gpui::{
     App, Bounds, Context, ElementId, Entity, InteractiveElement as _, IntoElement, KeyBinding,
     MouseButton, MouseDownEvent, ParentElement as _, Pixels, Render, Role, SharedString,
     StatefulInteractiveElement as _, StyleRefinement, Styled, Subscription, Task,
-    UniformListScrollHandle, Window, actions, anchored, canvas, deferred, div, point, px,
-    uniform_list,
+    UniformListScrollHandle, Window, actions, canvas, div, uniform_list,
 };
 
 use crate::components::common::{
-    ControlSizing, OVERLAY_LAYER, ResultLogErr as _, Sizable, StyledExt as _, floating_panel,
-    h_flex, paint_highlighted_row, v_flex, wrapping_adjacent_selectable,
+    ControlSizing, ResultLogErr as _, Sizable, StyledExt as _, floating_panel, h_flex,
+    paint_highlighted_row, v_flex, wrapping_adjacent_selectable,
 };
 use crate::components::empty_state::EmptyState;
 use crate::components::input::{Input, InputState, InputStateEvent};
@@ -54,41 +52,10 @@ actions!(
 /// The key context the combobox's wrapper declares.
 pub const COMBOBOX_CONTEXT: &str = "Combobox";
 
-/// Binds the combobox's four keys: down, up, enter, and escape.
-pub fn bind_combobox_keys(cx: &mut App) {
-    let under_input = Some("Combobox > Input");
-    cx.bind_keys([
-        KeyBinding::new("down", HighlightNext, under_input),
-        KeyBinding::new("up", HighlightPrevious, under_input),
-        KeyBinding::new("enter", Choose, under_input),
-        KeyBinding::new("escape", Dismiss, under_input),
-        KeyBinding::new("down", HighlightNext, Some(COMBOBOX_CONTEXT)),
-        KeyBinding::new("up", HighlightPrevious, Some(COMBOBOX_CONTEXT)),
-        KeyBinding::new("enter", Choose, Some(COMBOBOX_CONTEXT)),
-        KeyBinding::new("escape", Dismiss, Some(COMBOBOX_CONTEXT)),
-    ]);
-}
-
-/// What happens to text that matches no option when the field loses focus.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum UnmatchedText {
-    /// Restore the chosen option's label, or empty the field.
-    #[default]
-    Revert,
-    /// Leave the text and leave the value cleared.
-    Keep,
-    /// Hand the text to the `on_create` handler.
-    Create,
-}
-
 /// An option for a [`Combobox`]: a value and the label the filter matches on.
 pub type ComboboxOption<T> = (T, SharedString);
 /// Reports the value whenever it changes.
 pub type ComboboxHandler<T> = Rc<dyn Fn(Option<T>, &mut Window, &mut App)>;
-/// Receives unmatched text when the field loses focus in create mode.
-pub type ComboboxCreateHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
-/// Decides which options survive a query: the query, the value, the label.
-pub type ComboboxFilter<T> = Rc<dyn Fn(&str, &T, &SharedString) -> bool>;
 
 /// Builder for a combobox, consumed by [`ComboboxState::new`].
 #[must_use]
@@ -102,9 +69,6 @@ where
     selected: Option<T>,
     placeholder: SharedString,
     on_change: Option<ComboboxHandler<T>>,
-    on_create: Option<ComboboxCreateHandler>,
-    filter: Option<ComboboxFilter<T>>,
-    unmatched: UnmatchedText,
     size: Size,
     /// Icon shown at the field's leading edge while a value is selected.
     selected_icon: Option<Icon>,
@@ -127,9 +91,6 @@ where
             selected: None,
             placeholder: SharedString::from("Select..."),
             on_change: None,
-            on_create: None,
-            filter: None,
-            unmatched: UnmatchedText::default(),
             size: Size::default(),
             selected_icon: None,
             style: StyleRefinement::default(),
@@ -166,31 +127,6 @@ where
         F: Fn(Option<T>, &mut Window, &mut App) + 'static,
     {
         self.on_change = Some(Rc::new(handler));
-        self
-    }
-
-    /// Hands unmatched text to `handler` when the field loses focus.
-    pub fn on_create<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(SharedString, &mut Window, &mut App) + 'static,
-    {
-        self.on_create = Some(Rc::new(handler));
-        self.unmatched = UnmatchedText::Create;
-        self
-    }
-
-    /// Sets the matcher that decides which options survive a query.
-    pub fn filter<F>(mut self, filter: F) -> Self
-    where
-        F: Fn(&str, &T, &SharedString) -> bool + 'static,
-    {
-        self.filter = Some(Rc::new(filter));
-        self
-    }
-
-    /// Leaves unmatched text in the field on blur.
-    pub fn keep_unmatched_text(mut self) -> Self {
-        self.unmatched = UnmatchedText::Keep;
         self
     }
 
@@ -250,9 +186,6 @@ where
     /// The highlighted popup *row*, when the popup is open.
     highlight: Option<usize>,
     on_change: Option<ComboboxHandler<T>>,
-    on_create: Option<ComboboxCreateHandler>,
-    filter: ComboboxFilter<T>,
-    unmatched: UnmatchedText,
     size: Size,
     /// Width refinements from the builder, applied to the wrapper each render.
     style: StyleRefinement,
@@ -312,11 +245,6 @@ where
             visible,
             highlight: None,
             on_change: combobox.on_change,
-            on_create: combobox.on_create,
-            filter: combobox.filter.unwrap_or_else(|| {
-                Rc::new(|query, _value, label| label.to_lowercase().contains(&query.to_lowercase()))
-            }),
-            unmatched: combobox.unmatched,
             size: combobox.size,
             style: combobox.style,
             selected_icon: combobox.selected_icon,
@@ -324,21 +252,6 @@ where
             task: None,
             _subscription: subscription,
         }
-    }
-
-    /// The text currently in the field.
-    pub fn text(&self, cx: &App) -> String {
-        self.query.read(cx).value().to_string()
-    }
-
-    /// Focuses the query field.
-    pub fn focus(&self, window: &mut Window, cx: &mut App) {
-        window.focus(&self.query.read(cx).focus_handle(), cx);
-    }
-
-    /// Whether the option list is showing.
-    pub fn is_open(&self) -> bool {
-        self.highlight.is_some()
     }
 
     /// The chosen value.
@@ -367,11 +280,6 @@ where
         cx.notify();
     }
 
-    /// A copy of the current choice list.
-    pub fn options_snapshot(&self) -> Vec<ComboboxOption<T>> {
-        self.options.clone()
-    }
-
     /// The label of the chosen option, if there is one.
     fn selected_label(&self) -> Option<SharedString> {
         let selected = self.selected.as_ref()?;
@@ -383,12 +291,12 @@ where
 
     /// Recomputes `visible` for `query` and clamps the highlight onto it.
     fn refilter(&mut self, query: &str) {
-        let filter = self.filter.clone();
+        let needle = query.to_lowercase();
         self.visible = self
             .options
             .iter()
             .enumerate()
-            .filter(|(_, (value, label))| filter(query, value, label))
+            .filter(|(_, (_, label))| label.to_lowercase().contains(&needle))
             .map(|(index, _)| index)
             .collect();
         self.highlight = self.highlight.filter(|row| *row < self.visible.len());
@@ -452,7 +360,7 @@ where
         cx.notify();
     }
 
-    /// Losing focus. [`UnmatchedText`] decides what the text becomes.
+    /// Losing focus: unmatched text reverts to the chosen option's label.
     fn blurred(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.highlight = None;
         let text = self.query_text(cx);
@@ -462,26 +370,10 @@ where
             return;
         }
 
-        match self.unmatched {
-            UnmatchedText::Revert => {
-                let restored = self.selected_label().unwrap_or_default().to_string();
-                self.query
-                    .update(cx, |query, cx| query.set_value_silent(restored, window, cx));
-            }
-            UnmatchedText::Keep => {}
-            UnmatchedText::Create => {
-                if !text.is_empty()
-                    && let Some(on_create) = self.on_create.clone()
-                {
-                    let text = SharedString::from(text);
-                    let task = window.spawn(cx, async move |cx| {
-                        cx.update(|window, cx| on_create(text, window, cx))
-                            .log_err();
-                    });
-                    self.task.replace(task);
-                }
-            }
-        }
+        let restored = self.selected_label().unwrap_or_default().to_string();
+        self.query.update(cx, |query, cx| {
+            query.set_value_silent(restored, window, cx);
+        });
         cx.notify();
     }
 
@@ -535,37 +427,6 @@ where
         let id = self.id.clone();
         let state = cx.entity();
         let open = self.highlight.is_some();
-
-        let chevron = h_flex()
-            .id((id.clone(), "chevron"))
-            .cursor_pointer()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click({
-                let state = state.clone();
-                move |_, window, cx| {
-                    let focus = state.read(cx).query.read(cx).focus_handle();
-                    window.focus(&focus, cx);
-                    state.update(cx, |state, cx| {
-                        if state.highlight.is_some() {
-                            state.highlight = None;
-                        } else {
-                            if state.selected.is_some() {
-                                state.refilter("");
-                            } else {
-                                let query = state.query.read(cx).value().to_string();
-                                state.refilter(&query);
-                            }
-                            state.highlight = Some(0);
-                        }
-                        cx.notify();
-                    });
-                }
-            })
-            .child(
-                icon(IconRole::ChevronDown)
-                    .size(self.size.dense_icon_rems())
-                    .color(colors.muted_foreground),
-            );
 
         let wrapper_bounds: Rc<RefCell<Option<Bounds<Pixels>>>> = Rc::new(RefCell::new(None));
 
@@ -633,7 +494,39 @@ where
                     .top_0()
                     .bottom_0()
                     .items_center()
-                    .child(chevron),
+                    .child(
+                        h_flex()
+                            .id((id.clone(), "chevron"))
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click({
+                                let state = state.clone();
+                                move |_, window, cx| {
+                                    let focus = state.read(cx).query.read(cx).focus_handle();
+                                    window.focus(&focus, cx);
+                                    state.update(cx, |state, cx| {
+                                        if state.highlight.is_some() {
+                                            state.highlight = None;
+                                        } else {
+                                            if state.selected.is_some() {
+                                                state.refilter("");
+                                            } else {
+                                                let query =
+                                                    state.query.read(cx).value().to_string();
+                                                state.refilter(&query);
+                                            }
+                                            state.highlight = Some(0);
+                                        }
+                                        cx.notify();
+                                    });
+                                }
+                            })
+                            .child(
+                                icon(IconRole::ChevronDown)
+                                    .size(self.size.dense_icon_rems())
+                                    .color(colors.muted_foreground),
+                            ),
+                    ),
             )
             .when(open, |wrapper| {
                 let visible = self.visible.clone();
@@ -741,67 +634,84 @@ where
                     .map(|bounds| bounds.size.width)
                     .unwrap_or(COMBOBOX_WIDTH);
 
-                let panel = floating_panel(
-                    cx,
-                    radius.overlay,
-                    v_flex()
-                        .id((id.clone(), "panel"))
-                        .debug_selector({
-                            let id = id.clone();
-                            move || format!("{id}-panel")
-                        })
-                        .w(popup_width)
-                        .p_1()
-                        .text_color(colors.foreground),
-                    shadows,
-                )
-                .overflow_hidden()
-                .child(rows)
-                .child(
-                    canvas(
-                        {
-                            let cell = panel_bounds.clone();
-                            move |bounds, _window, _cx| *cell.borrow_mut() = Some(bounds)
-                        },
-                        {
-                            let state = state.clone();
-                            let panel_bounds = panel_bounds.clone();
-                            let wrapper_bounds = wrapper_bounds.clone();
-                            move |_, _, window, _cx| {
-                                window.on_mouse_event({
-                                    let state = state.clone();
-                                    let panel_bounds = panel_bounds.clone();
-                                    let wrapper_bounds = wrapper_bounds.clone();
-                                    move |event: &MouseDownEvent, phase, _window, cx| {
-                                        if phase != gpui::DispatchPhase::Bubble {
-                                            return;
-                                        }
-                                        let on_panel = panel_bounds
-                                            .borrow()
-                                            .is_some_and(|bounds| bounds.contains(&event.position));
-                                        let on_wrapper = wrapper_bounds
-                                            .borrow()
-                                            .is_some_and(|bounds| bounds.contains(&event.position));
-                                        if on_panel || on_wrapper {
-                                            return;
-                                        }
-                                        state.update(cx, |state, cx| {
-                                            state.highlight = None;
-                                            cx.notify();
-                                        });
-                                    }
-                                });
-                            }
-                        },
+                wrapper.child(crate::components::menu::anchored_overlay(
+                    None,
+                    floating_panel(
+                        cx,
+                        radius.overlay,
+                        v_flex()
+                            .id((id.clone(), "panel"))
+                            .debug_selector({
+                                let id = id.clone();
+                                move || format!("{id}-panel")
+                            })
+                            .w(popup_width)
+                            .p_1()
+                            .text_color(colors.foreground),
+                        shadows,
                     )
-                    .absolute()
-                    .inset_0(),
-                );
-
-                wrapper.child(
-                    deferred(anchored().offset(point(px(0.), px(4.))).child(panel))
-                        .with_priority(OVERLAY_LAYER),
-                )
+                    .overflow_hidden()
+                    .child(rows)
+                    .child(
+                        canvas(
+                            {
+                                let cell = panel_bounds.clone();
+                                move |bounds, _window, _cx| *cell.borrow_mut() = Some(bounds)
+                            },
+                            {
+                                let state = state.clone();
+                                let panel_bounds = panel_bounds.clone();
+                                let wrapper_bounds = wrapper_bounds.clone();
+                                move |_, _, window, _cx| {
+                                    window.on_mouse_event({
+                                        let state = state.clone();
+                                        let panel_bounds = panel_bounds.clone();
+                                        let wrapper_bounds = wrapper_bounds.clone();
+                                        move |event: &MouseDownEvent, phase, _window, cx| {
+                                            if phase != gpui::DispatchPhase::Bubble {
+                                                return;
+                                            }
+                                            let on_panel =
+                                                panel_bounds.borrow().is_some_and(|bounds| {
+                                                    bounds.contains(&event.position)
+                                                });
+                                            let on_wrapper =
+                                                wrapper_bounds.borrow().is_some_and(|bounds| {
+                                                    bounds.contains(&event.position)
+                                                });
+                                            if on_panel || on_wrapper {
+                                                return;
+                                            }
+                                            state.update(cx, |state, cx| {
+                                                state.highlight = None;
+                                                cx.notify();
+                                            });
+                                        }
+                                    });
+                                }
+                            },
+                        )
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .into_any_element(),
+                    None,
+                ))
             })
     }
+}
+
+/// Binds the combobox's four keys: down, up, enter, and escape.
+pub fn bind_combobox_keys(cx: &mut App) {
+    let under_input = Some("Combobox > Input");
+    cx.bind_keys([
+        KeyBinding::new("down", HighlightNext, under_input),
+        KeyBinding::new("up", HighlightPrevious, under_input),
+        KeyBinding::new("enter", Choose, under_input),
+        KeyBinding::new("escape", Dismiss, under_input),
+        KeyBinding::new("down", HighlightNext, Some(COMBOBOX_CONTEXT)),
+        KeyBinding::new("up", HighlightPrevious, Some(COMBOBOX_CONTEXT)),
+        KeyBinding::new("enter", Choose, Some(COMBOBOX_CONTEXT)),
+        KeyBinding::new("escape", Dismiss, Some(COMBOBOX_CONTEXT)),
+    ]);
 }

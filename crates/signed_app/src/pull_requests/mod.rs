@@ -29,13 +29,15 @@ use helpers::PullRequestFilter;
 pub use new::NewPullRequestView;
 pub use send_patch::SendPatchView;
 
+use crate::app::AppRoot;
 use crate::issues::helpers::{StatusCounts, filter_by_status};
 use crate::repo::helpers::short_id;
-use crate::shared::event_list::{EventList, EventRow};
-use crate::workspace::Workspace;
+use crate::shared::event_list::{EventHandler, EventList, EventRow, filter_toolbar};
+use crate::shared::log_dropped;
+use crate::shared::panels::open_detail;
 
 pub struct PullRequestsView {
-    workspace: WeakEntity<Workspace>,
+    workspace: WeakEntity<AppRoot>,
     store: Entity<RepoStore>,
     filter: PullRequestFilter,
     visible_prs: Vec<usize>,
@@ -49,7 +51,7 @@ pub struct PullRequestsView {
 
 impl PullRequestsView {
     pub fn new(
-        workspace: WeakEntity<Workspace>,
+        workspace: WeakEntity<AppRoot>,
         store: Entity<RepoStore>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -59,7 +61,7 @@ impl PullRequestsView {
         });
 
         cx.defer(move |cx| {
-            crate::shared::log_dropped(weak.update(cx, |this, cx| {
+            log_dropped(weak.update(cx, |this, cx| {
                 this.rebuild(cx);
             }));
         });
@@ -139,7 +141,7 @@ impl PullRequestsView {
         let workspace_for_build = workspace.clone();
         let store = self.store.clone();
 
-        crate::shared::panels::open_detail(
+        open_detail(
             &workspace,
             id.clone(),
             move |window, cx| {
@@ -168,7 +170,7 @@ impl PullRequestsView {
         let workspace_for_build = workspace.clone();
         let store = self.store.clone();
 
-        crate::shared::panels::open_detail(
+        open_detail(
             &workspace,
             id.clone(),
             move |window, cx| {
@@ -195,7 +197,7 @@ impl PullRequestsView {
         let menu_open_weak = cx.entity().downgrade();
         let patch_weak = cx.entity().downgrade();
 
-        crate::shared::event_list::filter_toolbar(
+        filter_toolbar(
             cx,
             [
                 Segmented::new("pr-filter", self.filter)
@@ -248,7 +250,7 @@ impl PullRequestsView {
                         }
                     })
                     .on_open_change(move |open, _, cx| {
-                        crate::shared::log_dropped(menu_open_weak.update(cx, |this, cx| {
+                        log_dropped(menu_open_weak.update(cx, |this, cx| {
                             this.new_pr_menu_open = open;
                             cx.notify();
                         }));
@@ -257,7 +259,7 @@ impl PullRequestsView {
                         vec![MenuItem::new("Send Patch").handler({
                             let weak = patch_weak.clone();
                             move |window, cx| {
-                                crate::shared::log_dropped(weak.update(cx, |this, cx| {
+                                log_dropped(weak.update(cx, |this, cx| {
                                     this.open_send_patch(window, cx);
                                 }));
                             }
@@ -302,14 +304,14 @@ impl Render for PullRequestsView {
                 let id_hex = pr.id.to_hex();
                 let status = store.read(cx).status_of(pr);
 
-                let on_click: crate::shared::event_list::EventHandler = {
+                let on_click: EventHandler = {
                     let workspace = workspace.clone();
                     let store = store.clone();
                     Rc::new(move |_, window, cx| {
                         let id = SharedString::from(format!("pr:{pr_id}"));
                         let workspace_for_build = workspace.clone();
                         let store = store.clone();
-                        crate::shared::panels::open_detail(
+                        open_detail(
                             &workspace,
                             id,
                             move |window, cx| {

@@ -11,11 +11,13 @@ use ui::input::{Input, InputState};
 use ui::layout::panel::Panel;
 use ui::theme::ActiveTheme as _;
 
+use crate::app::AppRoot;
+use crate::shared::log_dropped;
+use crate::shared::panels::close_detail;
 use crate::shared::progress::error_row;
-use crate::workspace::Workspace;
 
 pub struct SendPatchView {
-    workspace: WeakEntity<Workspace>,
+    workspace: WeakEntity<AppRoot>,
     panel_id: SharedString,
     store: Entity<RepoStore>,
     subject: Entity<InputState>,
@@ -27,7 +29,7 @@ pub struct SendPatchView {
 
 impl SendPatchView {
     pub fn new(
-        workspace: WeakEntity<Workspace>,
+        workspace: WeakEntity<AppRoot>,
         panel_id: SharedString,
         store: Entity<RepoStore>,
         _window: &mut Window,
@@ -82,11 +84,7 @@ impl SendPatchView {
         cx.spawn(async move |this, cx| match task.await {
             Ok(()) => {
                 this.update(cx, |this, cx| {
-                    let panel_id = this.panel_id.clone();
-                    crate::shared::log_dropped(
-                        this.workspace
-                            .update(cx, |workspace, cx| workspace.close_detail(&panel_id, cx)),
-                    );
+                    close_detail(&this.workspace, &this.panel_id, cx)
                 })
                 .log_err();
             }
@@ -122,7 +120,7 @@ impl SendPatchView {
                     .loading(self.submitting)
                     .disabled(!can_submit)
                     .on_click(move |_, _, cx| {
-                        crate::shared::log_dropped(weak.update(cx, |this, cx| this.submit(cx)));
+                        log_dropped(weak.update(cx, |this, cx| this.submit(cx)));
                     }),
             )
             .into_any_element()

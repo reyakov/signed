@@ -16,13 +16,15 @@ use ui::input::{Input, InputState};
 use ui::tooltip::Tooltip;
 
 use super::grasp_servers::{GraspServersState, grasp_servers_field, load_user_grasp_servers};
+use crate::app::AppRoot;
 use crate::repo::actions::open_repo_panel;
-use crate::shared::progress::{DialogProgress, error_row, push_steps_row, run_dialog_task_with};
-use crate::workspace::Workspace;
+use crate::shared::progress::{
+    DialogProgress, dialog_submit_button, error_row, push_steps_row, run_dialog_task_with,
+};
 
 /// Progress of the create-repository flow, so async results can be rendered.
 pub struct CreateRepoDialog {
-    workspace: WeakEntity<Workspace>,
+    workspace: WeakEntity<AppRoot>,
     handle: DialogHandle,
     name_input: Entity<InputState>,
     desc_input: Entity<InputState>,
@@ -35,11 +37,7 @@ pub struct CreateRepoDialog {
 }
 
 impl CreateRepoDialog {
-    pub fn new(
-        workspace: WeakEntity<Workspace>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Entity<Self> {
+    pub fn new(workspace: WeakEntity<AppRoot>, window: &mut Window, cx: &mut App) -> Entity<Self> {
         let settings = SettingsStore::global(cx);
         let grasp_settings = settings.read(cx).settings().grasp_servers.clone();
 
@@ -229,17 +227,18 @@ impl Render for CreateRepoDialog {
                 let busy = action_state.read(cx).busy;
                 let this = this.clone();
 
-                let create: AnyElement = Button::new("create-repository")
-                    .label("Create repository")
-                    .icon(Icon::named(IconRole::Plus))
-                    .loading(busy)
-                    .disabled(busy)
-                    .on_click(move |_, window, cx| {
-                        crate::shared::log_dropped(
-                            this.update(cx, |this, cx| this.create(window, cx)),
-                        );
-                    })
-                    .into_any_element();
+                let create: AnyElement = dialog_submit_button(
+                    "create-repository",
+                    "Create repository",
+                    Some(IconRole::Plus),
+                    busy,
+                    &this,
+                    |this, window, cx| {
+                        this.create(window, cx);
+                        Ok(())
+                    },
+                )
+                .into_any_element();
 
                 vec![create]
             })

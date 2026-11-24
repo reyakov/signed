@@ -9,11 +9,10 @@ use settings::SettingsStore;
 use signed_core::RepoAddr;
 use signed_git::Repo;
 use signed_state::Backend;
-use ui::button::Button;
 use ui::common::{ResultLogErr as _, v_flex};
 use ui::dialog::{Dialog, DialogHandle};
 use ui::field::Field;
-use ui::icons::{Icon, IconRole};
+use ui::icons::IconRole;
 use ui::input::{Input, InputState};
 use ui::layout::h_flex;
 use ui::select::{Select, SelectOption};
@@ -21,7 +20,9 @@ use ui::theme::ActiveTheme as _;
 
 use super::grasp_servers::{GraspServersState, grasp_servers_field, load_user_grasp_servers};
 use crate::repo::RepoDetailView;
-use crate::shared::progress::{DialogProgress, error_row, push_steps_row, run_dialog_task_with};
+use crate::shared::progress::{
+    DialogProgress, dialog_submit_button, error_row, push_steps_row, run_dialog_task_with,
+};
 
 pub struct InitRepoDialog {
     handle: DialogHandle,
@@ -246,17 +247,18 @@ impl Render for InitRepoDialog {
                 let busy = action_state.read(cx).busy;
                 let this = this.clone();
 
-                let init: AnyElement = Button::new("initialize-repository")
-                    .label("Initialize")
-                    .icon(Icon::named(IconRole::Plus))
-                    .loading(busy)
-                    .disabled(busy)
-                    .on_click(move |_, window, cx| {
-                        crate::shared::log_dropped(
-                            this.update(cx, |this, cx| this.init_repository(window, cx)),
-                        );
-                    })
-                    .into_any_element();
+                let init: AnyElement = dialog_submit_button(
+                    "initialize-repository",
+                    "Initialize",
+                    Some(IconRole::Plus),
+                    busy,
+                    &this,
+                    |this, window, cx| {
+                        this.init_repository(window, cx);
+                        Ok(())
+                    },
+                )
+                .into_any_element();
 
                 vec![init]
             })

@@ -2,17 +2,7 @@
 //!
 //! A [`Toasts`] entity holds the raised toast, and a [`ToastsView`] renders
 //! it; mount the view at the window root.
-//!
-//! # Examples
-//!
-//! ```no_run
-//! use ui::toast::{Toast, ToastAction};
-//!
-//! let toast = Toast::new("Copied to clipboard")
-//!     .action(ToastAction::new("Undo", |_cx| println!("undo")));
-//! ```
 
-use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
@@ -25,35 +15,10 @@ use gpui::{
 
 use crate::components::button::{Button, ButtonVariant};
 use crate::components::common::{
-    DismissHandler, ResultLogErr as _, Sizable as _, StyledExt as _, TOAST_LAYER, floating_panel,
-    v_flex,
+    ResultLogErr as _, Sizable as _, StyledExt as _, TOAST_LAYER, floating_panel, v_flex,
 };
 use crate::icons::{Icon, IconRole};
 use crate::theme::{ActiveTheme as _, TOAST_MAX_WIDTH};
-
-/// The action handler of a [`Toast`].
-pub type ActionHandler = Rc<dyn Fn(&mut App)>;
-
-/// One user action offered by a toast.
-#[derive(Clone)]
-pub struct ToastAction {
-    label: SharedString,
-    handler: ActionHandler,
-}
-
-impl ToastAction {
-    /// Creates an action with this label.
-    pub fn new<L, F>(label: L, handler: F) -> Self
-    where
-        L: Into<SharedString>,
-        F: Fn(&mut App) + 'static,
-    {
-        Self {
-            label: label.into(),
-            handler: Rc::new(handler),
-        }
-    }
-}
 
 /// A toast notification.
 #[derive(Clone)]
@@ -61,9 +26,7 @@ impl ToastAction {
 pub struct Toast {
     message: SharedString,
     icon: Option<Icon>,
-    action: Option<ToastAction>,
     duration: Option<Duration>,
-    on_dismiss: Option<DismissHandler>,
     style: StyleRefinement,
 }
 
@@ -79,9 +42,7 @@ impl Toast {
         Self {
             message: message.into(),
             icon: None,
-            action: None,
             duration: Some(Self::DURATION),
-            on_dismiss: None,
             style: StyleRefinement::default(),
         }
     }
@@ -94,27 +55,6 @@ impl Toast {
         self.icon = Some(icon.into());
         self
     }
-
-    /// Offers the user this action.
-    pub fn action(mut self, action: ToastAction) -> Self {
-        self.action = Some(action);
-        self
-    }
-
-    /// Sets the time before the toast dismisses itself.
-    pub fn duration(mut self, duration: Duration) -> Self {
-        self.duration = Some(duration);
-        self
-    }
-
-    /// Runs when the toast is dismissed by any means, once it is fully gone.
-    pub fn on_dismiss<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(&mut App) + 'static,
-    {
-        self.on_dismiss = Some(Rc::new(handler));
-        self
-    }
 }
 
 // Toast is a data builder, not an element, adopt the combinators explicitly.
@@ -125,6 +65,68 @@ impl FluentBuilder for Toast {}
 pub struct ToastEntry {
     pub id: usize,
     pub toast: Toast,
+}
+
+impl ToastEntry {
+    /// The rendered pill for this toast.
+    fn pill(&self, toasts: &Entity<Toasts>, cx: &App) -> gpui::Stateful<gpui::Div> {
+        let theme = cx.theme();
+        let foreground = theme.colors.foreground;
+        let radius = theme.radius.full;
+        let toast = &self.toast;
+        let toasts = toasts.clone();
+        let id = self.id;
+
+        floating_panel(
+            cx,
+            radius,
+            div()
+                .id(("toast", id))
+                .debug_selector(|| "toast-pill".to_string())
+                .role(Role::Alert)
+                .aria_label(toast.message.clone())
+                .max_w(TOAST_MAX_WIDTH)
+                .flex()
+                .items_center()
+                .gap_2()
+                .py_1p5()
+                .px_3(),
+            theme.elevations.popover.shadows(),
+        )
+        .refine_style(&toast.style)
+        .when_some(toast.icon.clone(), |pill, icon| {
+            pill.child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .child(icon.size(rems(1.0)).color(foreground)),
+            )
+        })
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .truncate()
+                .text_sm()
+                .text_color(foreground)
+                .child(toast.message.clone()),
+        )
+        .child(
+            div().flex_none().child(
+                Button::new(("toast-close", id))
+                    .icon(IconRole::Close)
+                    .variant(ButtonVariant::Ghost)
+                    .small()
+                    .accessibility_label("Dismiss")
+                    .on_click(move |_, _window, cx| {
+                        toasts.update(cx, |toasts, cx| {
+                            toasts.dismiss(id, cx);
+                        });
+                    }),
+            ),
+        )
+    }
 }
 
 /// The store of raised toasts.
@@ -177,33 +179,13 @@ impl Toasts {
         }
     }
 
-    /// Dismisses the toast on screen.
-    pub fn clear(&mut self, cx: &mut Context<Self>) {
-        if let Some(entry) = self.current.take() {
-            self.start_exit(entry, cx);
-        } else {
-            self.finish_exit(cx);
-        }
-    }
-
     /// The toast now showing, if any.
     pub fn current(&self) -> Option<&ToastEntry> {
         self.current.as_ref()
     }
 
-    /// How many toasts are on screen, including one fading out.
-    pub fn count(&self) -> usize {
-        usize::from(self.current.is_some()) + usize::from(self.exiting.is_some())
-    }
-
     /// Moves a toast into the fade-out phase.
     fn start_exit(&mut self, entry: ToastEntry, cx: &mut Context<Self>) {
-        if let Some(previous) = self.exiting.take()
-            && let Some(on_dismiss) = &previous.toast.on_dismiss
-        {
-            on_dismiss(cx);
-        }
-
         self.exiting = Some(entry);
         cx.notify();
 
@@ -217,11 +199,8 @@ impl Toasts {
     }
 
     fn finish_exit(&mut self, cx: &mut Context<Self>) {
-        if let Some(entry) = self.exiting.take() {
+        if self.exiting.take().is_some() {
             cx.notify();
-            if let Some(on_dismiss) = &entry.toast.on_dismiss {
-                on_dismiss(cx);
-            }
         }
     }
 }
@@ -280,84 +259,5 @@ impl RenderOnce for ToastsView {
                 }),
         )
         .with_priority(TOAST_LAYER)
-    }
-}
-
-impl ToastEntry {
-    /// The rendered pill for this toast.
-    fn pill(&self, toasts: &Entity<Toasts>, cx: &App) -> gpui::Stateful<gpui::Div> {
-        let theme = cx.theme();
-        let foreground = theme.colors.foreground;
-        let radius = theme.radius.full;
-        let toast = &self.toast;
-        let toasts = toasts.clone();
-        let id = self.id;
-
-        floating_panel(
-            cx,
-            radius,
-            div()
-                .id(("toast", id))
-                .debug_selector(|| "toast-pill".to_string())
-                .role(Role::Alert)
-                .aria_label(toast.message.clone())
-                .max_w(TOAST_MAX_WIDTH)
-                .flex()
-                .items_center()
-                .gap_2()
-                .py_1p5()
-                .px_3(),
-            theme.elevations.popover.shadows(),
-        )
-        .refine_style(&toast.style)
-        .when_some(toast.icon.clone(), |pill, icon| {
-            pill.child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .child(icon.size(rems(1.0)).color(foreground)),
-            )
-        })
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .truncate()
-                .text_sm()
-                .text_color(foreground)
-                .child(toast.message.clone()),
-        )
-        .when_some(toast.action.clone(), |pill, action| {
-            let toasts = toasts.clone();
-            pill.child(
-                div().flex_none().child(
-                    Button::new(("toast-action", id))
-                        .label(action.label.clone())
-                        .variant(ButtonVariant::Primary)
-                        .small()
-                        .on_click(move |_, _window, cx| {
-                            (action.handler)(cx);
-                            toasts.update(cx, |toasts, cx| {
-                                toasts.dismiss(id, cx);
-                            });
-                        }),
-                ),
-            )
-        })
-        .child(
-            div().flex_none().child(
-                Button::new(("toast-close", id))
-                    .icon(IconRole::Close)
-                    .variant(ButtonVariant::Ghost)
-                    .small()
-                    .accessibility_label("Dismiss")
-                    .on_click(move |_, _window, cx| {
-                        toasts.update(cx, |toasts, cx| {
-                            toasts.dismiss(id, cx);
-                        });
-                    }),
-            ),
-        )
     }
 }

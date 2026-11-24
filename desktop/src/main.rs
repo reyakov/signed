@@ -46,30 +46,36 @@ fn main() {
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("ctrl-q", Quit, None),
             ]);
+
             cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.set_app_identity("info.reya.signed", "Signed");
 
             let store = cx.new(|cx| SettingsStore::new(paths::settings_file(), cx));
             SettingsStore::set_global(store.clone(), cx);
+
             let settings = store.read(cx).settings().clone();
-            signed_app::apply_appearance(&settings, cx);
+            signed_app::apply_appearance_mode(settings.appearance, cx);
 
             if let Err(error) = std::fs::create_dir_all(paths::nostr_dir()) {
                 tracing::warn!("failed to create nostr dir: {error}");
             }
+
             if let Err(error) = std::fs::create_dir_all(paths::repos_dir()) {
                 tracing::warn!("failed to create repos dir: {error}");
             }
+
             signed_state::init(
                 paths::nostr_dir(),
                 paths::repos_dir().clone(),
                 settings.local_repos.scan_paths.clone(),
                 cx,
             );
+
             metadata::init(cx);
-            cx.set_app_identity("info.reya.signed", "Signed");
 
             let theme = cx.theme();
             let bounds = Bounds::centered(None, size(px(1120.0), px(750.0)), cx);
+
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(960.0), px(640.0))),

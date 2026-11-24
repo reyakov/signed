@@ -31,100 +31,11 @@ enum Backend {
     Fallback,
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
-
-/// Whether the session runs on Wayland, where compositors state blur protocols.
-fn wayland_session() -> bool {
-    std::env::var_os("WAYLAND_DISPLAY").is_some()
-        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session == "wayland")
-}
-
-fn detect(home: &Path, portal_reachable: bool, gsettings_reachable: bool) -> Backend {
-    let omarchy_marker = home
-        .join(".local/state/omarchy/current/theme.name")
-        .exists()
-        || home.join(".local/state/omarchy/current/theme").is_dir()
-        || home.join(".config/omarchy").is_dir();
-    if omarchy_marker {
-        Backend::Omarchy
-    } else if home.join(".config/kdeglobals").exists() {
-        Backend::Kde
-    } else if portal_reachable || gsettings_reachable {
-        Backend::Portal
-    } else {
-        Backend::Fallback
-    }
-}
-
 /// What `gsettings` states for GNOME sessions.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct GSettingsSnapshot {
     variant: Option<ThemeVariant>,
     accent: Option<Hsla>,
-}
-
-fn gsettings_value(args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("gsettings")
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
-}
-
-/// The named accent colors GNOME ships (libadwaita's background variants).
-fn accent_rgb(name: &str) -> Option<Hsla> {
-    let hex = match name {
-        "blue" => 0x3584e4,
-        "teal" => 0x2190a4,
-        "green" => 0x3a944a,
-        "yellow" => 0xc88800,
-        "orange" => 0xed5b00,
-        "red" => 0xe62d42,
-        "pink" => 0xd56199,
-        "purple" => 0x9141ac,
-        "slate" => 0x6f8396,
-        _ => return None,
-    };
-    Some(Hsla::from(gpui::rgb(hex)))
-}
-
-fn read_gsettings() -> Option<GSettingsSnapshot> {
-    let variant = gsettings_value(&["get", "org.gnome.desktop.interface", "color-scheme"])
-        .and_then(|value| match value.trim().trim_matches('\'') {
-            "prefer-dark" => Some(ThemeVariant::Dark),
-            "prefer-light" => Some(ThemeVariant::Light),
-            _ => None,
-        });
-
-    let accent = gsettings_value(&["get", "org.gnome.desktop.interface", "accent-color"])
-        .and_then(|value| accent_rgb(value.trim().trim_matches('\'')));
-
-    if variant.is_none() && accent.is_none() {
-        return None;
-    }
-    Some(GSettingsSnapshot { variant, accent })
-}
-
-pub(crate) fn platform_source() -> Box<dyn ThemeSource> {
-    let portal = portal::io::PortalClient::connect();
-    let gsettings = read_gsettings();
-
-    let backend = home_dir()
-        .map(|home| detect(&home, portal.is_some(), gsettings.is_some()))
-        .unwrap_or(Backend::Fallback);
-
-    Box::new(LinuxSource {
-        backend,
-        portal,
-        gsettings,
-        file_watcher: None,
-        _signal: None,
-    })
 }
 
 impl LinuxSource {
@@ -279,4 +190,93 @@ impl ThemeSource for LinuxSource {
             Backend::Fallback => SourceKind::Fallback.label(),
         }
     }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
+}
+
+/// Whether the session runs on Wayland, where compositors state blur protocols.
+fn wayland_session() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session == "wayland")
+}
+
+fn detect(home: &Path, portal_reachable: bool, gsettings_reachable: bool) -> Backend {
+    let omarchy_marker = home
+        .join(".local/state/omarchy/current/theme.name")
+        .exists()
+        || home.join(".local/state/omarchy/current/theme").is_dir()
+        || home.join(".config/omarchy").is_dir();
+    if omarchy_marker {
+        Backend::Omarchy
+    } else if home.join(".config/kdeglobals").exists() {
+        Backend::Kde
+    } else if portal_reachable || gsettings_reachable {
+        Backend::Portal
+    } else {
+        Backend::Fallback
+    }
+}
+
+fn gsettings_value(args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("gsettings")
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+/// The named accent colors GNOME ships (libadwaita's background variants).
+fn accent_rgb(name: &str) -> Option<Hsla> {
+    let hex = match name {
+        "blue" => 0x3584e4,
+        "teal" => 0x2190a4,
+        "green" => 0x3a944a,
+        "yellow" => 0xc88800,
+        "orange" => 0xed5b00,
+        "red" => 0xe62d42,
+        "pink" => 0xd56199,
+        "purple" => 0x9141ac,
+        "slate" => 0x6f8396,
+        _ => return None,
+    };
+    Some(Hsla::from(gpui::rgb(hex)))
+}
+
+fn read_gsettings() -> Option<GSettingsSnapshot> {
+    let variant = gsettings_value(&["get", "org.gnome.desktop.interface", "color-scheme"])
+        .and_then(|value| match value.trim().trim_matches('\'') {
+            "prefer-dark" => Some(ThemeVariant::Dark),
+            "prefer-light" => Some(ThemeVariant::Light),
+            _ => None,
+        });
+
+    let accent = gsettings_value(&["get", "org.gnome.desktop.interface", "accent-color"])
+        .and_then(|value| accent_rgb(value.trim().trim_matches('\'')));
+
+    if variant.is_none() && accent.is_none() {
+        return None;
+    }
+    Some(GSettingsSnapshot { variant, accent })
+}
+
+pub(crate) fn platform_source() -> Box<dyn ThemeSource> {
+    let portal = portal::io::PortalClient::connect();
+    let gsettings = read_gsettings();
+
+    let backend = home_dir()
+        .map(|home| detect(&home, portal.is_some(), gsettings.is_some()))
+        .unwrap_or(Backend::Fallback);
+
+    Box::new(LinuxSource {
+        backend,
+        portal,
+        gsettings,
+        file_watcher: None,
+        _signal: None,
+    })
 }

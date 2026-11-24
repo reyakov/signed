@@ -19,8 +19,33 @@ use gpui::{
     WindowId, div, px, rems,
 };
 
-pub use crate::theme::Size;
-use crate::theme::{ActiveTheme as _, FOCUS_RING_ALPHA, FOCUS_RING_SPREAD};
+use crate::theme::{ActiveTheme as _, FOCUS_RING_ALPHA, FOCUS_RING_SPREAD, Size};
+
+/// Deferred draw priority of window-modal surfaces; default layer 0 stays for in-flow chrome like resize handles.
+pub const DIALOG_LAYER: usize = 1;
+/// Deferred draw priority of floating panels, so controls inside a dialog open above it.
+pub const OVERLAY_LAYER: usize = 2;
+/// Deferred draw priority of passive notifications, so they stay visible over dialogs.
+pub const TOAST_LAYER: usize = 3;
+
+/// A handler told to clean up after a dismissed surface.
+pub type DismissHandler = std::rc::Rc<dyn Fn(&mut gpui::App)>;
+
+/// The painted bounds of elements that tooltips anchor to, per window and element id.
+#[derive(Default)]
+struct AnchorBoundsRegistry(HashMap<(WindowId, ElementId), Bounds<Pixels>>);
+
+impl Global for AnchorBoundsRegistry {}
+
+impl AnchorBoundsRegistry {
+    fn record(&mut self, window: WindowId, id: ElementId, bounds: Bounds<Pixels>) {
+        self.0.insert((window, id), bounds);
+    }
+
+    fn get(&self, window: WindowId, id: &ElementId) -> Option<Bounds<Pixels>> {
+        self.0.get(&(window, id.clone())).copied()
+    }
+}
 
 /// A row whose children center on the cross axis.
 #[must_use]
@@ -85,23 +110,6 @@ pub fn focus_handle(id: &ElementId, window: &mut Window, cx: &mut App) -> FocusH
         })
         .read(cx)
         .clone()
-}
-
-/// The painted bounds of elements that tooltips anchor to, per window and element id.
-/// Entries are never evicted: bounds are bounded by live windows, though long-lived processes minting dynamic per-item ids could accumulate.
-#[derive(Default)]
-struct AnchorBoundsRegistry(HashMap<(WindowId, ElementId), Bounds<Pixels>>);
-
-impl Global for AnchorBoundsRegistry {}
-
-impl AnchorBoundsRegistry {
-    fn record(&mut self, window: WindowId, id: ElementId, bounds: Bounds<Pixels>) {
-        self.0.insert((window, id), bounds);
-    }
-
-    fn get(&self, window: WindowId, id: &ElementId) -> Option<Bounds<Pixels>> {
-        self.0.get(&(window, id.clone())).copied()
-    }
 }
 
 /// The last bounds an element painted at, in the given window.
@@ -249,16 +257,6 @@ where
         }
     })
 }
-
-/// A handler told to clean up after a dismissed surface.
-pub type DismissHandler = std::rc::Rc<dyn Fn(&mut gpui::App)>;
-
-/// Deferred draw priority of window-modal surfaces; default layer 0 stays for in-flow chrome like resize handles.
-pub const DIALOG_LAYER: usize = 1;
-/// Deferred draw priority of floating panels, so controls inside a dialog open above it.
-pub const OVERLAY_LAYER: usize = 2;
-/// Deferred draw priority of passive notifications, so they stay visible over dialogs.
-pub const TOAST_LAYER: usize = 3;
 
 /// A component that can be told which size to render at.
 pub trait Sizable: Sized {

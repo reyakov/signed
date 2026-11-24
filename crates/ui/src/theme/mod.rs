@@ -113,12 +113,6 @@ pub const PROGRESS_ANIMATION_PERIOD: Duration = Duration::from_millis(1500);
 pub const SCROLLBAR_AUTOHIDE_DELAY: Duration = Duration::from_millis(700);
 /// How long the autohide scrollbar's fade runs.
 pub const SCROLLBAR_FADE_DURATION: Duration = Duration::from_millis(250);
-/// How much a change wash tints the rows it covers.
-pub const WASH_ALPHA: f32 = 0.14;
-/// The stronger wash under number gutters and intra-line word changes.
-pub const WASH_ALPHA_STRONG: f32 = 0.34;
-/// The subtle wash that sets the number gutter off from the code.
-pub const WASH_ALPHA_GUTTER: f32 = 0.18;
 /// The soft wash that marks the active code row.
 pub const WASH_ALPHA_SOFT: f32 = 0.45;
 /// How far a scrolling list renders past its viewport.

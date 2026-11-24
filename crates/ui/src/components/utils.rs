@@ -1,5 +1,5 @@
 //! Shared helpers for the editor's views: gutter cells, role colors and run
-//! styles, code line text, language mapping and change washes.
+//! styles, code line text and language mapping.
 
 use std::ops::Range;
 
@@ -8,10 +8,7 @@ use gpui::{
 };
 
 use crate::components::highlight::{Language, Line, Role};
-use crate::theme::{
-    ActiveTheme as _, CODE_GUTTER_WIDTH, ColorTokens, Ramps, WASH_ALPHA, WASH_ALPHA_GUTTER,
-    WASH_ALPHA_STRONG,
-};
+use crate::theme::{ActiveTheme as _, CODE_GUTTER_WIDTH, ColorTokens, Ramps};
 
 impl Role {
     /// Maps the role to the theme's semantic palette.
@@ -76,30 +73,6 @@ where
         .line_height(gpui::relative(1.0))
         .text_color(color)
         .child(content)
-}
-
-/// A change wash: the ramp color at the alpha rows tint with.
-pub(crate) fn wash(color: Hsla) -> Hsla {
-    Hsla {
-        a: color.a * WASH_ALPHA,
-        ..color
-    }
-}
-
-/// The stronger wash under number gutters and intra-line word changes.
-pub(crate) fn wash_strong(color: Hsla) -> Hsla {
-    Hsla {
-        a: color.a * WASH_ALPHA_STRONG,
-        ..color
-    }
-}
-
-/// The subtle wash that sets the number gutter off from the code.
-pub(crate) fn wash_gutter(colors: &ColorTokens) -> Hsla {
-    Hsla {
-        a: colors.muted.a * WASH_ALPHA_GUTTER,
-        ..colors.muted
-    }
 }
 
 /// One highlighted code line as styled text, roles resolved from the theme.

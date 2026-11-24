@@ -12,19 +12,21 @@ use signed_state::{Backend, RepoStore, SyncStatusDirectory};
 use ui::alert::{Alert, AlertSeverity, AlertStyle};
 use ui::button::{Button, ButtonVariant};
 use ui::common::{Sizable as _, v_flex};
+use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
+use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 
 use super::RepoDetailView;
 use super::commit_diff::CommitDiffView;
+use crate::app::AppRoot;
 use crate::shared::event_list::commit_list;
 use crate::shared::panels;
-use crate::workspace::Workspace;
 
 pub struct RepoHistoryView {
     store: Entity<RepoStore>,
-    workspace: WeakEntity<Workspace>,
+    workspace: WeakEntity<AppRoot>,
     detail: WeakEntity<RepoDetailView>,
     sync_directory: Entity<SyncStatusDirectory>,
     worktree: Option<PathBuf>,
@@ -41,7 +43,7 @@ pub struct RepoHistoryView {
 impl RepoHistoryView {
     pub fn new(
         store: Entity<RepoStore>,
-        workspace: WeakEntity<Workspace>,
+        workspace: WeakEntity<AppRoot>,
         detail: WeakEntity<RepoDetailView>,
         sync_directory: Entity<SyncStatusDirectory>,
     ) -> Self {
@@ -159,7 +161,7 @@ impl Render for RepoHistoryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(list) = self.all_commits.as_ref() else {
             return if self.loading_all_commits {
-                crate::shared::widgets::centered_spinner("commits-loading")
+                Spinner::centered("commits-loading")
             } else if let Some(error) = self.error.clone() {
                 let weak = cx.entity().downgrade();
                 v_flex()
@@ -183,12 +185,12 @@ impl Render for RepoHistoryView {
                     )
                     .into_any_element()
             } else {
-                crate::shared::widgets::empty_state("Failed to load commits")
+                EmptyState::centered("Failed to load commits")
             };
         };
 
         if self.commits.is_empty() {
-            return crate::shared::widgets::empty_state("No commits found");
+            return EmptyState::centered("No commits found");
         }
 
         let commits = Arc::clone(&self.commits);
@@ -261,7 +263,6 @@ impl Render for RepoHistoryView {
                     log::warn!("failed to open commit diff: {error}");
                 }
             },
-            cx,
         );
 
         v_flex()

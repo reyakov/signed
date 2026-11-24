@@ -76,24 +76,16 @@ pub(crate) fn filter_by_status<'a>(
     (visible, counts)
 }
 
-pub(crate) fn issue_roots(store: &RepoStore) -> &[Event] {
-    &store.issues
-}
-
-pub(crate) fn pr_roots(store: &RepoStore) -> &[Event] {
-    &store.pull_requests
-}
-
 pub(crate) fn sidebar_section(
     store: &Entity<RepoStore>,
     id: EventId,
-    roots: fn(&RepoStore) -> &[Event],
+    roots: &[Event],
     top_gap: bool,
     directory: &Entity<ProfileDirectory>,
     cx: &App,
 ) -> AnyElement {
     let store = store.read(cx);
-    let Some(root) = roots(store).iter().find(|event| event.id == id) else {
+    let Some(root) = roots.iter().find(|event| event.id == id) else {
         return div().into_any_element();
     };
 
@@ -116,7 +108,13 @@ pub(crate) fn sidebar_section(
             v_flex()
                 .when(top_gap, |this| this.mt_4())
                 .gap_2()
-                .child(crate::shared::widgets::section_label("Participants", cx))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_medium()
+                        .text_color(cx.theme().colors.muted_foreground)
+                        .child("Participants"),
+                )
                 .children(participants.iter().map(|pubkey| {
                     let profile = directory.read(cx).profile(pubkey, cx);
                     let name = profile.name();
@@ -136,7 +134,13 @@ pub(crate) fn sidebar_section(
         .child(
             v_flex()
                 .gap_2()
-                .child(crate::shared::widgets::section_label("Labels", cx))
+                .child(
+                    div()
+                        .text_xs()
+                        .font_medium()
+                        .text_color(cx.theme().colors.muted_foreground)
+                        .child("Labels"),
+                )
                 .map(|this| {
                     if labels.is_empty() {
                         this.child(
@@ -215,11 +219,14 @@ pub(crate) fn comments_section(
 pub(crate) fn comment_form(
     store: &Entity<RepoStore>,
     root: EventId,
-    roots: fn(&RepoStore) -> &[Event],
+    roots: &[Event],
     comment_input: &Entity<InputState>,
     button_id: &'static str,
     cx: &App,
 ) -> AnyElement {
+    let Some(root) = roots.iter().find(|event| event.id == root).cloned() else {
+        return div().into_any_element();
+    };
     let comment_input = comment_input.clone();
     let store = store.clone();
 
@@ -254,13 +261,6 @@ pub(crate) fn comment_form(
                             if content.is_empty() {
                                 return;
                             }
-                            let Some(root) = roots(store.read(cx))
-                                .iter()
-                                .find(|event| event.id == root)
-                                .cloned()
-                            else {
-                                return;
-                            };
                             store.update(cx, |store, cx| {
                                 store.comment(&root, content, cx);
                             });

@@ -16,19 +16,24 @@ use ui::avatar::Avatar;
 use ui::button::Button;
 use ui::clipboard::ClipboardButton;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
+use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::input::InputState;
 use ui::layout::panel::Panel;
 use ui::scroll_area::ScrollArea;
+use ui::spinner::Spinner;
 use ui::tabs::{Tab, Tabs};
 use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
 use super::dialogs;
-use crate::issues::helpers::{comment_form, comments_section, pr_roots, sidebar_section};
+use crate::app::AppRoot;
+use crate::issues::helpers::{comment_form, comments_section, sidebar_section};
 use crate::repo::commit_diff::{CommitDiffView, DiffPane};
-use crate::shared::widgets::{empty_state, status_badge};
-use crate::workspace::Workspace;
+use crate::shared::event_list::commit_list;
+use crate::shared::log_dropped;
+use crate::shared::panels::open_detail;
+use crate::shared::widgets::status_badge;
 
 const NOT_FOUND: &str = "Pull request not found";
 
@@ -44,7 +49,7 @@ struct PrBinding {
 }
 
 pub struct PullRequestDetailView {
-    workspace: WeakEntity<Workspace>,
+    workspace: WeakEntity<AppRoot>,
     store: Entity<RepoStore>,
     pr_id: EventId,
     update_dialog: Option<Entity<dialogs::update::UpdatePrDialog>>,
@@ -67,7 +72,7 @@ pub struct PullRequestDetailView {
 
 impl PullRequestDetailView {
     pub fn new(
-        workspace: WeakEntity<Workspace>,
+        workspace: WeakEntity<AppRoot>,
         store: Entity<RepoStore>,
         pr_id: EventId,
         _window: &mut Window,
@@ -82,7 +87,7 @@ impl PullRequestDetailView {
         });
 
         cx.defer(move |cx| {
-            crate::shared::log_dropped(weak.update(cx, |this, cx| this.sync(cx)));
+            log_dropped(weak.update(cx, |this, cx| this.sync(cx)));
         });
 
         Self {
@@ -300,7 +305,7 @@ impl PullRequestDetailView {
         };
         let workspace = self.workspace.clone();
         let commit_id = commit_id.to_owned();
-        crate::shared::panels::open_detail(
+        open_detail(
             &workspace,
             id,
             move |window, cx| {
@@ -336,7 +341,7 @@ impl PullRequestDetailView {
                 ]
             })
             .on_change(move |index, _, cx| {
-                crate::shared::log_dropped(weak.update(cx, |this, cx| {
+                log_dropped(weak.update(cx, |this, cx| {
                     this.active_tab = index;
                     cx.notify();
                 }));
@@ -346,10 +351,10 @@ impl PullRequestDetailView {
 
     fn render_discussion(&mut self, cx: &mut Context<Self>) -> AnyElement {
         if self.loading {
-            return centered_spinner();
+            return Spinner::centered("pr-loading");
         }
         if let Some(error) = self.error.clone() {
-            return empty_state(error);
+            return EmptyState::centered(error);
         }
         let (author, picture, age, root_id, pubkey) = {
             let store = self.store.read(cx);
@@ -358,7 +363,7 @@ impl PullRequestDetailView {
                 .iter()
                 .find(|pr| pr.id == self.pr_id && pr.kind == Kind::GitPullRequest)
             else {
-                return empty_state(NOT_FOUND);
+                return EmptyState::centered(NOT_FOUND);
             };
             let profile = self.directory.read(cx).profile(&root.pubkey, cx);
             (
@@ -369,6 +374,8 @@ impl PullRequestDetailView {
                 root.pubkey,
             )
         };
+
+        let store = self.store.read(cx);
 
         h_flex()
             .size_full()
@@ -416,7 +423,7 @@ impl PullRequestDetailView {
                             .child(comment_form(
                                 &self.store,
                                 root_id,
-                                pr_roots,
+                                &store.pull_requests,
                                 &self.comment_input,
                                 "pr-comment",
                                 cx,
@@ -426,7 +433,7 @@ impl PullRequestDetailView {
             .child(sidebar_section(
                 &self.store,
                 root_id,
-                pr_roots,
+                &store.pull_requests,
                 true,
                 &self.directory,
                 cx,
@@ -436,29 +443,29 @@ impl PullRequestDetailView {
 
     fn render_files(&self, _cx: &mut Context<Self>) -> AnyElement {
         if self.loading {
-            return centered_spinner();
+            return Spinner::centered("pr-loading");
         }
         if let Some(error) = self.error.clone() {
-            return empty_state(error);
+            return EmptyState::centered(error);
         }
         self.pane.clone().into_any_element()
     }
 
     fn render_commits(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.loading {
-            return centered_spinner();
+            return Spinner::centered("pr-loading");
         }
         if let Some(error) = self.error.clone() {
-            return empty_state(error);
+            return EmptyState::centered(error);
         }
         if self.commits.is_empty() {
-            return empty_state("No commits found");
+            return EmptyState::centered("No commits found");
         }
         let commits = Arc::clone(&self.commits);
         let worktree = self.worktree.clone();
         let view = cx.entity().downgrade();
 
-        crate::shared::event_list::commit_list(
+        commit_list(
             "pr-commits",
             "pr-commits-scroll",
             commits,
@@ -467,12 +474,11 @@ impl PullRequestDetailView {
             move |commit, window, cx| {
                 if let Some(worktree) = worktree.clone() {
                     let id = commit.id.clone();
-                    crate::shared::log_dropped(view.update(cx, |this, cx| {
+                    log_dropped(view.update(cx, |this, cx| {
                         this.open_commit_diff(worktree, &id, window, cx);
                     }));
                 }
             },
-            cx,
         )
     }
 
@@ -503,8 +509,9 @@ impl PullRequestDetailView {
             .px_4()
             .py_2()
             .gap_2()
+            // The top right corner is the panel toolbar's.
             .child(
-                h_flex().gap_2().child(status_badge(status)).child(
+                h_flex().gap_2().pr_16().child(status_badge(status)).child(
                     div()
                         .flex_1()
                         .min_w_0()
@@ -528,7 +535,7 @@ impl PullRequestDetailView {
                     .when(can_update, |this| {
                         this.child(Button::new("update-pr").label("Update").small().on_click(
                             move |_, _, cx| {
-                                crate::shared::log_dropped(weak.update(cx, |this, cx| {
+                                log_dropped(weak.update(cx, |this, cx| {
                                     let root = this
                                         .store
                                         .read(cx)
@@ -577,6 +584,10 @@ impl Panel for PullRequestDetailView {
     fn loading(&self, _cx: &App) -> bool {
         self.loading
     }
+
+    fn toolbar(&self, _cx: &App) -> bool {
+        true
+    }
 }
 
 impl Render for PullRequestDetailView {
@@ -594,8 +605,4 @@ impl Render for PullRequestDetailView {
                 _ => this.child(self.render_commits(cx)),
             })
     }
-}
-
-fn centered_spinner() -> AnyElement {
-    crate::shared::widgets::centered_spinner("pr-loading")
 }

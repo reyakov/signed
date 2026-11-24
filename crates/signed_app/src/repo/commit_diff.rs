@@ -14,20 +14,21 @@ use ui::badge::GroupedBadge;
 use ui::button::{Button, ButtonVariant};
 use ui::clipboard::ClipboardButton;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
+use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::Panel;
 use ui::layout::resizable::{Resizable, ResizableState};
+use ui::scrollbar::Scrollbar;
 use ui::separator::Separator;
+use ui::spinner::Spinner;
 use ui::switch::Switch;
 use ui::theme::ActiveTheme as _;
 use ui::toggle::Toggle;
 use ui::tooltip::Tooltip;
-use ui::tree::{Tree, TreeItem};
+use ui::tree::{Tree, TreeItem, TreeItemSeed};
 use utils::relative_time_secs;
 
-use super::helpers::{DiffRow, co_authors, diff_rows, render_diff_row, short_id};
-use crate::shared::tree::{TreeItemSeed, TreeRow, build_tree_items, collect_expanded, flatten};
-use crate::shared::widgets::{centered_spinner, empty_state, scroll_overlay};
+use super::helpers::{DiffRow, co_authors, diff_rows, short_id};
 
 /// Emitted when the user activates the Download commit button.
 pub enum DiffPaneEvent {
@@ -59,7 +60,7 @@ pub struct DiffPane {
     diff: Option<CommitDiff>,
     seeds: Vec<TreeItemSeed>,
     expanded: HashSet<String>,
-    rows: Vec<TreeRow>,
+    rows: Vec<TreeItem>,
     selected_index: Option<usize>,
     tree_visible: bool,
     split: Entity<ResizableState>,
@@ -103,9 +104,9 @@ impl DiffPane {
             .collect();
         paths.sort();
 
-        self.seeds = build_tree_items(&paths);
-        self.expanded = collect_expanded(&self.seeds);
-        self.rows = flatten(&self.seeds, &self.expanded);
+        self.seeds = TreeItemSeed::from_paths(&paths);
+        self.expanded = TreeItemSeed::collect_expanded(&self.seeds);
+        self.rows = TreeItemSeed::flatten_all(&self.seeds, &self.expanded);
         self.selected_index = None;
         self.diff = Some(diff);
 
@@ -172,7 +173,10 @@ impl DiffPane {
     }
 
     fn select_tree_file(&mut self, path: &str, cx: &mut Context<Self>) {
-        self.selected_index = self.rows.iter().position(|row| row.id == path);
+        self.selected_index = self
+            .rows
+            .iter()
+            .position(|row| row.key().to_string() == path);
         if self.expanded_files.insert(path.to_owned()) {
             self.rebuild_rows();
         }
@@ -249,7 +253,7 @@ impl DiffPane {
         if !self.expanded.remove(id) {
             self.expanded.insert(id.to_owned());
         }
-        self.rows = flatten(&self.seeds, &self.expanded);
+        self.rows = TreeItemSeed::flatten_all(&self.seeds, &self.expanded);
         self.selected_index = self
             .selected_index
             .and_then(|index| self.rows.get(index).map(|_| index));
@@ -269,22 +273,7 @@ impl DiffPane {
             .child(
                 Tree::new("commit-diff-tree")
                     .selected(selected)
-                    .items(move |_, _| {
-                        rows.iter()
-                            .map(|row| {
-                                let item = TreeItem::new(row.id.clone(), row.label.clone())
-                                    .depth(row.depth)
-                                    .expandable(row.expandable)
-                                    .expanded(row.expanded);
-
-                                if row.expandable {
-                                    item.icon(Icon::named(IconRole::Folder))
-                                } else {
-                                    item.icon(Icon::named(IconRole::File))
-                                }
-                            })
-                            .collect()
-                    })
+                    .items(move |_, _| rows.clone())
                     .on_change(move |index, window, cx| {
                         if let Some(index) = index
                             && let Err(error) = change_view.update(cx, |this, cx| {
@@ -298,7 +287,7 @@ impl DiffPane {
                         let view = view;
                         move |index, _, cx| {
                             if let Err(error) = view.update(cx, |this, cx| {
-                                let id = this.rows.get(index).map(|row| row.id.clone());
+                                let id = this.rows.get(index).map(|row| row.key().to_string());
                                 if let Some(id) = id {
                                     this.toggle_folder(&id, cx);
                                 }
@@ -315,8 +304,8 @@ impl DiffPane {
         let Some(row) = self.rows.get(index) else {
             return;
         };
-        let id = row.id.clone();
-        let expandable = row.expandable;
+        let id = row.key().to_string();
+        let expandable = row.is_expandable();
         self.selected_index = Some(index);
 
         if expandable {
@@ -427,7 +416,7 @@ impl DiffPane {
 
     fn render_file_list(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(diff) = self.diff.as_ref() else {
-            return empty_state("No changes");
+            return EmptyState::centered("No changes");
         };
 
         let files = diff.files.clone();
@@ -451,7 +440,7 @@ impl DiffPane {
                 .size_full()
                 .p_2(),
             )
-            .child(scroll_overlay("commit-diff-files", self.list.clone()))
+            .child(Scrollbar::vertical("commit-diff-files", self.list.clone()))
             .into_any_element()
     }
 }
@@ -562,7 +551,7 @@ fn render_pane_row(
                 .border_color(border)
                 .bg(surface)
                 .when(*last, |this| this.border_b_1().rounded_b_lg())
-                .child(render_diff_row(&file.hunks, *row, wrap, cx))
+                .child(row.render(&file.hunks, wrap, cx))
                 .into_any_element()
         }
     }
@@ -571,13 +560,13 @@ fn render_pane_row(
 impl Render for DiffPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.diff.is_none() {
-            return empty_state("No changes");
+            return EmptyState::centered("No changes");
         }
 
         let diff = self.diff.as_ref().expect("diff checked above");
 
         if diff.files.is_empty() {
-            return empty_state("No files changed");
+            return EmptyState::centered("No files changed");
         }
 
         let toolbar = self.render_toolbar(cx);
@@ -785,9 +774,11 @@ impl CommitDiffView {
             .gap_2()
             .border_b_1()
             .border_color(cx.theme().colors.border)
+            // The top right corner is the panel toolbar's.
             .child(
                 div()
                     .min_w_0()
+                    .pr_16()
                     .font_semibold()
                     .truncate()
                     .text_ellipsis()
@@ -893,14 +884,18 @@ impl Panel for CommitDiffView {
     fn loading(&self, _cx: &App) -> bool {
         self.loading
     }
+
+    fn toolbar(&self, _cx: &App) -> bool {
+        true
+    }
 }
 
 impl Render for CommitDiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = if self.loading {
-            centered_spinner("commit-diff-loading")
+            Spinner::centered("commit-diff-loading")
         } else if let Some(error) = self.error.clone() {
-            empty_state(error)
+            EmptyState::centered(error)
         } else {
             self.pane.clone().into_any_element()
         };

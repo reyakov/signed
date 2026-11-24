@@ -62,6 +62,8 @@ pub enum IconRole {
     PanelLeft,
     UnfoldVertical,
     Download,
+    Maximize,
+    Minimize,
 }
 
 impl IconRole {
@@ -112,6 +114,8 @@ impl IconRole {
             Self::PanelLeft => "panel-left",
             Self::UnfoldVertical => "unfold-vertical",
             Self::Download => "download",
+            Self::Maximize => "maximize",
+            Self::Minimize => "minimize",
         }
     }
 
@@ -148,17 +152,6 @@ pub struct Icon {
     color: Option<Hsla>,
     transformation: Option<Transformation>,
     rotation_period: Option<Duration>,
-}
-
-/// Creates an icon for the role at the default size.
-pub fn icon(role: IconRole) -> Icon {
-    Icon {
-        glyph: Glyph::Role(role),
-        size: AbsoluteLength::Rems(DEFAULT_ICON_SIZE),
-        color: None,
-        transformation: None,
-        rotation_period: None,
-    }
 }
 
 impl Icon {
@@ -304,5 +297,16 @@ impl AssetSource for Assets {
             .map(|file| SharedString::from(format!("icons/{file}")))
             .filter(|file| file.starts_with(path))
             .collect())
+    }
+}
+
+/// Creates an icon for the role at the default size.
+pub fn icon(role: IconRole) -> Icon {
+    Icon {
+        glyph: Glyph::Role(role),
+        size: AbsoluteLength::Rems(DEFAULT_ICON_SIZE),
+        color: None,
+        transformation: None,
+        rotation_period: None,
     }
 }

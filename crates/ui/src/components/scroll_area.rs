@@ -108,31 +108,31 @@ impl RenderOnce for ScrollArea {
         let mut pane_style = self.style.clone();
         pane_style.padding = Default::default();
 
-        let pane = div()
-            .id(self.id.clone())
-            .h_full()
-            .overflow_hidden()
-            .when(self.axes != ScrollAxes::Horizontal, |area| {
-                area.overflow_y_scroll()
-            })
-            .when(self.axes != ScrollAxes::Vertical, |area| {
-                area.overflow_x_scroll()
-            })
-            .when_some(self.handle.clone(), |area, handle| {
-                area.track_scroll(&handle)
-            })
-            .when_some(self.a11y_label, |area, label| area.aria_label(label))
-            .on_scroll(|_, _, cx| {
-                // Keep wheel events from scrolling an outer scroll area too.
-                cx.stop_propagation();
-            })
-            .refine_style(&pane_style)
-            .children(self.children);
-
         div()
             .relative()
             .refine_style(&self.style)
-            .child(pane.into_any_element())
+            .child(
+                div()
+                    .id(self.id.clone())
+                    .h_full()
+                    .overflow_hidden()
+                    .when(self.axes != ScrollAxes::Horizontal, |area| {
+                        area.overflow_y_scroll()
+                    })
+                    .when(self.axes != ScrollAxes::Vertical, |area| {
+                        area.overflow_x_scroll()
+                    })
+                    .when_some(self.handle.clone(), |area, handle| {
+                        area.track_scroll(&handle)
+                    })
+                    .when_some(self.a11y_label, |area, label| area.aria_label(label))
+                    .on_scroll(|_, _, cx| {
+                        // Keep wheel events from scrolling an outer scroll area too.
+                        cx.stop_propagation();
+                    })
+                    .refine_style(&pane_style)
+                    .children(self.children),
+            )
             .when_some(self.handle, |wrapper, handle| {
                 let id = self.id.clone();
 

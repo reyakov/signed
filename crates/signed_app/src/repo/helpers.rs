@@ -8,22 +8,92 @@ use gpui::{
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::{RelayUrl, ToBech32};
-use signed_core::Announcement;
+use signed_core::{Announcement, RepoAddr};
 use signed_git::{DiffHunk, DiffLine, DiffLineKind, FileCommit, FileDiff, Repo, WorktreeSnapshot};
 use signed_state::{Nip34Binding, RepoListStore, RepoStore};
 use ui::avatar::Avatar;
+use ui::clipboard::CopyRow;
 use ui::combobox::ComboboxState;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::theme::ActiveTheme as _;
-use utils::relative_time_secs;
 
 use super::RepoDetailView;
-use crate::shared::tree::{TreeItemSeed, build_tree_items, sorted_worktree_paths};
+use ui::tree::TreeItemSeed;
 
 const GUTTER_WIDTH: f32 = 44.;
 pub const DIFF_ROW_HEIGHT: f32 = 20.;
-pub const COMMIT_ROW_HEIGHT: f32 = 56.;
+
+#[derive(Clone, Copy)]
+pub(super) enum DiffRow {
+    Hunk {
+        old_start: u32,
+        old_lines: u32,
+        new_start: u32,
+        new_lines: u32,
+    },
+    Line {
+        hunk: usize,
+        line: usize,
+    },
+}
+
+impl DiffRow {
+    /// Renders one diff row against the file's hunks.
+    pub(super) fn render(self, hunks: &[DiffHunk], wrap: bool, cx: &App) -> AnyElement {
+        match self {
+            DiffRow::Hunk {
+                old_start,
+                old_lines,
+                new_start,
+                new_lines,
+            } => div()
+                .px_2()
+                .w_full()
+                .h(px(DIFF_ROW_HEIGHT))
+                .font_family(cx.theme().mono_font)
+                .text_xs()
+                .bg(cx.theme().colors.muted)
+                .border_y_1()
+                .border_color(cx.theme().colors.border)
+                .text_color(cx.theme().colors.muted_foreground)
+                .child(SharedString::from(format!(
+                    "@@ -{},{} +{},{} @@",
+                    old_start, old_lines, new_start, new_lines
+                )))
+                .into_any_element(),
+            DiffRow::Line { hunk, line } => {
+                match hunks.get(hunk).and_then(|h| h.lines.get(line)) {
+                    Some(line) => render_diff_line(line, wrap, cx),
+                    // A stale row index renders as a blank row rather than panicking.
+                    None => div().w_full().h(px(DIFF_ROW_HEIGHT)).into_any_element(),
+                }
+            }
+        }
+    }
+}
+
+pub(super) struct RepoData {
+    pub(super) tree: Vec<TreeItemSeed>,
+    pub(super) entries: Vec<PathBuf>,
+    pub(super) readme_path: Option<PathBuf>,
+    pub(super) readme: Option<Vec<u8>>,
+    pub(super) worktree: Option<PathBuf>,
+    pub(super) branches: Vec<String>,
+    pub(super) tags: Vec<String>,
+    pub(super) current_branch: Option<String>,
+    pub(super) head_commit: Option<FileCommit>,
+}
+
+/// Sorted relative paths of a worktree snapshot.
+pub(crate) fn sorted_worktree_paths(entries: &[PathBuf]) -> Vec<String> {
+    let mut paths: Vec<String> = entries
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    paths.sort();
+    paths
+}
 
 /// The announcement's name, falling back to its id.
 pub fn announcement_display_name(announcement: &Announcement) -> SharedString {
@@ -67,43 +137,12 @@ pub(super) fn snapshot_worktree(
     worktree: PathBuf,
 ) -> Result<(WorktreeSnapshot, Vec<TreeItemSeed>, Vec<String>), Error> {
     let snapshot = Repo::open(&worktree)?.snapshot()?;
-    let tree = build_tree_items(&snapshot.entries);
+    let tree = TreeItemSeed::from_paths(&snapshot.entries);
     let paths = sorted_worktree_paths(&snapshot.entries);
     Ok((snapshot, tree, paths))
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum DiffRow {
-    Hunk {
-        old_start: u32,
-        old_lines: u32,
-        new_start: u32,
-        new_lines: u32,
-    },
-    Line {
-        hunk: usize,
-        line: usize,
-    },
-}
-
-pub(super) struct RepoData {
-    pub(super) tree: Vec<TreeItemSeed>,
-    pub(super) entries: Vec<PathBuf>,
-    pub(super) readme_path: Option<PathBuf>,
-    pub(super) readme: Option<Vec<u8>>,
-    pub(super) worktree: Option<PathBuf>,
-    pub(super) branches: Vec<String>,
-    pub(super) tags: Vec<String>,
-    pub(super) current_branch: Option<String>,
-    pub(super) head_commit: Option<FileCommit>,
-}
-
-pub(super) fn clone_group(
-    label: &str,
-    id: SharedString,
-    command: &SharedString,
-    cx: &App,
-) -> AnyElement {
+pub(super) fn clone_group(label: &str, id: SharedString, command: &SharedString) -> AnyElement {
     v_flex()
         .gap_1()
         .min_w_0()
@@ -113,7 +152,7 @@ pub(super) fn clone_group(
                 .font_semibold()
                 .child(SharedString::from(label)),
         )
-        .child(crate::shared::widgets::clone_row(id, command.clone(), cx))
+        .child(CopyRow::new(id, command.clone()))
         .into_any_element()
 }
 
@@ -134,6 +173,23 @@ pub(super) fn nostr_clone_url(announcement: &Announcement, nip05: Option<&str>) 
     SharedString::from(url)
 }
 
+/// The display name of the announcement addressing `addr`, falling back to its identifier.
+pub(crate) fn upstream_display_name(
+    addr: &RepoAddr,
+    announcements: &[Announcement],
+) -> SharedString {
+    announcements
+        .iter()
+        .find(|a| a.addr() == *addr)
+        .map(|a| {
+            a.name
+                .as_deref()
+                .map(SharedString::from)
+                .unwrap_or_else(|| SharedString::from(a.id.clone()))
+        })
+        .unwrap_or_else(|| SharedString::from(addr.identifier().to_owned()))
+}
+
 pub(super) fn fork_row(
     announcement: &Announcement,
     cx: &mut Context<RepoDetailView>,
@@ -142,18 +198,8 @@ pub(super) fn fork_row(
 
     let (label, clickable) = match &upstream.addr {
         Some(addr) => {
-            let name = RepoListStore::global(cx)
-                .read(cx)
-                .announcements
-                .iter()
-                .find(|a| a.addr() == *addr)
-                .map(|a| {
-                    a.name
-                        .as_deref()
-                        .map(SharedString::from)
-                        .unwrap_or_else(|| SharedString::from(a.id.clone()))
-                })
-                .unwrap_or_else(|| SharedString::from(addr.identifier().to_owned()));
+            let name =
+                upstream_display_name(addr, &RepoListStore::global(cx).read(cx).announcements);
             (SharedString::from(format!("Forked from {name}")), true)
         }
         None => (SharedString::from(upstream.display().as_str()), false),
@@ -180,7 +226,7 @@ pub(super) fn fork_row(
 pub(super) fn load_repo_data(repo: &Repo) -> Result<RepoData, Error> {
     let snapshot = repo.snapshot()?;
     let worktree = repo.workdir().map(Path::to_path_buf);
-    let tree = build_tree_items(&snapshot.entries);
+    let tree = TreeItemSeed::from_paths(&snapshot.entries);
 
     Ok(RepoData {
         tree,
@@ -267,10 +313,6 @@ pub(super) fn source_hash(text: &str) -> u64 {
     hasher.finish()
 }
 
-pub(super) fn preview_spinner() -> AnyElement {
-    crate::shared::widgets::centered_spinner("repo-preview-spinner")
-}
-
 /// The kit grammar for a path; only four languages are supported.
 pub(super) fn code_language(path: &str) -> ui::highlight::Language {
     use ui::highlight::Language;
@@ -318,41 +360,6 @@ pub(super) fn diff_rows(file: &FileDiff) -> Vec<DiffRow> {
     rows
 }
 
-pub(super) fn render_diff_row(
-    hunks: &[DiffHunk],
-    row: DiffRow,
-    wrap: bool,
-    cx: &App,
-) -> AnyElement {
-    match row {
-        DiffRow::Hunk {
-            old_start,
-            old_lines,
-            new_start,
-            new_lines,
-        } => div()
-            .px_2()
-            .w_full()
-            .h(px(DIFF_ROW_HEIGHT))
-            .font_family(cx.theme().mono_font)
-            .text_xs()
-            .bg(cx.theme().colors.muted)
-            .border_y_1()
-            .border_color(cx.theme().colors.border)
-            .text_color(cx.theme().colors.muted_foreground)
-            .child(SharedString::from(format!(
-                "@@ -{},{} +{},{} @@",
-                old_start, old_lines, new_start, new_lines
-            )))
-            .into_any_element(),
-        DiffRow::Line { hunk, line } => match hunks.get(hunk).and_then(|h| h.lines.get(line)) {
-            Some(line) => render_diff_line(line, wrap, cx),
-            // A stale row index renders as a blank row rather than panicking.
-            None => div().w_full().h(px(DIFF_ROW_HEIGHT)).into_any_element(),
-        },
-    }
-}
-
 fn render_diff_line(line: &DiffLine, wrap: bool, cx: &App) -> AnyElement {
     let bg = match line.kind {
         DiffLineKind::Addition => Some(cx.theme().ramps.success.base.opacity(0.2)),
@@ -396,63 +403,6 @@ fn render_diff_line(line: &DiffLine, wrap: bool, cx: &App) -> AnyElement {
                 })
                 .child(line.text.clone()),
         )
-        .into_any_element()
-}
-
-pub(crate) fn commit_row(
-    ix: usize,
-    commit: &FileCommit,
-    action: Option<AnyElement>,
-    on_click: impl Fn(&mut Window, &mut gpui::App) + 'static,
-    cx: &gpui::App,
-) -> gpui::AnyElement {
-    h_flex()
-        .id(ix)
-        .px_4()
-        .h(px(COMMIT_ROW_HEIGHT))
-        .w_full()
-        .gap_3()
-        .border_b_1()
-        .border_color(cx.theme().colors.border)
-        .hover(|this| this.bg(cx.theme().colors.muted_hover))
-        .child(
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_1()
-                .justify_center()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .font_family(cx.theme().mono_font)
-                                .text_sm()
-                                .text_color(cx.theme().colors.muted_foreground)
-                                .child(short_id(&commit.id)),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_sm()
-                                .text_ellipsis()
-                                .whitespace_nowrap()
-                                .child(commit.summary.clone()),
-                        ),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .text_xs()
-                        .text_color(cx.theme().colors.muted_foreground)
-                        .child(commit.author.clone())
-                        .child(relative_time_secs(commit.time)),
-                ),
-        )
-        .when_some(action, |row, action| row.child(action))
-        .on_click(move |_, window, cx| on_click(window, cx))
         .into_any_element()
 }
 

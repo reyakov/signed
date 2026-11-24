@@ -1,8 +1,7 @@
 use gpui::{
-    App, Context, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, div,
+    Context, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, div,
 };
 use ui::empty_state::EmptyState;
-use ui::layout::panel::Panel;
 
 /// A tab that stands in for a screen that is not ported yet.
 pub struct PlaceholderView {
@@ -14,12 +13,6 @@ impl PlaceholderView {
         Self {
             title: title.into(),
         }
-    }
-}
-
-impl Panel for PlaceholderView {
-    fn title(&self, _cx: &App) -> SharedString {
-        self.title.clone()
     }
 }
 

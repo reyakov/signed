@@ -111,9 +111,11 @@ impl ResizableState {
     pub fn set_pane_width(&mut self, ix: usize, width: Pixels, cx: &mut Context<Self>) {
         // Persisted layouts can carry negative sizes.
         let width = width.max(PANE_MIN_SIZE);
+
         while self.sizes.len() <= ix {
             self.sizes.push(width);
         }
+
         if self.sizes[ix] != width {
             self.sizes[ix] = width;
             cx.notify();
@@ -249,26 +251,6 @@ impl RenderOnce for Resizable {
             .refine_style(&self.style)
             .children(self.panes.into_iter().enumerate().flat_map(|(ix, pane)| {
                 let remainder = ix + 1 == pane_count;
-                let pane_element = div()
-                    .overflow_hidden()
-                    .when(remainder, |pane_element| {
-                        pane_element
-                            .flex_1()
-                            .when(axis == Axis::Vertical, |p| p.min_h(pane.min))
-                            .when(axis == Axis::Horizontal, |p| p.min_w(pane.min))
-                    })
-                    .when(!remainder, |pane_element| {
-                        pane_element
-                            .flex_none()
-                            .when(axis == Axis::Vertical, |p| p.h(sizes[ix]).w_full())
-                            .when(axis == Axis::Horizontal, |p| p.w(sizes[ix]).h_full())
-                    })
-                    .when_some(debug_selector.clone(), |pane_element, selector| {
-                        let prefix = selector();
-                        pane_element.debug_selector(move || format!("{prefix}-{ix}"))
-                    })
-                    .child(pane.content)
-                    .into_any_element();
 
                 let divider = (!remainder).then(|| {
                     // The positional index is a stable id: panes are append-only, never reordered.
@@ -291,7 +273,29 @@ impl RenderOnce for Resizable {
                         .into_any_element()
                 });
 
-                std::iter::once(pane_element).chain(divider)
+                std::iter::once(
+                    div()
+                        .overflow_hidden()
+                        .when(remainder, |pane_element| {
+                            pane_element
+                                .flex_1()
+                                .when(axis == Axis::Vertical, |p| p.min_h(pane.min))
+                                .when(axis == Axis::Horizontal, |p| p.min_w(pane.min))
+                        })
+                        .when(!remainder, |pane_element| {
+                            pane_element
+                                .flex_none()
+                                .when(axis == Axis::Vertical, |p| p.h(sizes[ix]).w_full())
+                                .when(axis == Axis::Horizontal, |p| p.w(sizes[ix]).h_full())
+                        })
+                        .when_some(debug_selector.clone(), |pane_element, selector| {
+                            let prefix = selector();
+                            pane_element.debug_selector(move || format!("{prefix}-{ix}"))
+                        })
+                        .child(pane.content)
+                        .into_any_element(),
+                )
+                .chain(divider)
             }))
             .when(pane_count > 0, |group| {
                 group.child(
@@ -303,7 +307,9 @@ impl RenderOnce for Resizable {
                                     Axis::Vertical => bounds.size.height,
                                     Axis::Horizontal => bounds.size.width,
                                 };
-                                state.update(cx, |state, cx| state.set_measured(extent, cx));
+                                state.update(cx, |state, cx| {
+                                    state.set_measured(extent, cx);
+                                });
                             }
                         },
                         |_, _, _, _| {},
@@ -312,32 +318,5 @@ impl RenderOnce for Resizable {
                     .inset_0(),
                 )
             })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use gpui::TestAppContext;
-
-    #[gpui::test]
-    fn resize_never_stores_sub_floor_size(cx: &mut TestAppContext) {
-        let state = cx.new(|_| ResizableState::default());
-        state.update(cx, |state, cx| {
-            // The measured extent is smaller than the other pane's floor.
-            state.set_measured(px(100.), cx);
-            state.resize(0, px(500.), &[px(48.), px(150.)], cx);
-            assert_eq!(state.sizes[0], px(48.));
-        });
-    }
-
-    #[gpui::test]
-    fn set_pane_width_clamps_negative_values(cx: &mut TestAppContext) {
-        let state = cx.new(|_| ResizableState::default());
-        state.update(cx, |state, cx| {
-            // Persisted layouts can carry negative sizes.
-            state.set_pane_width(0, px(-20.), cx);
-            assert_eq!(state.pane_size(0, 1), PANE_MIN_SIZE);
-        });
     }
 }

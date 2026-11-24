@@ -47,34 +47,13 @@ actions!(code_view, [Copy]);
 /// The key context the code view declares while it holds focus.
 pub const CODE_VIEW_CONTEXT: &str = "CodeView";
 
-/// Binds the code view's copy chord: cmd-c on macOS, ctrl-c elsewhere.
-///
-/// Call once at startup. Without it, selection copy has no key.
-pub fn bind_code_view_keys(cx: &mut App) {
-    let context = match KeyBindingContextPredicate::parse(CODE_VIEW_CONTEXT) {
-        Ok(context) => Some(Rc::new(context)),
-        Err(error) => {
-            log::error!("failed to parse code view key context: {error}");
-            return;
-        }
-    };
-    let binding = match KeyBinding::load("secondary-c", Box::new(Copy), context, false, None, cx) {
-        Ok(binding) => binding,
-        Err(error) => {
-            log::error!("failed to parse code view copy keystroke: {error}");
-            return;
-        }
-    };
-    cx.bind_keys([binding]);
-}
-
 /// A point in the source, in lines and characters (not bytes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SelectionPoint {
+struct SelectionPoint {
     /// The zero-based line index.
-    pub row: usize,
+    row: usize,
     /// The zero-based character offset within the line.
-    pub col: usize,
+    col: usize,
 }
 
 impl SelectionPoint {
@@ -235,24 +214,8 @@ impl CodeViewState {
         self.active_line
     }
 
-    /// Selects a range, endpoints in lines and characters.
-    pub fn select_range(
-        &mut self,
-        start: SelectionPoint,
-        end: SelectionPoint,
-        cx: &mut Context<Self>,
-    ) {
-        self.selection = if start.earlier_than(&end) {
-            Some((start, end))
-        } else {
-            Some((end, start))
-        };
-        self.selecting = false;
-        cx.notify();
-    }
-
     /// The selected range, endpoints in document order, when there is one.
-    pub fn selection(&self) -> Option<(SelectionPoint, SelectionPoint)> {
+    fn selection(&self) -> Option<(SelectionPoint, SelectionPoint)> {
         self.selection.map(|(anchor, head)| {
             if anchor.earlier_than(&head) {
                 (anchor, head)
@@ -263,7 +226,7 @@ impl CodeViewState {
     }
 
     /// The selected text, or `None` when nothing is selected.
-    pub fn selected_text(&self) -> Option<String> {
+    fn selected_text(&self) -> Option<String> {
         let (start, end) = self.selection()?;
 
         let lines: Vec<&str> = self.source.split('\n').collect();
@@ -325,6 +288,128 @@ impl CodeViewState {
 
         SelectionPoint { row, col }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_row(
+        &self,
+        id: &ElementId,
+        line_ix: usize,
+        active: bool,
+        selection: Option<(SelectionPoint, SelectionPoint)>,
+        mono_font: &'static str,
+        colors: ColorTokens,
+        ramps: Ramps,
+        text_size: Pixels,
+        line_height: Pixels,
+        cx: &App,
+    ) -> gpui::AnyElement {
+        let layout = self.line_layouts.get(line_ix);
+        let text = layout.map_or("", |layout| layout.text.as_str());
+        let roles = layout.map_or(&[][..], |layout| layout.roles.as_slice());
+        let char_count = text.chars().count();
+
+        let mut selected = vec![false; char_count];
+
+        if let Some((start, end)) = selection
+            && line_ix >= start.row
+            && line_ix <= end.row
+        {
+            let start_col = if line_ix == start.row {
+                start.col.min(char_count)
+            } else {
+                0
+            };
+
+            let end_col = if line_ix == end.row {
+                end.col.min(char_count)
+            } else {
+                char_count
+            };
+
+            for slot in &mut selected[start_col..end_col] {
+                *slot = true;
+            }
+        }
+
+        let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
+        let mut run_start = 0usize;
+        let mut run_end = 0usize;
+        let mut run_role = Role::Text;
+        let mut run_selected = false;
+
+        for (char_ix, (byte_ix, character)) in text.char_indices().enumerate() {
+            let fresh =
+                char_ix == 0 || roles[char_ix] != run_role || selected[char_ix] != run_selected;
+            if fresh {
+                if char_ix > 0 {
+                    highlights.push((
+                        run_start..run_end,
+                        run_role.run_style(run_selected, colors, ramps),
+                    ));
+                }
+                run_start = byte_ix;
+                run_role = roles[char_ix];
+                run_selected = selected[char_ix];
+            }
+            run_end = byte_ix + character.len_utf8();
+        }
+
+        if run_end > run_start || !text.is_empty() {
+            highlights.push((
+                run_start..run_end,
+                run_role.run_style(run_selected, colors, ramps),
+            ));
+        }
+
+        let style = TextStyle {
+            color: colors.foreground,
+            font_family: SharedString::from(mono_font),
+            font_size: text_size.into(),
+            line_height: line_height.into(),
+            white_space: gpui::WhiteSpace::Nowrap,
+            ..Default::default()
+        };
+
+        div()
+            .debug_selector(move || format!("{id}-row-{line_ix}"))
+            .id(("code-row", line_ix))
+            .w_full()
+            .text_xs()
+            .h(line_height)
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .when(active, |row| {
+                row.bg(Hsla {
+                    a: colors.muted.a * WASH_ALPHA_SOFT,
+                    ..colors.muted
+                })
+            })
+            .child(
+                gutter_cell(
+                    cx,
+                    if active {
+                        colors.foreground
+                    } else {
+                        colors.muted_foreground
+                    },
+                    format!("{}", line_ix + 1),
+                )
+                .justify_end()
+                .pr_2()
+                .whitespace_nowrap(),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .ml_4()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(gpui::StyledText::new(text).with_default_highlights(&style, highlights)),
+            )
+            .into_any_element()
+    }
 }
 
 impl gpui::Focusable for CodeViewState {
@@ -351,37 +436,6 @@ impl Render for CodeViewState {
 
         let bounds_cell: std::rc::Rc<std::cell::RefCell<Option<Bounds<Pixels>>>> =
             std::rc::Rc::new(std::cell::RefCell::new(None));
-
-        let rows = uniform_list((id.clone(), "rows"), line_count, {
-            let id = id.clone();
-            let state = state.clone();
-            move |range, _window, cx| {
-                let code = state.read(cx);
-                let active_line = code.active_line;
-                let theme = cx.theme();
-
-                range
-                    .map(|line_ix| {
-                        render_row(
-                            code,
-                            &id,
-                            line_ix,
-                            active_line == Some(line_ix),
-                            selection,
-                            theme.mono_font,
-                            theme.colors,
-                            theme.ramps,
-                            text_size,
-                            line_height,
-                            cx,
-                        )
-                    })
-                    .collect()
-            }
-        })
-        .track_scroll(&self.handle)
-        .h_full()
-        .w_full();
 
         div()
             .id((id.clone(), "view"))
@@ -512,7 +566,37 @@ impl Render for CodeViewState {
                 .absolute()
                 .inset_0(),
             )
-            .child(rows)
+            .child(
+                uniform_list((id.clone(), "rows"), line_count, {
+                    let id = id.clone();
+                    let state = state.clone();
+                    move |range, _window, cx| {
+                        let code = state.read(cx);
+                        let active_line = code.active_line;
+                        let theme = cx.theme();
+
+                        range
+                            .map(|line_ix| {
+                                code.render_row(
+                                    &id,
+                                    line_ix,
+                                    active_line == Some(line_ix),
+                                    selection,
+                                    theme.mono_font,
+                                    theme.colors,
+                                    theme.ramps,
+                                    text_size,
+                                    line_height,
+                                    cx,
+                                )
+                            })
+                            .collect()
+                    }
+                })
+                .track_scroll(&self.handle)
+                .h_full()
+                .w_full(),
+            )
             .child(
                 Scrollbar::vertical((self.id.clone(), "v-scrollbar"), self.handle.clone())
                     .visibility(ScrollbarVisibility::Platform),
@@ -523,123 +607,23 @@ impl Render for CodeViewState {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn render_row(
-    code: &CodeViewState,
-    id: &ElementId,
-    line_ix: usize,
-    active: bool,
-    selection: Option<(SelectionPoint, SelectionPoint)>,
-    mono_font: &'static str,
-    colors: ColorTokens,
-    ramps: Ramps,
-    text_size: Pixels,
-    line_height: Pixels,
-    cx: &App,
-) -> gpui::AnyElement {
-    let layout = code.line_layouts.get(line_ix);
-    let text = layout.map_or("", |layout| layout.text.as_str());
-    let roles = layout.map_or(&[][..], |layout| layout.roles.as_slice());
-    let char_count = text.chars().count();
-
-    let mut selected = vec![false; char_count];
-
-    if let Some((start, end)) = selection
-        && line_ix >= start.row
-        && line_ix <= end.row
-    {
-        let start_col = if line_ix == start.row {
-            start.col.min(char_count)
-        } else {
-            0
-        };
-
-        let end_col = if line_ix == end.row {
-            end.col.min(char_count)
-        } else {
-            char_count
-        };
-
-        for slot in &mut selected[start_col..end_col] {
-            *slot = true;
+/// Binds the code view's copy chord: cmd-c on macOS, ctrl-c elsewhere.
+///
+/// Call once at startup. Without it, selection copy has no key.
+pub fn bind_code_view_keys(cx: &mut App) {
+    let context = match KeyBindingContextPredicate::parse(CODE_VIEW_CONTEXT) {
+        Ok(context) => Some(Rc::new(context)),
+        Err(error) => {
+            log::error!("failed to parse code view key context: {error}");
+            return;
         }
-    }
-
-    let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
-    let mut run_start = 0usize;
-    let mut run_end = 0usize;
-    let mut run_role = Role::Text;
-    let mut run_selected = false;
-
-    for (char_ix, (byte_ix, character)) in text.char_indices().enumerate() {
-        let fresh = char_ix == 0 || roles[char_ix] != run_role || selected[char_ix] != run_selected;
-        if fresh {
-            if char_ix > 0 {
-                highlights.push((
-                    run_start..run_end,
-                    run_role.run_style(run_selected, colors, ramps),
-                ));
-            }
-            run_start = byte_ix;
-            run_role = roles[char_ix];
-            run_selected = selected[char_ix];
-        }
-        run_end = byte_ix + character.len_utf8();
-    }
-
-    if run_end > run_start || !text.is_empty() {
-        highlights.push((
-            run_start..run_end,
-            run_role.run_style(run_selected, colors, ramps),
-        ));
-    }
-
-    let style = TextStyle {
-        color: colors.foreground,
-        font_family: SharedString::from(mono_font),
-        font_size: text_size.into(),
-        line_height: line_height.into(),
-        white_space: gpui::WhiteSpace::Nowrap,
-        ..Default::default()
     };
-
-    div()
-        .debug_selector(move || format!("{id}-row-{line_ix}"))
-        .id(("code-row", line_ix))
-        .w_full()
-        .text_xs()
-        .h(line_height)
-        .flex()
-        .items_center()
-        .overflow_hidden()
-        .when(active, |row| {
-            row.bg(Hsla {
-                a: colors.muted.a * WASH_ALPHA_SOFT,
-                ..colors.muted
-            })
-        })
-        .child(
-            gutter_cell(
-                cx,
-                if active {
-                    colors.foreground
-                } else {
-                    colors.muted_foreground
-                },
-                format!("{}", line_ix + 1),
-            )
-            .justify_end()
-            .pr_2()
-            .whitespace_nowrap(),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .ml_4()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .child(gpui::StyledText::new(text).with_default_highlights(&style, highlights)),
-        )
-        .into_any_element()
+    let binding = match KeyBinding::load("secondary-c", Box::new(Copy), context, false, None, cx) {
+        Ok(binding) => binding,
+        Err(error) => {
+            log::error!("failed to parse code view copy keystroke: {error}");
+            return;
+        }
+    };
+    cx.bind_keys([binding]);
 }

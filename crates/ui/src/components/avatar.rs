@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Role,
     SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window, div,
@@ -140,6 +141,78 @@ impl RenderOnce for Avatar {
     }
 }
 
+/// An avatar with the display name beside it.
+#[derive(IntoElement)]
+#[must_use]
+pub struct IdentityRow {
+    id: SharedString,
+    name: SharedString,
+    picture: Option<SharedString>,
+    size: Size,
+    truncate: bool,
+    style: StyleRefinement,
+}
+
+impl IdentityRow {
+    /// Creates the row for `id` (the pixel-fallback seed) showing `name`.
+    pub fn new<ID, N>(id: ID, name: N, picture: Option<SharedString>) -> Self
+    where
+        ID: Into<SharedString>,
+        N: Into<SharedString>,
+    {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            picture,
+            size: Size::default(),
+            truncate: false,
+            style: StyleRefinement::default(),
+        }
+    }
+
+    /// Truncates the name to one line inside the available width.
+    pub fn truncate(mut self) -> Self {
+        self.truncate = true;
+        self
+    }
+}
+
+impl Sizable for IdentityRow {
+    fn apply_size(&mut self, size: Size) {
+        self.size = size;
+    }
+}
+
+impl gpui::Styled for IdentityRow {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl RenderOnce for IdentityRow {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        h_flex()
+            .refine_style(&self.style)
+            .child(
+                Avatar::new(self.id.clone())
+                    .name(self.name.clone())
+                    .picture(self.picture)
+                    .with_size(self.size),
+            )
+            .child(
+                div()
+                    .when(self.truncate, |name| {
+                        name.flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                    })
+                    .child(self.name),
+            )
+    }
+}
+
 /// A deterministic, offline pixel-art avatar.
 #[derive(IntoElement)]
 struct PixelAvatar {
@@ -218,6 +291,28 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
+/// Tiny xorshift64* PRNG for deriving the pattern from the seed.
+struct PixelRng(u64);
+
+impl PixelRng {
+    fn new(seed: u64) -> Self {
+        Self(seed.max(1))
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    fn chance(&mut self, probability: f32) -> bool {
+        self.next() as f32 / (u64::MAX as f32) < probability
+    }
+}
+
 fn pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
     let cached = PATTERN_CACHE.with(|cache| cache.borrow().get(&seed).copied());
     if let Some(cached) = cached {
@@ -283,26 +378,4 @@ fn fnv1a(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
-}
-
-/// Tiny xorshift64* PRNG for deriving the pattern from the seed.
-struct PixelRng(u64);
-
-impl PixelRng {
-    fn new(seed: u64) -> Self {
-        Self(seed.max(1))
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-
-    fn chance(&mut self, probability: f32) -> bool {
-        self.next() as f32 / (u64::MAX as f32) < probability
-    }
 }

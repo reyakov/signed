@@ -7,14 +7,12 @@ use crate::theme::{
     DEFAULT_TRANSPARENCY, MIN_MATERIAL_FILL_DARK, MIN_MATERIAL_FILL_LIGHT, ThemeVariant,
 };
 
-fn hex(hex: u32) -> Hsla {
-    rgb(hex).into()
-}
-
-/// The dim scrim behind modal layers; always a translucent black.
-pub(crate) fn scrim(alpha: f32) -> Hsla {
-    hsla(0., 0., 0., alpha)
-}
+/// Windows paints its caption close-button hover red in every theme.
+pub const WINDOWS_CLOSE_HOVER: Hsla = hsla(0.986043, 0.863406, 0.488235, 1.0);
+/// The close-button hover dimmed while pressed.
+pub const WINDOWS_CLOSE_PRESSED: Hsla = hsla(0.986043, 0.863406, 0.488235, 0.8);
+/// The close glyph's color over the red hover.
+pub const WINDOWS_CLOSE_FOREGROUND: Hsla = gpui::white();
 
 /// The semantic color roles components paint from.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -165,9 +163,11 @@ impl MaterialTokens {
     }
 }
 
-/// Windows paints its caption close-button hover red in every theme.
-pub const WINDOWS_CLOSE_HOVER: Hsla = hsla(0.986043, 0.863406, 0.488235, 1.0);
-/// The close-button hover dimmed while pressed.
-pub const WINDOWS_CLOSE_PRESSED: Hsla = hsla(0.986043, 0.863406, 0.488235, 0.8);
-/// The close glyph's color over the red hover.
-pub const WINDOWS_CLOSE_FOREGROUND: Hsla = gpui::white();
+fn hex(hex: u32) -> Hsla {
+    rgb(hex).into()
+}
+
+/// The dim scrim behind modal layers; always a translucent black.
+pub(crate) fn scrim(alpha: f32) -> Hsla {
+    hsla(0., 0., 0., alpha)
+}

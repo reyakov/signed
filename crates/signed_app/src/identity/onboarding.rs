@@ -4,14 +4,13 @@ use gpui::{
     Styled as _, Window, div, px,
 };
 use signed_state::Backend;
-use ui::button::Button;
 use ui::common::v_flex;
 use ui::dialog::{Dialog, DialogHandle};
 use ui::field::Field;
 use ui::input::{Input, InputState};
 use ui::theme::ActiveTheme as _;
 
-use crate::shared::progress::{DialogProgress, error_row, run_dialog_task};
+use crate::shared::progress::{DialogProgress, dialog_submit_button, error_row, run_dialog_task};
 
 pub struct OnboardingDialog {
     handle: DialogHandle,
@@ -108,16 +107,18 @@ impl Render for OnboardingDialog {
                 let busy = action_state.read(cx).busy;
                 let this = this.clone();
 
-                let create: AnyElement = Button::new("create-identity")
-                    .label("Create new identity")
-                    .loading(busy)
-                    .disabled(busy)
-                    .on_click(move |_, _, cx| {
-                        crate::shared::log_dropped(
-                            this.update(cx, |this, cx| this.create_identity(cx)),
-                        );
-                    })
-                    .into_any_element();
+                let create: AnyElement = dialog_submit_button(
+                    "create-identity",
+                    "Create new identity",
+                    None,
+                    busy,
+                    &this,
+                    |this, _window, cx| {
+                        this.create_identity(cx);
+                        Ok(())
+                    },
+                )
+                .into_any_element();
 
                 vec![create]
             })

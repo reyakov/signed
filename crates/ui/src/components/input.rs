@@ -12,7 +12,7 @@
 //! use ui::input::{Input, InputState, bind_input_keys};
 //!
 //! # let mut cx: gpui::App = unimplemented!();
-//! bind_input_keys(&mut cx, None);
+//! bind_input_keys(&mut cx);
 //!
 //! let state = InputState::builder()
 //!     .text("Ada Lovelace")
@@ -131,10 +131,9 @@ actions!(
 /// The keybindings [`bind_input_keys`] registers on the application.
 ///
 /// A `None` field leaves its action unbound. Start from [`InputBindings::default`]
-/// to rebind one action and keep the platform defaults, or from
-/// [`InputBindings::empty`] to bind only what you set.
+/// to rebind one action and keep the platform defaults.
 #[derive(Clone, Debug)]
-pub struct InputBindings {
+pub(crate) struct InputBindings {
     pub escape: Option<KeyBinding>,
     pub submit: Option<KeyBinding>,
     pub secondary_submit: Option<KeyBinding>,
@@ -260,43 +259,6 @@ impl Default for InputBindings {
 }
 
 impl InputBindings {
-    /// A table with every key unbound, for building custom bindings.
-    pub fn empty() -> Self {
-        Self {
-            escape: None,
-            submit: None,
-            secondary_submit: None,
-            insert_newline: None,
-            backspace: None,
-            delete: None,
-            delete_word_left: None,
-            delete_word_right: None,
-            delete_to_beginning_of_line: None,
-            left: None,
-            right: None,
-            up: None,
-            down: None,
-            select_left: None,
-            select_right: None,
-            select_up: None,
-            select_down: None,
-            word_left: None,
-            word_right: None,
-            select_word_left: None,
-            select_word_right: None,
-            home: None,
-            end: None,
-            select_home: None,
-            select_end: None,
-            select_all: None,
-            copy: None,
-            cut: None,
-            paste: None,
-            undo: None,
-            redo: None,
-        }
-    }
-
     /// Collects the table into keybindings.
     pub(crate) fn into_bindings(self) -> Vec<KeyBinding> {
         let mut bindings: Vec<KeyBinding> = [
@@ -508,55 +470,6 @@ impl HistoryEntry {
     }
 }
 
-/// The application-owned state of a text field that [`Input`] renders.
-pub struct InputState {
-    text: String,
-    /// The caret's byte offset.
-    cursor: usize,
-    /// The byte offset the selection extends from.
-    anchor: usize,
-    /// The byte range of in-progress IME composition, if any.
-    marked_range: Option<Range<usize>>,
-    /// Whether the field had focus at the last paint, for focus transitions.
-    focused: bool,
-    focus_handle: gpui::FocusHandle,
-    /// The key-down handler, bound to this entity with `cx.listener`.
-    key_down_handler: KeyDownHandler,
-    /// The mouse-down handler, bound to this entity with `cx.listener`.
-    mouse_down_handler: MouseDownHandler,
-    /// Whether a drag-select is in progress.
-    dragging: bool,
-    /// Patch history. `redo_stack` holds undone entries awaiting redo.
-    undo_stack: Vec<HistoryEntry>,
-    redo_stack: Vec<HistoryEntry>,
-    /// Consecutive edits within this interval merge into one undo entry.
-    group_interval: Duration,
-    /// When set, user edits are refused; focus, movement, selection, and copy still work.
-    read_only: bool,
-    /// When set, the field is a password field.
-    password: bool,
-    /// Whether a password field currently shows its content.
-    revealed: bool,
-    /// Whether the field holds multiple lines of text.
-    multiline: bool,
-    /// Which keystroke submits a multiline field.
-    submit_on: SubmitOn,
-    /// The x the caret keeps across vertical movement, reset on any other move.
-    goal_x: Option<Pixels>,
-    /// Content scroll inside the field: x for single-line, y for multiline, clamped at paint.
-    scroll_offset: gpui::Point<Pixels>,
-    /// Set by every caret-affecting change.
-    scroll_to_caret_pending: bool,
-    /// Bumped on every edit.
-    caret_epoch: usize,
-    /// When the current caret epoch started.
-    caret_epoch_started: Instant,
-    /// The shaped line and element bounds, recorded during each paint.
-    layout: Option<InputLayout>,
-    /// The last shaped buffer, reused while no shaping input changed.
-    shaped_cache: std::cell::RefCell<Option<(ShapeCacheKey, ShapedText)>>,
-}
-
 /// Everything `shape_text` consumes, for cache reuse between frames.
 #[derive(Clone, PartialEq)]
 struct ShapeCacheKey {
@@ -566,8 +479,6 @@ struct ShapeCacheKey {
     font: Font,
     color: gpui::Hsla,
 }
-
-impl EventEmitter<InputStateEvent> for InputState {}
 
 /// Builder for [`InputState`] settings that are fixed at creation.
 #[derive(Default)]
@@ -627,6 +538,57 @@ impl InputStateBuilder {
         })
     }
 }
+
+/// The application-owned state of a text field that [`Input`] renders.
+pub struct InputState {
+    text: String,
+    /// The caret's byte offset.
+    cursor: usize,
+    /// The byte offset the selection extends from.
+    anchor: usize,
+    /// The byte range of in-progress IME composition, if any.
+    marked_range: Option<Range<usize>>,
+    /// Whether the field had focus at the last paint, for focus transitions.
+    focused: bool,
+    focus_handle: gpui::FocusHandle,
+    /// The key-down handler, bound to this entity with `cx.listener`.
+    key_down_handler: KeyDownHandler,
+    /// The mouse-down handler, bound to this entity with `cx.listener`.
+    mouse_down_handler: MouseDownHandler,
+    /// Whether a drag-select is in progress.
+    dragging: bool,
+    /// Patch history. `redo_stack` holds undone entries awaiting redo.
+    undo_stack: Vec<HistoryEntry>,
+    redo_stack: Vec<HistoryEntry>,
+    /// Consecutive edits within this interval merge into one undo entry.
+    group_interval: Duration,
+    /// When set, user edits are refused; focus, movement, selection, and copy still work.
+    read_only: bool,
+    /// When set, the field is a password field.
+    password: bool,
+    /// Whether a password field currently shows its content.
+    revealed: bool,
+    /// Whether the field holds multiple lines of text.
+    multiline: bool,
+    /// Which keystroke submits a multiline field.
+    submit_on: SubmitOn,
+    /// The x the caret keeps across vertical movement, reset on any other move.
+    goal_x: Option<Pixels>,
+    /// Content scroll inside the field: x for single-line, y for multiline, clamped at paint.
+    scroll_offset: gpui::Point<Pixels>,
+    /// Set by every caret-affecting change.
+    scroll_to_caret_pending: bool,
+    /// Bumped on every edit.
+    caret_epoch: usize,
+    /// When the current caret epoch started.
+    caret_epoch_started: Instant,
+    /// The shaped line and element bounds, recorded during each paint.
+    layout: Option<InputLayout>,
+    /// The last shaped buffer, reused while no shaping input changed.
+    shaped_cache: std::cell::RefCell<Option<(ShapeCacheKey, ShapedText)>>,
+}
+
+impl EventEmitter<InputStateEvent> for InputState {}
 
 impl InputState {
     fn new_inner(cx: &mut Context<Self>) -> Self {
@@ -2517,14 +2479,8 @@ impl RenderOnce for Input {
 }
 
 /// Registers the input keybindings on the application, once at startup.
-///
-/// Pass `None` for the platform defaults or an [`InputBindings`] table for
-/// custom ones.
-pub fn bind_input_keys<B>(cx: &mut App, bindings: B)
-where
-    B: Into<Option<InputBindings>>,
-{
-    cx.bind_keys(bindings.into().unwrap_or_default().into_bindings());
+pub fn bind_input_keys(cx: &mut App) {
+    cx.bind_keys(InputBindings::default().into_bindings());
 }
 
 /// The row holding `display`.

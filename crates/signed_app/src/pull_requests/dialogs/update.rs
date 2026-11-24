@@ -4,14 +4,13 @@ use gpui::{
 };
 use nostr::prelude::Event;
 use signed_state::RepoStore;
-use ui::button::Button;
 use ui::common::v_flex;
 use ui::dialog::{Dialog, DialogHandle};
 use ui::field::Field;
 use ui::input::{Input, InputState};
 use ui::theme::ActiveTheme as _;
 
-use crate::shared::progress::DialogProgress;
+use crate::shared::progress::{DialogProgress, dialog_submit_button};
 
 pub struct UpdatePrDialog {
     handle: DialogHandle,
@@ -80,14 +79,18 @@ impl Render for UpdatePrDialog {
                 let this = this.clone();
                 let busy = action_state.read(cx).busy;
                 vec![
-                    Button::new("submit-update")
-                        .label("Update pull request")
-                        .loading(busy)
-                        .disabled(busy)
-                        .on_click(move |_, _, cx| {
-                            crate::shared::log_dropped(this.update(cx, |this, cx| this.submit(cx)));
-                        })
-                        .into_any_element() as AnyElement,
+                    dialog_submit_button(
+                        "submit-update",
+                        "Update pull request",
+                        None,
+                        busy,
+                        &this,
+                        |this, _window, cx| {
+                            this.submit(cx);
+                            Ok(())
+                        },
+                    )
+                    .into_any_element() as AnyElement,
                 ]
             })
     }

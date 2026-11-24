@@ -15,21 +15,20 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyView, App, ClipboardItem, ElementId, Entity, IntoElement, RenderOnce, SharedString,
-    StyleRefinement, Task, Window,
+    AnyView, App, ClipboardItem, ElementId, Entity, IntoElement, ParentElement as _, RenderOnce,
+    SharedString, StyleRefinement, Styled as _, Task, Window, div,
 };
 
 use crate::components::button::{Button, ButtonVariant};
-use crate::components::common::{ResultLogErr as _, Sizable, StyledExt as _};
+use crate::components::common::{ResultLogErr as _, Sizable, StyledExt as _, h_flex};
 use crate::icons::IconRole;
-use crate::theme::Size;
+use crate::theme::{ActiveTheme as _, Size};
 
 /// How long the check mark shows before reverting to the copy icon.
-pub const COPIED_DURATION: Duration = Duration::from_secs(1);
+const COPIED_DURATION: Duration = Duration::from_secs(1);
 
 /// The tooltip view builder gpui's `.tooltip(...)` expects.
 type TooltipBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyView>;
-
 /// Runs after the value lands on the clipboard.
 type CopiedHandler = Box<dyn Fn(&mut App)>;
 
@@ -181,6 +180,71 @@ impl RenderOnce for ClipboardButton {
                         on_copied(cx);
                     }
                 }
+            })
+    }
+}
+
+/// A copyable value shown as a boxed row with a trailing copy button.
+#[derive(IntoElement)]
+#[must_use]
+pub struct CopyRow {
+    id: SharedString,
+    value: SharedString,
+    large_text: bool,
+}
+
+impl CopyRow {
+    /// Monospace `value` in a secondary-background row (the clone-command look).
+    pub fn new<ID, V>(id: ID, value: V) -> Self
+    where
+        ID: Into<SharedString>,
+        V: Into<SharedString>,
+    {
+        Self {
+            id: id.into(),
+            value: value.into(),
+            large_text: false,
+        }
+    }
+
+    /// Base-size label and default-size copy button (the about-dialog list look).
+    pub fn text_base(mut self) -> Self {
+        self.large_text = true;
+        self
+    }
+}
+
+impl RenderOnce for CopyRow {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme();
+
+        h_flex()
+            .h_8()
+            .px_2()
+            .gap_2()
+            .min_w_0()
+            .bg(theme.colors.secondary)
+            .rounded(theme.radius.control)
+            .text_color(theme.colors.secondary_foreground)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .when(self.large_text, |text| text.text_base())
+                    .when(!self.large_text, |text| {
+                        text.font_family(theme.mono_font).text_xs()
+                    })
+                    .child(self.value.clone()),
+            )
+            .child(if self.large_text {
+                ClipboardButton::new(self.id, self.value).into_any_element()
+            } else {
+                ClipboardButton::new(self.id, self.value)
+                    .xsmall()
+                    .into_any_element()
             })
     }
 }

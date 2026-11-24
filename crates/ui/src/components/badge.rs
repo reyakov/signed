@@ -153,7 +153,7 @@ impl RenderOnce for Badge {
         let size = self.size;
         let (background, foreground, border) = self.variant.tokens(theme);
 
-        let badge = h_flex()
+        h_flex()
             .id(self.id.clone())
             .flex_none()
             .justify_center()
@@ -163,14 +163,12 @@ impl RenderOnce for Badge {
             .border_color(border)
             .bg(background)
             .text_color(foreground)
-            .control_caption_text(size);
-        let badge = match size {
-            Size::XSmall | Size::Small => badge.h_5().min_w_5().px_1(),
-            Size::Medium => badge.h_6().min_w_6().px_1p5(),
-            Size::Large => badge.h_7().min_w_7().px_2(),
-        };
-
-        badge
+            .control_caption_text(size)
+            .map(|badge| match size {
+                Size::XSmall | Size::Small => badge.h_5().min_w_5().px_1(),
+                Size::Medium => badge.h_6().min_w_6().px_1p5(),
+                Size::Large => badge.h_7().min_w_7().px_2(),
+            })
             .when_some(self.icon, |badge, icon| {
                 badge.child(icon.size(size.dense_icon_rems()).color(foreground))
             })

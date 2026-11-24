@@ -242,124 +242,6 @@ impl RenderOnce for DropdownMenu {
         let trigger_bounds: TriggerBoundsCell = Rc::new(RefCell::new(None));
         let chevron_bounds: TriggerBoundsCell = Rc::new(RefCell::new(None));
 
-        let main = h_flex()
-            .id(self.id.clone())
-            .debug_selector({
-                let id = self.id.clone();
-                move || id.to_string()
-            })
-            .justify_center()
-            .h_full()
-            .when(icon_only, |zone| zone.w_full())
-            .gap_2()
-            .line_height(relative(1.0))
-            .control_text(self.size)
-            .text_color(foreground)
-            .role(Role::Button)
-            .when_some(a11y_label, |zone, label| zone.aria_label(label))
-            .aria_expanded(self.open)
-            .when(!icon_only, |zone| zone.control_padding_x(self.size))
-            .when(split, |zone| zone.rounded_l(radius))
-            .when(!split, |zone| {
-                zone.rounded(radius)
-                    .when(self.open, |zone| zone.bg(pressed))
-            })
-            .when(!icon_only && !split, |zone| {
-                zone.child(
-                    icon(IconRole::ChevronDown)
-                        .size(self.size.dense_icon_rems())
-                        .color(foreground),
-                )
-            })
-            .child(
-                h_flex()
-                    .gap_2()
-                    .when(self.loading, |content| content.invisible())
-                    .when_some(self.icon, |content, icon| {
-                        content.child(icon.size(self.size.icon_rems()).color(foreground))
-                    })
-                    .when_some(self.label, |content, label| content.child(label)),
-            )
-            .when(self.loading, |zone| {
-                zone.child(
-                    h_flex().absolute().inset_0().justify_center().child(
-                        Spinner::new((self.id.clone(), "spinner"))
-                            .with_size(self.size)
-                            .color(foreground),
-                    ),
-                )
-            });
-
-        let main = if inert {
-            main
-        } else {
-            main.track_focus(&focus)
-                .cursor_pointer()
-                .hover(move |style| style.bg(hover))
-                .active(move |style| style.bg(pressed))
-                .on_click({
-                    let on_click = self.on_click;
-                    let on_open = on_open.clone();
-                    let keyboard_open = keyboard_open.clone();
-                    let open = self.open;
-                    move |event, window, cx| match (on_click.as_ref(), event) {
-                        (Some(on_click), _) => on_click(event, window, cx),
-                        (None, ClickEvent::Keyboard(_)) => {
-                            keyboard_open.update(cx, |keyboard_open, _| *keyboard_open = true);
-                            on_open(!open, window, cx);
-                        }
-                        (None, _) => {}
-                    }
-                })
-                .on_key_down({
-                    let on_open = on_open.clone();
-                    let keyboard_open = keyboard_open.clone();
-                    move |event: &KeyDownEvent, window, cx| {
-                        if event.keystroke.key == "down" {
-                            keyboard_open.update(cx, |keyboard_open, _| *keyboard_open = true);
-                            on_open(true, window, cx);
-                            cx.stop_propagation();
-                        }
-                    }
-                })
-        };
-
-        let chevron_zone = h_flex()
-            .id((self.id.clone(), "chevron"))
-            .debug_selector({
-                let id = self.id.clone();
-                move || format!("{id}-chevron")
-            })
-            .relative()
-            .h_full()
-            .control_dense_padding_x(self.size)
-            .rounded_r(radius)
-            .rounded_l_none()
-            .border_l_1()
-            .border_color(border)
-            .when(self.open, |zone| zone.bg(pressed))
-            .when(!inert, |zone| {
-                zone.cursor_pointer()
-                    .hover(move |style| style.bg(hover))
-                    .active(move |style| style.bg(pressed))
-            })
-            .child(
-                icon(IconRole::ChevronDown)
-                    .size(self.size.dense_icon_rems())
-                    .color(foreground),
-            )
-            .child(
-                canvas(
-                    {
-                        let cell = chevron_bounds.clone();
-                        move |bounds, _window, _cx| *cell.borrow_mut() = Some(bounds)
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            );
-
         let trigger = h_flex()
             .debug_selector({
                 let id = self.id.clone();
@@ -377,13 +259,129 @@ impl RenderOnce for DropdownMenu {
                     .track_focus(&focus)
                     .focus_visible(move |style| style.shadow(focus_ring(ring)))
             })
-            .child(main);
-
-        let trigger = if split {
-            trigger.child(chevron_zone)
-        } else {
-            trigger
-        };
+            .child(
+                h_flex()
+                    .id(self.id.clone())
+                    .debug_selector({
+                        let id = self.id.clone();
+                        move || id.to_string()
+                    })
+                    .justify_center()
+                    .h_full()
+                    .when(icon_only, |zone| zone.w_full())
+                    .gap_2()
+                    .line_height(relative(1.0))
+                    .control_text(self.size)
+                    .text_color(foreground)
+                    .role(Role::Button)
+                    .when_some(a11y_label, |zone, label| zone.aria_label(label))
+                    .aria_expanded(self.open)
+                    .when(!icon_only, |zone| zone.control_padding_x(self.size))
+                    .when(split, |zone| zone.rounded_l(radius))
+                    .when(!split, |zone| {
+                        zone.rounded(radius)
+                            .when(self.open, |zone| zone.bg(pressed))
+                    })
+                    .when(!icon_only && !split, |zone| {
+                        zone.child(
+                            icon(IconRole::ChevronDown)
+                                .size(self.size.dense_icon_rems())
+                                .color(foreground),
+                        )
+                    })
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .when(self.loading, |content| content.invisible())
+                            .when_some(self.icon, |content, icon| {
+                                content.child(icon.size(self.size.icon_rems()).color(foreground))
+                            })
+                            .when_some(self.label, |content, label| content.child(label)),
+                    )
+                    .when(self.loading, |zone| {
+                        zone.child(
+                            h_flex().absolute().inset_0().justify_center().child(
+                                Spinner::new((self.id.clone(), "spinner"))
+                                    .with_size(self.size)
+                                    .color(foreground),
+                            ),
+                        )
+                    })
+                    .when(!inert, |main| {
+                        main.track_focus(&focus)
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(hover))
+                            .active(move |style| style.bg(pressed))
+                            .on_click({
+                                let on_click = self.on_click;
+                                let on_open = on_open.clone();
+                                let keyboard_open = keyboard_open.clone();
+                                let open = self.open;
+                                move |event, window, cx| match (on_click.as_ref(), event) {
+                                    (Some(on_click), _) => on_click(event, window, cx),
+                                    (None, ClickEvent::Keyboard(_)) => {
+                                        keyboard_open.update(cx, |keyboard_open, _| {
+                                            *keyboard_open = true;
+                                        });
+                                        on_open(!open, window, cx);
+                                    }
+                                    (None, _) => {}
+                                }
+                            })
+                            .on_key_down({
+                                let on_open = on_open.clone();
+                                let keyboard_open = keyboard_open.clone();
+                                move |event: &KeyDownEvent, window, cx| {
+                                    if event.keystroke.key == "down" {
+                                        keyboard_open.update(cx, |keyboard_open, _| {
+                                            *keyboard_open = true;
+                                        });
+                                        on_open(true, window, cx);
+                                        cx.stop_propagation();
+                                    }
+                                }
+                            })
+                    }),
+            )
+            .when(split, |trigger| {
+                trigger.child(
+                    h_flex()
+                        .id((self.id.clone(), "chevron"))
+                        .debug_selector({
+                            let id = self.id.clone();
+                            move || format!("{id}-chevron")
+                        })
+                        .relative()
+                        .h_full()
+                        .control_dense_padding_x(self.size)
+                        .rounded_r(radius)
+                        .rounded_l_none()
+                        .border_l_1()
+                        .border_color(border)
+                        .when(self.open, |zone| zone.bg(pressed))
+                        .when(!inert, |zone| {
+                            zone.cursor_pointer()
+                                .hover(move |style| style.bg(hover))
+                                .active(move |style| style.bg(pressed))
+                        })
+                        .child(
+                            icon(IconRole::ChevronDown)
+                                .size(self.size.dense_icon_rems())
+                                .color(foreground),
+                        )
+                        .child(
+                            canvas(
+                                {
+                                    let cell = chevron_bounds.clone();
+                                    move |bounds, _window, _cx| *cell.borrow_mut() = Some(bounds)
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .inset_0(),
+                        ),
+                )
+            });
 
         let items = if self.open {
             self.items

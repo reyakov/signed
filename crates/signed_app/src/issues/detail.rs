@@ -8,13 +8,16 @@ use signed_core::GitEvent;
 use signed_state::RepoStore;
 use ui::avatar::Avatar;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
+use ui::empty_state::EmptyState;
 use ui::input::InputState;
 use ui::layout::panel::Panel;
 use ui::scroll_area::ScrollArea;
+use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
-use crate::issues::helpers::{comment_form, comments_section, issue_roots, sidebar_section};
+use crate::issues::helpers::{comment_form, comments_section, sidebar_section};
+use crate::shared::log_dropped;
 use crate::shared::widgets::status_badge;
 
 pub struct IssueDetailView {
@@ -39,7 +42,7 @@ impl IssueDetailView {
         let directory = ProfileDirectory::new(cx);
         let weak = cx.entity().downgrade();
         cx.defer(move |cx| {
-            crate::shared::log_dropped(weak.update(cx, |this, cx| this.track_participants(cx)));
+            log_dropped(weak.update(cx, |this, cx| this.track_participants(cx)));
         });
 
         Self {
@@ -94,9 +97,9 @@ impl Render for IssueDetailView {
         let Some(issue) = store.issues.iter().find(|issue| issue.id == self.issue_id) else {
             // A not-yet-loaded store is not the same as a missing issue.
             return if store.loaded {
-                crate::shared::widgets::empty_state("Issue not found")
+                EmptyState::centered("Issue not found")
             } else {
-                crate::shared::widgets::centered_spinner("issue-loading")
+                Spinner::centered("issue-loading")
             };
         };
 
@@ -189,7 +192,7 @@ impl Render for IssueDetailView {
                                     .child(comment_form(
                                         &self.store,
                                         issue_id,
-                                        issue_roots,
+                                        &store.issues,
                                         &self.comment_input,
                                         "comment",
                                         cx,
@@ -200,7 +203,7 @@ impl Render for IssueDetailView {
             .child(sidebar_section(
                 &self.store,
                 issue_id,
-                issue_roots,
+                &store.issues,
                 true,
                 &self.directory,
                 cx,

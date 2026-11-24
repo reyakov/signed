@@ -56,24 +56,24 @@ type ItemsFn = Box<dyn Fn(&mut Window, &mut App) -> Vec<MenuItem>>;
 
 /// One row of a [`Menu`]: an action, a checkable action, a submenu, or a separator.
 #[derive(Clone)]
+enum MenuItemKind {
+    Action,
+    Separator,
+    Submenu(Rc<[MenuItem]>),
+}
+
+/// One row of a [`Menu`]: an action, a checkable action, a submenu, or a separator.
+#[derive(Clone)]
 #[must_use]
 pub struct MenuItem {
     id: Option<ElementId>,
     kind: MenuItemKind,
     label: SharedString,
     icon: Option<Icon>,
-    shortcut: Option<SharedString>,
     handler: Option<ItemHandler>,
     disabled: bool,
     destructive: bool,
     checked: bool,
-}
-
-#[derive(Clone)]
-enum MenuItemKind {
-    Action,
-    Separator,
-    Submenu(Rc<[MenuItem]>),
 }
 
 impl MenuItem {
@@ -87,7 +87,6 @@ impl MenuItem {
             kind: MenuItemKind::Action,
             label: label.into(),
             icon: None,
-            shortcut: None,
             handler: None,
             disabled: false,
             destructive: false,
@@ -102,7 +101,6 @@ impl MenuItem {
             kind: MenuItemKind::Separator,
             label: SharedString::default(),
             icon: None,
-            shortcut: None,
             handler: None,
             disabled: false,
             destructive: false,
@@ -134,15 +132,6 @@ impl MenuItem {
         I: Into<Icon>,
     {
         self.icon = Some(icon.into());
-        self
-    }
-
-    /// Shows a shortcut hint after the label.
-    pub fn shortcut<S>(mut self, shortcut: S) -> Self
-    where
-        S: Into<SharedString>,
-    {
-        self.shortcut = Some(shortcut.into());
         self
     }
 
@@ -184,6 +173,226 @@ impl MenuItem {
     /// Whether keyboard navigation and activation may land on this item.
     fn selectable(&self) -> bool {
         matches!(self.kind, MenuItemKind::Action | MenuItemKind::Submenu(_)) && !self.disabled
+    }
+
+    /// Renders one menu row.
+    fn render_item(
+        &self,
+        window: &mut Window,
+        cx: &mut App,
+        index: usize,
+        selected: bool,
+        env: &RowEnv,
+    ) -> AnyElement {
+        match &self.kind {
+            MenuItemKind::Separator => div()
+                .h_px()
+                .debug_selector(move || format!("{}-separator-{index}", env.debug_prefix))
+                .mx_2()
+                .my_1()
+                .bg(env.chrome.border)
+                .into_any_element(),
+            MenuItemKind::Action => {
+                let label_color = self.row_color(selected, false, env.chrome);
+                let disabled = self.disabled;
+                let checked = self.checked;
+                let icon = self.icon.clone();
+
+                self.row_shell(cx, index, selected, env)
+                    .on_click({
+                        let handler = self.handler.clone();
+                        let on_activate = env.on_activate.clone();
+                        move |_, window, cx| {
+                            if disabled {
+                                return;
+                            }
+
+                            if let Some(on_activate) = &on_activate {
+                                on_activate(false, window, cx);
+                            }
+
+                            if let Some(handler) = &handler {
+                                handler(window, cx);
+                            }
+                        }
+                    })
+                    .when_some(icon, |row, icon| {
+                        row.child(icon.size(rems(1.0)).color(label_color))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(label_color)
+                            .child(self.label.clone()),
+                    )
+                    .when(checked, |row| {
+                        row.child(
+                            icon_glyph(IconRole::Check)
+                                .size(rems(0.75))
+                                .color(label_color),
+                        )
+                    })
+                    .into_any_element()
+            }
+            MenuItemKind::Submenu(items) => {
+                let chrome = env.chrome;
+                let flyout = env.flyout;
+                let disabled = self.disabled;
+                let open = *flyout.open.read(cx) == Some(index);
+                let label_color = self.row_color(selected, open, chrome);
+                let row_bounds: TriggerBoundsCell = Rc::new(RefCell::new(None));
+
+                self.row_shell(cx, index, selected, env)
+                    .on_click({
+                        let set_flyout = flyout.set_flyout.clone();
+                        move |_, _window, cx| {
+                            if disabled {
+                                return;
+                            }
+                            // Hover already opens the flyout; a click never closes it.
+                            set_flyout(Some(index), false, cx);
+                        }
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(label_color)
+                            .child(self.label.clone()),
+                    )
+                    .child(
+                        icon_glyph(IconRole::ChevronRight)
+                            .size(rems(0.75))
+                            .color(label_color),
+                    )
+                    .aria_expanded(open)
+                    .when(open, |row| {
+                        row.child(
+                            canvas(
+                                {
+                                    let cell = row_bounds.clone();
+                                    move |bounds, _window, _cx| *cell.borrow_mut() = Some(bounds)
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .inset_0(),
+                        )
+                        .child(
+                            deferred(div().absolute().left_full().top_0().child(menu_panel(
+                                window,
+                                cx,
+                                flyout.state,
+                                MenuPanelParams {
+                                    id: &flyout.id,
+                                    items: items.clone(),
+                                    initial_selection: None,
+                                    preselect: *flyout.preselect.read(cx),
+                                    min_width: flyout.min_width,
+                                    label: self.label.clone(),
+                                    dismiss_bounds: &row_bounds,
+                                    bounds_sink: Some(flyout.bounds),
+                                    outer_stack: Some(flyout.stack),
+                                    on_dismiss: Some(flyout.dismiss.clone()),
+                                    on_activate: flyout.on_activate.clone(),
+                                    is_flyout: true,
+                                    chrome,
+                                    enter_duration: flyout.enter_duration,
+                                    debug_prefix: "submenu",
+                                },
+                            )))
+                            .with_priority(OVERLAY_LAYER),
+                        )
+                    })
+                    .into_any_element()
+            }
+        }
+    }
+
+    /// The shared row shell: dimensions, highlight, and hover-selection.
+    fn row_shell(
+        &self,
+        cx: &App,
+        index: usize,
+        selected: bool,
+        env: &RowEnv,
+    ) -> gpui::Stateful<gpui::Div> {
+        let chrome = env.chrome;
+        let selectable = self.selectable();
+        let opens_submenu = self.submenu_items().is_some();
+        let flyout_open = *env.flyout.open.read(cx) == Some(index);
+        let row_id = self
+            .id
+            .clone()
+            .unwrap_or_else(|| ("menu-item", index).into());
+
+        div()
+            .id(row_id)
+            .role(Role::MenuItem)
+            .debug_selector(move || format!("{}-item-{index}", env.debug_prefix))
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_h_8()
+            .px_4()
+            .text_sm()
+            .line_height(relative(1.0))
+            .rounded(chrome.radius_full)
+            .map(|row| {
+                if self.disabled {
+                    row
+                } else if selected && flyout_open {
+                    row.bg(chrome.muted_hover)
+                } else if selected {
+                    let highlight = if self.destructive {
+                        chrome.destructive
+                    } else {
+                        chrome.primary
+                    };
+                    row.bg(highlight)
+                } else {
+                    row.hover(|row| row.bg(chrome.muted_hover))
+                }
+            })
+            .on_mouse_move({
+                let selection = env.selection.clone();
+                let flyout_open = env.flyout.open.clone();
+                let set_flyout = env.flyout.set_flyout.clone();
+                let dismiss = env.flyout.dismiss.clone();
+                move |_, window, cx| {
+                    if !selectable {
+                        return;
+                    }
+
+                    if *selection.read(cx) != Some(index) {
+                        selection.update(cx, |selection, _| *selection = Some(index));
+                    }
+
+                    if opens_submenu {
+                        set_flyout(Some(index), false, cx);
+                    } else if flyout_open.read(cx).is_some() {
+                        dismiss(false, window, cx);
+                    }
+                }
+            })
+    }
+
+    /// The row's label/icon color.
+    fn row_color(&self, selected: bool, flyout_open: bool, chrome: &MenuChrome) -> gpui::Hsla {
+        if self.disabled {
+            return chrome.muted_foreground;
+        }
+        if self.destructive {
+            return if selected && !flyout_open {
+                chrome.destructive_foreground
+            } else {
+                chrome.destructive
+            };
+        }
+        if selected && !flyout_open {
+            chrome.primary_foreground
+        } else {
+            chrome.foreground
+        }
     }
 }
 
@@ -378,49 +587,12 @@ impl RenderOnce for Menu {
         div()
             .relative()
             .refine_style(&self.style)
-            .child(
-                canvas(
-                    {
-                        let cell = trigger_bounds.clone();
-                        move |bounds, _window, _cx| *cell.borrow_mut() = Some(bounds)
-                    },
-                    {
-                        let on_change = on_change;
-                        let open = self.open;
-                        let trigger_button = self.trigger_button;
-                        let cell = trigger_bounds.clone();
-
-                        move |_, _, window, _cx| {
-                            let trigger_bounds = cell;
-
-                            window.on_mouse_event({
-                                let on_change = on_change.clone();
-                                move |event: &MouseDownEvent, phase, window, cx| {
-                                    if phase != DispatchPhase::Bubble
-                                        || event.button != trigger_button
-                                    {
-                                        return;
-                                    }
-
-                                    let on_trigger = trigger_bounds
-                                        .borrow()
-                                        .is_some_and(|bounds| bounds.contains(&event.position));
-                                    if !on_trigger {
-                                        return;
-                                    }
-
-                                    if let Some(on_change) = &on_change {
-                                        on_change(!open, window, cx);
-                                    }
-                                    cx.stop_propagation();
-                                }
-                            });
-                        }
-                    },
-                )
-                .absolute()
-                .inset_0(),
-            )
+            .child(trigger_toggle(
+                &trigger_bounds,
+                self.open,
+                on_change.clone(),
+                self.trigger_button,
+            ))
             .when_some(self.trigger, |wrapper, trigger| {
                 wrapper.child(trigger(window, cx))
             })
@@ -453,15 +625,6 @@ struct MenuPanelState {
     was_open: Entity<bool>,
     scroll: Entity<ScrollHandle>,
     selection: Entity<Option<usize>>,
-}
-
-fn create_menu_panel_state(id: &ElementId, window: &mut Window, cx: &mut App) -> MenuPanelState {
-    MenuPanelState {
-        focus: focus_handle(&(id.clone(), "panel").into(), window, cx),
-        was_open: window.use_keyed_state((id.clone(), "menu-was-open"), cx, |_, _| false),
-        scroll: window.use_keyed_state((id.clone(), "menu-scroll"), cx, |_, _| ScrollHandle::new()),
-        selection: window.use_keyed_state((id.clone(), "menu-selection"), cx, |_, _| None),
-    }
 }
 
 struct MenuPanelParams<'a> {
@@ -513,6 +676,100 @@ struct RowEnv<'a> {
     debug_prefix: &'static str,
 }
 
+/// Everything key navigation needs from the panel.
+struct MenuKeyEnv<'a> {
+    items: &'a [MenuItem],
+    selection: &'a Entity<Option<usize>>,
+    set_flyout: &'a FlyoutSetter,
+    on_dismiss: &'a Option<ChangeHandler>,
+    on_activate: &'a Option<ChangeHandler>,
+    left_dismisses: bool,
+}
+
+/// Canvas that records the trigger's painted bounds and toggles `open` on click.
+pub(crate) fn trigger_toggle(
+    bounds: &TriggerBoundsCell,
+    open: bool,
+    on_change: Option<ChangeHandler>,
+    button: MouseButton,
+) -> AnyElement {
+    let painted = bounds.clone();
+
+    canvas(
+        {
+            let cell = bounds.clone();
+            move |painted, _window, _cx| *cell.borrow_mut() = Some(painted)
+        },
+        move |_, _, window, _cx| {
+            let cell = painted.clone();
+            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble || event.button != button {
+                    return;
+                }
+
+                let on_trigger = cell
+                    .borrow()
+                    .is_some_and(|bounds| bounds.contains(&event.position));
+                if !on_trigger {
+                    return;
+                }
+
+                if let Some(on_change) = &on_change {
+                    on_change(!open, window, cx);
+                }
+                cx.stop_propagation();
+            });
+        },
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
+}
+
+/// Deferred anchored overlay on OVERLAY_LAYER, optionally fading in.
+pub(crate) fn anchored_overlay(
+    position: Option<Point<Pixels>>,
+    panel: AnyElement,
+    fade: Option<(&'static str, std::time::Duration)>,
+) -> AnyElement {
+    deferred(
+        anchored()
+            .when_some(position, |anchored, position| anchored.position(position))
+            .offset(point(px(0.), px(4.)))
+            // AnyElement lacks `Styled`, so the opacity animation rides a wrapper.
+            .child(panel.when_some(fade, |panel, (id, duration)| {
+                div()
+                    .child(panel)
+                    .with_animation(
+                        id,
+                        Animation::new(duration).with_easing(ease_out_quint()),
+                        |panel, delta| panel.opacity(delta),
+                    )
+                    .into_any_element()
+            })),
+    )
+    .with_priority(OVERLAY_LAYER)
+    .into_any_element()
+}
+
+/// Canvas that grabs focus when `should_grab` holds.
+pub(crate) fn focus_capture(
+    focus: FocusHandle,
+    should_grab: impl Fn(&mut Window, &mut App) -> bool + 'static,
+) -> AnyElement {
+    canvas(
+        |_, _, _| {},
+        move |_, _, window, cx| {
+            if should_grab(window, cx) {
+                window.focus(&focus, cx);
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
+}
+
 /// Assembles the floating menu panel anchored to its trigger.
 pub(crate) fn anchored_menu_panel(
     window: &mut Window,
@@ -524,8 +781,6 @@ pub(crate) fn anchored_menu_panel(
 ) -> Option<AnyElement> {
     let was_open = window.use_keyed_state((id.clone(), "menu-was-open"), cx, |_, _| false);
 
-    // Render-phase residue: trigger-toggle and owner-driven closes bypass every
-    // dismissal handler, so this closed frame is the only universal close hook.
     if !spec.open {
         was_open.update(cx, |was_open, _| *was_open = false);
         // A closed menu drops any open flyout; fresh state on the next open.
@@ -562,17 +817,7 @@ pub(crate) fn anchored_menu_panel(
         },
     );
 
-    let anchored = match spec.position {
-        Some(position) => anchored().position(position),
-        None => anchored(),
-    }
-    .offset(point(px(0.), px(4.)));
-
-    Some(
-        deferred(anchored.child(panel))
-            .with_priority(OVERLAY_LAYER)
-            .into_any_element(),
-    )
+    Some(anchored_overlay(spec.position, panel, None))
 }
 
 /// Builds one menu panel: chrome, rows, focus, navigation, and dismissals.
@@ -668,10 +913,9 @@ fn menu_panel(
         .iter()
         .enumerate()
         .map(|(index, item)| {
-            render_item(
+            item.render_item(
                 window,
                 cx,
-                item,
                 index,
                 selected == Some(index),
                 &RowEnv {
@@ -791,254 +1035,6 @@ fn menu_panel(
     .into_any_element()
 }
 
-/// Renders one menu row.
-fn render_item(
-    window: &mut Window,
-    cx: &mut App,
-    item: &MenuItem,
-    index: usize,
-    selected: bool,
-    env: &RowEnv,
-) -> AnyElement {
-    match &item.kind {
-        MenuItemKind::Separator => div()
-            .h_px()
-            .debug_selector(move || format!("{}-separator-{index}", env.debug_prefix))
-            .mx_2()
-            .my_1()
-            .bg(env.chrome.border)
-            .into_any_element(),
-        MenuItemKind::Action => {
-            let label_color = row_color(item, selected, false, env.chrome);
-            let disabled = item.disabled;
-            let destructive = item.destructive;
-            let checked = item.checked;
-            let shortcut = item.shortcut.clone();
-            let icon = item.icon.clone();
-
-            row_shell(cx, item, index, selected, env)
-                .on_click({
-                    let handler = item.handler.clone();
-                    let on_activate = env.on_activate.clone();
-                    move |_, window, cx| {
-                        if disabled {
-                            return;
-                        }
-
-                        if let Some(on_activate) = &on_activate {
-                            on_activate(false, window, cx);
-                        }
-
-                        if let Some(handler) = &handler {
-                            handler(window, cx);
-                        }
-                    }
-                })
-                .when_some(icon, |row, icon| {
-                    row.child(icon.size(rems(1.0)).color(label_color))
-                })
-                .child(
-                    div()
-                        .flex_1()
-                        .text_color(label_color)
-                        .child(item.label.clone()),
-                )
-                .when_some(shortcut, |row, shortcut| {
-                    row.child(
-                        div()
-                            .text_color(if selected && !destructive && !disabled {
-                                env.chrome.primary_foreground
-                            } else {
-                                env.chrome.muted_foreground
-                            })
-                            .child(shortcut),
-                    )
-                })
-                .when(checked, |row| {
-                    row.child(
-                        icon_glyph(IconRole::Check)
-                            .size(rems(0.75))
-                            .color(label_color),
-                    )
-                })
-                .into_any_element()
-        }
-        MenuItemKind::Submenu(items) => {
-            let chrome = env.chrome;
-            let flyout = env.flyout;
-            let disabled = item.disabled;
-            let open = *flyout.open.read(cx) == Some(index);
-            let label_color = row_color(item, selected, open, chrome);
-            let row_bounds: TriggerBoundsCell = Rc::new(RefCell::new(None));
-
-            row_shell(cx, item, index, selected, env)
-                .on_click({
-                    let set_flyout = flyout.set_flyout.clone();
-                    move |_, _window, cx| {
-                        if disabled {
-                            return;
-                        }
-                        // Hover already opens the flyout; a click never closes it.
-                        set_flyout(Some(index), false, cx);
-                    }
-                })
-                .child(
-                    div()
-                        .flex_1()
-                        .text_color(label_color)
-                        .child(item.label.clone()),
-                )
-                .child(
-                    icon_glyph(IconRole::ChevronRight)
-                        .size(rems(0.75))
-                        .color(label_color),
-                )
-                .aria_expanded(open)
-                .when(open, |row| {
-                    row.child(
-                        canvas(
-                            {
-                                let cell = row_bounds.clone();
-                                move |bounds, _window, _cx| *cell.borrow_mut() = Some(bounds)
-                            },
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .inset_0(),
-                    )
-                    .child(
-                        deferred(div().absolute().left_full().top_0().child(menu_panel(
-                            window,
-                            cx,
-                            flyout.state,
-                            MenuPanelParams {
-                                id: &flyout.id,
-                                items: items.clone(),
-                                initial_selection: None,
-                                preselect: *flyout.preselect.read(cx),
-                                min_width: flyout.min_width,
-                                label: item.label.clone(),
-                                dismiss_bounds: &row_bounds,
-                                bounds_sink: Some(flyout.bounds),
-                                outer_stack: Some(flyout.stack),
-                                on_dismiss: Some(flyout.dismiss.clone()),
-                                on_activate: flyout.on_activate.clone(),
-                                is_flyout: true,
-                                chrome,
-                                enter_duration: flyout.enter_duration,
-                                debug_prefix: "submenu",
-                            },
-                        )))
-                        .with_priority(OVERLAY_LAYER),
-                    )
-                })
-                .into_any_element()
-        }
-    }
-}
-
-/// The shared row shell: dimensions, highlight, and hover-selection.
-fn row_shell(
-    cx: &App,
-    item: &MenuItem,
-    index: usize,
-    selected: bool,
-    env: &RowEnv,
-) -> gpui::Stateful<gpui::Div> {
-    let chrome = env.chrome;
-    let selectable = item.selectable();
-    let opens_submenu = item.submenu_items().is_some();
-    let flyout_open = *env.flyout.open.read(cx) == Some(index);
-    let row_id = item
-        .id
-        .clone()
-        .unwrap_or_else(|| ("menu-item", index).into());
-
-    div()
-        .id(row_id)
-        .role(Role::MenuItem)
-        .debug_selector(move || format!("{}-item-{index}", env.debug_prefix))
-        .flex()
-        .items_center()
-        .gap_2()
-        .min_h_8()
-        .px_4()
-        .text_sm()
-        .line_height(relative(1.0))
-        .rounded(chrome.radius_full)
-        .map(|row| {
-            if item.disabled {
-                row
-            } else if selected && flyout_open {
-                row.bg(chrome.muted_hover)
-            } else if selected {
-                let highlight = if item.destructive {
-                    chrome.destructive
-                } else {
-                    chrome.primary
-                };
-                row.bg(highlight)
-            } else {
-                row.hover(|row| row.bg(chrome.muted_hover))
-            }
-        })
-        .on_mouse_move({
-            let selection = env.selection.clone();
-            let flyout_open = env.flyout.open.clone();
-            let set_flyout = env.flyout.set_flyout.clone();
-            let dismiss = env.flyout.dismiss.clone();
-            move |_, window, cx| {
-                if !selectable {
-                    return;
-                }
-
-                if *selection.read(cx) != Some(index) {
-                    selection.update(cx, |selection, _| *selection = Some(index));
-                }
-
-                if opens_submenu {
-                    set_flyout(Some(index), false, cx);
-                } else if flyout_open.read(cx).is_some() {
-                    dismiss(false, window, cx);
-                }
-            }
-        })
-}
-
-/// The row's label/icon color.
-fn row_color(
-    item: &MenuItem,
-    selected: bool,
-    flyout_open: bool,
-    chrome: &MenuChrome,
-) -> gpui::Hsla {
-    if item.disabled {
-        return chrome.muted_foreground;
-    }
-    if item.destructive {
-        return if selected && !flyout_open {
-            chrome.destructive_foreground
-        } else {
-            chrome.destructive
-        };
-    }
-    if selected && !flyout_open {
-        chrome.primary_foreground
-    } else {
-        chrome.foreground
-    }
-}
-
-/// Everything key navigation needs from the panel.
-struct MenuKeyEnv<'a> {
-    items: &'a [MenuItem],
-    selection: &'a Entity<Option<usize>>,
-    set_flyout: &'a FlyoutSetter,
-    on_dismiss: &'a Option<ChangeHandler>,
-    on_activate: &'a Option<ChangeHandler>,
-    left_dismisses: bool,
-}
-
 /// Handles the panel's navigation keys.
 fn handle_menu_key(event: &KeyDownEvent, env: MenuKeyEnv, window: &mut Window, cx: &mut App) {
     let selectable: Vec<usize> = env
@@ -1110,4 +1106,14 @@ fn handle_menu_key(event: &KeyDownEvent, env: MenuKeyEnv, window: &mut Window, c
     }
 
     cx.stop_propagation();
+}
+
+/// Creates one panel's keyed state: focus, open tracking, scroll, and selection.
+fn create_menu_panel_state(id: &ElementId, window: &mut Window, cx: &mut App) -> MenuPanelState {
+    MenuPanelState {
+        focus: focus_handle(&(id.clone(), "panel").into(), window, cx),
+        was_open: window.use_keyed_state((id.clone(), "menu-was-open"), cx, |_, _| false),
+        scroll: window.use_keyed_state((id.clone(), "menu-scroll"), cx, |_, _| ScrollHandle::new()),
+        selection: window.use_keyed_state((id.clone(), "menu-selection"), cx, |_, _| None),
+    }
 }

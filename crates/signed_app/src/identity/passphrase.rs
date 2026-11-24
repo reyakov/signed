@@ -4,14 +4,15 @@ use gpui::{
     Styled as _, Subscription, Window, px,
 };
 use signed_state::Backend;
-use ui::button::Button;
 use ui::common::v_flex;
 use ui::dialog::{Dialog, DialogHandle};
 use ui::field::Field;
-use ui::icons::{Icon, IconRole};
+use ui::icons::IconRole;
 use ui::input::{Input, InputState, InputStateEvent};
 
-use crate::shared::progress::{DialogProgress, error_row, push_steps_row, run_dialog_task};
+use crate::shared::progress::{
+    DialogProgress, dialog_submit_button, error_row, push_steps_row, run_dialog_task,
+};
 
 pub struct PassphraseDialog {
     handle: DialogHandle,
@@ -102,15 +103,18 @@ impl Render for PassphraseDialog {
                 let busy = action_state.read(cx).busy;
                 let this = this.clone();
 
-                let unlock: AnyElement = Button::new("unlock")
-                    .label("Unlock")
-                    .icon(Icon::named(IconRole::Unlock))
-                    .loading(busy)
-                    .disabled(busy)
-                    .on_click(move |_, _, cx| {
-                        crate::shared::log_dropped(this.update(cx, |this, cx| this.unlock(cx)));
-                    })
-                    .into_any_element();
+                let unlock: AnyElement = dialog_submit_button(
+                    "unlock",
+                    "Unlock",
+                    Some(IconRole::Unlock),
+                    busy,
+                    &this,
+                    |this, _window, cx| {
+                        this.unlock(cx);
+                        Ok(())
+                    },
+                )
+                .into_any_element();
 
                 vec![unlock]
             })

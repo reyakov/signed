@@ -3,23 +3,19 @@
 //! # Examples
 //!
 //! ```no_run
-//! use gpui::{Keystroke, ParentElement as _};
-//! use ui::kbd::{Kbd, KbdGroup};
+//! use gpui::Keystroke;
+//! use ui::kbd::Kbd;
 //!
 //! let save = Kbd::new(Keystroke::parse("cmd-s").unwrap());
-//! let combo = KbdGroup::new()
-//!     .child(Kbd::new(Keystroke::parse("ctrl-b").unwrap()))
-//!     .child(Kbd::new(Keystroke::parse("ctrl-k").unwrap()));
 //! ```
 
-use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Action, AnyElement, App, FocusHandle, InteractiveElement as _, IntoElement, KeyBinding,
-    KeyContext, Keystroke, OperatingSystem, ParentElement as _, RenderOnce, SharedString,
-    StyleRefinement, Styled as _, Window, div, relative,
+    Action, App, InteractiveElement as _, IntoElement, KeyBinding, KeyContext, Keystroke,
+    OperatingSystem, ParentElement as _, RenderOnce, SharedString, StyleRefinement, Styled as _,
+    Window, div, relative,
 };
 
-use crate::components::common::{StyledExt as _, h_flex};
+use crate::components::common::StyledExt as _;
 use crate::theme::ActiveTheme as _;
 
 /// A key or shortcut shown as a small key cap, like `⌘S` or `Ctrl+S`.
@@ -27,7 +23,6 @@ use crate::theme::ActiveTheme as _;
 #[must_use]
 pub struct Kbd {
     stroke: Keystroke,
-    appearance: bool,
     style: StyleRefinement,
 }
 
@@ -42,7 +37,6 @@ impl Kbd {
     pub fn new(stroke: Keystroke) -> Self {
         Self {
             stroke,
-            appearance: true,
             style: StyleRefinement::default(),
         }
     }
@@ -50,12 +44,6 @@ impl Kbd {
     /// The keystroke this key cap shows.
     pub fn keystroke(&self) -> &Keystroke {
         &self.stroke
-    }
-
-    /// When false, paints the formatted shortcut as plain text without the key cap.
-    pub fn appearance(mut self, appearance: bool) -> Self {
-        self.appearance = appearance;
-        self
     }
 
     /// Returns a key cap for the highest-precedence binding of `action`.
@@ -73,23 +61,6 @@ impl Kbd {
         Self::from_binding(&binding)
     }
 
-    /// Returns a key cap for the binding of `action`.
-    pub fn binding_for_action_in(
-        action: &dyn Action,
-        focus_handle: &FocusHandle,
-        window: &Window,
-    ) -> Option<Self> {
-        let binding = window.highest_precedence_binding_for_action_in(action, focus_handle)?;
-        Self::from_binding(&binding)
-    }
-
-    /// Returns a key cap for the binding of `action` registered without a key context.
-    pub fn global_binding_for_action(action: &dyn Action, window: &Window) -> Option<Self> {
-        let binding = window
-            .highest_precedence_binding_for_action_in_context(action, KeyContext::default())?;
-        Self::from_binding(&binding)
-    }
-
     /// Shows the binding's keystroke as the keymap holds it.
     fn from_binding(binding: &KeyBinding) -> Option<Self> {
         binding.keystrokes().first().map(|stroke| {
@@ -102,7 +73,7 @@ impl Kbd {
     }
 
     /// Formats `stroke` for `os`: modifier symbols on macOS, `Ctrl+` words elsewhere.
-    pub fn format(stroke: &Keystroke, os: OperatingSystem) -> String {
+    fn format(stroke: &Keystroke, os: OperatingSystem) -> String {
         let mac = os == OperatingSystem::Mac;
         let separator = if mac { "" } else { "+" };
         let mut parts: Vec<&str> = Vec::new();
@@ -253,60 +224,18 @@ impl RenderOnce for Kbd {
         let label = SharedString::from(Self::format(&self.stroke, os));
 
         div()
-            // Lets a test ask whether this shortcut hint was painted this frame.
             .debug_selector(move || selector)
-            .when(self.appearance, |key| {
-                key.flex_none()
-                    .border_1()
-                    .border_color(theme.colors.border)
-                    .bg(theme.colors.muted)
-                    .text_color(theme.colors.muted_foreground)
-                    .py_0p5()
-                    .px_1()
-                    .min_w_5()
-                    .rounded(theme.radius.sm)
-                    .text_center()
-                    .line_height(relative(1.))
-                    .text_xs()
-            })
+            .flex_none()
+            .bg(theme.colors.muted)
+            .text_color(theme.colors.muted_foreground)
+            .py_0p5()
+            .px_1()
+            .min_w_5()
+            .rounded(theme.radius.sm)
+            .text_center()
+            .line_height(relative(1.))
+            .text_xs()
             .refine_style(&self.style)
             .child(label)
-    }
-}
-
-/// A row of key caps, grouping the keys of a multi-key hint.
-#[derive(IntoElement, Default)]
-#[must_use]
-pub struct KbdGroup {
-    style: StyleRefinement,
-    children: Vec<AnyElement>,
-}
-
-impl KbdGroup {
-    /// Creates an empty group.
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl gpui::ParentElement for KbdGroup {
-    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.children.extend(elements);
-    }
-}
-
-impl gpui::Styled for KbdGroup {
-    fn style(&mut self) -> &mut StyleRefinement {
-        &mut self.style
-    }
-}
-
-impl RenderOnce for KbdGroup {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        h_flex()
-            .flex_none()
-            .gap_1()
-            .refine_style(&self.style)
-            .children(self.children)
     }
 }

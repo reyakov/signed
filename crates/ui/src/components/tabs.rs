@@ -388,6 +388,292 @@ impl Tab {
         self.wrap = Some(Box::new(wrap));
         self
     }
+
+    fn render_tab(mut self, ctx: &StripCtx, cx: &App, index: usize) -> AnyElement {
+        let selected = index == ctx.selected;
+        // A pinned tab always wears the active treatment, selected or not.
+        let active = selected || self.pinned;
+
+        let theme = cx.theme();
+        let label_color = tab_label_color(ctx.variant, active, self.disabled, cx);
+
+        let titlebar = ctx.variant == TabsVariant::Titlebar;
+        let group = SharedString::from(format!("{}-tab-{}", ctx.id, self.key));
+        let close = (self.closeable && ctx.on_close.is_some() && !self.disabled)
+            .then(|| self.render_tab_close(&ctx.id, index, &ctx.on_close));
+
+        let label = div()
+            .flex_grow(1.0)
+            .when(titlebar, |label| {
+                let fade = if active {
+                    theme.colors.background
+                } else {
+                    theme.colors.muted
+                };
+
+                let hover_fade = if active {
+                    theme.colors.background
+                } else {
+                    theme.colors.muted_hover
+                };
+
+                let fade_width = rems(0.75);
+                let hover_fade_width = rems(1.5);
+
+                label
+                    .min_w_0()
+                    .relative()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .w_full()
+                            .whitespace_nowrap()
+                            .text_overflow(TextOverflow::Truncate(SharedString::default()))
+                            .child(self.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom_0()
+                            .w(fade_width)
+                            .bg(linear_gradient(
+                                90.,
+                                linear_color_stop(fade.opacity(0.), 0.),
+                                linear_color_stop(fade, 1.),
+                            )),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .right_0()
+                            .bottom_0()
+                            .w(hover_fade_width)
+                            .bg(linear_gradient(
+                                90.,
+                                linear_color_stop(hover_fade.opacity(0.), 0.),
+                                linear_color_stop(hover_fade, 1.),
+                            ))
+                            .invisible()
+                            .group_hover(group.clone(), |style| style.visible()),
+                    )
+            })
+            .when(!titlebar, |label| label.child(self.label.clone()));
+
+        let strip_tab = div()
+            .id((self.key.clone(), "tab"))
+            .debug_selector({
+                let tabs_id = ctx.id.clone();
+                let label = self.label.clone();
+                move || format!("{tabs_id}-tab-{}", label)
+            })
+            .flex()
+            .items_center()
+            .gap_2()
+            .role(Role::Tab)
+            .aria_selected(selected)
+            .text_color(label_color)
+            .when(titlebar, |strip_tab| strip_tab.group(group.clone()))
+            .when(!self.disabled && !active, |strip_tab| {
+                strip_tab.hover(|strip_tab| {
+                    strip_tab.bg(match ctx.variant {
+                        TabsVariant::Titlebar => theme.colors.muted_hover,
+                        _ => theme.colors.muted,
+                    })
+                })
+            })
+            .map(|strip_tab| {
+                apply_tab_chrome(strip_tab, ctx.variant, active, cx).when(titlebar, |strip_tab| {
+                    strip_tab.min_w(TAB_MIN_WIDTH).max_w(TAB_MAX_WIDTH)
+                })
+            })
+            .when_some(self.lead.take(), |strip_tab, lead| strip_tab.child(lead))
+            .child(label)
+            .when(ctx.variant == TabsVariant::Pill, |strip_tab| {
+                strip_tab.child(div().flex_none().w_4())
+            })
+            .when(self.busy && !self.disabled, |strip_tab| {
+                strip_tab.child(
+                    Spinner::new((self.key.clone(), "tab-busy"))
+                        .small()
+                        .accessibility_label("Loading"),
+                )
+            })
+            .when_some(close, |strip_tab, close| {
+                if titlebar {
+                    strip_tab.child(
+                        div()
+                            .flex_none()
+                            .invisible()
+                            .group_hover(group, |style| style.visible())
+                            .child(close),
+                    )
+                } else {
+                    strip_tab.child(close)
+                }
+            })
+            .when(
+                {
+                    let drop = ctx.drop_at.read(cx);
+                    drop.onto == Some(index) && !drop.canceled()
+                },
+                |strip_tab| {
+                    strip_tab.child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0p5()
+                            .bottom_0p5()
+                            .w_0p5()
+                            .rounded(theme.radius.sm)
+                            .bg(theme.ramps.primary.base),
+                    )
+                },
+            )
+            .when_some(ctx.measure.clone(), |strip_tab, measure| {
+                let key = measure.key.clone();
+                let root_bounds = measure.root_bounds.clone();
+                let tab_key = self.key.to_string();
+                strip_tab.child(
+                    canvas(
+                        move |bounds, _, cx| {
+                            let root = root_bounds.borrow();
+                            if let Some(root) = root.as_ref() {
+                                cx.default_global::<TabsMeasurements>().record_tab(
+                                    &key,
+                                    tab_key,
+                                    TabMeasure {
+                                        left: bounds.origin.x - root.origin.x,
+                                        width: bounds.size.width,
+                                    },
+                                );
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+            })
+            .when(!self.disabled, |strip_tab| {
+                strip_tab.cursor_pointer().on_click({
+                    let selected = ctx.selected;
+                    let on_change = ctx.on_change.clone();
+                    let focus = ctx.focus.clone();
+                    move |_, window, cx| {
+                        window.focus(&focus, cx);
+                        if index != selected
+                            && let Some(on_change) = &on_change
+                        {
+                            on_change(index, window, cx);
+                        }
+                    }
+                })
+            })
+            .when(ctx.draggable && !self.disabled, |strip_tab| {
+                strip_tab
+                    .on_mouse_down(MouseButton::Left, {
+                        let drop_at = ctx.drop_at.clone();
+                        move |event, _, cx| {
+                            cx.stop_propagation();
+                            drop_at.update(cx, |drop, cx| {
+                                let fresh = TabDrop {
+                                    origin: Some(event.position),
+                                    ..TabDrop::default()
+                                };
+                                if *drop != fresh {
+                                    *drop = fresh;
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    })
+                    .on_drag(TabDrag { index }, {
+                        let label = self.label.clone();
+                        move |_, _, _, cx| {
+                            cx.new(|_| TabDragPreview {
+                                label: label.clone(),
+                            })
+                        }
+                    })
+                    .drag_over::<TabDrag>({
+                        let drop_at = ctx.drop_at.clone();
+                        move |style, drag, _, cx| {
+                            let drop = *drop_at.read(cx);
+                            let hovered = drag.index != index && !drop.canceled();
+                            drop_at.update(cx, |drop, cx| match (hovered, drop.onto) {
+                                (true, current) if current != Some(index) => {
+                                    drop.onto = Some(index);
+                                    cx.notify();
+                                }
+                                (false, Some(_)) => {
+                                    drop.onto = None;
+                                    cx.notify();
+                                }
+                                _ => {}
+                            });
+                            style
+                        }
+                    })
+                    .on_drop::<TabDrag>({
+                        let on_reorder = ctx.on_reorder.clone();
+                        let drop_at = ctx.drop_at.clone();
+                        move |drag, window, cx| {
+                            let canceled = drop_at.read(cx).canceled();
+                            drop_at.update(cx, |drop, cx| {
+                                if drop.onto.is_some() {
+                                    drop.onto = None;
+                                    cx.notify();
+                                }
+                            });
+                            let target = (!canceled)
+                                .then(|| reorder_target(drag.index, index))
+                                .flatten();
+                            if let (Some(to), Some(on_reorder)) = (target, on_reorder.as_ref()) {
+                                on_reorder(drag.index, to, window, cx);
+                            }
+                        }
+                    })
+            });
+
+        match self.wrap {
+            Some(wrap) => wrap(strip_tab),
+            None => strip_tab.into_any_element(),
+        }
+    }
+
+    fn render_tab_close(
+        &self,
+        tabs_id: &ElementId,
+        index: usize,
+        on_close: &Option<CloseHandler>,
+    ) -> AnyElement {
+        Button::new((self.key.clone(), "tab-close"))
+            .icon(IconRole::Close)
+            .variant(ButtonVariant::Ghost)
+            .xsmall()
+            .fully_rounded(true)
+            .tab_stop(false)
+            .debug_selector({
+                let tabs_id = tabs_id.clone();
+                let label = self.label.clone();
+                move || format!("{tabs_id}-close-{}", label)
+            })
+            .tooltip(Tooltip::text("Close"))
+            .accessibility_label(SharedString::from(format!("Close {}", self.label)))
+            .on_click({
+                let on_close = on_close.clone();
+                move |_, window, cx| {
+                    cx.stop_propagation();
+                    if let Some(on_close) = &on_close {
+                        on_close(index, window, cx);
+                    }
+                }
+            })
+            .into_any_element()
+    }
 }
 
 // Tab is a data builder, not an element, adopt the combinators explicitly.
@@ -988,33 +1274,6 @@ impl RenderOnce for Tabs {
                         return root.children(strip);
                     };
 
-                    let container_canvas = canvas(
-                        {
-                            let key = measure_key.clone();
-                            move |bounds, _, cx| {
-                                cx.default_global::<TabsMeasurements>()
-                                    .record_container(&key, bounds.size.width);
-                                *root_bounds.borrow_mut() = Some(bounds);
-                            }
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .inset(shadow_bleed);
-
-                    let trigger_canvas = canvas(
-                        {
-                            let key = measure_key;
-                            move |bounds, _, cx| {
-                                cx.default_global::<TabsMeasurements>()
-                                    .record_trigger(&key, bounds.size.width);
-                            }
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .inset_0();
-
                     let control = match popover {
                         Some(popover) => div().flex_none().relative().child(popover),
                         None => div().flex_none().relative().child(
@@ -1030,7 +1289,21 @@ impl RenderOnce for Tabs {
                         .overflow_hidden()
                         .p(shadow_bleed)
                         .m(-shadow_bleed)
-                        .child(container_canvas)
+                        .child(
+                            canvas(
+                                {
+                                    let key = measure_key.clone();
+                                    move |bounds, _, cx| {
+                                        cx.default_global::<TabsMeasurements>()
+                                            .record_container(&key, bounds.size.width);
+                                        *root_bounds.borrow_mut() = Some(bounds);
+                                    }
+                                },
+                                |_, _, _, _| {},
+                            )
+                            .absolute()
+                            .inset(shadow_bleed),
+                        )
                         .child(
                             div()
                                 .flex_none()
@@ -1039,7 +1312,22 @@ impl RenderOnce for Tabs {
                                 .when(self.variant.is_capsule(), |row| row.items_center())
                                 .children(strip),
                         )
-                        .child(control.child(trigger_canvas))
+                        .child(
+                            control.child(
+                                canvas(
+                                    {
+                                        let key = measure_key;
+                                        move |bounds, _, cx| {
+                                            cx.default_global::<TabsMeasurements>()
+                                                .record_trigger(&key, bounds.size.width);
+                                        }
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .inset_0(),
+                            ),
+                        )
                 } else if self.overflow_scroll {
                     root.min_w_0()
                         .overflow_x_scroll()
@@ -1057,293 +1345,5 @@ impl RenderOnce for Tabs {
                     root.children(strip)
                 }
             })
-    }
-}
-
-impl Tab {
-    fn render_tab(mut self, ctx: &StripCtx, cx: &App, index: usize) -> AnyElement {
-        let selected = index == ctx.selected;
-        // A pinned tab always wears the active treatment, selected or not.
-        let active = selected || self.pinned;
-
-        let theme = cx.theme();
-        let label_color = tab_label_color(ctx.variant, active, self.disabled, cx);
-
-        let titlebar = ctx.variant == TabsVariant::Titlebar;
-        let group = SharedString::from(format!("{}-tab-{}", ctx.id, self.key));
-        let close = (self.closeable && ctx.on_close.is_some() && !self.disabled)
-            .then(|| self.render_tab_close(&ctx.id, index, &ctx.on_close));
-
-        let label = div()
-            .flex_grow(1.0)
-            .when(titlebar, |label| {
-                let fade = if active {
-                    theme.colors.background
-                } else {
-                    theme.colors.muted
-                };
-
-                let hover_fade = if active {
-                    theme.colors.background
-                } else {
-                    theme.colors.muted_hover
-                };
-
-                let fade_width = rems(0.75);
-                let hover_fade_width = rems(1.5);
-
-                label
-                    .min_w_0()
-                    .relative()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .w_full()
-                            .whitespace_nowrap()
-                            .text_overflow(TextOverflow::Truncate(SharedString::default()))
-                            .child(self.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .right_0()
-                            .bottom_0()
-                            .w(fade_width)
-                            .bg(linear_gradient(
-                                90.,
-                                linear_color_stop(fade.opacity(0.), 0.),
-                                linear_color_stop(fade, 1.),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .right_0()
-                            .bottom_0()
-                            .w(hover_fade_width)
-                            .bg(linear_gradient(
-                                90.,
-                                linear_color_stop(hover_fade.opacity(0.), 0.),
-                                linear_color_stop(hover_fade, 1.),
-                            ))
-                            .invisible()
-                            .group_hover(group.clone(), |style| style.visible()),
-                    )
-            })
-            .when(!titlebar, |label| label.child(self.label.clone()));
-
-        let strip_tab = div()
-            .id((self.key.clone(), "tab"))
-            .debug_selector({
-                let tabs_id = ctx.id.clone();
-                let label = self.label.clone();
-                move || format!("{tabs_id}-tab-{}", label)
-            })
-            .flex()
-            .items_center()
-            .gap_2()
-            .role(Role::Tab)
-            .aria_selected(selected)
-            .text_color(label_color)
-            .when(titlebar, |strip_tab| strip_tab.group(group.clone()))
-            .when(!self.disabled && !active, |strip_tab| {
-                strip_tab.hover(|strip_tab| {
-                    strip_tab.bg(match ctx.variant {
-                        TabsVariant::Titlebar => theme.colors.muted_hover,
-                        _ => theme.colors.muted,
-                    })
-                })
-            })
-            .map(|strip_tab| {
-                apply_tab_chrome(strip_tab, ctx.variant, active, cx).when(titlebar, |strip_tab| {
-                    strip_tab.min_w(TAB_MIN_WIDTH).max_w(TAB_MAX_WIDTH)
-                })
-            })
-            .when_some(self.lead.take(), |strip_tab, lead| strip_tab.child(lead))
-            .child(label)
-            .when(ctx.variant == TabsVariant::Pill, |strip_tab| {
-                strip_tab.child(div().flex_none().w_4())
-            })
-            .when(self.busy && !self.disabled, |strip_tab| {
-                strip_tab.child(
-                    Spinner::new((self.key.clone(), "tab-busy"))
-                        .small()
-                        .accessibility_label("Loading"),
-                )
-            })
-            .when_some(close, |strip_tab, close| {
-                if titlebar {
-                    strip_tab.child(
-                        div()
-                            .flex_none()
-                            .invisible()
-                            .group_hover(group, |style| style.visible())
-                            .child(close),
-                    )
-                } else {
-                    strip_tab.child(close)
-                }
-            })
-            .when(
-                {
-                    let drop = ctx.drop_at.read(cx);
-                    drop.onto == Some(index) && !drop.canceled()
-                },
-                |strip_tab| {
-                    strip_tab.child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .top_0p5()
-                            .bottom_0p5()
-                            .w_0p5()
-                            .rounded(theme.radius.sm)
-                            .bg(theme.ramps.primary.base),
-                    )
-                },
-            )
-            .when_some(ctx.measure.clone(), |strip_tab, measure| {
-                let key = measure.key.clone();
-                let root_bounds = measure.root_bounds.clone();
-                let tab_key = self.key.to_string();
-                strip_tab.child(
-                    canvas(
-                        move |bounds, _, cx| {
-                            let root = root_bounds.borrow();
-                            if let Some(root) = root.as_ref() {
-                                cx.default_global::<TabsMeasurements>().record_tab(
-                                    &key,
-                                    tab_key,
-                                    TabMeasure {
-                                        left: bounds.origin.x - root.origin.x,
-                                        width: bounds.size.width,
-                                    },
-                                );
-                            }
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .inset_0(),
-                )
-            })
-            .when(!self.disabled, |strip_tab| {
-                strip_tab.cursor_pointer().on_click({
-                    let selected = ctx.selected;
-                    let on_change = ctx.on_change.clone();
-                    let focus = ctx.focus.clone();
-                    move |_, window, cx| {
-                        window.focus(&focus, cx);
-                        if index != selected
-                            && let Some(on_change) = &on_change
-                        {
-                            on_change(index, window, cx);
-                        }
-                    }
-                })
-            })
-            .when(ctx.draggable && !self.disabled, |strip_tab| {
-                strip_tab
-                    .on_mouse_down(MouseButton::Left, {
-                        let drop_at = ctx.drop_at.clone();
-                        move |event, _, cx| {
-                            cx.stop_propagation();
-                            drop_at.update(cx, |drop, cx| {
-                                let fresh = TabDrop {
-                                    origin: Some(event.position),
-                                    ..TabDrop::default()
-                                };
-                                if *drop != fresh {
-                                    *drop = fresh;
-                                    cx.notify();
-                                }
-                            });
-                        }
-                    })
-                    .on_drag(TabDrag { index }, {
-                        let label = self.label.clone();
-                        move |_, _, _, cx| {
-                            cx.new(|_| TabDragPreview {
-                                label: label.clone(),
-                            })
-                        }
-                    })
-                    .drag_over::<TabDrag>({
-                        let drop_at = ctx.drop_at.clone();
-                        move |style, drag, _, cx| {
-                            let drop = *drop_at.read(cx);
-                            let hovered = drag.index != index && !drop.canceled();
-                            drop_at.update(cx, |drop, cx| match (hovered, drop.onto) {
-                                (true, current) if current != Some(index) => {
-                                    drop.onto = Some(index);
-                                    cx.notify();
-                                }
-                                (false, Some(_)) => {
-                                    drop.onto = None;
-                                    cx.notify();
-                                }
-                                _ => {}
-                            });
-                            style
-                        }
-                    })
-                    .on_drop::<TabDrag>({
-                        let on_reorder = ctx.on_reorder.clone();
-                        let drop_at = ctx.drop_at.clone();
-                        move |drag, window, cx| {
-                            let canceled = drop_at.read(cx).canceled();
-                            drop_at.update(cx, |drop, cx| {
-                                if drop.onto.is_some() {
-                                    drop.onto = None;
-                                    cx.notify();
-                                }
-                            });
-                            let target = (!canceled)
-                                .then(|| reorder_target(drag.index, index))
-                                .flatten();
-                            if let (Some(to), Some(on_reorder)) = (target, on_reorder.as_ref()) {
-                                on_reorder(drag.index, to, window, cx);
-                            }
-                        }
-                    })
-            });
-
-        match self.wrap {
-            Some(wrap) => wrap(strip_tab),
-            None => strip_tab.into_any_element(),
-        }
-    }
-
-    fn render_tab_close(
-        &self,
-        tabs_id: &ElementId,
-        index: usize,
-        on_close: &Option<CloseHandler>,
-    ) -> AnyElement {
-        Button::new((self.key.clone(), "tab-close"))
-            .icon(IconRole::Close)
-            .variant(ButtonVariant::Ghost)
-            .xsmall()
-            .fully_rounded(true)
-            .tab_stop(false)
-            .debug_selector({
-                let tabs_id = tabs_id.clone();
-                let label = self.label.clone();
-                move || format!("{tabs_id}-close-{}", label)
-            })
-            .tooltip(Tooltip::text("Close"))
-            .accessibility_label(SharedString::from(format!("Close {}", self.label)))
-            .on_click({
-                let on_close = on_close.clone();
-                move |_, window, cx| {
-                    cx.stop_propagation();
-                    if let Some(on_close) = &on_close {
-                        on_close(index, window, cx);
-                    }
-                }
-            })
-            .into_any_element()
     }
 }

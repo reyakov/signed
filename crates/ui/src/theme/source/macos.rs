@@ -44,15 +44,6 @@ define_class!(
     }
 );
 
-impl ThemeObserver {
-    fn new(reapply: async_channel::Sender<()>) -> Retained<Self> {
-        let this = Self::alloc().set_ivars(reapply);
-        // SAFETY: `this` is freshly allocated with ivars set and not yet
-        // initialized, which is exactly the receiver `init` requires.
-        unsafe { msg_send![super(this), init] }
-    }
-}
-
 /// One watcher registration, kept so [`Drop`] can undo it.
 enum Watcher {
     /// A distributed notification, registered by name.
@@ -80,6 +71,15 @@ pub(crate) struct MacosSource {
     watchers: Vec<Watcher>,
     /// Keeps the reapply loop alive.
     _signal: Option<ReapplySignal>,
+}
+
+impl ThemeObserver {
+    fn new(reapply: async_channel::Sender<()>) -> Retained<Self> {
+        let this = Self::alloc().set_ivars(reapply);
+        // SAFETY: `this` is freshly allocated with ivars set and not yet initialized,
+        // which is exactly the receiver `init` requires.
+        unsafe { msg_send![super(this), init] }
+    }
 }
 
 impl MacosSource {

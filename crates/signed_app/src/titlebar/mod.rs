@@ -2,7 +2,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, Context, Entity, IntoElement, KeyBinding,
+    AnyElement, App, AppContext as _, Context, Entity, IntoElement, KeyBinding,
     KeyBindingContextPredicate, ParentElement as _, SharedString, Subscription, WeakEntity, Window,
 };
 use metadata::{Profile, ProfileDirectory};
@@ -15,17 +15,16 @@ use ui::avatar::Avatar;
 use ui::button::{Button, ButtonVariant};
 use ui::command_palette::{Command, CommandPalette, CommandPaletteState};
 use ui::icons::{Icon, IconRole};
-use ui::layout::panel::PanelView;
+use ui::layout::root::RootContext as _;
 use ui::menu::{Menu, MenuItem};
-use ui::tabs::{Tab, Tabs, TabsVariant};
 use ui::tooltip::Tooltip;
 
+use crate::app::AppRoot;
 use crate::explore::ExploreView;
 use crate::identity::exit::ExitDialog;
 use crate::repo::{RepoDetailView, actions, dialogs};
 use crate::settings::SettingsDialog;
 use crate::shared::{log_dropped, panels};
-use crate::workspace::Workspace;
 
 mod repository_switcher;
 
@@ -56,83 +55,33 @@ pub(crate) struct SwitchRepository {
 #[action(namespace = signed, no_json)]
 pub(crate) struct CreateRepository;
 
-pub(crate) fn bind_repository_shortcuts(cx: &mut App) {
-    let context = match KeyBindingContextPredicate::parse(REPOSITORY_KEY_CONTEXT) {
-        Ok(context) => Some(Rc::new(context)),
-        Err(error) => {
-            log::error!("failed to parse repository key context: {error}");
-            return;
-        }
-    };
-
-    let bindings = REPOSITORY_KEYSTROKES
-        .into_iter()
-        .enumerate()
-        .map(|(index, keystroke)| {
-            KeyBinding::load(
-                keystroke,
-                Box::new(SwitchRepository { index }),
-                context.clone(),
-                false,
-                None,
-                cx,
-            )
-        })
-        .chain(std::iter::once(KeyBinding::load(
-            CREATE_KEYSTROKE,
-            Box::new(CreateRepository),
-            context.clone(),
-            false,
-            None,
-            cx,
-        )))
-        .collect::<Result<Vec<_>, _>>();
-
-    let bindings = match bindings {
-        Ok(bindings) => bindings,
-        Err(error) => {
-            log::error!("failed to parse repository shortcut keystrokes: {error}");
-            return;
-        }
-    };
-
-    cx.bind_keys(bindings);
-}
-
 pub struct TitlebarView {
     weak: WeakEntity<Self>,
-    workspace: WeakEntity<Workspace>,
+    app: WeakEntity<AppRoot>,
     /// User's announced repositories.
     announcements: Arc<Vec<Announcement>>,
     /// Local repositories found by the scan that are not announced yet.
     local_repos: Arc<Vec<ResolvedLocalRepo>>,
     /// Profiles rendered by the repository switcher.
     directory: Entity<ProfileDirectory>,
-    /// The command palette opened from the titlebar.
-    palette: Entity<CommandPaletteState>,
     repository_switcher: Entity<RepositorySwitcher>,
-    settings: Option<Entity<SettingsDialog>>,
-    exit: Option<Entity<ExitDialog>>,
-    create: Option<Entity<dialogs::create::CreateRepoDialog>>,
     user_menu_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
 impl TitlebarView {
-    pub fn new(
-        workspace: WeakEntity<Workspace>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(app: WeakEntity<AppRoot>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let backend = Backend::global(cx);
         let repos = RepoListStore::global(cx);
         let local = LocalReposStore::global(cx);
-
-        let weak = cx.entity().downgrade();
-        let palette = Self::new_palette(weak.clone(), window, cx);
         let directory = ProfileDirectory::new(cx);
 
         let entity = cx.entity();
+        let weak = entity.downgrade();
+
+        let palette = Self::new_palette(weak.clone(), window, cx);
+        cx.open_palette(palette);
+
         let mut subscriptions = Vec::new();
 
         let repository_switcher = cx.new(|cx| {
@@ -195,15 +144,11 @@ impl TitlebarView {
 
         Self {
             weak: cx.entity().downgrade(),
-            workspace,
+            app,
             announcements: Arc::new(Vec::new()),
             local_repos: Arc::new(Vec::new()),
             directory,
-            palette,
             repository_switcher,
-            settings: None,
-            exit: None,
-            create: None,
             user_menu_open: false,
             _subscriptions: subscriptions,
         }
@@ -256,10 +201,6 @@ impl TitlebarView {
             Command::new("open-settings", "Settings").icon(Icon::named(IconRole::Settings)),
             Command::new("exit", "Exit"),
         ]
-    }
-
-    pub fn palette(&self) -> Entity<CommandPaletteState> {
-        self.palette.clone()
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
@@ -351,57 +292,6 @@ impl TitlebarView {
         self.repository_switcher.clone()
     }
 
-    /// Tabs for the repositories opened in the main panel.
-    pub fn render_repo_tabs(&self, workspace: &Workspace) -> Option<Tabs> {
-        let open = workspace.open_mains();
-
-        if open.is_empty() {
-            return None;
-        }
-
-        let tabs: Vec<_> = open
-            .iter()
-            .map(|id| (id.clone(), workspace.main_view(id)))
-            .collect();
-
-        let selected = workspace
-            .active_main_id()
-            .and_then(|id| open.iter().position(|open_id| open_id == id))
-            .unwrap_or(usize::MAX);
-
-        let change_workspace = self.workspace.clone();
-        let close_workspace = self.workspace.clone();
-        let open_for_change = open.to_vec();
-
-        Some(
-            Tabs::new("signed-repo-tabs")
-                .variant(TabsVariant::Titlebar)
-                .overflow_scroll(true)
-                .selected(selected)
-                .tabs(move |_, cx| {
-                    tabs.iter()
-                        .map(|(id, view)| match view {
-                            Some(view) => view.tab(id.clone().into(), cx).closeable(true),
-                            None => Tab::new(id.clone(), id.clone()).closeable(true),
-                        })
-                        .collect()
-                })
-                .on_change(move |index, _, cx| {
-                    let Some(id) = open_for_change.get(index).cloned() else {
-                        return;
-                    };
-                    log_dropped(change_workspace.update(cx, |workspace, cx| {
-                        workspace.activate_main(&id, cx);
-                    }));
-                })
-                .on_close(move |index, _, cx| {
-                    log_dropped(close_workspace.update(cx, |workspace, cx| {
-                        workspace.close_main_at(index, cx);
-                    }));
-                }),
-        )
-    }
-
     pub(crate) fn activate_shortcut(
         &mut self,
         index: usize,
@@ -420,37 +310,27 @@ impl TitlebarView {
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
-        self.settings = Some(SettingsDialog::new(cx));
+        let dialog = SettingsDialog::new(cx);
+        cx.open_dialog(dialog);
         cx.notify();
     }
 
     fn open_exit(&mut self, cx: &mut Context<Self>) {
-        self.exit = Some(ExitDialog::new(cx));
+        let dialog = ExitDialog::new(cx);
+        cx.open_dialog(dialog);
         cx.notify();
     }
 
     fn open_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let view = dialogs::create::CreateRepoDialog::new(self.workspace.clone(), window, cx);
-        self.create = Some(view);
+        let view = dialogs::create::CreateRepoDialog::new(self.app.clone(), window, cx);
+        cx.open_dialog(view);
         cx.notify();
-    }
-
-    /// The dialogs this titlebar opens, rendered at the window root.
-    pub fn dialogs(&self) -> Vec<AnyView> {
-        [
-            self.settings.clone().map(Into::into),
-            self.exit.clone().map(Into::into),
-            self.create.clone().map(Into::into),
-        ]
-        .into_iter()
-        .flatten()
-        .collect()
     }
 
     fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(announcement) = self.announcements.get(index) {
             let addr = announcement.addr();
-            actions::open_repo_panel(&self.workspace, &addr, Some(announcement), window, cx);
+            actions::open_repo_panel(&self.app, &addr, Some(announcement), window, cx);
             return;
         }
 
@@ -479,7 +359,7 @@ impl TitlebarView {
 
         if let Some(announcement) = announcement {
             let id = SharedString::from(format!("repo:{}", announcement.addr()));
-            let workspace = self.workspace.clone();
+            let workspace = self.app.clone();
             let workspace_for_build = workspace.clone();
             panels::open_primary(
                 &workspace,
@@ -502,7 +382,7 @@ impl TitlebarView {
         }
 
         let id = SharedString::from(format!("repo-local:{}", path.display()));
-        let workspace = self.workspace.clone();
+        let workspace = self.app.clone();
         let workspace_for_build = workspace.clone();
 
         panels::open_primary(
@@ -534,7 +414,7 @@ impl TitlebarView {
     }
 
     pub fn render_explore(&self) -> AnyElement {
-        let workspace = self.workspace.clone();
+        let workspace = self.app.clone();
 
         Button::new("open-explore")
             .icon(IconRole::Grid)
@@ -625,4 +505,47 @@ fn local_key(entry: &ResolvedLocalRepo) -> SharedString {
         Some(announcement) => announcement_key(announcement),
         None => SharedString::from(format!("repo-local:{}", entry.path.display())),
     }
+}
+
+pub(crate) fn bind_repository_shortcuts(cx: &mut App) {
+    let context = match KeyBindingContextPredicate::parse(REPOSITORY_KEY_CONTEXT) {
+        Ok(context) => Some(Rc::new(context)),
+        Err(error) => {
+            log::error!("failed to parse repository key context: {error}");
+            return;
+        }
+    };
+
+    let bindings = REPOSITORY_KEYSTROKES
+        .into_iter()
+        .enumerate()
+        .map(|(index, keystroke)| {
+            KeyBinding::load(
+                keystroke,
+                Box::new(SwitchRepository { index }),
+                context.clone(),
+                false,
+                None,
+                cx,
+            )
+        })
+        .chain(std::iter::once(KeyBinding::load(
+            CREATE_KEYSTROKE,
+            Box::new(CreateRepository),
+            context.clone(),
+            false,
+            None,
+            cx,
+        )))
+        .collect::<Result<Vec<_>, _>>();
+
+    let bindings = match bindings {
+        Ok(bindings) => bindings,
+        Err(error) => {
+            log::error!("failed to parse repository shortcut keystrokes: {error}");
+            return;
+        }
+    };
+
+    cx.bind_keys(bindings);
 }

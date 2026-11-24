@@ -29,7 +29,7 @@ use crate::icons::{Icon, IconRole, icon};
 use crate::theme::{ActiveTheme as _, Size};
 
 /// Reports the value the user chose. `None` means the select holds no value.
-pub type SelectHandler<T> = Rc<dyn Fn(Option<T>, &mut Window, &mut App)>;
+type SelectHandler<T> = Rc<dyn Fn(Option<T>, &mut Window, &mut App)>;
 
 /// Select option for a [`Select`] control.
 #[derive(Clone)]
@@ -340,7 +340,7 @@ where
                 .collect()
         };
 
-        let menu = Menu::new(self.id)
+        Menu::new(self.id)
             .open(is_open)
             .on_change({
                 let open = open.clone();
@@ -353,8 +353,7 @@ where
                 }
             })
             .trigger(trigger)
-            .items(items);
-
-        menu.when_some(selected_index, |menu, index| menu.initial_selection(index))
+            .items(items)
+            .when_some(selected_index, |menu, index| menu.initial_selection(index))
     }
 }

@@ -107,21 +107,20 @@ impl RenderOnce for StatusDot {
         let size = self.size;
         let color = self.variant.color(theme);
 
-        let dot = div()
+        div()
             .id(self.id.clone())
             .debug_selector(move || self.id.to_string())
             .flex_none()
             .rounded(theme.radius.full)
-            .bg(color);
-        let dot = match size {
-            Size::XSmall => dot.size_1p5(),
-            Size::Small | Size::Medium => dot.size_2(),
-            Size::Large => dot.size_2p5(),
-        };
-
-        dot.when_some(self.label, |dot, label| {
-            dot.role(Role::Status).aria_label(label)
-        })
-        .refine_style(&self.style)
+            .bg(color)
+            .map(|dot| match size {
+                Size::XSmall => dot.size_1p5(),
+                Size::Small | Size::Medium => dot.size_2(),
+                Size::Large => dot.size_2p5(),
+            })
+            .refine_style(&self.style)
+            .when_some(self.label, |dot, label| {
+                dot.role(Role::Status).aria_label(label)
+            })
     }
 }

@@ -29,11 +29,6 @@ const TILE_PX: u32 = 256;
 #[must_use]
 pub struct Grain;
 
-/// Creates a grain overlay.
-pub fn grain() -> Grain {
-    Grain
-}
-
 impl RenderOnce for Grain {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let texture = texture();
@@ -72,6 +67,11 @@ impl RenderOnce for Grain {
         .absolute()
         .inset_0()
     }
+}
+
+/// Creates a grain overlay.
+pub fn grain() -> Grain {
+    Grain
 }
 
 /// Returns the shared noise tile so every tile reuses one atlas entry.

@@ -46,18 +46,6 @@ pub enum ButtonVariant {
     Destructive,
 }
 
-/// The variant colors a button paints with, resolved from the active theme.
-pub struct ButtonChrome {
-    /// The resting background, `None` for unpainted variants like `Ghost`.
-    pub background: Option<Hsla>,
-    pub foreground: Hsla,
-    pub hover: Hsla,
-    pub pressed: Hsla,
-    pub border: Hsla,
-    pub hover_border: Hsla,
-    pub pressed_border: Hsla,
-}
-
 impl ButtonVariant {
     /// The variant's colors from the active theme.
     pub fn chrome(&self, cx: &App) -> ButtonChrome {
@@ -115,6 +103,18 @@ pub enum ButtonSide {
     Left,
     /// Content on the right edge, icon trailing the label.
     Right,
+}
+
+/// The variant colors a button paints with, resolved from the active theme.
+pub struct ButtonChrome {
+    /// The resting background, `None` for unpainted variants like `Ghost`.
+    pub background: Option<Hsla>,
+    pub foreground: Hsla,
+    pub hover: Hsla,
+    pub pressed: Hsla,
+    pub border: Hsla,
+    pub hover_border: Hsla,
+    pub pressed_border: Hsla,
 }
 
 /// A push button that renders a label, an icon, or both, and fires

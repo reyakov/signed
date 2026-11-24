@@ -10,15 +10,14 @@ use gpui::{
 use signed_git::{FileCommit, Repo, WorktreeSnapshot};
 use ui::code::CodeViewState;
 use ui::common::{StyledExt as _, h_flex, v_flex};
-use ui::icons::{Icon, IconRole};
+use ui::empty_state::EmptyState;
 use ui::markdown::MarkdownViewState;
+use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
-use ui::tree::{Tree, TreeItem};
+use ui::tree::{Tree, TreeItem, TreeItemSeed};
 
-use super::helpers::{code_language, is_markdown_path, preview_spinner, source_hash};
+use super::helpers::{code_language, is_markdown_path, source_hash};
 use crate::repo::helpers::short_id;
-use crate::shared::tree::{TreeItemSeed, TreeRow, collect_expanded, flatten};
-use crate::shared::widgets::empty_state;
 
 const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 const MAX_PREVIEWED_FILES: usize = 32;
@@ -56,7 +55,7 @@ struct CodeView {
 pub struct RepoFilesView {
     seeds: Vec<TreeItemSeed>,
     expanded: HashSet<String>,
-    rows: Vec<TreeRow>,
+    rows: Vec<TreeItem>,
     selected_index: Option<usize>,
     worktree: Option<PathBuf>,
     worktree_paths: Vec<String>,
@@ -112,18 +111,19 @@ impl RepoFilesView {
     ) {
         self.worktree_paths = paths;
         self.seeds = tree;
-        let folder_ids = collect_expanded(&self.seeds);
+        let folder_ids = TreeItemSeed::collect_expanded(&self.seeds);
         self.expanded.retain(|id| folder_ids.contains(id));
         self.rebuild_rows();
         cx.notify();
     }
 
     fn rebuild_rows(&mut self) {
-        self.rows = flatten(&self.seeds, &self.expanded);
-        self.selected_index = self
-            .selected_file
-            .as_ref()
-            .and_then(|path| self.rows.iter().position(|row| row.id == path.as_ref()));
+        self.rows = TreeItemSeed::flatten_all(&self.seeds, &self.expanded);
+        self.selected_index = self.selected_file.as_ref().and_then(|path| {
+            self.rows
+                .iter()
+                .position(|row| row.key().to_string() == path.as_ref())
+        });
     }
 
     fn toggle_folder(&mut self, id: &str) {
@@ -235,8 +235,8 @@ impl RepoFilesView {
         let Some(row) = self.rows.get(index) else {
             return;
         };
-        let id = row.id.clone();
-        let expandable = row.expandable;
+        let id = row.key().to_string();
+        let expandable = row.is_expandable();
 
         self.selected_index = Some(index);
 
@@ -261,22 +261,7 @@ impl RepoFilesView {
             .child(
                 Tree::new("repo-tree")
                     .selected(selected)
-                    .items(move |_, _| {
-                        rows.iter()
-                            .map(|row| {
-                                let item = TreeItem::new(row.id.clone(), row.label.clone())
-                                    .depth(row.depth)
-                                    .expandable(row.expandable)
-                                    .expanded(row.expanded);
-
-                                if row.expandable {
-                                    item.icon(Icon::named(IconRole::Folder))
-                                } else {
-                                    item.icon(Icon::named(IconRole::File))
-                                }
-                            })
-                            .collect()
-                    })
+                    .items(move |_, _| rows.clone())
                     .on_change({
                         let view = change_view;
                         move |index, window, cx| {
@@ -293,7 +278,7 @@ impl RepoFilesView {
                         let view = disclosure_view;
                         move |index, _, cx| {
                             if let Err(error) = view.update(cx, |this, cx| {
-                                let id = this.rows.get(index).map(|row| row.id.clone());
+                                let id = this.rows.get(index).map(|row| row.key().to_string());
                                 if let Some(id) = id {
                                     this.toggle_folder(&id);
                                     cx.emit(RepoFilesEvent::Activated);
@@ -319,15 +304,17 @@ impl RepoFilesView {
                         self.code_element(path.as_ref())
                     }
                 }
-                Some(FileContent::Binary) => empty_state("Binary file - preview not supported"),
-                Some(FileContent::TooLarge) => empty_state("File is too large to preview"),
-                Some(FileContent::Failed(message)) => empty_state(message),
-                None => preview_spinner(),
+                Some(FileContent::Binary) => {
+                    EmptyState::centered("Binary file - preview not supported")
+                }
+                Some(FileContent::TooLarge) => EmptyState::centered("File is too large to preview"),
+                Some(FileContent::Failed(message)) => EmptyState::centered(message),
+                None => Spinner::centered("repo-preview-spinner"),
             }
         } else if self.readme_name.is_some() {
             self.markdown_element(None)
         } else {
-            empty_state("No README found")
+            EmptyState::centered("No README found")
         };
 
         let commit = match &self.selected_file {
@@ -426,7 +413,7 @@ impl RepoFilesView {
 
     fn markdown_element(&self, path: Option<&str>) -> AnyElement {
         let Some(md) = &self.md else {
-            return preview_spinner();
+            return Spinner::centered("repo-preview-spinner");
         };
 
         let ready = match path {
@@ -435,7 +422,7 @@ impl RepoFilesView {
         };
 
         if !ready {
-            return preview_spinner();
+            return Spinner::centered("repo-preview-spinner");
         }
 
         div()
@@ -481,10 +468,10 @@ impl RepoFilesView {
 
     fn code_element(&self, path: &str) -> AnyElement {
         let Some(code) = &self.code else {
-            return preview_spinner();
+            return Spinner::centered("repo-preview-spinner");
         };
         if code.path.as_ref() != path {
-            return preview_spinner();
+            return Spinner::centered("repo-preview-spinner");
         }
 
         div()

@@ -143,269 +143,7 @@ impl SidebarEntry {
         }
         self
     }
-}
 
-// SidebarEntry is a data builder, not an element, adopt the combinators explicitly.
-impl FluentBuilder for SidebarEntry {}
-
-/// A sidebar of [`SidebarEntry`] rows grouped under section headers.
-#[derive(IntoElement)]
-#[must_use]
-pub struct Sidebar {
-    id: ElementId,
-    selected: Option<usize>,
-    transparent: bool,
-    grain: bool,
-    border_right: bool,
-    padded: bool,
-    width: Pixels,
-    a11y_label: Option<SharedString>,
-    on_change: Option<ChangeHandler>,
-    entries: Option<EntriesFn>,
-    style: StyleRefinement,
-}
-
-impl Sidebar {
-    /// Creates a sidebar with nothing selected.
-    pub fn new<I>(id: I) -> Self
-    where
-        I: Into<ElementId>,
-    {
-        Self {
-            id: id.into(),
-            selected: None,
-            transparent: false,
-            grain: false,
-            border_right: true,
-            padded: true,
-            width: SIDEBAR_DEFAULT_WIDTH,
-            a11y_label: None,
-            on_change: None,
-            entries: None,
-            style: StyleRefinement::default(),
-        }
-    }
-
-    /// Sets the current selection.
-    pub fn selected(mut self, selected: Option<usize>) -> Self {
-        self.selected = selected;
-        self
-    }
-
-    /// Paints translucent material fills so the window's native backdrop shows through.
-    pub fn transparent(mut self, transparent: bool) -> Self {
-        self.transparent = transparent;
-        self
-    }
-
-    /// Whether translucent material fills are painted.
-    pub fn is_transparent(&self) -> bool {
-        self.transparent
-    }
-
-    /// Textures the sidebar with a film-grain overlay.
-    pub fn grain(mut self, grain: bool) -> Self {
-        self.grain = grain;
-        self
-    }
-
-    /// Paints a hairline border on the sidebar's right edge.
-    pub fn border_right(mut self, border_right: bool) -> Self {
-        self.border_right = border_right;
-        self
-    }
-
-    /// Whether the right-edge border is painted.
-    pub fn has_border_right(&self) -> bool {
-        self.border_right
-    }
-
-    /// Insets the entry list from the sidebar's edges; the scrollbar stays on the edge.
-    pub fn padded(mut self, padded: bool) -> Self {
-        self.padded = padded;
-        self
-    }
-
-    /// Whether the entry list is inset from the sidebar's edges.
-    pub fn is_padded(&self) -> bool {
-        self.padded
-    }
-
-    /// Sets the sidebar's width, overriding the default.
-    pub fn width<W>(mut self, width: W) -> Self
-    where
-        W: Into<Pixels>,
-    {
-        self.width = width.into();
-        self
-    }
-
-    /// Reports the next selected row, from clicks and keys alike.
-    pub fn on_change<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(Option<usize>, &mut Window, &mut App) + 'static,
-    {
-        self.on_change = Some(Rc::new(handler));
-        self
-    }
-
-    /// Sets the entries; the closure runs during render and must not mutate entities or notify.
-    pub fn entries<F>(mut self, entries: F) -> Self
-    where
-        F: Fn(&mut Window, &mut App) -> Vec<SidebarEntry> + 'static,
-    {
-        self.entries = Some(Box::new(entries));
-        self
-    }
-
-    /// Overrides the accessibility label, which defaults to the id.
-    pub fn accessibility_label<L>(mut self, label: L) -> Self
-    where
-        L: Into<SharedString>,
-    {
-        self.a11y_label = Some(label.into());
-        self
-    }
-}
-
-impl gpui::Styled for Sidebar {
-    fn style(&mut self) -> &mut StyleRefinement {
-        &mut self.style
-    }
-}
-
-impl RenderOnce for Sidebar {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let Self {
-            id,
-            selected,
-            transparent: material,
-            grain,
-            border_right,
-            padded,
-            width,
-            a11y_label,
-            on_change,
-            entries,
-            style,
-        } = self;
-
-        let label = a11y_label.unwrap_or_else(|| SharedString::from(id.to_string()));
-        let debug_id = id.clone();
-
-        let entries = match entries {
-            Some(build) => build(window, cx),
-            None => Vec::new(),
-        };
-
-        // Headers and custom entries are never selectable, only enabled rows are.
-        let selectable: Vec<usize> = entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| match entry {
-                SidebarEntry::Row { disabled, .. } => !disabled,
-                SidebarEntry::Header { .. } | SidebarEntry::Custom(_) => false,
-            })
-            .map(|(index, _)| index)
-            .collect();
-
-        let focus = crate::components::common::focus_handle(&id, window, cx);
-        let scroll = window.with_element_namespace(id.clone(), |window| {
-            window
-                .use_keyed_state("scroll", cx, |_, _| gpui::ScrollHandle::new())
-                .clone()
-        });
-        let scroll_area_id = (id.clone(), "entries");
-
-        let row_count = entries
-            .iter()
-            .filter(|entry| matches!(entry, SidebarEntry::Row { .. }))
-            .count();
-        let mut row_position = 0usize;
-
-        let children: Vec<AnyElement> = entries
-            .into_iter()
-            .enumerate()
-            .map(|(index, entry)| {
-                let is_row = matches!(entry, SidebarEntry::Row { .. });
-
-                if is_row {
-                    row_position += 1;
-                }
-
-                let (position_in_set, size_of_set) = if is_row {
-                    (row_position, row_count)
-                } else {
-                    (0, 0)
-                };
-
-                entry.render_entry(
-                    cx,
-                    index,
-                    position_in_set,
-                    size_of_set,
-                    selected == Some(index),
-                    material,
-                    &on_change,
-                    &focus,
-                )
-            })
-            .collect();
-
-        let body = div()
-            .id((id.clone(), "list"))
-            .flex_1()
-            .min_h_0()
-            .track_focus(&focus)
-            .focusable()
-            .tab_stop(true)
-            .role(Role::List)
-            .aria_label(label)
-            .on_key_down({
-                let on_change = on_change.clone();
-                move |event: &KeyDownEvent, window, cx| {
-                    if nav_key(&selectable, selected, &event.keystroke.key, |next| {
-                        if let Some(on_change) = &on_change {
-                            on_change(next, window, cx);
-                        }
-                    }) {
-                        cx.stop_propagation();
-                    }
-                }
-            })
-            .child(
-                ScrollArea::new(scroll_area_id)
-                    .handle(scroll.read(cx).clone())
-                    .h_full()
-                    .child(
-                        v_flex()
-                            .gap_0p5()
-                            .when(padded, |content| content.p_2())
-                            .children(children),
-                    ),
-            )
-            .into_any_element();
-
-        let theme = cx.theme();
-
-        v_flex()
-            .id(id.clone())
-            .refine_style(&style)
-            .debug_selector(move || format!("sidebar-{debug_id}"))
-            .h_full()
-            .w(width)
-            .text_sm()
-            .when(border_right, |sidebar| {
-                sidebar
-                    .border_r(BORDER_WIDTH)
-                    .border_color(theme.colors.border)
-            })
-            .child(body)
-            .when(material && grain, |sidebar| sidebar.child(grain_overlay()))
-    }
-}
-
-impl SidebarEntry {
     #[allow(clippy::too_many_arguments)]
     fn render_entry(
         self,
@@ -527,5 +265,229 @@ impl SidebarEntry {
                     .into_any_element()
             }
         }
+    }
+}
+
+// SidebarEntry is a data builder, not an element, adopt the combinators explicitly.
+impl FluentBuilder for SidebarEntry {}
+
+/// A sidebar of [`SidebarEntry`] rows grouped under section headers.
+#[derive(IntoElement)]
+#[must_use]
+pub struct Sidebar {
+    id: ElementId,
+    selected: Option<usize>,
+    transparent: bool,
+    grain: bool,
+    border_right: bool,
+    padded: bool,
+    width: Pixels,
+    a11y_label: Option<SharedString>,
+    on_change: Option<ChangeHandler>,
+    entries: Option<EntriesFn>,
+    style: StyleRefinement,
+}
+
+impl Sidebar {
+    /// Creates a sidebar with nothing selected.
+    pub fn new<I>(id: I) -> Self
+    where
+        I: Into<ElementId>,
+    {
+        Self {
+            id: id.into(),
+            selected: None,
+            transparent: false,
+            grain: false,
+            border_right: true,
+            padded: true,
+            width: SIDEBAR_DEFAULT_WIDTH,
+            a11y_label: None,
+            on_change: None,
+            entries: None,
+            style: StyleRefinement::default(),
+        }
+    }
+
+    /// Sets the current selection.
+    pub fn selected(mut self, selected: Option<usize>) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// Paints translucent material fills so the window's native backdrop shows through.
+    pub fn transparent(mut self, transparent: bool) -> Self {
+        self.transparent = transparent;
+        self
+    }
+
+    /// Paints a hairline border on the sidebar's right edge.
+    pub fn border_right(mut self, border_right: bool) -> Self {
+        self.border_right = border_right;
+        self
+    }
+
+    /// Reports the next selected row, from clicks and keys alike.
+    pub fn on_change<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(Option<usize>, &mut Window, &mut App) + 'static,
+    {
+        self.on_change = Some(Rc::new(handler));
+        self
+    }
+
+    /// Sets the entries; the closure runs during render and must not mutate entities or notify.
+    pub fn entries<F>(mut self, entries: F) -> Self
+    where
+        F: Fn(&mut Window, &mut App) -> Vec<SidebarEntry> + 'static,
+    {
+        self.entries = Some(Box::new(entries));
+        self
+    }
+
+    /// Overrides the accessibility label, which defaults to the id.
+    pub fn accessibility_label<L>(mut self, label: L) -> Self
+    where
+        L: Into<SharedString>,
+    {
+        self.a11y_label = Some(label.into());
+        self
+    }
+}
+
+impl gpui::Styled for Sidebar {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
+}
+
+impl RenderOnce for Sidebar {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Self {
+            id,
+            selected,
+            transparent: material,
+            grain,
+            border_right,
+            padded,
+            width,
+            a11y_label,
+            on_change,
+            entries,
+            style,
+        } = self;
+
+        let label = a11y_label.unwrap_or_else(|| SharedString::from(id.to_string()));
+        let debug_id = id.clone();
+
+        let entries = match entries {
+            Some(build) => build(window, cx),
+            None => Vec::new(),
+        };
+
+        // Headers and custom entries are never selectable, only enabled rows are.
+        let selectable: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| match entry {
+                SidebarEntry::Row { disabled, .. } => !disabled,
+                SidebarEntry::Header { .. } | SidebarEntry::Custom(_) => false,
+            })
+            .map(|(index, _)| index)
+            .collect();
+
+        let focus = crate::components::common::focus_handle(&id, window, cx);
+        let scroll = window.with_element_namespace(id.clone(), |window| {
+            window
+                .use_keyed_state("scroll", cx, |_, _| gpui::ScrollHandle::new())
+                .clone()
+        });
+        let scroll_area_id = (id.clone(), "entries");
+
+        let row_count = entries
+            .iter()
+            .filter(|entry| matches!(entry, SidebarEntry::Row { .. }))
+            .count();
+        let mut row_position = 0usize;
+
+        let children: Vec<AnyElement> = entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let is_row = matches!(entry, SidebarEntry::Row { .. });
+
+                if is_row {
+                    row_position += 1;
+                }
+
+                let (position_in_set, size_of_set) = if is_row {
+                    (row_position, row_count)
+                } else {
+                    (0, 0)
+                };
+
+                entry.render_entry(
+                    cx,
+                    index,
+                    position_in_set,
+                    size_of_set,
+                    selected == Some(index),
+                    material,
+                    &on_change,
+                    &focus,
+                )
+            })
+            .collect();
+
+        let theme = cx.theme();
+
+        v_flex()
+            .id(id.clone())
+            .refine_style(&style)
+            .debug_selector(move || format!("sidebar-{debug_id}"))
+            .h_full()
+            .w(width)
+            .text_sm()
+            .when(border_right, |sidebar| {
+                sidebar
+                    .border_r(BORDER_WIDTH)
+                    .border_color(theme.colors.border)
+            })
+            .child(
+                div()
+                    .id((id.clone(), "list"))
+                    .flex_1()
+                    .min_h_0()
+                    .track_focus(&focus)
+                    .focusable()
+                    .tab_stop(true)
+                    .role(Role::List)
+                    .aria_label(label)
+                    .on_key_down({
+                        let on_change = on_change.clone();
+                        move |event: &KeyDownEvent, window, cx| {
+                            if nav_key(&selectable, selected, &event.keystroke.key, |next| {
+                                if let Some(on_change) = &on_change {
+                                    on_change(next, window, cx);
+                                }
+                            }) {
+                                cx.stop_propagation();
+                            }
+                        }
+                    })
+                    .child(
+                        ScrollArea::new(scroll_area_id)
+                            .handle(scroll.read(cx).clone())
+                            .h_full()
+                            .child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .when(padded, |content| content.p_2())
+                                    .children(children),
+                            ),
+                    )
+                    .into_any_element(),
+            )
+            .when(material && grain, |sidebar| sidebar.child(grain_overlay()))
     }
 }

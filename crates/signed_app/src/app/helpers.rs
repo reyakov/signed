@@ -1,11 +1,6 @@
 use gpui::App;
-use settings::{AppearanceMode, Settings};
+use settings::AppearanceMode;
 use ui::theme::{ThemeVariant, follow_system, set_mode_override};
-
-/// Applies the persisted light/dark/system preference to the kit theme.
-pub fn apply_appearance(settings: &Settings, cx: &mut App) {
-    apply_appearance_mode(settings.appearance, cx);
-}
 
 /// Applies one appearance mode to the kit theme.
 pub fn apply_appearance_mode(mode: AppearanceMode, cx: &mut App) {

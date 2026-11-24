@@ -1,4 +1,4 @@
-//! The window titlebar: the full-width strip drawn above the panel row —
+//! The window titlebar: the full-width strip drawn above the panel stack —
 //! the prefix, tab bar, and suffix in the middle, the platform's window
 //! controls at macOS's leading edge and every other platform's trailing
 //! edge. The bar itself moves the window, tab bar included; the prefix and
@@ -22,7 +22,6 @@ pub struct Titlebar {
     prefix: Vec<AnyElement>,
     tab_bar: Option<AnyElement>,
     suffix: Vec<AnyElement>,
-    transparent: bool,
     style: StyleRefinement,
 }
 
@@ -37,7 +36,6 @@ impl Titlebar {
             prefix: Vec::new(),
             tab_bar: None,
             suffix: Vec::new(),
-            transparent: false,
             style: StyleRefinement::default(),
         }
     }
@@ -68,12 +66,6 @@ impl Titlebar {
         self.suffix = vec![suffix.into_any_element()];
         self
     }
-
-    /// Leaves the strip unpainted so the shell's material backdrop shows through.
-    pub(crate) fn transparent(mut self, transparent: bool) -> Self {
-        self.transparent = transparent;
-        self
-    }
 }
 
 impl gpui::Styled for Titlebar {
@@ -99,7 +91,7 @@ impl RenderOnce for Titlebar {
                 .w_full()
                 .h(height)
                 .gap_2()
-                .when(!self.transparent, |bar| bar.bg(theme.colors.muted))
+                .bg(theme.colors.muted)
                 .px_3()
                 .refine_style(&self.style)
                 .when(cfg!(target_os = "macos"), |bar| bar.pl(TRAFFIC_LIGHT_PAD))

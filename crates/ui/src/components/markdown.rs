@@ -19,8 +19,6 @@
 //! fn notes(cx: &mut App) -> TextView {
 //!     let state = cx.new(|_| MarkdownViewState::new("notes", "# Notes\n- [x] shipped"));
 //!     TextView::new(&state)
-//!         .on_link_click(|destination, _window, _cx| println!("{destination}"))
-//!         .on_task_toggle(|index, checked, _window, _cx| println!("{index}: {checked}"))
 //! }
 //! ```
 
@@ -29,7 +27,6 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -55,11 +52,6 @@ use crate::theme::{ActiveTheme as _, BORDER_WIDTH, CODE_LINE_HEIGHT, CODE_OVERSC
 const BODY_LINE_HEIGHT: f32 = 1.6;
 /// The key context the text view declares while it holds focus.
 pub const TEXT_VIEW_CONTEXT: &str = "TextView";
-
-/// The callback a view invokes when the user clicks a markdown link.
-pub type LinkClickHandler = Arc<dyn Fn(&SharedString, &mut Window, &mut App)>;
-/// The callback a view invokes when the user toggles a task checkbox.
-pub type TaskToggleHandler = Arc<dyn Fn(usize, bool, &mut Window, &mut App)>;
 
 actions!(text_view, [Copy]);
 
@@ -191,6 +183,94 @@ impl MarkdownBlock {
         self.hash(&mut hasher);
         hasher.finish()
     }
+
+    /// The block's selectable text units, in render order.
+    fn block_text_units(&self) -> Vec<String> {
+        match self {
+            MarkdownBlock::Heading { spans, .. } => vec![spans_text_of(spans)],
+            MarkdownBlock::Paragraph { items, .. } | MarkdownBlock::ListItem { items, .. } => {
+                let mut units: Vec<String> = Vec::new();
+                for item in items {
+                    match item {
+                        InlineItem::Text(span) => match units.last_mut() {
+                            // Consecutive text items share the unit between images.
+                            Some(unit) => unit.push_str(&span.text),
+                            None => units.push(span.text.as_ref().to_string()),
+                        },
+                        // An image starts the next unit; the render emits no
+                        // element for it.
+                        InlineItem::Image { .. } => units.push(String::new()),
+                    }
+                }
+                units
+            }
+            MarkdownBlock::Code { lines, .. } => {
+                lines.lines.iter().map(|line| line.text()).collect()
+            }
+            MarkdownBlock::Table { table, .. } => table
+                .rows
+                .iter()
+                .flat_map(|row| row.cells.iter())
+                .map(|cell| spans_text_of(&cell.spans))
+                .collect(),
+            MarkdownBlock::Image { .. } | MarkdownBlock::ThematicBreak { .. } => Vec::new(),
+        }
+    }
+
+    /// Renders one parsed block as a list row.
+    fn render_block(&self, block_index: usize, ctx: &BlockContext, cx: &App) -> AnyElement {
+        let gap = rems(0.75);
+
+        match self {
+            MarkdownBlock::Heading {
+                level,
+                spans,
+                indent,
+                quote,
+            } => heading_row(
+                *level,
+                spans,
+                *indent,
+                *quote,
+                if block_index == 0 {
+                    Rems::ZERO
+                } else {
+                    rems(0.375)
+                },
+                ctx,
+                cx,
+            ),
+            MarkdownBlock::Paragraph {
+                items,
+                indent,
+                quote,
+            } => text_row(items, *indent, *quote, gap, None, ctx, cx),
+            MarkdownBlock::ListItem {
+                marker,
+                items,
+                indent,
+                quote,
+            } => text_row(items, *indent, *quote, rems(0.2), Some(*marker), ctx, cx),
+            MarkdownBlock::Image {
+                source,
+                alt,
+                indent,
+                quote,
+            } => image_row(source, alt, *indent, *quote, ctx, cx),
+            MarkdownBlock::Code {
+                language,
+                lines,
+                indent,
+                quote,
+            } => code_row(lines, language.as_ref(), *indent, *quote, ctx, cx),
+            MarkdownBlock::ThematicBreak { indent, quote } => rule_row(*indent, *quote, ctx, cx),
+            MarkdownBlock::Table {
+                table,
+                indent,
+                quote,
+            } => table_row(table, *indent, *quote, ctx, cx),
+        }
+    }
 }
 
 /// One run of inline text sharing a style.
@@ -235,8 +315,6 @@ pub struct MarkdownViewState {
     /// Drives the vertical scroll of the virtualized block list.
     handle: ListState,
     a11y_label: Option<SharedString>,
-    link_handler: Option<LinkClickHandler>,
-    task_toggle_handler: Option<TaskToggleHandler>,
     /// `(anchor, head)` in the order they were set, over the rendered text.
     selection: Option<(usize, usize)>,
     /// Whether a drag is still extending the selection.
@@ -265,8 +343,6 @@ impl MarkdownViewState {
             highlight_code: true,
             handle: ListState::new(count, ListAlignment::Top, CODE_OVERSCROLL_MAX),
             a11y_label: None,
-            link_handler: None,
-            task_toggle_handler: None,
             selection: None,
             selecting: false,
             focus_handle: None,
@@ -360,34 +436,6 @@ impl MarkdownViewState {
         self
     }
 
-    /// Invokes `handler` when the user clicks a link, instead of opening it.
-    pub fn on_link_click<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(&SharedString, &mut Window, &mut App) + 'static,
-    {
-        self.link_handler = Some(Arc::new(handler));
-        self
-    }
-
-    /// Replaces the link click handler.
-    pub fn set_link_handler(&mut self, handler: LinkClickHandler) {
-        self.link_handler = Some(handler);
-    }
-
-    /// Invokes `handler(block, checked)` when the user toggles a task checkbox.
-    pub fn on_task_toggle<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(usize, bool, &mut Window, &mut App) + 'static,
-    {
-        self.task_toggle_handler = Some(Arc::new(handler));
-        self
-    }
-
-    /// Replaces the task toggle handler.
-    pub fn set_task_toggle_handler(&mut self, handler: TaskToggleHandler) {
-        self.task_toggle_handler = Some(handler);
-    }
-
     /// Selects a range over the rendered text, endpoints in byte offsets.
     pub fn select_range(&mut self, start: usize, end: usize, cx: &mut Context<Self>) {
         self.selection = Some((start, end));
@@ -430,8 +478,6 @@ impl Render for MarkdownViewState {
         let focus_handle = self.focus_handle(cx);
         let frame = std::rc::Rc::new(ViewFrame {
             state: state.clone(),
-            link_handler: self.link_handler.clone(),
-            task_toggle: self.task_toggle_handler.clone(),
             selection: self.selection(),
             focus_handle,
             pressed_on_piece: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -455,7 +501,7 @@ impl Render for MarkdownViewState {
                             block_index,
                             block_id,
                         };
-                        render_block(block, block_index, &ctx, cx)
+                        block.render_block(block_index, &ctx, cx)
                     }
                     None => div().into_any_element(),
                 }
@@ -481,8 +527,6 @@ impl Render for MarkdownViewState {
 /// The per-frame context the view's renderers wire themselves from.
 struct ViewFrame {
     state: Entity<MarkdownViewState>,
-    link_handler: Option<LinkClickHandler>,
-    task_toggle: Option<TaskToggleHandler>,
     /// The selection over the rendered text, endpoints in document order.
     selection: Option<(usize, usize)>,
     focus_handle: gpui::FocusHandle,
@@ -525,7 +569,6 @@ impl BlockContext<'_> {
 
         Some(PieceContext {
             state: self.frame.state.clone(),
-            link_handler: self.frame.link_handler.clone(),
             doc_range: piece.range.clone(),
             selected,
             pressed_on_piece: self.frame.pressed_on_piece.clone(),
@@ -536,7 +579,6 @@ impl BlockContext<'_> {
 /// What one selectable text element wires itself from.
 struct PieceContext {
     state: Entity<MarkdownViewState>,
-    link_handler: Option<LinkClickHandler>,
     /// The piece's byte range in the rendered text.
     doc_range: Range<usize>,
     /// The selection overlap, in piece-local bytes.
@@ -579,7 +621,7 @@ impl TextDocument {
                 .iter()
                 .position(|piece| piece.block_index != block_index)
                 .map_or(self.pieces.len(), |offset| piece_ix + offset);
-            let units = block_text_units(block);
+            let units = block.block_text_units();
 
             for piece in &self.pieces[piece_ix..block_end] {
                 let Some(unit) = units.get(piece.sub_index).filter(|unit| !unit.is_empty()) else {
@@ -602,8 +644,6 @@ pub struct TextView {
     id: ElementId,
     source: Option<SharedString>,
     state: Option<Entity<MarkdownViewState>>,
-    link_handler: Option<LinkClickHandler>,
-    task_toggle_handler: Option<TaskToggleHandler>,
     style: StyleRefinement,
 }
 
@@ -618,8 +658,6 @@ impl TextView {
             id: id.into(),
             source: Some(source.into()),
             state: None,
-            link_handler: None,
-            task_toggle_handler: None,
             style: StyleRefinement::default(),
         }
     }
@@ -630,28 +668,8 @@ impl TextView {
             id: ElementId::from(SharedString::from(format!("{}", state.entity_id()))),
             source: None,
             state: Some(state.clone()),
-            link_handler: None,
-            task_toggle_handler: None,
             style: StyleRefinement::default(),
         }
-    }
-
-    /// Invokes `handler` when the user clicks a link, instead of opening it.
-    pub fn on_link_click<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(&SharedString, &mut Window, &mut App) + 'static,
-    {
-        self.link_handler = Some(Arc::new(handler));
-        self
-    }
-
-    /// Invokes `handler(block, checked)` when the user toggles a task checkbox.
-    pub fn on_task_toggle<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(usize, bool, &mut Window, &mut App) + 'static,
-    {
-        self.task_toggle_handler = Some(Arc::new(handler));
-        self
     }
 }
 
@@ -693,8 +711,6 @@ impl Element for TextView {
         };
 
         let source = self.source.clone();
-        let link_handler = self.link_handler.clone();
-        let task_toggle = self.task_toggle_handler.clone();
 
         let (selection, focus_handle) =
             state.update(cx, |view, cx| (view.selection(), view.focus_handle(cx)));
@@ -703,19 +719,11 @@ impl Element for TextView {
             if let Some(source) = source {
                 view.set_source(source, cx);
             }
-            if let Some(link_handler) = link_handler {
-                view.set_link_handler(link_handler);
-            }
-            if let Some(task_toggle) = task_toggle {
-                view.set_task_toggle_handler(task_toggle);
-            }
         });
 
         let view = state.read(cx);
         let frame = ViewFrame {
             state: state.clone(),
-            link_handler: view.link_handler.clone(),
-            task_toggle: view.task_toggle_handler.clone(),
             selection,
             focus_handle,
             pressed_on_piece: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -908,44 +916,13 @@ fn render_blocks(
                 block_index,
                 block_id,
             };
-            render_block(block, block_index, &ctx, cx)
+            block.render_block(block_index, &ctx, cx)
         },
     ))
 }
 
 fn spans_text_of(spans: &[InlineSpan]) -> String {
     spans.iter().map(|span| span.text.as_ref()).collect()
-}
-
-/// The selectable text units of a block.
-fn block_text_units(block: &MarkdownBlock) -> Vec<String> {
-    match block {
-        MarkdownBlock::Heading { spans, .. } => vec![spans_text_of(spans)],
-        MarkdownBlock::Paragraph { items, .. } | MarkdownBlock::ListItem { items, .. } => {
-            let mut units: Vec<String> = Vec::new();
-            for item in items {
-                match item {
-                    InlineItem::Text(span) => match units.last_mut() {
-                        // Consecutive text items share the unit between images.
-                        Some(unit) => unit.push_str(&span.text),
-                        None => units.push(span.text.as_ref().to_string()),
-                    },
-                    // An image starts the next unit; the render emits no
-                    // element for it.
-                    InlineItem::Image { .. } => units.push(String::new()),
-                }
-            }
-            units
-        }
-        MarkdownBlock::Code { lines, .. } => lines.lines.iter().map(|line| line.text()).collect(),
-        MarkdownBlock::Table { table, .. } => table
-            .rows
-            .iter()
-            .flat_map(|row| row.cells.iter())
-            .map(|cell| spans_text_of(&cell.spans))
-            .collect(),
-        MarkdownBlock::Image { .. } | MarkdownBlock::ThematicBreak { .. } => Vec::new(),
-    }
 }
 
 /// Enumerates the selectable text pieces of `blocks`, in render order.
@@ -960,7 +937,7 @@ fn text_document(blocks: &[MarkdownBlock]) -> TextDocument {
             MarkdownBlock::Paragraph { .. } | MarkdownBlock::ListItem { .. }
         );
 
-        for (sub_index, unit) in block_text_units(block).into_iter().enumerate() {
+        for (sub_index, unit) in block.block_text_units().into_iter().enumerate() {
             if unit.is_empty() && skip_empty {
                 continue;
             }
@@ -1405,66 +1382,6 @@ fn flush_item_inline(
     });
 }
 
-/// Renders one parsed block as a list row.
-fn render_block(
-    block: &MarkdownBlock,
-    block_index: usize,
-    ctx: &BlockContext,
-    cx: &App,
-) -> AnyElement {
-    let gap = rems(0.75);
-
-    match block {
-        MarkdownBlock::Heading {
-            level,
-            spans,
-            indent,
-            quote,
-        } => heading_row(
-            *level,
-            spans,
-            *indent,
-            *quote,
-            if block_index == 0 {
-                Rems::ZERO
-            } else {
-                rems(0.375)
-            },
-            ctx,
-            cx,
-        ),
-        MarkdownBlock::Paragraph {
-            items,
-            indent,
-            quote,
-        } => text_row(items, *indent, *quote, gap, None, ctx, cx),
-        MarkdownBlock::ListItem {
-            marker,
-            items,
-            indent,
-            quote,
-        } => text_row(items, *indent, *quote, rems(0.2), Some(*marker), ctx, cx),
-        MarkdownBlock::Image {
-            source,
-            alt,
-            indent,
-            quote,
-        } => image_row(source, alt, *indent, *quote, ctx, cx),
-        MarkdownBlock::Code {
-            language,
-            lines,
-            indent,
-            quote,
-        } => code_row(lines, language.as_ref(), *indent, *quote, ctx, cx),
-        MarkdownBlock::ThematicBreak { indent, quote } => rule_row(*indent, *quote, ctx, cx),
-        MarkdownBlock::Table {
-            table,
-            indent,
-            quote,
-        } => table_row(table, *indent, *quote, ctx, cx),
-    }
-}
-
 /// The shared block frame: ambient text style, spacing, quote bar.
 fn block_frame(quote: bool, top: Rems, bottom: Rems, id: &ElementId, cx: &App) -> Div {
     let theme = cx.theme();
@@ -1509,19 +1426,18 @@ fn heading_row(
     ctx: &BlockContext,
     cx: &App,
 ) -> AnyElement {
-    let frame = block_frame(quote, top, rems(0.75), ctx.block_id, cx);
-    let frame = match level {
-        MarkdownHeading::H1 => frame.text_xl().font_semibold(),
-        MarkdownHeading::H2 => frame.text_lg().font_semibold(),
-        MarkdownHeading::H3 => frame.text_base().font_semibold(),
-        MarkdownHeading::H4 | MarkdownHeading::H5 | MarkdownHeading::H6 => {
-            frame.text_sm().font_semibold()
-        }
-    };
-
     indented_frame(
         indent,
-        frame.child(text_child(spans, ctx.block_id, ctx.piece_context(0), cx)),
+        block_frame(quote, top, rems(0.75), ctx.block_id, cx)
+            .map(|frame| match level {
+                MarkdownHeading::H1 => frame.text_xl().font_semibold(),
+                MarkdownHeading::H2 => frame.text_lg().font_semibold(),
+                MarkdownHeading::H3 => frame.text_base().font_semibold(),
+                MarkdownHeading::H4 | MarkdownHeading::H5 | MarkdownHeading::H6 => {
+                    frame.text_sm().font_semibold()
+                }
+            })
+            .child(text_child(spans, ctx.block_id, ctx.piece_context(0), cx)),
     )
     .into_any_element()
 }
@@ -1542,35 +1458,42 @@ fn text_row(
         block_frame(quote, Rems::ZERO, bottom, ctx.block_id, cx).map(|frame| match marker {
             Some(marker) => {
                 let line_height = rems(1.2);
-                let marker_cell = div()
-                    .flex_none()
-                    .w(rems(1.75))
-                    .h(line_height)
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .pr_1()
-                    .child(match marker {
-                        ListMarker::Bullet => div()
-                            .size_1()
-                            .rounded(theme.radius.full)
-                            .bg(theme.colors.muted_foreground)
-                            .into_any_element(),
-                        ListMarker::Ordered(number) => div()
-                            .text_color(theme.colors.muted_foreground)
-                            .whitespace_nowrap()
-                            .child(format!("{number}."))
-                            .into_any_element(),
-                        ListMarker::Task(checked) => task_toggle(checked, item_text(items), ctx),
-                    });
 
                 frame.child(
-                    div().flex().items_start().child(marker_cell).child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(paragraph_child(items, ctx, cx)),
-                    ),
+                    div()
+                        .flex()
+                        .items_start()
+                        .child(
+                            div()
+                                .flex_none()
+                                .w(rems(1.75))
+                                .h(line_height)
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .pr_1()
+                                .child(match marker {
+                                    ListMarker::Bullet => div()
+                                        .size_1()
+                                        .rounded(theme.radius.full)
+                                        .bg(theme.colors.muted_foreground)
+                                        .into_any_element(),
+                                    ListMarker::Ordered(number) => div()
+                                        .text_color(theme.colors.muted_foreground)
+                                        .whitespace_nowrap()
+                                        .child(format!("{number}."))
+                                        .into_any_element(),
+                                    ListMarker::Task(checked) => {
+                                        task_toggle(checked, item_text(items), ctx)
+                                    }
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(paragraph_child(items, ctx, cx)),
+                        ),
                 )
             }
             None => frame.child(paragraph_child(items, ctx, cx)),
@@ -1579,22 +1502,17 @@ fn text_row(
     .into_any_element()
 }
 
-/// The task marker: a checkbox that reports toggles when a handler is set.
+/// The task marker: a checkbox that renders the state without toggling.
 fn task_toggle(checked: bool, label: SharedString, ctx: &BlockContext) -> AnyElement {
     let block_index = ctx.block_index;
     let selector = SharedString::from(format!("task-toggle-{block_index}"));
-    let checkbox = Checkbox::new((ctx.block_id.clone(), "task"))
+    Checkbox::new((ctx.block_id.clone(), "task"))
         .debug_selector(move || selector.to_string())
         .checked(checked)
         .with_size(Size::Small)
-        .accessibility_label(label);
-
-    match ctx.frame.task_toggle.clone() {
-        Some(handler) => checkbox
-            .on_change(move |next, window, cx| handler(block_index, next, window, cx))
-            .into_any_element(),
-        None => checkbox.disabled(true).into_any_element(),
-    }
+        .accessibility_label(label)
+        .disabled(true)
+        .into_any_element()
 }
 
 /// The item's plain text, for the checkbox's accessibility label.
@@ -1710,54 +1628,54 @@ fn code_row(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let actions_row = h_flex()
-        .justify_between()
-        .pb_1()
-        .when_some(language.cloned(), |row, language| {
-            row.child(
-                div()
-                    .text_xs()
-                    .text_color(theme.colors.muted_foreground)
-                    .child(language),
-            )
-        })
-        .child(
-            Button::new((ctx.block_id.clone(), "copy-code"))
-                .label("Copy")
-                .variant(ButtonVariant::Ghost)
-                .debug_selector(|| "copy-code".to_string())
-                .on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(plain.clone()));
-                }),
-        );
-
-    let plate = v_flex()
-        .w_full()
-        .rounded(theme.radius.control)
-        .bg(theme.colors.muted)
-        .p_2()
-        .font_family(theme.mono_font)
-        .text_xs()
-        .line_height(relative(CODE_LINE_HEIGHT))
-        .overflow_hidden()
-        .child(actions_row)
-        .children(lines.lines.iter().enumerate().map(|(line_ix, line)| {
-            let styled = code_line(line, theme.colors, theme.ramps);
-            let layout = styled.layout().clone();
-            with_selection_handlers(
-                div()
-                    .h(line_height)
-                    .whitespace_nowrap()
-                    .overflow_hidden()
-                    .child(styled),
-                ctx.piece_context(line_ix),
-                layout,
-            )
-        }));
-
     indented_frame(
         indent,
-        block_frame(quote, Rems::ZERO, rems(0.75), ctx.block_id, cx).child(plate),
+        block_frame(quote, Rems::ZERO, rems(0.75), ctx.block_id, cx).child(
+            v_flex()
+                .w_full()
+                .rounded(theme.radius.control)
+                .bg(theme.colors.muted)
+                .p_2()
+                .font_family(theme.mono_font)
+                .text_xs()
+                .line_height(relative(CODE_LINE_HEIGHT))
+                .overflow_hidden()
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .pb_1()
+                        .when_some(language.cloned(), |row, language| {
+                            row.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.colors.muted_foreground)
+                                    .child(language),
+                            )
+                        })
+                        .child(
+                            Button::new((ctx.block_id.clone(), "copy-code"))
+                                .label("Copy")
+                                .variant(ButtonVariant::Ghost)
+                                .debug_selector(|| "copy-code".to_string())
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(plain.clone()));
+                                }),
+                        ),
+                )
+                .children(lines.lines.iter().enumerate().map(|(line_ix, line)| {
+                    let styled = code_line(line, theme.colors, theme.ramps);
+                    let layout = styled.layout().clone();
+                    with_selection_handlers(
+                        div()
+                            .h(line_height)
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .child(styled),
+                        ctx.piece_context(line_ix),
+                        layout,
+                    )
+                })),
+        ),
     )
     .into_any_element()
 }
@@ -1790,50 +1708,52 @@ fn table_row(
     let row_count = table.rows.len();
     let mut cell_ix = 0usize;
 
-    let grid = v_flex()
-        .w_full()
-        .border_1()
-        .border_color(colors.border)
-        .rounded(theme.radius.control)
-        .overflow_hidden()
-        .children(table.rows.iter().enumerate().map(|(row_index, row)| {
-            div()
-                .w_full()
-                .flex()
-                .when(row_index + 1 < row_count, |row_element| {
-                    row_element.border_b_1().border_color(colors.border)
-                })
-                .when(row.header, |row_element| row_element.bg(colors.muted))
-                .children(
-                    row.cells
-                        .iter()
-                        .enumerate()
-                        .map(|(column_index, cell)| {
-                            let cell_id = ElementId::from(SharedString::from(format!(
-                                "{}-cell-{row_index}-{column_index}",
-                                ctx.block_id
-                            )));
-                            let piece = ctx.piece_context(cell_ix);
-                            cell_ix += 1;
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .px_2()
-                                .py_1()
-                                .when(row.header, |cell_element| cell_element.font_semibold())
-                                .child(text_child(&cell.spans, &cell_id, piece, cx))
-                        })
-                        // Ragged tables pad missing cells so rows align.
-                        .chain(
-                            (row.cells.len()..width)
-                                .map(|_| div().flex_1().min_w_0().px_2().py_1()),
-                        ),
-                )
-        }));
-
     indented_frame(
         indent,
-        block_frame(quote, Rems::ZERO, rems(0.75), ctx.block_id, cx).child(grid),
+        block_frame(quote, Rems::ZERO, rems(0.75), ctx.block_id, cx).child(
+            v_flex()
+                .w_full()
+                .border_1()
+                .border_color(colors.border)
+                .rounded(theme.radius.control)
+                .overflow_hidden()
+                .children(table.rows.iter().enumerate().map(|(row_index, row)| {
+                    div()
+                        .w_full()
+                        .flex()
+                        .when(row_index + 1 < row_count, |row_element| {
+                            row_element.border_b_1().border_color(colors.border)
+                        })
+                        .when(row.header, |row_element| row_element.bg(colors.muted))
+                        .children(
+                            row.cells
+                                .iter()
+                                .enumerate()
+                                .map(|(column_index, cell)| {
+                                    let cell_id = ElementId::from(SharedString::from(format!(
+                                        "{}-cell-{row_index}-{column_index}",
+                                        ctx.block_id
+                                    )));
+                                    let piece = ctx.piece_context(cell_ix);
+                                    cell_ix += 1;
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .px_2()
+                                        .py_1()
+                                        .when(row.header, |cell_element| {
+                                            cell_element.font_semibold()
+                                        })
+                                        .child(text_child(&cell.spans, &cell_id, piece, cx))
+                                })
+                                // Ragged tables pad missing cells so rows align.
+                                .chain(
+                                    (row.cells.len()..width)
+                                        .map(|_| div().flex_1().min_w_0().px_2().py_1()),
+                                ),
+                        )
+                })),
+        ),
     )
     .into_any_element()
 }
@@ -2016,16 +1936,12 @@ where
     let inner = if destinations.is_empty() {
         styled.into_any_element()
     } else {
-        let link_handler = piece.as_ref().and_then(|piece| piece.link_handler.clone());
         InteractiveText::new(id.clone(), styled)
-            .on_click(link_ranges, move |range_ix, window, cx| {
+            .on_click(link_ranges, move |range_ix, _window, cx| {
                 let Some(destination) = destinations.get(range_ix) else {
                     return;
                 };
-                match link_handler.as_ref() {
-                    Some(handler) => handler(destination, window, cx),
-                    None => cx.open_url(destination.as_ref()),
-                }
+                cx.open_url(destination.as_ref());
             })
             .into_any_element()
     };

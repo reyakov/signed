@@ -40,6 +40,16 @@ impl Oklch {
     }
 }
 
+/// The state shades components paint from for one accent color.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AccentShades {
+    pub base: Hsla,
+    pub hover: Hsla,
+    pub pressed: Hsla,
+    pub subtle: Hsla,
+    pub foreground: Hsla,
+}
+
 /// Mixes `a` toward `b` by `t` in OKLCH, taking the shortest arc between hues.
 ///
 /// `t = 0` returns `a`, `t = 1` returns `b`.
@@ -150,16 +160,6 @@ pub fn contrast_foreground(background: Hsla) -> Hsla {
     } else {
         black
     }
-}
-
-/// The state shades components paint from for one accent color.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AccentShades {
-    pub base: Hsla,
-    pub hover: Hsla,
-    pub pressed: Hsla,
-    pub subtle: Hsla,
-    pub foreground: Hsla,
 }
 
 /// Derives hover/pressed/subtle shades for an accent against its background.

@@ -269,7 +269,7 @@ impl RenderOnce for Alert {
 
 /// One pushed alert, with its identity in the stack.
 #[derive(Clone)]
-pub struct AlertEntry {
+struct AlertEntry {
     /// The id [`Alerts::push`] returned.
     pub id: usize,
     /// The alert as pushed.
@@ -338,13 +338,8 @@ impl Alerts {
     }
 
     /// The stacked alerts, oldest first.
-    pub fn entries(&self) -> &[AlertEntry] {
+    fn entries(&self) -> &[AlertEntry] {
         &self.entries
-    }
-
-    /// How many alerts are stacked.
-    pub fn count(&self) -> usize {
-        self.entries.len()
     }
 }
 

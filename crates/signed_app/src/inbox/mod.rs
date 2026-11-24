@@ -15,6 +15,7 @@ use signed_state::{Backend, BackendEvent, Inbox, RefreshGate, RefreshRequest, Re
 use ui::alert::{Alert, AlertSeverity, AlertStyle};
 use ui::button::Button;
 use ui::common::{StyledExt as _, h_flex, v_flex};
+use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::Panel;
 use ui::scroll_area::ScrollArea;
@@ -23,10 +24,9 @@ mod helpers;
 
 use helpers::{empty_section_row, repo_header, thread};
 
+use crate::app::AppRoot;
 use crate::repo::actions::{RepoItem, open_repo_item};
 use crate::repo::helpers::announcement_display_name;
-use crate::shared::widgets::empty_state;
-use crate::workspace::Workspace;
 
 const MAX_SUB_ACTIVITIES: usize = 5;
 
@@ -45,7 +45,7 @@ struct InboxSection {
 }
 
 pub struct InboxView {
-    workspace: WeakEntity<Workspace>,
+    workspace: WeakEntity<AppRoot>,
     threads: Arc<Vec<InboxItem>>,
     sections: Arc<Vec<InboxSection>>,
     rows: Arc<Vec<InboxRow>>,
@@ -60,7 +60,7 @@ pub struct InboxView {
 }
 
 impl InboxView {
-    pub fn new(workspace: WeakEntity<Workspace>, cx: &mut Context<Self>) -> Self {
+    pub fn new(workspace: WeakEntity<AppRoot>, cx: &mut Context<Self>) -> Self {
         let backend = Backend::global(cx);
         let inbox = backend.read(cx).inbox();
 
@@ -470,7 +470,7 @@ impl Render for InboxView {
                     .min_h_0()
                     .px_4()
                     .child(if rows.is_empty() {
-                        empty_state("You're all caught up.")
+                        EmptyState::centered("You're all caught up.")
                     } else {
                         ScrollArea::new("inbox-scroll")
                             .flex_1()

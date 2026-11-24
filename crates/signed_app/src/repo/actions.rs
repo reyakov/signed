@@ -3,9 +3,9 @@ use nostr::prelude::EventId;
 use signed_core::{Announcement, RepoAddr};
 use signed_state::RepoStore;
 
+use crate::app::AppRoot;
 use crate::repo::RepoDetailView;
 use crate::shared::panels;
-use crate::workspace::Workspace;
 
 /// An item of a repository to open from outside its detail panel.
 pub enum RepoItem {
@@ -16,7 +16,7 @@ pub enum RepoItem {
 
 /// Opens a repository as the main panel, keyed by its address.
 pub fn open_repo_panel(
-    workspace: &WeakEntity<Workspace>,
+    workspace: &WeakEntity<AppRoot>,
     addr: &RepoAddr,
     hint: Option<&Announcement>,
     window: &mut Window,
@@ -42,7 +42,7 @@ pub fn open_repo_panel(
 
 /// Opens an issue or pull request using a store built here.
 pub fn open_repo_item(
-    workspace: &WeakEntity<Workspace>,
+    workspace: &WeakEntity<AppRoot>,
     addr: &RepoAddr,
     hint: Option<&Announcement>,
     item: RepoItem,

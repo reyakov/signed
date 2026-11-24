@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Entity, IntoElement, ParentElement as _, PathPromptOptions,
-    SharedString, Styled as _, Window, div, px,
+    AnyElement, App, AppContext as _, Div, Entity, IntoElement, ParentElement as _,
+    PathPromptOptions, SharedString, Styled as _, Window, div, px,
 };
 use settings::{AppearanceMode, EventFetchingStrategy, SettingsStore};
-use ui::button::Button;
+use ui::button::{Button, ButtonVariant};
 use ui::common::{StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
@@ -13,7 +13,25 @@ use ui::select::{Select, SelectOption};
 use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 
+use crate::apply_appearance_mode;
 use crate::repo::dialogs::grasp_servers::{normalize_server, server_host};
+
+/// The title and description a settings row or block opens with.
+fn setting_header(
+    cx: &App,
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+) -> Div {
+    v_flex()
+        .gap_1()
+        .child(div().text_sm().font_semibold().child(title.into()))
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().colors.muted_foreground)
+                .child(description.into()),
+        )
+}
 
 /// A settings row with the label and description on the left and the control on the right.
 pub fn setting_row(
@@ -26,19 +44,7 @@ pub fn setting_row(
         .w_full()
         .justify_between()
         .gap_4()
-        .child(
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .gap_1()
-                .child(div().text_sm().font_semibold().child(title.into()))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().colors.muted_foreground)
-                        .child(description.into()),
-                ),
-        )
+        .child(setting_header(cx, title, description))
         .child(div().w(px(200.)).flex_shrink_0().child(control))
         .into_any_element()
 }
@@ -53,17 +59,7 @@ pub fn setting_block(
     v_flex()
         .w_full()
         .gap_3()
-        .child(
-            v_flex()
-                .gap_1()
-                .child(div().text_sm().font_semibold().child(title.into()))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().colors.muted_foreground)
-                        .child(description.into()),
-                ),
-        )
+        .child(setting_header(cx, title, description))
         .child(control)
         .into_any_element()
 }
@@ -84,7 +80,7 @@ pub fn appearance_select(cx: &App) -> Select<AppearanceMode> {
             SettingsStore::global(cx).update(cx, |store, cx| {
                 store.edit(|settings| settings.appearance = mode, cx);
             });
-            crate::apply_appearance_mode(mode, cx);
+            apply_appearance_mode(mode, cx);
         })
 }
 
@@ -106,6 +102,36 @@ pub fn event_fetching_select(cx: &App) -> Select<EventFetchingStrategy> {
         })
 }
 
+/// One editable value: a muted row with a trailing remove button.
+fn editor_value_row(
+    id: String,
+    text: SharedString,
+    on_remove: impl Fn(&mut App) + 'static,
+    cx: &App,
+) -> AnyElement {
+    h_flex()
+        .gap_1()
+        .child(
+            h_flex()
+                .flex_1()
+                .h_8()
+                .px_2()
+                .bg(cx.theme().colors.muted)
+                .text_color(cx.theme().colors.muted_foreground)
+                .text_xs()
+                .rounded(cx.theme().radius.control)
+                .child(text),
+        )
+        .child(
+            Button::new(id)
+                .icon(Icon::named(IconRole::Close))
+                .variant(ButtonVariant::Ghost)
+                .tooltip(Tooltip::text("Remove"))
+                .on_click(move |_, _, cx| on_remove(cx)),
+        )
+        .into_any_element()
+}
+
 pub fn grasp_servers_editor(input: &Entity<InputState>, cx: &App) -> AnyElement {
     let store = SettingsStore::global(cx);
     let servers = store
@@ -119,48 +145,30 @@ pub fn grasp_servers_editor(input: &Entity<InputState>, cx: &App) -> AnyElement 
         .gap_2()
         .children(servers.iter().enumerate().map(|(ix, server)| {
             let server = server.clone();
-            h_flex()
-                .gap_1()
-                .child(
-                    h_flex()
-                        .flex_1()
-                        .h_8()
-                        .px_2()
-                        .bg(cx.theme().colors.muted)
-                        .text_color(cx.theme().colors.muted_foreground)
-                        .text_xs()
-                        .rounded(cx.theme().radius.control)
-                        .child(display_server(&server)),
-                )
-                .child(
-                    Button::new(format!("settings-remove-server:{ix}"))
-                        .icon(Icon::named(IconRole::Close))
-                        .variant(ui::button::ButtonVariant::Ghost)
-                        .tooltip(Tooltip::text("Remove"))
-                        .on_click({
-                            let store = store.clone();
-                            move |_, _, cx| {
-                                store.update(cx, |store, cx| {
-                                    store.edit(
-                                        |settings| {
-                                            // A row's index can desync after a prior
-                                            // removal; match by value.
-                                            if let Some(at) = settings
-                                                .grasp_servers
-                                                .default_servers
-                                                .iter()
-                                                .position(|known| known == &server)
-                                            {
-                                                settings.grasp_servers.default_servers.remove(at);
-                                            }
-                                        },
-                                        cx,
-                                    );
-                                });
-                            }
-                        }),
-                )
-                .into_any_element()
+            editor_value_row(
+                format!("settings-remove-server:{ix}"),
+                display_server(&server),
+                move |cx| {
+                    let store = SettingsStore::global(cx);
+                    store.update(cx, |store, cx| {
+                        store.edit(
+                            |settings| {
+                                // A row's index can desync after a prior removal; match by value.
+                                if let Some(at) = settings
+                                    .grasp_servers
+                                    .default_servers
+                                    .iter()
+                                    .position(|known| known == &server)
+                                {
+                                    settings.grasp_servers.default_servers.remove(at);
+                                }
+                            },
+                            cx,
+                        );
+                    });
+                },
+                cx,
+            )
         }))
         .child(
             h_flex()
@@ -173,7 +181,7 @@ pub fn grasp_servers_editor(input: &Entity<InputState>, cx: &App) -> AnyElement 
                 .child(
                     Button::new("settings-add-server")
                         .icon(Icon::named(IconRole::Plus))
-                        .variant(ui::button::ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Ghost)
                         .tooltip(Tooltip::text("Add grasp server"))
                         .on_click({
                             let input = input.clone();
@@ -229,46 +237,30 @@ pub fn scan_paths_editor(cx: &App) -> AnyElement {
         .gap_2()
         .children(scan_paths.iter().enumerate().map(|(ix, path)| {
             let path = path.clone();
-            h_flex()
-                .gap_1()
-                .child(
-                    h_flex()
-                        .flex_1()
-                        .h_8()
-                        .px_2()
-                        .bg(cx.theme().colors.muted)
-                        .text_color(cx.theme().colors.muted_foreground)
-                        .text_xs()
-                        .rounded(cx.theme().radius.control)
-                        .child(path.display().to_string()),
-                )
-                .child(
-                    Button::new(format!("settings-remove-path:{ix}"))
-                        .icon(Icon::named(IconRole::Close))
-                        .variant(ui::button::ButtonVariant::Ghost)
-                        .tooltip(Tooltip::text("Remove"))
-                        .on_click(move |_, _, cx| {
-                            let store = SettingsStore::global(cx);
-                            store.update(cx, |store, cx| {
-                                store.edit(
-                                    |settings| {
-                                        // A row's index can desync after a prior
-                                        // removal; match by value.
-                                        if let Some(at) = settings
-                                            .local_repos
-                                            .scan_paths
-                                            .iter()
-                                            .position(|known| known == &path)
-                                        {
-                                            settings.local_repos.scan_paths.remove(at);
-                                        }
-                                    },
-                                    cx,
-                                );
-                            });
-                        }),
-                )
-                .into_any_element()
+            editor_value_row(
+                format!("settings-remove-path:{ix}"),
+                SharedString::from(path.display().to_string()),
+                move |cx| {
+                    let store = SettingsStore::global(cx);
+                    store.update(cx, |store, cx| {
+                        store.edit(
+                            |settings| {
+                                // A row's index can desync after a prior removal; match by value.
+                                if let Some(at) = settings
+                                    .local_repos
+                                    .scan_paths
+                                    .iter()
+                                    .position(|known| known == &path)
+                                {
+                                    settings.local_repos.scan_paths.remove(at);
+                                }
+                            },
+                            cx,
+                        );
+                    });
+                },
+                cx,
+            )
         }))
         .child(
             h_flex().justify_end().child(
@@ -328,7 +320,7 @@ pub fn default_folder_selector(default_folder: &Entity<InputState>) -> AnyElemen
         .child(
             Button::new("settings-choose-folder")
                 .icon(Icon::named(IconRole::Folder))
-                .variant(ui::button::ButtonVariant::Ghost)
+                .variant(ButtonVariant::Ghost)
                 .tooltip(Tooltip::text("Choose folder"))
                 .on_click(move |_, window, cx| {
                     choose_default_folder(&folder, window, cx);

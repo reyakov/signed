@@ -1,3 +1,6 @@
+use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, Entity, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
@@ -12,11 +15,23 @@ use ui::icons::{Icon, IconRole};
 use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
+use crate::app::AppRoot;
 use crate::repo::actions::open_repo_panel;
-use crate::repo::helpers::announcement_display_name;
-use crate::workspace::Workspace;
+use crate::repo::helpers::{announcement_display_name, upstream_display_name};
 
 const RECENT_COUNT: usize = 10;
+
+/// One of the three banner photos, picked per process launch.
+pub fn pick_banner() -> SharedString {
+    static BANNER: LazyLock<SharedString> = LazyLock::new(|| {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|now| now.subsec_nanos())
+            .unwrap_or(0);
+        SharedString::from(format!("backgrounds/banner{}.jpg", nanos % 3 + 1))
+    });
+    BANNER.clone()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum RepoFilter {
@@ -55,7 +70,7 @@ pub(super) fn render_card(
     last_activity: Option<Timestamp>,
     announcements: &[Announcement],
     directory: &Entity<ProfileDirectory>,
-    workspace: &WeakEntity<Workspace>,
+    workspace: &WeakEntity<AppRoot>,
     cx: &mut gpui::App,
 ) -> AnyElement {
     let owner = directory.read(cx).profile(&announcement.owner, cx);
@@ -78,16 +93,7 @@ pub(super) fn render_card(
 
     let fork_label: Option<SharedString> = announcement.upstream.as_ref().and_then(|upstream| {
         let addr = upstream.addr.as_ref()?;
-        let name = announcements
-            .iter()
-            .find(|a| a.addr() == *addr)
-            .map(|a| {
-                a.name
-                    .as_deref()
-                    .map(SharedString::from)
-                    .unwrap_or_else(|| SharedString::from(a.id.clone()))
-            })
-            .unwrap_or_else(|| SharedString::from(addr.identifier().to_owned()));
+        let name = upstream_display_name(addr, announcements);
         Some(SharedString::from(format!("forked from {name}")))
     });
 

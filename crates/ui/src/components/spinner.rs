@@ -10,11 +10,12 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
-    Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window, div,
+    AnyElement, App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
+    RenderOnce, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
+    Window, div,
 };
 
-use crate::components::common::{Sizable, StyledExt as _};
+use crate::components::common::{Sizable, StyledExt as _, v_flex};
 use crate::icons::{IconRole, icon};
 use crate::theme::{ActiveTheme as _, SPINNER_PERIOD, Size};
 
@@ -42,6 +43,19 @@ impl Spinner {
             a11y_label: None,
             style: StyleRefinement::default(),
         }
+    }
+
+    /// The spinner centered in the full available space.
+    pub fn centered<I>(id: I) -> AnyElement
+    where
+        I: Into<ElementId>,
+    {
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .child(Self::new(id))
+            .into_any_element()
     }
 
     /// Overrides the icon color, for accent-filled surfaces.

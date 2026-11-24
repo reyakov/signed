@@ -28,14 +28,6 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-/// A grammar's parser and compiled highlight query.
-#[cfg(not(target_arch = "wasm32"))]
-struct Highlighter {
-    parser: tree_sitter::Parser,
-    query: tree_sitter::Query,
-    roles: Vec<Option<Role>>,
-}
-
 /// A language source can highlight as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Language {
@@ -62,6 +54,14 @@ pub enum Role {
     Punctuation,
     Tag,
     Escape,
+}
+
+/// A grammar's parser and compiled highlight query.
+#[cfg(not(target_arch = "wasm32"))]
+struct Highlighter {
+    parser: tree_sitter::Parser,
+    query: tree_sitter::Query,
+    roles: Vec<Option<Role>>,
 }
 
 /// A run of text sharing one role.

@@ -19,17 +19,18 @@ use utils::relative_time;
 use std::rc::Rc;
 
 use self::detail::IssueDetailView;
+use crate::app::AppRoot;
 use crate::repo::helpers::short_id;
-use crate::shared::event_list::{EventList, EventRow};
+use crate::shared::event_list::{EventHandler, EventList, EventRow, filter_toolbar};
+use crate::shared::log_dropped;
 use crate::shared::panels;
-use crate::workspace::Workspace;
 
 pub mod detail;
 pub(crate) mod helpers;
 pub mod new_issue;
 
 pub struct IssuesView {
-    workspace: WeakEntity<Workspace>,
+    workspace: WeakEntity<AppRoot>,
     store: Entity<RepoStore>,
     new_issue: Option<Entity<new_issue::NewIssueDialog>>,
     filter: IssueFilter,
@@ -45,7 +46,7 @@ pub struct IssuesView {
 
 impl IssuesView {
     pub fn new(
-        workspace: WeakEntity<Workspace>,
+        workspace: WeakEntity<AppRoot>,
         store: Entity<RepoStore>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -54,7 +55,7 @@ impl IssuesView {
         });
         let weak = cx.entity().downgrade();
         cx.defer(move |cx| {
-            crate::shared::log_dropped(weak.update(cx, |this, cx| this.rebuild(cx)));
+            log_dropped(weak.update(cx, |this, cx| this.rebuild(cx)));
         });
 
         Self {
@@ -128,7 +129,7 @@ impl IssuesView {
         let muted = cx.theme().colors.muted_foreground;
         let weak = cx.entity().downgrade();
 
-        crate::shared::event_list::filter_toolbar(
+        filter_toolbar(
             cx,
             [
                 Segmented::new("issue-filter", self.filter)
@@ -190,7 +191,7 @@ impl Render for IssuesView {
                 let id_hex = issue.id.to_hex();
                 let status = store.read(cx).status_of(issue);
 
-                let on_click: crate::shared::event_list::EventHandler = {
+                let on_click: EventHandler = {
                     let workspace = workspace.clone();
                     let store = store.clone();
                     Rc::new(move |_, window, cx| {

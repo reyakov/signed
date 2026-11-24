@@ -55,25 +55,6 @@ pub(crate) struct WindowsSource {
     _signal: Option<ReapplySignal>,
 }
 
-pub(crate) fn platform_source() -> Box<dyn ThemeSource> {
-    // SAFETY: WinRT activation requires COM on this thread; the STA matches
-    // the UI thread's message pump, and RPC_E_CHANGED_MODE means COM is
-    // already initialized in another apartment.
-    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-
-    if initialized.is_err() && initialized != RPC_E_CHANGED_MODE {
-        log::error!("theme: COM initialization failed: {initialized:?}");
-    }
-
-    match WindowsSource::new() {
-        Some(source) => Box::new(source),
-        None => {
-            log::warn!("theme: Windows system theme unavailable; using fallback");
-            Box::new(super::fallback::FallbackSource)
-        }
-    }
-}
-
 impl WindowsSource {
     fn new() -> Option<Self> {
         let ui_settings = match UISettings::new() {
@@ -204,5 +185,24 @@ impl ThemeSource for WindowsSource {
 
     fn label(&self) -> &'static str {
         SourceKind::Windows.label()
+    }
+}
+
+pub(crate) fn platform_source() -> Box<dyn ThemeSource> {
+    // SAFETY: WinRT activation requires COM on this thread,
+    // the STA matches the UI thread's message pump,
+    // and RPC_E_CHANGED_MODE means COM is already initialized in another apartment.
+    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+
+    if initialized.is_err() && initialized != RPC_E_CHANGED_MODE {
+        log::error!("theme: COM initialization failed: {initialized:?}");
+    }
+
+    match WindowsSource::new() {
+        Some(source) => Box::new(source),
+        None => {
+            log::warn!("theme: Windows system theme unavailable; using fallback");
+            Box::new(super::fallback::FallbackSource)
+        }
     }
 }

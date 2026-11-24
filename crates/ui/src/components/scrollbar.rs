@@ -42,6 +42,39 @@ pub enum ScrollbarVisibility {
 /// How often the autohide fade repaints while it runs.
 const FADE_STEP: Duration = Duration::from_millis(50);
 
+/// The drag state shared between the scrollbar's mouse handlers.
+type Drag = Option<(Pixels, Pixels)>;
+
+/// Which direction the scrollbar lies along.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Axis {
+    Vertical,
+    Horizontal,
+}
+
+impl Axis {
+    fn along(self, position: Point<Pixels>) -> Pixels {
+        match self {
+            Axis::Vertical => position.y,
+            Axis::Horizontal => position.x,
+        }
+    }
+
+    fn with_along(self, position: Point<Pixels>, along: Pixels) -> Point<Pixels> {
+        match self {
+            Axis::Vertical => point(position.x, along),
+            Axis::Horizontal => point(along, position.y),
+        }
+    }
+
+    fn viewport_along(self, viewport: &Bounds<Pixels>) -> Pixels {
+        match self {
+            Axis::Vertical => viewport.size.height,
+            Axis::Horizontal => viewport.size.width,
+        }
+    }
+}
+
 /// The shared autohide timeline for an overlay scrollbar.
 #[derive(Clone)]
 struct Autohide {
@@ -199,36 +232,6 @@ impl ScrollbarHandle for ListState {
     }
 }
 
-/// Which direction the scrollbar lies along.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Axis {
-    Vertical,
-    Horizontal,
-}
-
-impl Axis {
-    fn along(self, position: Point<Pixels>) -> Pixels {
-        match self {
-            Axis::Vertical => position.y,
-            Axis::Horizontal => position.x,
-        }
-    }
-
-    fn with_along(self, position: Point<Pixels>, along: Pixels) -> Point<Pixels> {
-        match self {
-            Axis::Vertical => point(position.x, along),
-            Axis::Horizontal => point(along, position.y),
-        }
-    }
-
-    fn viewport_along(self, viewport: &Bounds<Pixels>) -> Pixels {
-        match self {
-            Axis::Vertical => viewport.size.height,
-            Axis::Horizontal => viewport.size.width,
-        }
-    }
-}
-
 /// An overlay scrollbar, rendered over the scrolled surface.
 #[derive(IntoElement)]
 #[must_use]
@@ -237,6 +240,20 @@ pub struct Scrollbar {
     handle: Rc<dyn ScrollbarHandle>,
     visibility: ScrollbarVisibility,
     id: ElementId,
+}
+
+impl RenderOnce for Scrollbar {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        canvas(|_, _, _| {}, {
+            let handle = self.handle;
+            let axis = self.axis;
+            let visibility = self.visibility;
+            let id = self.id;
+            move |_, _, window, cx| Self::paint(&handle, axis, visibility, &id, window, cx)
+        })
+        .absolute()
+        .inset_0()
+    }
 }
 
 impl Scrollbar {
@@ -304,26 +321,7 @@ impl Scrollbar {
             ..color
         })
     }
-}
 
-impl RenderOnce for Scrollbar {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        canvas(|_, _, _| {}, {
-            let handle = self.handle;
-            let axis = self.axis;
-            let visibility = self.visibility;
-            let id = self.id;
-            move |_, _, window, cx| Self::paint(&handle, axis, visibility, &id, window, cx)
-        })
-        .absolute()
-        .inset_0()
-    }
-}
-
-/// The drag state shared between the scrollbar's mouse handlers.
-type Drag = Option<(Pixels, Pixels)>;
-
-impl Scrollbar {
     fn paint(
         handle: &Rc<dyn ScrollbarHandle>,
         axis: Axis,

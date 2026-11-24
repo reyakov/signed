@@ -1,24 +1,32 @@
-mod helpers;
+use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, IntoElement, ListAlignment, ListState,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, WeakEntity, Window, div,
-    list, px,
+    ObjectFit, ParentElement as _, Pixels, Render, SharedString, Styled as _, StyledImage as _,
+    Subscription, WeakEntity, Window, div, img, list, px,
 };
 use helpers::{RepoFilter, render_card};
 use metadata::ProfileDirectory;
 use nostr::prelude::PublicKey;
-use signed_state::RepoListStore;
+use signed_state::{Backend, RepoListStore};
+use ui::button::{Button, ButtonVariant};
 use ui::common::{h_flex, v_flex};
 use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState, InputStateEvent};
-use ui::layout::panel::Panel;
+use ui::layout::panel::{Panel, PanelSlot, SplitSide};
+use ui::layout::root::RootContext as _;
+use ui::scrollbar::Scrollbar;
 use ui::segmented::{Segmented, SegmentedOption};
 use ui::theme::ActiveTheme as _;
 
+use crate::app::AppRoot;
+use crate::explore::helpers::pick_banner;
+use crate::identity::import::ImportDialog;
+use crate::identity::onboarding::OnboardingDialog;
 use crate::shared::panels;
-use crate::workspace::Workspace;
+
+mod helpers;
 
 const COLUMNS: usize = 2;
 // Name row, avatar strip, meta row, and their borders and gaps, in px.
@@ -26,7 +34,7 @@ const CARD_HEIGHT: f32 = 40. + 64. + 48. + 2. + 6.;
 
 pub struct ExploreView {
     store: Entity<RepoListStore>,
-    workspace: WeakEntity<Workspace>,
+    workspace: WeakEntity<AppRoot>,
     scroll_handle: ListState,
     filter: RepoFilter,
     /// Indices matching [`Self::filter`] into the store's `announcements`.
@@ -36,6 +44,8 @@ pub struct ExploreView {
     directory: Entity<ProfileDirectory>,
     _search_subscription: Subscription,
     _store_subscription: Subscription,
+    /// Observes the panel stack for the onboarding sidebar, set once this view is in it.
+    _stack_subscription: Option<Subscription>,
 }
 
 impl ExploreView {
@@ -43,7 +53,7 @@ impl ExploreView {
     pub(crate) const PANEL_ID: &'static str = "Explore";
 
     /// Opens the explore panel in the main panel, reusing it when it is already cached.
-    pub(crate) fn open(workspace: &WeakEntity<Workspace>, window: &mut Window, cx: &mut App) {
+    pub(crate) fn open(workspace: &WeakEntity<AppRoot>, window: &mut Window, cx: &mut App) {
         panels::open_primary(
             workspace,
             Self::PANEL_ID,
@@ -56,7 +66,7 @@ impl ExploreView {
         );
     }
 
-    pub fn new(workspace: WeakEntity<Workspace>, cx: &mut Context<Self>) -> Self {
+    pub fn new(workspace: WeakEntity<AppRoot>, cx: &mut Context<Self>) -> Self {
         let store = RepoListStore::global(cx);
         let directory = ProfileDirectory::new(cx);
 
@@ -73,9 +83,13 @@ impl ExploreView {
             this.rebuild_rows(cx);
         });
 
+        // The root and the stack are still being updated while this view is built.
         cx.defer(move |cx| {
-            if let Err(error) = weak.update(cx, |this, cx| this.rebuild_rows(cx)) {
-                log::warn!("failed to load explore rows: {error}");
+            if let Err(error) = weak.update(cx, |this, cx| {
+                this.rebuild_rows(cx);
+                this.watch_stack(cx);
+            }) {
+                log::warn!("failed to set up the explore panel: {error}");
             }
         });
 
@@ -89,6 +103,7 @@ impl ExploreView {
             directory,
             _search_subscription: search_subscription,
             _store_subscription: store_subscription,
+            _stack_subscription: None,
         }
     }
 
@@ -120,6 +135,50 @@ impl ExploreView {
             2
         } else {
             self.visible.len().div_ceil(COLUMNS) + 1
+        }
+    }
+
+    /// Observes the panel stack so the onboarding sidebar follows the shown panel.
+    fn watch_stack(&mut self, cx: &mut Context<Self>) {
+        let Ok(stack) = self
+            .workspace
+            .read_with(cx, |workspace, _| workspace.panels().clone())
+        else {
+            log::warn!("failed to watch the panel stack: the app root is gone");
+            return;
+        };
+        self._stack_subscription =
+            Some(cx.observe(&stack, |this, _stack, cx| this.sync_sidebar(cx)));
+        self.sync_sidebar(cx);
+    }
+
+    /// Shows the onboarding sidebar while signed out and an explore panel is shown, and closes it otherwise.
+    fn sync_sidebar(&mut self, cx: &mut Context<Self>) {
+        let signed_out = Backend::global(cx).read(cx).current_user().is_none();
+        let explore = SharedString::from(Self::PANEL_ID);
+        let sidebar = SharedString::from(OnboardingSidebar::PANEL_ID);
+
+        let result = self.workspace.update(cx, |workspace, cx| {
+            workspace.panels().clone().update(cx, |stack, cx| {
+                let shown = signed_out && stack.is_active(PanelSlot::Main, &explore);
+
+                if shown && !stack.is_open(PanelSlot::Split, &sidebar) {
+                    let view = Arc::new(cx.new(|_| OnboardingSidebar));
+                    stack.insert_split_at(
+                        sidebar.clone(),
+                        OnboardingSidebar::WIDTH,
+                        SplitSide::Leading,
+                        view,
+                        cx,
+                    );
+                } else if !shown {
+                    stack.close(PanelSlot::Split, &sidebar, cx);
+                }
+            })
+        });
+
+        if let Err(error) = result {
+            log::warn!("failed to update the onboarding sidebar: {error}");
         }
     }
 
@@ -256,9 +315,75 @@ impl Render for ExploreView {
                 })
                 .size_full(),
             )
-            .child(crate::shared::widgets::scroll_overlay(
-                "explore-scroll",
-                scroll_handle,
-            ))
+            .child(Scrollbar::vertical("explore-scroll", scroll_handle))
+    }
+}
+
+/// The onboarding sidebar shown beside the explore panel while signed out.
+struct OnboardingSidebar;
+
+impl OnboardingSidebar {
+    /// The identifier of the sidebar in the panel stack; shown as its tab label.
+    const PANEL_ID: &'static str = "Onboarding";
+    /// The width the sidebar opens at.
+    const WIDTH: Pixels = px(300.);
+}
+
+impl Panel for OnboardingSidebar {
+    fn title(&self, _cx: &App) -> SharedString {
+        SharedString::from(Self::PANEL_ID)
+    }
+}
+
+impl Render for OnboardingSidebar {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let colors = theme.colors;
+
+        v_flex()
+            .size_full()
+            .relative()
+            .bg(colors.background)
+            .rounded(theme.radius.overlay)
+            .overflow_hidden()
+            .child(
+                div().absolute().inset_0().child(
+                    img(pick_banner())
+                        .size_full()
+                        .object_fit(ObjectFit::Cover)
+                        .rounded(theme.radius.overlay),
+                ),
+            )
+            .child(
+                v_flex()
+                    .size_full()
+                    .justify_end()
+                    .p_4()
+                    .gap_6()
+                    .child(img("backgrounds/headline.png").max_w_48())
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .w_full()
+                            .child(
+                                Button::new("join")
+                                    .label("Join now")
+                                    .variant(ButtonVariant::Primary)
+                                    .on_click(|_, _, cx| {
+                                        let dialog = OnboardingDialog::new(cx);
+                                        cx.open_dialog(dialog)
+                                    }),
+                            )
+                            .child(
+                                Button::new("import")
+                                    .label("Import identity")
+                                    .variant(ButtonVariant::Secondary)
+                                    .on_click(|_, _, cx| {
+                                        let dialog = ImportDialog::new(cx);
+                                        cx.open_dialog(dialog)
+                                    }),
+                            ),
+                    ),
+            )
     }
 }

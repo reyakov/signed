@@ -7,6 +7,7 @@ use ui::menu::MenuItem;
 use utils::middle_truncate;
 
 use super::NewPullRequestView;
+use crate::repo::helpers::announcement_display_name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PullRequestFilter {
@@ -77,8 +78,10 @@ pub fn source_menu_items(
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
+
         let target = view.clone();
         let path_for_action = path.clone();
+
         items.push(
             MenuItem::new(truncate_label(&label))
                 .checked(active_path.as_ref() == Some(&path))
@@ -113,14 +116,12 @@ pub fn source_menu_items(
             } else {
                 SharedString::from(format!("by {}", shorten_owner(&candidate.owner)))
             };
-            let title = format!(
-                "{} — {}",
-                crate::repo::helpers::announcement_display_name(&candidate),
-                subtitle
-            );
+
+            let title = format!("{} — {}", announcement_display_name(&candidate), subtitle);
             let target = view.clone();
             let checked = active_fork == Some(candidate.addr());
             let announcement = candidate;
+
             items.push(
                 MenuItem::new(truncate_label(&title))
                     .checked(checked)
@@ -135,5 +136,6 @@ pub fn source_menu_items(
             );
         }
     }
+
     items
 }

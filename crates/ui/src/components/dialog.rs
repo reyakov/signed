@@ -42,7 +42,7 @@ use crate::icons::IconRole;
 use crate::theme::{ActiveTheme as _, DIALOG_MIN_WIDTH};
 
 /// Requests the dialog's close: `false` closes.
-pub type ChangeHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
+type ChangeHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 type ContentFn = Box<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 type ActionsFn = Box<dyn Fn(&mut Window, &mut App) -> Vec<AnyElement>>;
 

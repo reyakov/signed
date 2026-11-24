@@ -11,8 +11,8 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, IntoElement, ParentElement as _, RenderOnce, SharedString, StyleRefinement, Styled as _,
-    Window, div, rems,
+    AnyElement, App, IntoElement, ParentElement as _, RenderOnce, SharedString, StyleRefinement,
+    Styled as _, Window, div, rems,
 };
 
 use crate::components::common::{StyledExt, v_flex};
@@ -43,6 +43,19 @@ impl EmptyState {
             action: None,
             style: StyleRefinement::default(),
         }
+    }
+
+    /// The empty state centered in the full available space.
+    pub fn centered<L>(message: L) -> AnyElement
+    where
+        L: Into<SharedString>,
+    {
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .child(Self::new(message))
+            .into_any_element()
     }
 
     /// Sets a large muted icon above the headline.

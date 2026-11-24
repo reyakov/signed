@@ -165,12 +165,6 @@ impl Render for RepositorySwitcher {
                 let list_weak = row_weak.clone();
                 let list_on_open = on_open.clone();
                 let list_scroll_handle = scroll_handle.clone();
-                let create_hint = Kbd::binding_for_action(
-                    &CreateRepository,
-                    Some(REPOSITORY_KEY_CONTEXT),
-                    window,
-                );
-
                 v_flex()
                     .w(px(380.))
                     .p_2()
@@ -265,7 +259,14 @@ impl Render for RepositorySwitcher {
                             .full_width(true)
                             .icon(Icon::named(IconRole::CirclePlus))
                             .child(div().flex_1().child("Create Repository"))
-                            .when_some(create_hint, |button, hint| button.child(hint))
+                            .when_some(
+                                Kbd::binding_for_action(
+                                    &CreateRepository,
+                                    Some(REPOSITORY_KEY_CONTEXT),
+                                    window,
+                                ),
+                                |button, hint| button.child(hint),
+                            )
                             .on_click(move |_, window, cx| {
                                 log_dropped(create_weak.update(cx, |this, cx| {
                                     this.close(cx);

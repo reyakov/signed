@@ -9,6 +9,7 @@ use ui::avatar::Avatar;
 use ui::badge::Badge;
 use ui::common::{Sizable as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
+use ui::status_dot::{StatusDot, StatusDotVariant};
 use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
@@ -101,8 +102,7 @@ pub fn thread(
                 .child(div().flex_1())
                 .when(unread, |this| {
                     this.child(
-                        ui::status_dot::StatusDot::new(("inbox-unread", ix))
-                            .variant(ui::status_dot::StatusDotVariant::Accent),
+                        StatusDot::new(("inbox-unread", ix)).variant(StatusDotVariant::Accent),
                     )
                 }),
         )

@@ -5,7 +5,7 @@ use nostr::prelude::PublicKey;
 pub mod event_list;
 pub mod panels;
 pub mod progress;
-pub mod tree;
+
 pub mod widgets;
 
 /// Logs a discarded `Result` with its source location instead of dropping it silently.

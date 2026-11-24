@@ -1,14 +1,44 @@
 use gpui::{
     AnyElement, App, AsyncApp, Context, Entity, IntoElement as _, ParentElement as _, SharedString,
-    Styled as _, Subscription, Task, div,
+    Styled as _, Subscription, Task, WeakEntity, Window, div,
 };
 use signed_core::RepoAddr;
 use signed_state::{Backend, BackendEvent, PushStepStatus};
+use ui::button::Button;
 use ui::common::{h_flex, v_flex};
 use ui::dialog::DialogHandle;
 use ui::icons::{Icon, IconRole};
 use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
+
+use super::log_dropped;
+
+/// The dialog's submit button: loading/disabled while busy, closing over the dialog's submit.
+pub fn dialog_submit_button<T, F>(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    icon: Option<IconRole>,
+    busy: bool,
+    this: &WeakEntity<T>,
+    submit: F,
+) -> Button
+where
+    T: 'static,
+    F: Fn(&mut T, &mut Window, &mut Context<T>) -> Result<(), anyhow::Error> + 'static,
+{
+    let mut button = Button::new(id).label(label);
+    if let Some(icon) = icon {
+        button = button.icon(Icon::named(icon));
+    }
+
+    let this = this.clone();
+    button
+        .loading(busy)
+        .disabled(busy)
+        .on_click(move |_, window, cx| {
+            log_dropped(this.update(cx, |this, cx| submit(this, window, cx)));
+        })
+}
 
 /// Progress of an async dialog action: a busy flag that disables the form and an error shown below it.
 #[derive(Debug, Default)]
