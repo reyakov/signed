@@ -1,5 +1,6 @@
 use signed_core::RepoStatus;
 use ui::badge::{Badge, BadgeVariant};
+use ui::common::Sizable;
 use ui::icons::{Icon, IconRole};
 use ui::tooltip::Tooltip;
 
@@ -16,4 +17,5 @@ pub fn status_badge(status: RepoStatus) -> Badge {
         .variant(variant)
         .icon(Icon::named(icon))
         .tooltip(Tooltip::text(label))
+        .small()
 }

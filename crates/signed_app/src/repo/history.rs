@@ -4,25 +4,28 @@ use std::sync::Arc;
 use anyhow::Error;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Task, UniformListScrollHandle, WeakEntity, Window, div,
+    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Task,
+    UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
 };
 use signed_git::{CommitList, FileCommit, Repo};
 use signed_state::{Backend, RepoStore, SyncStatusDirectory};
 use ui::alert::{Alert, AlertSeverity, AlertStyle};
 use ui::button::{Button, ButtonVariant};
-use ui::common::{Sizable as _, v_flex};
+use ui::common::{Sizable as _, h_flex, v_flex};
 use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::PanelSlot;
+use ui::scrollbar::Scrollbar;
 use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
+use utils::relative_time_secs;
 
 use super::RepoDetailView;
 use super::commit_diff::CommitDiffView;
+use super::helpers::short_id;
 use crate::app::AppRoot;
-use crate::shared::event_list::commit_list;
 use crate::shared::log_dropped;
 
 pub struct RepoHistoryView {
@@ -202,12 +205,18 @@ impl Render for RepoHistoryView {
         let commits = Arc::clone(&self.commits);
         let shown = commits.len();
         let total = list.total;
+
         let view = cx.entity().downgrade();
         let detail = self.detail.clone();
 
-        let user = Backend::global(cx).read(cx).current_user();
+        let backend = Backend::global(cx);
+        let user = backend.read(cx).current_user();
+
         let author = user.is_some_and(|user| self.store.read(cx).is_author(&user));
         let checkout = self.worktree.clone();
+
+        let pushing = self.store.read(cx).pushing;
+        let scroll_handle = self.scroll_handle.clone();
 
         let ahead = self
             .store
@@ -222,61 +231,126 @@ impl Render for RepoHistoryView {
             })
             .unwrap_or_default();
 
-        let pushing = self.store.read(cx).pushing;
-
-        let list = commit_list(
-            "commits",
-            "commits-scroll",
-            commits,
-            self.scroll_handle.clone(),
-            move |ix, commit, _| {
-                ahead
-                    .iter()
-                    .find(|(id, _)| id.starts_with(commit.id.as_str()))
-                    .map(|(ahead_id, path)| {
-                        let detail = detail.clone();
-                        let path = path.clone();
-                        let target = ahead_id.clone();
-                        let short = super::helpers::short_id(&commit.id);
-
-                        Button::new(("sync-commit", ix))
-                            .label("Sync")
-                            .icon(Icon::named(IconRole::ArrowUp))
-                            .variant(ButtonVariant::Secondary)
-                            .small()
-                            .disabled(pushing)
-                            .tooltip(Tooltip::text(format!("Sync up to {short}")))
-                            .on_click(move |_, window, cx| {
-                                cx.stop_propagation();
-                                if let Some(detail) = detail.upgrade() {
-                                    detail.update(cx, |this, cx| {
-                                        this.sync_checkout_commit(
-                                            path.clone(),
-                                            target.clone(),
-                                            window,
-                                            cx,
-                                        );
-                                    });
-                                }
-                            })
-                            .into_any_element()
-                    })
-            },
-            move |commit, window, cx| {
-                if let Err(error) = view.update(cx, |this, cx| {
-                    this.open_commit_diff(&commit.id, window, cx);
-                }) {
-                    log::warn!("failed to open commit diff: {error}");
-                }
-            },
-        );
-
         v_flex()
             .relative()
             .flex_1()
             .w_full()
             .min_h_0()
-            .child(list)
+            .child(
+                v_flex()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        uniform_list("commits", shown, move |range, _, cx| {
+                            range
+                                .map(|ix| {
+                                    let Some(commit) = commits.get(ix) else {
+                                        return div().into_any_element();
+                                    };
+
+                                    let row_id = commit.id.clone();
+                                    let view = view.clone();
+                                    let ahead = ahead
+                                        .iter()
+                                        .find(|(id, _)| id.starts_with(commit.id.as_str()));
+
+                                    h_flex()
+                                        .id(commit.id.clone())
+                                        .px_4()
+                                        .h_16()
+                                        .w_full()
+                                        .gap_3()
+                                        .border_b_1()
+                                        .border_color(cx.theme().colors.border)
+                                        .hover(|this| this.bg(cx.theme().colors.muted_hover))
+                                        .child(
+                                            v_flex()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .justify_center()
+                                                .child(
+                                                    h_flex()
+                                                        .gap_2()
+                                                        .overflow_hidden()
+                                                        .child(
+                                                            div()
+                                                                .text_sm()
+                                                                .text_color(
+                                                                    cx.theme()
+                                                                        .colors
+                                                                        .muted_foreground,
+                                                                )
+                                                                .child(short_id(&commit.id)),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .flex_1()
+                                                                .min_w_0()
+                                                                .text_sm()
+                                                                .text_ellipsis()
+                                                                .whitespace_nowrap()
+                                                                .child(commit.summary.clone()),
+                                                        ),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .gap_2()
+                                                        .text_xs()
+                                                        .text_color(
+                                                            cx.theme().colors.muted_foreground,
+                                                        )
+                                                        .child(commit.author.clone())
+                                                        .child(relative_time_secs(commit.time)),
+                                                ),
+                                        )
+                                        .when_some(ahead, |row, (ahead_id, path)| {
+                                            let detail = detail.clone();
+                                            let path = path.clone();
+                                            let target = ahead_id.clone();
+                                            let short = short_id(&commit.id);
+
+                                            row.child(
+                                                Button::new(("sync-commit", ix))
+                                                    .label("Sync")
+                                                    .icon(Icon::named(IconRole::ArrowUp))
+                                                    .variant(ButtonVariant::Secondary)
+                                                    .small()
+                                                    .disabled(pushing)
+                                                    .tooltip(Tooltip::text(format!(
+                                                        "Sync up to {short}"
+                                                    )))
+                                                    .on_click(move |_, window, cx| {
+                                                        cx.stop_propagation();
+                                                        if let Some(detail) = detail.upgrade() {
+                                                            detail.update(cx, |this, cx| {
+                                                                this.sync_checkout_commit(
+                                                                    path.clone(),
+                                                                    target.clone(),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            });
+                                                        }
+                                                    }),
+                                            )
+                                        })
+                                        .on_click(move |_, window, cx| {
+                                            if let Err(error) = view.update(cx, |this, cx| {
+                                                this.open_commit_diff(&row_id, window, cx);
+                                            }) {
+                                                log::warn!("failed to open commit diff: {error}");
+                                            }
+                                        })
+                                        .into_any_element()
+                                })
+                                .collect()
+                        })
+                        .track_scroll(&scroll_handle)
+                        .size_full(),
+                    )
+                    .child(Scrollbar::vertical("commits-scroll", scroll_handle)),
+            )
             .when(shown < total, |this| {
                 this.child(
                     div()

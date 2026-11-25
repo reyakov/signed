@@ -1,20 +1,22 @@
-use std::rc::Rc;
-
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, UniformListScrollHandle, WeakEntity, Window, div,
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::{Kind, PublicKey};
 use signed_core::GitEvent;
 use signed_state::RepoStore;
 use ui::alert::{Alert, AlertSeverity};
+use ui::avatar::Avatar;
 use ui::common::{Sizable, h_flex, v_flex};
 use ui::dropdown_menu::DropdownMenu;
+use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::{Panel, PanelSlot};
 use ui::menu::MenuItem;
+use ui::scrollbar::Scrollbar;
 use ui::segmented::{Segmented, SegmentedOption};
 use ui::theme::ActiveTheme as _;
 use utils::relative_time;
@@ -33,8 +35,8 @@ pub use send_patch::SendPatchView;
 use crate::app::AppRoot;
 use crate::issues::helpers::{StatusCounts, filter_by_status};
 use crate::repo::helpers::short_id;
-use crate::shared::event_list::{EventHandler, EventList, EventRow};
 use crate::shared::log_dropped;
+use crate::shared::widgets::status_badge;
 
 pub struct PullRequestsView {
     workspace: WeakEntity<AppRoot>,
@@ -299,60 +301,8 @@ impl Render for PullRequestsView {
         let dismiss_warning_store = self.store.clone();
         let dismiss_error_store = self.store.clone();
 
-        let rows = visible
-            .iter()
-            .filter_map(|&pr_ix| {
-                // The store re-read per frame can shrink below a captured index.
-                let pr = store.read(cx).pull_requests.get(pr_ix)?;
-                let profile = directory.read(cx).profile(&pr.pubkey, cx);
-                let pr_id = pr.id;
-                let id_hex = pr.id.to_hex();
-                let status = store.read(cx).status_of(pr);
-
-                let on_click: EventHandler = {
-                    let workspace = workspace.clone();
-                    let store = store.clone();
-                    Rc::new(move |_, window, cx| {
-                        let id = SharedString::from(format!("pr:{pr_id}"));
-                        let workspace_for_build = workspace.clone();
-                        let store = store.clone();
-                        log_dropped(workspace.update(cx, |root, cx| {
-                            root.panels().clone().update(cx, |panels, cx| {
-                                panels.open(
-                                    PanelSlot::Split,
-                                    id,
-                                    move |window, cx| {
-                                        cx.new(|cx| {
-                                            PullRequestDetailView::new(
-                                                workspace_for_build.clone(),
-                                                store.clone(),
-                                                pr_id,
-                                                window,
-                                                cx,
-                                            )
-                                        })
-                                    },
-                                    window,
-                                    cx,
-                                )
-                            })
-                        }));
-                    })
-                };
-
-                Some(EventRow {
-                    id: SharedString::from(format!("pr:{id_hex}")).into(),
-                    status,
-                    title: pr.activity_subject().into(),
-                    author: profile.name(),
-                    picture: profile.picture(),
-                    pubkey: pr.pubkey,
-                    short_id: short_id(&id_hex),
-                    age: SharedString::from(relative_time(pr.created_at)),
-                    on_click,
-                })
-            })
-            .collect();
+        let scroll_handle = self.scroll_handle.clone();
+        let count = visible.len();
 
         v_flex()
             .size_full()
@@ -385,12 +335,128 @@ impl Render for PullRequestsView {
                 )
             })
             .child(
-                EventList::new("prl")
-                    .toolbar(self.render_header(cx))
-                    .scroll_handle(self.scroll_handle.clone())
-                    .rows(rows)
-                    .empty_message(filter.empty_message())
-                    .render(cx),
+                v_flex()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(self.render_header(cx))
+                    .when(count > 0, |this| {
+                        this.child(
+                            uniform_list("prl", count, move |range, _, cx| {
+                                range
+                                    .map(|ix| {
+                                        // The store re-read per frame can shrink below a captured index.
+                                        let Some(pr) = visible.get(ix).and_then(|pr_ix| {
+                                            store.read(cx).pull_requests.get(*pr_ix)
+                                        }) else {
+                                            return div().into_any_element();
+                                        };
+                                        let profile = directory.read(cx).profile(&pr.pubkey, cx);
+                                        let pr_id = pr.id;
+                                        let id_hex = pr.id.to_hex();
+                                        let status = store.read(cx).status_of(pr);
+                                        let workspace = workspace.clone();
+                                        let store = store.clone();
+
+                                        h_flex()
+                                            .id(SharedString::from(format!("pr:{id_hex}")))
+                                            .w_full()
+                                            .h_16()
+                                            .gap_4()
+                                            .px_2()
+                                            .border_b_1()
+                                            .border_color(cx.theme().colors.border)
+                                            .hover(|this| this.bg(cx.theme().colors.muted_hover))
+                                            .on_click(move |_, window, cx| {
+                                                let id = SharedString::from(format!("pr:{pr_id}"));
+                                                let workspace_for_build = workspace.clone();
+                                                let store = store.clone();
+
+                                                log_dropped(workspace.update(cx, |root, cx| {
+                                                    root.panels().clone().update(
+                                                        cx,
+                                                        |panels, cx| {
+                                                            panels.open(
+                                                                PanelSlot::Split,
+                                                                id,
+                                                                move |window, cx| {
+                                                                    cx.new(|cx| {
+                                                                        PullRequestDetailView::new(
+                                                                            workspace_for_build
+                                                                                .clone(),
+                                                                            store.clone(),
+                                                                            pr_id,
+                                                                            window,
+                                                                            cx,
+                                                                        )
+                                                                    })
+                                                                },
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )
+                                                }));
+                                            })
+                                            .child(status_badge(status))
+                                            .child(
+                                                v_flex()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .text_ellipsis()
+                                                            .whitespace_nowrap()
+                                                            .child(pr.activity_subject()),
+                                                    )
+                                                    .child(
+                                                        h_flex()
+                                                            .gap_2()
+                                                            .text_xs()
+                                                            .child(
+                                                                h_flex()
+                                                                    .gap_1()
+                                                                    .child(
+                                                                        Avatar::new(pr.pubkey)
+                                                                            .name(profile.name())
+                                                                            .picture(
+                                                                                profile.picture(),
+                                                                            )
+                                                                            .small(),
+                                                                    )
+                                                                    .child(
+                                                                        div().child(profile.name()),
+                                                                    ),
+                                                            )
+                                                            .child("opened")
+                                                            .child(
+                                                                div()
+                                                                    .text_color(
+                                                                        cx.theme()
+                                                                            .colors
+                                                                            .muted_foreground,
+                                                                    )
+                                                                    .child(short_id(&id_hex)),
+                                                            )
+                                                            .child(relative_time(pr.created_at)),
+                                                    ),
+                                            )
+                                            .into_any_element()
+                                    })
+                                    .collect()
+                            })
+                            .track_scroll(&scroll_handle)
+                            .size_full(),
+                        )
+                        .child(Scrollbar::vertical("prl-scroll", scroll_handle.clone()))
+                    })
+                    .when(count == 0, |this| {
+                        this.child(EmptyState::centered(filter.empty_message()))
+                    })
+                    .into_any_element(),
             )
             .into_any_element()
     }

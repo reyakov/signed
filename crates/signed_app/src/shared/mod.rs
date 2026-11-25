@@ -2,7 +2,6 @@ use gpui::{App, Entity};
 use metadata::ProfileDirectory;
 use nostr::prelude::PublicKey;
 
-pub mod event_list;
 pub mod progress;
 
 pub mod widgets;

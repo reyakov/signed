@@ -4,8 +4,8 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StyleRefinement, Styled as _, Subscription,
-    UniformListScrollHandle, WeakEntity, Window, div,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, StyleRefinement,
+    Styled as _, Subscription, UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::{EventId, Kind, Url};
@@ -22,16 +22,17 @@ use ui::input::InputState;
 use ui::layout::panel::{Panel, PanelSlot};
 use ui::layout::root::RootContext as _;
 use ui::scroll_area::ScrollArea;
+use ui::scrollbar::Scrollbar;
 use ui::spinner::Spinner;
 use ui::tabs::{Tab, Tabs};
 use ui::theme::ActiveTheme as _;
-use utils::relative_time;
+use utils::{relative_time, relative_time_secs};
 
 use crate::app::AppRoot;
 use crate::issues::helpers::{comment_form, comments_section, sidebar_section};
 use crate::pull_requests::dialogs::update::UpdatePrDialog;
 use crate::repo::commit_diff::{CommitDiffView, DiffPane};
-use crate::shared::event_list::commit_list;
+use crate::repo::helpers::short_id;
 use crate::shared::log_dropped;
 use crate::shared::widgets::status_badge;
 
@@ -493,21 +494,86 @@ impl PullRequestDetailView {
         let worktree = self.worktree.clone();
         let view = cx.entity().downgrade();
 
-        commit_list(
-            "pr-commits",
-            "pr-commits-scroll",
-            commits,
-            self.commit_scroll_handle.clone(),
-            |_, _, _| None,
-            move |commit, window, cx| {
-                if let Some(worktree) = worktree.clone() {
-                    let id = commit.id.clone();
-                    log_dropped(view.update(cx, |this, cx| {
-                        this.open_commit_diff(worktree, &id, window, cx);
-                    }));
-                }
-            },
-        )
+        let scroll_handle = self.commit_scroll_handle.clone();
+
+        v_flex()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .child(
+                uniform_list("pr-commits", commits.len(), move |range, _, cx| {
+                    range
+                        .map(|ix| {
+                            let Some(commit) = commits.get(ix) else {
+                                return div().into_any_element();
+                            };
+                            let row_id = commit.id.clone();
+                            let worktree = worktree.clone();
+                            let view = view.clone();
+
+                            h_flex()
+                                .id(commit.id.clone())
+                                .px_4()
+                                .h_16()
+                                .w_full()
+                                .gap_3()
+                                .border_b_1()
+                                .border_color(cx.theme().colors.border)
+                                .hover(|this| this.bg(cx.theme().colors.muted_hover))
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .gap_1()
+                                        .justify_center()
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .overflow_hidden()
+                                                .child(
+                                                    div()
+                                                        .font_family(cx.theme().mono_font)
+                                                        .text_sm()
+                                                        .text_color(
+                                                            cx.theme().colors.muted_foreground,
+                                                        )
+                                                        .child(short_id(&commit.id)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .text_sm()
+                                                        .text_ellipsis()
+                                                        .whitespace_nowrap()
+                                                        .child(commit.summary.clone()),
+                                                ),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .text_xs()
+                                                .text_color(cx.theme().colors.muted_foreground)
+                                                .child(commit.author.clone())
+                                                .child(relative_time_secs(commit.time)),
+                                        ),
+                                )
+                                .on_click(move |_, window, cx| {
+                                    if let Some(worktree) = worktree.clone() {
+                                        log_dropped(view.update(cx, |this, cx| {
+                                            this.open_commit_diff(worktree, &row_id, window, cx);
+                                        }));
+                                    }
+                                })
+                                .into_any_element()
+                        })
+                        .collect()
+                })
+                .track_scroll(&scroll_handle)
+                .size_full(),
+            )
+            .child(Scrollbar::vertical("pr-commits-scroll", scroll_handle))
+            .into_any_element()
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {

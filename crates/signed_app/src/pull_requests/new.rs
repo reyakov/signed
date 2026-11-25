@@ -4,8 +4,9 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, SharedString, StyleRefinement, Styled as _,
-    Subscription, UniformListScrollHandle, WeakEntity, Window, div, px,
+    ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
+    StyleRefinement, Styled as _, Subscription, UniformListScrollHandle, WeakEntity, Window, div,
+    px, uniform_list,
 };
 use nostr::prelude::{PublicKey, Url};
 use signed_core::Announcement;
@@ -19,14 +20,16 @@ use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
 use ui::layout::panel::{Panel, PanelSlot};
 use ui::menu::Menu;
+use ui::scrollbar::Scrollbar;
 use ui::spinner::Spinner;
 use ui::tabs::{Tab, Tabs};
+use ui::theme::ActiveTheme as _;
+use utils::relative_time_secs;
 
 use super::helpers::{ForkCompare, truncate_label};
 use crate::app::AppRoot;
 use crate::repo::commit_diff::{CommitDiffView, DiffPane};
-use crate::repo::helpers::announcement_display_name;
-use crate::shared::event_list::commit_list;
+use crate::repo::helpers::{announcement_display_name, short_id};
 use crate::shared::log_dropped;
 use crate::shared::progress::error_row;
 
@@ -445,25 +448,90 @@ impl NewPullRequestView {
         let Some(commits) = self.commits.as_ref() else {
             return EmptyState::centered("No commits");
         };
+
         if commits.is_empty() {
             return EmptyState::centered("No commits between the branches");
         }
+
         let commits = Arc::clone(commits);
         let view = cx.entity().downgrade();
+        let scroll_handle = self.scroll_handle.clone();
 
-        commit_list(
-            "new-pr-commits",
-            "new-pr-commits-scroll",
-            commits,
-            self.scroll_handle.clone(),
-            |_, _, _| None,
-            move |commit, window, cx| {
-                let id = commit.id.clone();
-                log_dropped(view.update(cx, |this, cx| {
-                    this.open_commit_diff(&id, window, cx);
-                }));
-            },
-        )
+        v_flex()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .child(
+                uniform_list("new-pr-commits", commits.len(), move |range, _, cx| {
+                    range
+                        .map(|ix| {
+                            let Some(commit) = commits.get(ix) else {
+                                return div().into_any_element();
+                            };
+                            let row_id = commit.id.clone();
+                            let view = view.clone();
+
+                            h_flex()
+                                .id(commit.id.clone())
+                                .px_4()
+                                .h_16()
+                                .w_full()
+                                .gap_3()
+                                .border_b_1()
+                                .border_color(cx.theme().colors.border)
+                                .hover(|this| this.bg(cx.theme().colors.muted_hover))
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .gap_1()
+                                        .justify_center()
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .overflow_hidden()
+                                                .child(
+                                                    div()
+                                                        .font_family(cx.theme().mono_font)
+                                                        .text_sm()
+                                                        .text_color(
+                                                            cx.theme().colors.muted_foreground,
+                                                        )
+                                                        .child(short_id(&commit.id)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .text_sm()
+                                                        .text_ellipsis()
+                                                        .whitespace_nowrap()
+                                                        .child(commit.summary.clone()),
+                                                ),
+                                        )
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .text_xs()
+                                                .text_color(cx.theme().colors.muted_foreground)
+                                                .child(commit.author.clone())
+                                                .child(relative_time_secs(commit.time)),
+                                        ),
+                                )
+                                .on_click(move |_, window, cx| {
+                                    log_dropped(view.update(cx, |this, cx| {
+                                        this.open_commit_diff(&row_id, window, cx);
+                                    }));
+                                })
+                                .into_any_element()
+                        })
+                        .collect()
+                })
+                .track_scroll(&scroll_handle)
+                .size_full(),
+            )
+            .child(Scrollbar::vertical("new-pr-commits-scroll", scroll_handle))
+            .into_any_element()
     }
 
     pub(super) fn has_source(&self) -> bool {

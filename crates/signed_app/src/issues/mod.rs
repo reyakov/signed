@@ -1,18 +1,21 @@
-use std::rc::Rc;
-
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, UniformListScrollHandle, WeakEntity, Window, div,
+    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
 };
 use helpers::{IssueFilter, StatusCounts, filter_by_status};
 use metadata::ProfileDirectory;
 use nostr::prelude::PublicKey;
 use signed_core::GitEvent;
 use signed_state::RepoStore;
+use ui::avatar::Avatar;
 use ui::button::Button;
 use ui::common::{Sizable, h_flex, v_flex};
+use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::layout::panel::{Panel, PanelSlot};
+use ui::scrollbar::Scrollbar;
 use ui::segmented::{Segmented, SegmentedOption};
 use ui::theme::ActiveTheme as _;
 use utils::relative_time;
@@ -21,8 +24,8 @@ use self::detail::IssueDetailView;
 use crate::app::AppRoot;
 use crate::issues::new_issue::NewIssueView;
 use crate::repo::helpers::short_id;
-use crate::shared::event_list::{EventHandler, EventList, EventRow};
 use crate::shared::log_dropped;
+use crate::shared::widgets::status_badge;
 
 pub mod detail;
 pub(crate) mod helpers;
@@ -214,54 +217,8 @@ impl Render for IssuesView {
         let directory = self.directory.clone();
         let store = self.store.clone();
         let workspace = self.workspace.clone();
-
-        let rows = visible_issues
-            .iter()
-            .filter_map(|&issue_ix| {
-                // The store re-read per frame can shrink below a captured index.
-                let issue = store.read(cx).issues.get(issue_ix)?;
-                let profile = directory.read(cx).profile(&issue.pubkey, cx);
-                let issue_id = issue.id;
-                let id_hex = issue.id.to_hex();
-                let status = store.read(cx).status_of(issue);
-
-                let on_click: EventHandler = {
-                    let workspace = workspace.clone();
-                    let store = store.clone();
-                    Rc::new(move |_, window, cx| {
-                        let id = SharedString::from(format!("issue:{issue_id}"));
-                        let store = store.clone();
-                        log_dropped(workspace.update(cx, |root, cx| {
-                            root.panels().clone().update(cx, |panels, cx| {
-                                panels.open(
-                                    PanelSlot::Split,
-                                    id,
-                                    move |_, cx| {
-                                        cx.new(|cx| {
-                                            IssueDetailView::new(store.clone(), issue_id, cx)
-                                        })
-                                    },
-                                    window,
-                                    cx,
-                                )
-                            })
-                        }));
-                    })
-                };
-
-                Some(EventRow {
-                    id: SharedString::from(format!("issue:{id_hex}")).into(),
-                    status,
-                    title: issue.activity_subject().into(),
-                    author: profile.name(),
-                    picture: profile.picture(),
-                    pubkey: issue.pubkey,
-                    short_id: short_id(&id_hex),
-                    age: SharedString::from(relative_time(issue.created_at)),
-                    on_click,
-                })
-            })
-            .collect();
+        let scroll_handle = self.scroll_handle.clone();
+        let count = visible_issues.len();
 
         let empty_message = match filter {
             IssueFilter::All => "No issues",
@@ -272,12 +229,126 @@ impl Render for IssuesView {
         v_flex()
             .size_full()
             .child(
-                EventList::new("issues")
-                    .toolbar(self.render_header(cx))
-                    .scroll_handle(self.scroll_handle.clone())
-                    .rows(rows)
-                    .empty_message(empty_message)
-                    .render(cx),
+                v_flex()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(self.render_header(cx))
+                    .when(count > 0, |this| {
+                        this.child(
+                            uniform_list("issues", count, move |range, _, cx| {
+                                range
+                                    .map(|ix| {
+                                        // The store re-read per frame can shrink below a captured index.
+                                        let Some(issue) =
+                                            visible_issues.get(ix).and_then(|issue_ix| {
+                                                store.read(cx).issues.get(*issue_ix)
+                                            })
+                                        else {
+                                            return div().into_any_element();
+                                        };
+                                        let profile = directory.read(cx).profile(&issue.pubkey, cx);
+                                        let issue_id = issue.id;
+                                        let id_hex = issue.id.to_hex();
+                                        let status = store.read(cx).status_of(issue);
+                                        let store = store.clone();
+                                        let workspace = workspace.clone();
+
+                                        h_flex()
+                                            .id(SharedString::from(format!("issue:{id_hex}")))
+                                            .w_full()
+                                            .h_16()
+                                            .gap_4()
+                                            .px_2()
+                                            .border_b_1()
+                                            .border_color(cx.theme().colors.border)
+                                            .hover(|this| this.bg(cx.theme().colors.muted_hover))
+                                            .on_click(move |_, window, cx| {
+                                                let id =
+                                                    SharedString::from(format!("issue:{issue_id}"));
+                                                let store = store.clone();
+                                                log_dropped(workspace.update(cx, |root, cx| {
+                                                    root.panels().clone().update(
+                                                        cx,
+                                                        |panels, cx| {
+                                                            panels.open(
+                                                                PanelSlot::Split,
+                                                                id,
+                                                                move |_, cx| {
+                                                                    cx.new(|cx| {
+                                                                        IssueDetailView::new(
+                                                                            store.clone(),
+                                                                            issue_id,
+                                                                            cx,
+                                                                        )
+                                                                    })
+                                                                },
+                                                                window,
+                                                                cx,
+                                                            )
+                                                        },
+                                                    )
+                                                }));
+                                            })
+                                            .child(status_badge(status))
+                                            .child(
+                                                v_flex()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .text_ellipsis()
+                                                            .whitespace_nowrap()
+                                                            .child(issue.activity_subject()),
+                                                    )
+                                                    .child(
+                                                        h_flex()
+                                                            .gap_2()
+                                                            .text_xs()
+                                                            .child(
+                                                                h_flex()
+                                                                    .gap_1()
+                                                                    .child(
+                                                                        Avatar::new(issue.pubkey)
+                                                                            .name(profile.name())
+                                                                            .picture(
+                                                                                profile.picture(),
+                                                                            )
+                                                                            .small(),
+                                                                    )
+                                                                    .child(
+                                                                        div().child(profile.name()),
+                                                                    ),
+                                                            )
+                                                            .child("opened")
+                                                            .child(
+                                                                div()
+                                                                    .text_color(
+                                                                        cx.theme()
+                                                                            .colors
+                                                                            .muted_foreground,
+                                                                    )
+                                                                    .child(short_id(&id_hex)),
+                                                            )
+                                                            .child(relative_time(issue.created_at)),
+                                                    ),
+                                            )
+                                            .into_any_element()
+                                    })
+                                    .collect()
+                            })
+                            .track_scroll(&scroll_handle)
+                            .size_full(),
+                        )
+                        .child(Scrollbar::vertical("issues-scroll", scroll_handle.clone()))
+                    })
+                    .when(count == 0, |this| {
+                        this.child(EmptyState::centered(empty_message))
+                    })
+                    .into_any_element(),
             )
             .into_any_element()
     }
