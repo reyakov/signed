@@ -1,5 +1,5 @@
-//! The shared issue and pull-request lists: toolbar, uniform rows, scrollbar
-//! overlay, and empty state, plus the scrollable commit list.
+//! The shared issue and pull-request lists: uniform rows, scrollbar overlay, and
+//! empty state, plus the scrollable commit list.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -187,19 +187,6 @@ impl EventList {
             })
             .into_any_element()
     }
-}
-
-/// The toolbar above the issue and pull-request lists: a filter and its actions.
-pub fn filter_toolbar(cx: &App, children: impl IntoIterator<Item = AnyElement>) -> AnyElement {
-    h_flex()
-        .px_4()
-        .w_full()
-        .gap_3()
-        .border_b_1()
-        .border_color(cx.theme().colors.border)
-        .bg(cx.theme().colors.muted)
-        .children(children)
-        .into_any_element()
 }
 
 /// A scrollable commit list: uniform `commit_row`s under a scrollbar overlay.

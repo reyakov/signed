@@ -15,6 +15,7 @@ use ui::avatar::Avatar;
 use ui::button::{Button, ButtonVariant};
 use ui::command_palette::{Command, CommandPalette, CommandPaletteState};
 use ui::icons::{Icon, IconRole};
+use ui::layout::panel::PanelSlot;
 use ui::layout::root::RootContext as _;
 use ui::menu::{Menu, MenuItem};
 use ui::tooltip::Tooltip;
@@ -24,7 +25,7 @@ use crate::explore::ExploreView;
 use crate::identity::exit::ExitDialog;
 use crate::repo::{RepoDetailView, actions, dialogs};
 use crate::settings::SettingsDialog;
-use crate::shared::{log_dropped, panels};
+use crate::shared::log_dropped;
 
 mod repository_switcher;
 
@@ -361,23 +362,28 @@ impl TitlebarView {
             let id = SharedString::from(format!("repo:{}", announcement.addr()));
             let workspace = self.app.clone();
             let workspace_for_build = workspace.clone();
-            panels::open_primary(
-                &workspace,
-                id,
-                move |window, cx| {
-                    cx.new(|cx| {
-                        RepoDetailView::new_local_announced(
-                            workspace_for_build.clone(),
-                            announcement.clone(),
-                            path.clone(),
-                            window,
-                            cx,
-                        )
-                    })
-                },
-                window,
-                cx,
-            );
+
+            log_dropped(workspace.update(cx, |root, cx| {
+                root.panels().clone().update(cx, |panels, cx| {
+                    panels.open(
+                        PanelSlot::Main,
+                        id,
+                        move |window, cx| {
+                            cx.new(|cx| {
+                                RepoDetailView::new_local_announced(
+                                    workspace_for_build.clone(),
+                                    announcement.clone(),
+                                    path.clone(),
+                                    window,
+                                    cx,
+                                )
+                            })
+                        },
+                        window,
+                        cx,
+                    )
+                })
+            }));
             return;
         }
 
@@ -385,23 +391,27 @@ impl TitlebarView {
         let workspace = self.app.clone();
         let workspace_for_build = workspace.clone();
 
-        panels::open_primary(
-            &workspace,
-            id,
-            move |window, cx| {
-                cx.new(|cx| {
-                    RepoDetailView::new_local(
-                        workspace_for_build.clone(),
-                        path.clone(),
-                        nip34.clone(),
-                        window,
-                        cx,
-                    )
-                })
-            },
-            window,
-            cx,
-        );
+        log_dropped(workspace.update(cx, |root, cx| {
+            root.panels().clone().update(cx, |panels, cx| {
+                panels.open(
+                    PanelSlot::Main,
+                    id,
+                    move |window, cx| {
+                        cx.new(|cx| {
+                            RepoDetailView::new_local(
+                                workspace_for_build.clone(),
+                                path.clone(),
+                                nip34.clone(),
+                                window,
+                                cx,
+                            )
+                        })
+                    },
+                    window,
+                    cx,
+                )
+            })
+        }));
     }
 
     pub fn render_user_menu(&self, cx: &App) -> Option<AnyElement> {

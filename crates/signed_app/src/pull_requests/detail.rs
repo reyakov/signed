@@ -19,7 +19,7 @@ use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::input::InputState;
-use ui::layout::panel::Panel;
+use ui::layout::panel::{Panel, PanelSlot};
 use ui::layout::root::RootContext as _;
 use ui::scroll_area::ScrollArea;
 use ui::spinner::Spinner;
@@ -33,7 +33,6 @@ use crate::pull_requests::dialogs::update::UpdatePrDialog;
 use crate::repo::commit_diff::{CommitDiffView, DiffPane};
 use crate::shared::event_list::commit_list;
 use crate::shared::log_dropped;
-use crate::shared::panels::open_detail;
 use crate::shared::widgets::status_badge;
 
 const NOT_FOUND: &str = "Pull request not found";
@@ -315,19 +314,31 @@ impl PullRequestDetailView {
             Some(addr) => SharedString::from(format!("commit:{addr}:{commit_id}")),
             None => SharedString::from(format!("commit:{}:{commit_id}", worktree.display())),
         };
+
         let workspace = self.workspace.clone();
         let commit_id = commit_id.to_owned();
-        open_detail(
-            &workspace,
-            id,
-            move |window, cx| {
-                cx.new(|cx| {
-                    CommitDiffView::new(worktree.clone(), commit_id.clone(), false, window, cx)
-                })
-            },
-            window,
-            cx,
-        );
+
+        log_dropped(workspace.update(cx, |root, cx| {
+            root.panels().clone().update(cx, |panels, cx| {
+                panels.open(
+                    PanelSlot::Split,
+                    id,
+                    move |window, cx| {
+                        cx.new(|cx| {
+                            CommitDiffView::new(
+                                worktree.clone(),
+                                commit_id.clone(),
+                                false,
+                                window,
+                                cx,
+                            )
+                        })
+                    },
+                    window,
+                    cx,
+                )
+            })
+        }));
     }
 
     fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {

@@ -8,12 +8,11 @@ use ui::button::Button;
 use ui::common::{ResultLogErr as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
-use ui::layout::panel::Panel;
+use ui::layout::panel::{Panel, PanelSlot};
 use ui::theme::ActiveTheme as _;
 
 use crate::app::AppRoot;
 use crate::shared::log_dropped;
-use crate::shared::panels::close_detail;
 use crate::shared::progress::error_row;
 
 pub struct SendPatchView {
@@ -80,13 +79,16 @@ impl SendPatchView {
                 cx,
             )
         });
+        let workspace = self.workspace.clone();
+        let panel_id = self.panel_id.clone();
 
         cx.spawn(async move |this, cx| match task.await {
             Ok(()) => {
-                this.update(cx, |this, cx| {
-                    close_detail(&this.workspace, &this.panel_id, cx)
-                })
-                .log_err();
+                log_dropped(workspace.update(cx, |root, cx| {
+                    root.panels().clone().update(cx, |panels, cx| {
+                        panels.close(PanelSlot::Split, &panel_id, cx)
+                    })
+                }));
             }
             Err(error) => {
                 this.update(cx, |this, cx| {

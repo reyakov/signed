@@ -1451,6 +1451,7 @@ impl RepoDetailView {
                 })
                 .child(
                     h_flex()
+                        .px_2()
                         .w_full()
                         .gap_2()
                         .child(

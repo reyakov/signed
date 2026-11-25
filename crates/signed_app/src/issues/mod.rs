@@ -10,20 +10,19 @@ use nostr::prelude::PublicKey;
 use signed_core::GitEvent;
 use signed_state::RepoStore;
 use ui::button::Button;
-use ui::common::v_flex;
+use ui::common::{Sizable, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
-use ui::layout::panel::Panel;
-use ui::layout::root::RootContext as _;
+use ui::layout::panel::{Panel, PanelSlot};
 use ui::segmented::{Segmented, SegmentedOption};
 use ui::theme::ActiveTheme as _;
 use utils::relative_time;
 
 use self::detail::IssueDetailView;
 use crate::app::AppRoot;
-use crate::issues::new_issue::NewIssueDialog;
+use crate::issues::new_issue::NewIssueView;
 use crate::repo::helpers::short_id;
-use crate::shared::event_list::{EventHandler, EventList, EventRow, filter_toolbar};
-use crate::shared::{log_dropped, panels};
+use crate::shared::event_list::{EventHandler, EventList, EventRow};
+use crate::shared::log_dropped;
 
 pub mod detail;
 pub(crate) mod helpers;
@@ -73,9 +72,36 @@ impl IssuesView {
         }
     }
 
-    fn open_new_issue(&mut self, cx: &mut Context<Self>) {
-        let dialog = NewIssueDialog::new(self.store.clone(), cx);
-        cx.open_dialog(dialog);
+    fn open_new_issue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(addr) = self.store.read(cx).addr().cloned() else {
+            return;
+        };
+
+        let id = SharedString::from(format!("new-issue:{addr}"));
+        let workspace = self.workspace.clone();
+        let workspace_for_build = workspace.clone();
+        let store = self.store.clone();
+
+        log_dropped(workspace.update(cx, |root, cx| {
+            root.panels().clone().update(cx, |panels, cx| {
+                panels.open(
+                    PanelSlot::Split,
+                    id.clone(),
+                    move |_, cx| {
+                        cx.new(|cx| {
+                            NewIssueView::new(
+                                workspace_for_build.clone(),
+                                id.clone(),
+                                store.clone(),
+                                cx,
+                            )
+                        })
+                    },
+                    window,
+                    cx,
+                )
+            })
+        }));
     }
 
     /// Total number of issues across all statuses, for the sidebar label.
@@ -127,23 +153,30 @@ impl IssuesView {
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let counts = self.counts;
-        let muted = cx.theme().colors.muted_foreground;
+        let colors = cx.theme().colors;
+        let muted = colors.muted_foreground;
         let weak = cx.entity().downgrade();
 
-        filter_toolbar(
-            cx,
-            [
+        h_flex()
+            .px_2()
+            .h_12()
+            .w_full()
+            .gap_3()
+            .border_b_1()
+            .border_color(colors.border)
+            .bg(colors.muted)
+            .child(
                 Segmented::new("issue-filter", self.filter)
                     .options(vec![
-                        SegmentedOption::new(IssueFilter::All, format!("All ({})", counts.total))
+                        SegmentedOption::new(IssueFilter::All)
+                            .label(format!("All ({})", counts.total))
                             .icon(Icon::named(IconRole::GitIssueDone).color(muted)),
-                        SegmentedOption::new(IssueFilter::Open, format!("Open ({})", counts.open))
+                        SegmentedOption::new(IssueFilter::Open)
+                            .label(format!("Open ({})", counts.open))
                             .icon(Icon::named(IconRole::GitIssueOngoing).color(muted)),
-                        SegmentedOption::new(
-                            IssueFilter::Closed,
-                            format!("Closed ({})", counts.closed),
-                        )
-                        .icon(Icon::named(IconRole::GitIssueClosed).color(muted)),
+                        SegmentedOption::new(IssueFilter::Closed)
+                            .label(format!("Closed ({})", counts.closed))
+                            .icon(Icon::named(IconRole::GitIssueClosed).color(muted)),
                     ])
                     .on_change(move |filter, _, cx| {
                         if let Err(error) = weak.update(cx, |this, cx| {
@@ -152,18 +185,19 @@ impl IssuesView {
                         }) {
                             log::warn!("failed to switch issue filter: {error}");
                         }
-                    })
-                    .into_any_element(),
-                div().flex_1().into_any_element(),
+                    }),
+            )
+            .child(div().flex_1())
+            .child(
                 Button::new("new-issue")
                     .label("New issue")
                     .icon(Icon::named(IconRole::CirclePlus))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.open_new_issue(cx);
-                    }))
-                    .into_any_element(),
-            ],
-        )
+                    .small()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_new_issue(window, cx);
+                    })),
+            )
+            .into_any_element()
     }
 }
 
@@ -197,15 +231,21 @@ impl Render for IssuesView {
                     Rc::new(move |_, window, cx| {
                         let id = SharedString::from(format!("issue:{issue_id}"));
                         let store = store.clone();
-                        panels::open_detail(
-                            &workspace,
-                            id,
-                            move |_, cx| {
-                                cx.new(|cx| IssueDetailView::new(store.clone(), issue_id, cx))
-                            },
-                            window,
-                            cx,
-                        );
+                        log_dropped(workspace.update(cx, |root, cx| {
+                            root.panels().clone().update(cx, |panels, cx| {
+                                panels.open(
+                                    PanelSlot::Split,
+                                    id,
+                                    move |_, cx| {
+                                        cx.new(|cx| {
+                                            IssueDetailView::new(store.clone(), issue_id, cx)
+                                        })
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            })
+                        }));
                     })
                 };
 

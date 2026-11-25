@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
@@ -7,12 +9,11 @@ use metadata::ProfileDirectory;
 use nostr::prelude::{Kind, PublicKey};
 use signed_core::GitEvent;
 use signed_state::RepoStore;
-use std::rc::Rc;
 use ui::alert::{Alert, AlertSeverity};
-use ui::common::v_flex;
+use ui::common::{Sizable, h_flex, v_flex};
 use ui::dropdown_menu::DropdownMenu;
 use ui::icons::{Icon, IconRole};
-use ui::layout::panel::Panel;
+use ui::layout::panel::{Panel, PanelSlot};
 use ui::menu::MenuItem;
 use ui::segmented::{Segmented, SegmentedOption};
 use ui::theme::ActiveTheme as _;
@@ -32,9 +33,8 @@ pub use send_patch::SendPatchView;
 use crate::app::AppRoot;
 use crate::issues::helpers::{StatusCounts, filter_by_status};
 use crate::repo::helpers::short_id;
-use crate::shared::event_list::{EventHandler, EventList, EventRow, filter_toolbar};
+use crate::shared::event_list::{EventHandler, EventList, EventRow};
 use crate::shared::log_dropped;
-use crate::shared::panels::open_detail;
 
 pub struct PullRequestsView {
     workspace: WeakEntity<AppRoot>,
@@ -141,23 +141,27 @@ impl PullRequestsView {
         let workspace_for_build = workspace.clone();
         let store = self.store.clone();
 
-        open_detail(
-            &workspace,
-            id.clone(),
-            move |window, cx| {
-                cx.new(|cx| {
-                    NewPullRequestView::new(
-                        workspace_for_build.clone(),
-                        id.clone(),
-                        store.clone(),
-                        window,
-                        cx,
-                    )
-                })
-            },
-            window,
-            cx,
-        );
+        log_dropped(workspace.update(cx, |root, cx| {
+            root.panels().clone().update(cx, |panels, cx| {
+                panels.open(
+                    PanelSlot::Split,
+                    id.clone(),
+                    move |window, cx| {
+                        cx.new(|cx| {
+                            NewPullRequestView::new(
+                                workspace_for_build.clone(),
+                                id.clone(),
+                                store.clone(),
+                                window,
+                                cx,
+                            )
+                        })
+                    },
+                    window,
+                    cx,
+                )
+            })
+        }));
     }
 
     fn open_send_patch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -170,63 +174,64 @@ impl PullRequestsView {
         let workspace_for_build = workspace.clone();
         let store = self.store.clone();
 
-        open_detail(
-            &workspace,
-            id.clone(),
-            move |window, cx| {
-                cx.new(|cx| {
-                    SendPatchView::new(
-                        workspace_for_build.clone(),
-                        id.clone(),
-                        store.clone(),
-                        window,
-                        cx,
-                    )
-                })
-            },
-            window,
-            cx,
-        );
+        log_dropped(workspace.update(cx, |root, cx| {
+            root.panels().clone().update(cx, |panels, cx| {
+                panels.open(
+                    PanelSlot::Split,
+                    id.clone(),
+                    move |window, cx| {
+                        cx.new(|cx| {
+                            SendPatchView::new(
+                                workspace_for_build.clone(),
+                                id.clone(),
+                                store.clone(),
+                                window,
+                                cx,
+                            )
+                        })
+                    },
+                    window,
+                    cx,
+                )
+            })
+        }));
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let counts = self.counts;
-        let muted = cx.theme().colors.muted_foreground;
+        let colors = cx.theme().colors;
+        let muted = colors.muted_foreground;
         let weak = cx.entity().downgrade();
         let open_weak = cx.entity().downgrade();
         let menu_open_weak = cx.entity().downgrade();
         let patch_weak = cx.entity().downgrade();
 
-        filter_toolbar(
-            cx,
-            [
+        h_flex()
+            .px_2()
+            .h_12()
+            .w_full()
+            .gap_3()
+            .border_b_1()
+            .border_color(colors.border)
+            .bg(colors.muted)
+            .child(
                 Segmented::new("pr-filter", self.filter)
                     .options(vec![
-                        SegmentedOption::new(
-                            PullRequestFilter::All,
-                            format!("All ({})", counts.total),
-                        )
-                        .icon(Icon::named(IconRole::GitPullRequest).color(muted)),
-                        SegmentedOption::new(
-                            PullRequestFilter::Open,
-                            format!("Open ({})", counts.open),
-                        )
-                        .icon(Icon::named(IconRole::GitPullRequest).color(muted)),
-                        SegmentedOption::new(
-                            PullRequestFilter::Closed,
-                            format!("Closed ({})", counts.closed),
-                        )
-                        .icon(Icon::named(IconRole::GitPullRequestClosed).color(muted)),
-                        SegmentedOption::new(
-                            PullRequestFilter::Draft,
-                            format!("Draft ({})", counts.draft),
-                        )
-                        .icon(Icon::named(IconRole::GitPullRequestDraft).color(muted)),
-                        SegmentedOption::new(
-                            PullRequestFilter::Merged,
-                            format!("Merged ({})", counts.applied),
-                        )
-                        .icon(Icon::named(IconRole::GitPullRequestMerged).color(muted)),
+                        SegmentedOption::new(PullRequestFilter::All)
+                            .label(format!("All ({})", counts.total))
+                            .icon(Icon::named(IconRole::GitPullRequest).color(muted)),
+                        SegmentedOption::new(PullRequestFilter::Open)
+                            .label(format!("Open ({})", counts.open))
+                            .icon(Icon::named(IconRole::GitPullRequest).color(muted)),
+                        SegmentedOption::new(PullRequestFilter::Closed)
+                            .label(format!("Closed ({})", counts.closed))
+                            .icon(Icon::named(IconRole::GitPullRequestClosed).color(muted)),
+                        SegmentedOption::new(PullRequestFilter::Draft)
+                            .label(format!("Draft ({})", counts.draft))
+                            .icon(Icon::named(IconRole::GitPullRequestDraft).color(muted)),
+                        SegmentedOption::new(PullRequestFilter::Merged)
+                            .label(format!("Merged ({})", counts.applied))
+                            .icon(Icon::named(IconRole::GitPullRequestMerged).color(muted)),
                     ])
                     .on_change(move |filter, _, cx| {
                         if let Err(error) = weak.update(cx, |this, cx| {
@@ -235,12 +240,14 @@ impl PullRequestsView {
                         }) {
                             log::warn!("failed to switch PR filter: {error}");
                         }
-                    })
-                    .into_any_element(),
-                div().flex_1().into_any_element(),
+                    }),
+            )
+            .child(div().flex_1())
+            .child(
                 DropdownMenu::new("new-pr-actions")
                     .label("New")
                     .icon(Icon::named(IconRole::GitPullRequest))
+                    .small()
                     .open(self.new_pr_menu_open)
                     .on_click(move |_, window, cx| {
                         if let Err(error) =
@@ -264,10 +271,9 @@ impl PullRequestsView {
                                 }));
                             }
                         })]
-                    })
-                    .into_any_element(),
-            ],
-        )
+                    }),
+            )
+            .into_any_element()
     }
 }
 
@@ -310,23 +316,27 @@ impl Render for PullRequestsView {
                         let id = SharedString::from(format!("pr:{pr_id}"));
                         let workspace_for_build = workspace.clone();
                         let store = store.clone();
-                        open_detail(
-                            &workspace,
-                            id,
-                            move |window, cx| {
-                                cx.new(|cx| {
-                                    PullRequestDetailView::new(
-                                        workspace_for_build.clone(),
-                                        store.clone(),
-                                        pr_id,
-                                        window,
-                                        cx,
-                                    )
-                                })
-                            },
-                            window,
-                            cx,
-                        );
+                        log_dropped(workspace.update(cx, |root, cx| {
+                            root.panels().clone().update(cx, |panels, cx| {
+                                panels.open(
+                                    PanelSlot::Split,
+                                    id,
+                                    move |window, cx| {
+                                        cx.new(|cx| {
+                                            PullRequestDetailView::new(
+                                                workspace_for_build.clone(),
+                                                store.clone(),
+                                                pr_id,
+                                                window,
+                                                cx,
+                                            )
+                                        })
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            })
+                        }));
                     })
                 };
 

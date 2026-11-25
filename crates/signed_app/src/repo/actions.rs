@@ -2,10 +2,11 @@ use gpui::{App, AppContext as _, SharedString, WeakEntity, Window};
 use nostr::prelude::EventId;
 use signed_core::{Announcement, RepoAddr};
 use signed_state::RepoStore;
+use ui::layout::panel::PanelSlot;
 
 use crate::app::AppRoot;
 use crate::repo::RepoDetailView;
-use crate::shared::panels;
+use crate::shared::log_dropped;
 
 /// An item of a repository to open from outside its detail panel.
 pub enum RepoItem {
@@ -27,17 +28,23 @@ pub fn open_repo_panel(
     let hint = hint.cloned();
     let workspace_for_build = workspace.clone();
 
-    panels::open_primary(
-        workspace,
-        id,
-        move |window, cx| {
-            let addr = addr.clone();
-            let hint = hint.clone();
-            cx.new(|cx| RepoDetailView::new(workspace_for_build.clone(), addr, hint, window, cx))
-        },
-        window,
-        cx,
-    );
+    log_dropped(workspace.update(cx, |root, cx| {
+        root.panels().clone().update(cx, |panels, cx| {
+            panels.open(
+                PanelSlot::Main,
+                id,
+                move |window, cx| {
+                    let addr = addr.clone();
+                    let hint = hint.clone();
+                    cx.new(|cx| {
+                        RepoDetailView::new(workspace_for_build.clone(), addr, hint, window, cx)
+                    })
+                },
+                window,
+                cx,
+            )
+        })
+    }));
 }
 
 /// Opens an issue or pull request using a store built here.
@@ -54,39 +61,51 @@ pub fn open_repo_item(
         RepoItem::Issue(issue_id) => {
             let id = SharedString::from(format!("issue:{issue_id}"));
             let store = store.clone();
-            panels::open_detail(
-                workspace,
-                id,
-                move |_, cx| {
-                    cx.new(|cx| {
-                        crate::issues::detail::IssueDetailView::new(store.clone(), issue_id, cx)
-                    })
-                },
-                window,
-                cx,
-            );
+            log_dropped(workspace.update(cx, |root, cx| {
+                root.panels().clone().update(cx, |panels, cx| {
+                    panels.open(
+                        PanelSlot::Split,
+                        id,
+                        move |_, cx| {
+                            cx.new(|cx| {
+                                crate::issues::detail::IssueDetailView::new(
+                                    store.clone(),
+                                    issue_id,
+                                    cx,
+                                )
+                            })
+                        },
+                        window,
+                        cx,
+                    )
+                })
+            }));
         }
         RepoItem::PullRequest(pr_id) => {
             let id = SharedString::from(format!("pr:{pr_id}"));
             let workspace_for_build = workspace.clone();
             let store = store.clone();
-            panels::open_detail(
-                workspace,
-                id,
-                move |window, cx| {
-                    cx.new(|cx| {
-                        crate::pull_requests::PullRequestDetailView::new(
-                            workspace_for_build.clone(),
-                            store.clone(),
-                            pr_id,
-                            window,
-                            cx,
-                        )
-                    })
-                },
-                window,
-                cx,
-            );
+            log_dropped(workspace.update(cx, |root, cx| {
+                root.panels().clone().update(cx, |panels, cx| {
+                    panels.open(
+                        PanelSlot::Split,
+                        id,
+                        move |window, cx| {
+                            cx.new(|cx| {
+                                crate::pull_requests::PullRequestDetailView::new(
+                                    workspace_for_build.clone(),
+                                    store.clone(),
+                                    pr_id,
+                                    window,
+                                    cx,
+                                )
+                            })
+                        },
+                        window,
+                        cx,
+                    )
+                })
+            }));
         }
         // Opening a patch series directly is not a feature.
         _ => {}

@@ -24,7 +24,7 @@ use crate::app::AppRoot;
 use crate::explore::helpers::pick_banner;
 use crate::identity::import::ImportDialog;
 use crate::identity::onboarding::OnboardingDialog;
-use crate::shared::panels;
+use crate::shared::log_dropped;
 
 mod helpers;
 
@@ -54,16 +54,20 @@ impl ExploreView {
 
     /// Opens the explore panel in the main panel, reusing it when it is already cached.
     pub(crate) fn open(workspace: &WeakEntity<AppRoot>, window: &mut Window, cx: &mut App) {
-        panels::open_primary(
-            workspace,
-            Self::PANEL_ID,
-            {
-                let workspace = workspace.clone();
-                move |_, cx| cx.new(|cx| Self::new(workspace.clone(), cx))
-            },
-            window,
-            cx,
-        );
+        log_dropped(workspace.update(cx, |root, cx| {
+            root.panels().clone().update(cx, |panels, cx| {
+                panels.open(
+                    PanelSlot::Main,
+                    Self::PANEL_ID,
+                    {
+                        let workspace = workspace.clone();
+                        move |_, cx| cx.new(|cx| Self::new(workspace.clone(), cx))
+                    },
+                    window,
+                    cx,
+                )
+            })
+        }));
     }
 
     pub fn new(workspace: WeakEntity<AppRoot>, cx: &mut Context<Self>) -> Self {
@@ -220,9 +224,11 @@ impl ExploreView {
                 div().absolute().left_0().bottom_0().pl_4().pb_4().child(
                     Segmented::new("explore-filter", filter)
                         .options(vec![
-                            SegmentedOption::new(RepoFilter::All, "All")
+                            SegmentedOption::new(RepoFilter::All)
+                                .label("All")
                                 .icon(Icon::named(IconRole::Grid).small().color(muted)),
-                            SegmentedOption::new(RepoFilter::Recent, "Recent")
+                            SegmentedOption::new(RepoFilter::Recent)
+                                .label("Recent")
                                 .icon(Icon::named(IconRole::Clock).small().color(muted)),
                         ])
                         .on_change(move |filter, _, cx| {

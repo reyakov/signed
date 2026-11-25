@@ -13,6 +13,7 @@
 - Keep the Explore list at its scroll position across background refreshes, a new search or filter still starts at the top
 - Reuse the rendered file tree, commit diffs, README previews and split pane instead of rebuilding them on every repaint
 - Truncate long tab and file tree labels with an ellipsis instead of letting them widen their row
+- Open the New issue form in a split panel instead of a dialog, it now stays open until the issue is published and shows a failed publish in the form
 
 ### Fixed
 
@@ -34,6 +35,7 @@
 - Fix an open dialog taking keyboard focus back from the command palette or a toast button on every repaint
 - Fix the remove button of a Settings or grasp server row carrying its hover state over to the next row after a removal
 - Fix the file tree's scrollbar sitting inset from the sidebar's right border, it now rides beside it
+- Fix the selected filter in the Explore, Issues and Pull requests views highlighting only after the pointer crossed it, it now highlights as soon as the filter is drawn
 
 ## v0.2.0 - 2026/10/21
 

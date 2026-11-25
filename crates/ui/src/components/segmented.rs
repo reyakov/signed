@@ -7,8 +7,8 @@
 //!
 //! let mode = Segmented::new("editor-mode", "text")
 //!     .options([
-//!         SegmentedOption::new("text", "Text"),
-//!         SegmentedOption::new("preview", "Preview"),
+//!         SegmentedOption::new("text").label("Text"),
+//!         SegmentedOption::new("preview").label("Preview"),
 //!     ])
 //!     .on_change(|value, _window, _cx| println!("mode: {value}"));
 //! ```
@@ -18,8 +18,9 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     AnimationExt as _, App, Bounds, ElementId, Entity, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Point, RenderOnce, Role, SharedString, SpringAnimation,
-    StatefulInteractiveElement as _, StyleRefinement, Styled as _, Toggled, Window, canvas, div,
+    KeyDownEvent, ParentElement as _, Pixels, Point, RenderOnce, Role, SharedString,
+    SpringAnimation, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Toggled,
+    Window, canvas, div,
 };
 
 use crate::components::common::{
@@ -36,21 +37,29 @@ type ChangeHandler<T> = Rc<dyn Fn(T, &mut Window, &mut App)>;
 #[must_use]
 pub struct SegmentedOption<T> {
     value: T,
-    label: SharedString,
+    label: Option<SharedString>,
     icon: Option<Icon>,
+    a11y_label: Option<SharedString>,
 }
 
 impl<T> SegmentedOption<T> {
-    /// Creates a choice showing `label`; picking it reports `value`.
-    pub fn new<L>(value: T, label: L) -> Self
+    /// Creates a choice that reports `value` when picked.
+    pub fn new(value: T) -> Self {
+        Self {
+            value,
+            label: None,
+            icon: None,
+            a11y_label: None,
+        }
+    }
+
+    /// Sets the text shown for the segment.
+    pub fn label<L>(mut self, label: L) -> Self
     where
         L: Into<SharedString>,
     {
-        Self {
-            value,
-            label: label.into(),
-            icon: None,
-        }
+        self.label = Some(label.into());
+        self
     }
 
     /// Sets a leading icon for the segment.
@@ -61,6 +70,15 @@ impl<T> SegmentedOption<T> {
         self.icon = Some(icon.into());
         self
     }
+
+    /// Overrides the accessibility label, which defaults to the visible label.
+    pub fn accessibility_label<L>(mut self, label: L) -> Self
+    where
+        L: Into<SharedString>,
+    {
+        self.a11y_label = Some(label.into());
+        self
+    }
 }
 
 /// Converts a `(value, label)` pair into an option.
@@ -69,11 +87,7 @@ where
     L: Into<SharedString>,
 {
     fn from((value, label): (T, L)) -> Self {
-        Self {
-            value,
-            label: label.into(),
-            icon: None,
-        }
+        Self::new(value).label(label)
     }
 }
 
@@ -195,10 +209,10 @@ where
             .unwrap_or_else(|| SharedString::from(self.id.to_string()));
 
         window.with_element_namespace(self.id.clone(), |window| {
-            let geometry: Entity<Vec<Option<Bounds<gpui::Pixels>>>> =
+            let geometry: Entity<Vec<Option<Bounds<Pixels>>>> =
                 window.use_keyed_state("segmented-geometry", cx, |_, _| Vec::new());
 
-            let track_origin: Entity<Option<Point<gpui::Pixels>>> =
+            let track_origin: Entity<Option<Point<Pixels>>> =
                 window.use_keyed_state("segmented-track-origin", cx, |_, _| None);
 
             let focus = focus_handle(&self.id, window, cx);
@@ -226,6 +240,7 @@ where
                     } else {
                         muted_foreground
                     };
+                    let a11y_label = segment.a11y_label.clone().or_else(|| segment.label.clone());
 
                     h_flex()
                         .id(("segment", index))
@@ -240,26 +255,24 @@ where
                         .when(!is_selected, |segment| {
                             segment.hover(|style| style.bg(surface))
                         })
-                        .role(Role::RadioButton)
-                        .aria_label(segment.label.clone())
+                        .when_some(a11y_label, |segment, label| segment.aria_label(label))
                         .aria_toggled(Toggled::from(is_selected))
                         .when_some(segment.icon.clone(), |segment, icon| {
                             segment.child(icon.size(self.size.icon_rems()).color(content_color))
                         })
-                        .child(segment.label.clone())
+                        .when_some(segment.label.clone(), |segment, label| segment.child(label))
                         .child(
                             canvas(
-                                {
-                                    let geometry = geometry.clone();
-                                    move |bounds, _, cx| {
-                                        geometry.update(cx, |geometry, _| {
-                                            if geometry.len() <= index {
-                                                geometry.resize(index + 1, None);
-                                            }
-                                            geometry[index] = Some(bounds);
-                                        });
+                                measure(&geometry, move |geometry, bounds| {
+                                    if geometry.get(index) == Some(&Some(bounds)) {
+                                        return false;
                                     }
-                                },
+                                    if geometry.len() <= index {
+                                        geometry.resize(index + 1, None);
+                                    }
+                                    geometry[index] = Some(bounds);
+                                    true
+                                }),
                                 |_, _, _, _| {},
                             )
                             .absolute()
@@ -298,13 +311,13 @@ where
                     .control_text(self.size)
                     .child(
                         canvas(
-                            {
-                                let track_origin = track_origin.clone();
-                                move |bounds, _, cx| {
-                                    track_origin
-                                        .update(cx, |origin, _| *origin = Some(bounds.origin));
+                            measure(&track_origin, |origin, bounds| {
+                                if *origin == Some(bounds.origin) {
+                                    return false;
                                 }
-                            },
+                                *origin = Some(bounds.origin);
+                                true
+                            }),
                             |_, _, _, _| {},
                         )
                         .absolute()
@@ -365,5 +378,19 @@ where
                     .refine_style(&self.style),
             )
         })
+    }
+}
+
+/// Stores what a frame measured and requests the frame that draws from it.
+fn measure<S: 'static>(
+    state: &Entity<S>,
+    record: impl Fn(&mut S, Bounds<Pixels>) -> bool + 'static,
+) -> impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static {
+    let state = state.clone();
+    move |bounds, window, cx| {
+        let changed = state.update(cx, |state, _| record(state, bounds));
+        if changed {
+            window.request_animation_frame();
+        }
     }
 }

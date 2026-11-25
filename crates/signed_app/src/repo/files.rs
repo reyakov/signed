@@ -260,7 +260,6 @@ impl RepoFilesView {
         let change_view = view.clone();
         let disclosure_view = view;
 
-        // Mirrors the sidebar's left inset, so rows stay aligned while the scrollbar hugs its border.
         Tree::new("repo-tree")
             .pr_2()
             .selected(selected)

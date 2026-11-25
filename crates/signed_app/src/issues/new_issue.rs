@@ -1,70 +1,132 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    Styled as _, Window, div,
+    AnyElement, App, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
+    Render, SharedString, Styled as _, Task, WeakEntity, Window, div,
 };
 use signed_state::RepoStore;
-use ui::common::v_flex;
-use ui::dialog::{Dialog, DialogHandle};
+use ui::button::Button;
+use ui::common::{h_flex, v_flex};
 use ui::field::Field;
 use ui::input::{Input, InputState};
+use ui::layout::panel::{Panel, PanelSlot};
 use ui::theme::ActiveTheme as _;
 
-use crate::shared::progress::{DialogProgress, dialog_submit_button};
+use crate::app::AppRoot;
+use crate::shared::log_dropped;
+use crate::shared::progress::error_row;
 
-pub struct NewIssueDialog {
-    handle: DialogHandle,
+pub struct NewIssueView {
+    workspace: WeakEntity<AppRoot>,
+    panel_id: SharedString,
     store: Entity<RepoStore>,
     subject: Entity<InputState>,
     content: Entity<InputState>,
-    state: Entity<DialogProgress>,
+    submitting: bool,
+    error: Option<SharedString>,
+    /// The running publish, cancelled when the view closes.
+    submit_task: Option<Task<()>>,
 }
 
-impl NewIssueDialog {
-    pub fn new(store: Entity<RepoStore>, cx: &mut App) -> Entity<Self> {
+impl NewIssueView {
+    pub fn new(
+        workspace: WeakEntity<AppRoot>,
+        panel_id: SharedString,
+        store: Entity<RepoStore>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let subject = InputState::new(cx);
         let content = InputState::builder().multiline().build(cx);
-        let state = cx.new(|_| DialogProgress::default());
 
-        cx.new(|_| Self {
-            handle: DialogHandle::new(true),
+        Self {
+            workspace,
+            panel_id,
             store,
             subject,
             content,
-            state,
-        })
+            submitting: false,
+            error: None,
+            submit_task: None,
+        }
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
-        // The publish runs detached in the store; one submission per dialog.
-        if self.state.read(cx).busy {
+        if self.submitting {
             return;
         }
+
         let subject = self.subject.read(cx).value().to_string();
         let content = self.content.read(cx).value().to_string();
         let subject = (!subject.trim().is_empty()).then_some(subject);
 
-        self.state.update(cx, |state, _| state.begin());
-        self.store.update(cx, |store, cx| {
-            store.open_issue(subject, content, cx);
-        });
+        self.submitting = true;
+        self.error = None;
+        cx.notify();
 
-        self.handle.close(cx);
+        let workspace = self.workspace.clone();
+        let panel_id = self.panel_id.clone();
+        let task = self
+            .store
+            .update(cx, |store, cx| store.open_issue(subject, content, cx));
+        self.submit_task = Some(cx.spawn(async move |this, cx| match task.await {
+            Ok(()) => {
+                log_dropped(workspace.update(cx, |root, cx| {
+                    root.panels().clone().update(cx, |panels, cx| {
+                        panels.close(PanelSlot::Split, &panel_id, cx)
+                    })
+                }));
+            }
+            Err(error) => {
+                log_dropped(this.update(cx, |this, cx| {
+                    this.submitting = false;
+                    this.error = Some(error.to_string().into());
+                    cx.notify();
+                }));
+            }
+        }));
+    }
+
+    fn render_footer(&self, cx: &Context<Self>) -> AnyElement {
+        let weak = cx.entity().downgrade();
+
+        h_flex()
+            .px_4()
+            .py_2()
+            .w_full()
+            .justify_end()
+            .border_t_1()
+            .border_color(cx.theme().colors.border)
+            .child(
+                Button::new("create-issue")
+                    .label("Create issue")
+                    .loading(self.submitting)
+                    .disabled(self.submitting)
+                    .on_click(move |_, _, cx| {
+                        log_dropped(weak.update(cx, |this, cx| this.submit(cx)));
+                    }),
+            )
+            .into_any_element()
     }
 }
 
-impl Render for NewIssueDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let subject = self.subject.clone();
-        let content = self.content.clone();
-        let this = cx.entity().downgrade();
-        let action_state = self.state.clone();
+impl Panel for NewIssueView {
+    fn title(&self, _cx: &App) -> SharedString {
+        SharedString::from("New issue")
+    }
 
-        Dialog::new("new-issue-dialog")
-            .handle(self.handle.clone())
-            .min_width(gpui::px(520.))
-            .title("New issue")
-            .content(move |_, cx| {
+    fn loading(&self, _cx: &App) -> bool {
+        self.submitting
+    }
+}
+
+impl Render for NewIssueView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .id("new-issue")
+            .size_full()
+            .child(
                 v_flex()
+                    .p_4()
+                    .flex_1()
                     .gap_3()
                     .child(
                         div()
@@ -74,31 +136,14 @@ impl Render for NewIssueDialog {
                     )
                     .child(
                         Field::new("issue-title", "Title")
-                            .child(Input::new("issue-title-input", subject.clone())),
+                            .child(Input::new("issue-title-input", self.subject.clone())),
                     )
                     .child(
                         Field::new("issue-content", "Content")
-                            .child(Input::new("issue-content-input", content.clone()).rows(6)),
+                            .child(Input::new("issue-content-input", self.content.clone()).rows(6)),
                     )
-                    .into_any_element()
-            })
-            .actions(move |_, cx| {
-                let this = this.clone();
-                let busy = action_state.read(cx).busy;
-                vec![
-                    dialog_submit_button(
-                        "create-issue",
-                        "Create issue",
-                        None,
-                        busy,
-                        &this,
-                        |this, _window, cx| {
-                            this.submit(cx);
-                            Ok(())
-                        },
-                    )
-                    .into_any_element() as AnyElement,
-                ]
-            })
+                    .when_some(error_row(&self.error, cx), |this, error| this.child(error)),
+            )
+            .child(self.render_footer(cx))
     }
 }

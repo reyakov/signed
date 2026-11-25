@@ -17,7 +17,7 @@ use ui::common::{StyledExt as _, h_flex, v_flex};
 use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
-use ui::layout::panel::Panel;
+use ui::layout::panel::{Panel, PanelSlot};
 use ui::menu::Menu;
 use ui::spinner::Spinner;
 use ui::tabs::{Tab, Tabs};
@@ -28,7 +28,6 @@ use crate::repo::commit_diff::{CommitDiffView, DiffPane};
 use crate::repo::helpers::announcement_display_name;
 use crate::shared::event_list::commit_list;
 use crate::shared::log_dropped;
-use crate::shared::panels::{close_detail, open_detail};
 use crate::shared::progress::error_row;
 
 pub struct NewPullRequestView {
@@ -245,7 +244,11 @@ impl NewPullRequestView {
             this.update(cx, |this, _cx| {
                 this.submitting = false;
             })?;
-            close_detail(&workspace, &panel_id, cx);
+            log_dropped(workspace.update(cx, |root, cx| {
+                root.panels().clone().update(cx, |panels, cx| {
+                    panels.close(PanelSlot::Split, &panel_id, cx)
+                })
+            }));
             Ok(())
         });
         self.push_task(task);
@@ -261,17 +264,27 @@ impl NewPullRequestView {
         };
         let workspace = self.workspace.clone();
         let commit_id = commit_id.to_owned();
-        open_detail(
-            &workspace,
-            id,
-            move |window, cx| {
-                cx.new(|cx| {
-                    CommitDiffView::new(repo_path.clone(), commit_id.clone(), false, window, cx)
-                })
-            },
-            window,
-            cx,
-        );
+        log_dropped(workspace.update(cx, |root, cx| {
+            root.panels().clone().update(cx, |panels, cx| {
+                panels.open(
+                    PanelSlot::Split,
+                    id,
+                    move |window, cx| {
+                        cx.new(|cx| {
+                            CommitDiffView::new(
+                                repo_path.clone(),
+                                commit_id.clone(),
+                                false,
+                                window,
+                                cx,
+                            )
+                        })
+                    },
+                    window,
+                    cx,
+                )
+            })
+        }));
     }
 
     fn submit_enabled(&self, cx: &App) -> bool {

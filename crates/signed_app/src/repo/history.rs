@@ -14,6 +14,7 @@ use ui::button::{Button, ButtonVariant};
 use ui::common::{Sizable as _, v_flex};
 use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
+use ui::layout::panel::PanelSlot;
 use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
@@ -22,7 +23,7 @@ use super::RepoDetailView;
 use super::commit_diff::CommitDiffView;
 use crate::app::AppRoot;
 use crate::shared::event_list::commit_list;
-use crate::shared::panels;
+use crate::shared::log_dropped;
 
 pub struct RepoHistoryView {
     store: Entity<RepoStore>,
@@ -138,17 +139,27 @@ impl RepoHistoryView {
         };
         let workspace = self.workspace.clone();
 
-        panels::open_detail(
-            &workspace,
-            id,
-            move |window, cx| {
-                cx.new(|cx| {
-                    CommitDiffView::new(worktree.clone(), commit_id.clone(), true, window, cx)
-                })
-            },
-            window,
-            cx,
-        );
+        log_dropped(workspace.update(cx, |root, cx| {
+            root.panels().clone().update(cx, |panels, cx| {
+                panels.open(
+                    PanelSlot::Split,
+                    id,
+                    move |window, cx| {
+                        cx.new(|cx| {
+                            CommitDiffView::new(
+                                worktree.clone(),
+                                commit_id.clone(),
+                                true,
+                                window,
+                                cx,
+                            )
+                        })
+                    },
+                    window,
+                    cx,
+                )
+            })
+        }));
     }
 }
 

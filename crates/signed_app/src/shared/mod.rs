@@ -3,7 +3,6 @@ use metadata::ProfileDirectory;
 use nostr::prelude::PublicKey;
 
 pub mod event_list;
-pub mod panels;
 pub mod progress;
 
 pub mod widgets;

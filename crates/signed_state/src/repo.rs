@@ -605,10 +605,14 @@ impl RepoStore {
             .is_some_and(|addr| addr.public_key() == *user)
     }
 
-    pub fn open_issue(&mut self, subject: Option<String>, content: String, cx: &mut Context<Self>) {
+    pub fn open_issue(
+        &mut self,
+        subject: Option<String>,
+        content: String,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), Error>> {
         let Some(addr) = self.addr.clone() else {
-            self.not_announced(cx);
-            return;
+            return self.action_error("This repository is not published to Nostr yet", cx);
         };
 
         let builder = GitIssue {
@@ -619,7 +623,7 @@ impl RepoStore {
         }
         .into_event_builder();
 
-        self.publish(builder, cx);
+        self.publish(builder, cx)
     }
 
     pub fn comments_of(&self, root: &EventId) -> impl Iterator<Item = &Event> {
@@ -650,10 +654,11 @@ impl RepoStore {
             .and_then(|a| a.relays.first())
             .cloned();
 
-        self.publish(
+        let task = self.publish(
             comment_builder(root, parent, relay_hint.as_ref(), &addr, content),
             cx,
         );
+        self.tasks.push(task);
     }
 
     #[expect(clippy::too_many_arguments, reason = "mirrors the PR event")]
@@ -1167,7 +1172,8 @@ impl RepoStore {
             Tag::coordinate(addr.clone().into(), None),
         ]);
 
-        self.publish(builder, cx);
+        let task = self.publish(builder, cx);
+        self.tasks.push(task);
     }
 
     fn action_announcement(&self, cx: &App) -> Option<Announcement> {
@@ -1403,8 +1409,12 @@ impl RepoStore {
         Task::ready(Err(anyhow::anyhow!("{message}")))
     }
 
-    /// Publish an event to the repository's relays, and update the store with any error.
-    fn publish(&mut self, builder: EventBuilder, cx: &mut Context<Self>) {
+    /// Publish an event to the repository's relays; the task fails when it is not accepted and the store records the error.
+    fn publish(
+        &mut self,
+        builder: EventBuilder,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), Error>> {
         self.last_error = None;
 
         let backend = Backend::global(cx);
@@ -1432,17 +1442,17 @@ impl RepoStore {
             }
             .await;
 
-            if let Err(e) = publish_result {
+            if let Err(e) = &publish_result {
                 this.update(cx, |this, cx| {
                     this.last_error = Some(e.to_string());
                     cx.notify();
                 })?;
             }
 
-            Ok(())
+            publish_result.map(|_| ())
         });
 
-        self.tasks.push(task);
+        task
     }
 }
 
