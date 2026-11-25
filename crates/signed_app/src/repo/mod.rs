@@ -6,9 +6,8 @@ use anyhow::Error;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled as _, Subscription, SystemNotification, Task, WeakEntity, Window, div,
-    px,
+    ParentElement as _, PathPromptOptions, Render, SharedString, StyleRefinement, Styled as _,
+    Subscription, SystemNotification, Task, WeakEntity, Window, div, px,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::{PublicKey, Url};
@@ -1441,42 +1440,45 @@ impl RepoDetailView {
         let commit_id = commit.id.clone();
 
         Some(
-            h_flex()
-                .id("last-commit")
-                .h_8()
-                .px_2()
-                .gap_2()
-                .min_w_0()
-                .rounded(cx.theme().radius.control)
-                .hover(|this| this.bg(cx.theme().colors.muted_hover))
+            Button::new("last-commit")
+                .variant(ButtonVariant::Ghost)
+                .fully_rounded(true)
                 .tooltip(Tooltip::text("View latest commit"))
                 .on_click(move |_, window, cx| {
                     history.update(cx, |history, cx| {
                         history.open_commit_diff(&commit_id, window, cx);
                     });
                 })
-                .child(Icon::named(IconRole::GitCommit).color(cx.theme().colors.muted_foreground))
                 .child(
-                    div()
-                        .font_family(cx.theme().mono_font)
-                        .text_sm()
-                        .text_color(cx.theme().colors.muted_foreground)
-                        .child(SharedString::from(short)),
+                    h_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(
+                            Icon::named(IconRole::GitCommit)
+                                .color(cx.theme().colors.muted_foreground),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().colors.muted_foreground)
+                                .child(SharedString::from(&short)),
+                        )
+                        .child(
+                            div()
+                                .max_w(px(220.))
+                                .text_sm()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .child(SharedString::from(&commit.summary)),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().colors.muted_foreground)
+                                .child(SharedString::from(relative_time_secs(commit.time))),
+                        ),
                 )
-                .child(
-                    div()
-                        .max_w(px(220.))
-                        .text_sm()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .child(commit.summary.clone()),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().colors.muted_foreground)
-                        .child(relative_time_secs(commit.time)),
-                )
+                .flex_1()
                 .into_any_element(),
         )
     }

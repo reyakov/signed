@@ -26,12 +26,14 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     AnyElement, App, ElementId, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled as _, Window, div, rems,
+    StyleRefinement, Styled as _, UniformListScrollHandle, Window, div, rems, uniform_list,
 };
 
+use crate::common::{focus_handle, h_flex};
 use crate::components::common::{
     StyledExt as _, nav_key, paint_selectable_row, selectable_label_color, v_flex,
 };
+use crate::components::scrollbar::Scrollbar;
 use crate::icons::{Icon, IconRole, icon};
 use crate::theme::ActiveTheme as _;
 
@@ -138,15 +140,14 @@ impl TreeItem {
         let depth = self.depth.min(TREE_MAX_DEPTH) as f32;
         let indent = rems(0.75 * if self.depth == 0 { 0.5 } else { depth + 1.0 });
 
-        div()
+        h_flex()
             .id((self.key.clone(), "tree-item"))
             .relative()
-            .flex()
-            .items_center()
             .gap_2()
             .pl(indent)
             .pr_2()
             .py_1()
+            .w_full()
             .min_h_8()
             .rounded(theme.radius.sm)
             .role(Role::TreeItem)
@@ -551,10 +552,21 @@ impl gpui::Styled for Tree {
 
 impl RenderOnce for Tree {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let items = match self.items {
+        let Tree {
+            id,
+            selected,
+            a11y_label,
+            on_change,
+            on_disclosure,
+            items,
+            style,
+        } = self;
+
+        let items = match items {
             Some(build) => build(window, cx),
             None => Arc::default(),
         };
+        let count = items.len();
 
         let selectable: Vec<usize> = items
             .iter()
@@ -563,92 +575,109 @@ impl RenderOnce for Tree {
             .map(|(index, _)| index)
             .collect();
 
-        let focus = crate::components::common::focus_handle(&self.id, window, cx);
-
-        let label = self
-            .a11y_label
-            .clone()
-            .unwrap_or_else(|| SharedString::from(self.id.to_string()));
-
+        let focus = focus_handle(&id, window, cx);
+        let label = a11y_label.unwrap_or_else(|| SharedString::from(id.to_string()));
         let sibling_sets = Self::sibling_sets(&items);
 
-        let rows: Vec<AnyElement> = items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let (position_in_set, size_of_set) = sibling_sets[index];
-                item.render_row(
-                    cx,
-                    index,
-                    position_in_set,
-                    size_of_set,
-                    self.selected == Some(index),
-                    &self.on_change,
-                    &self.on_disclosure,
-                    &focus,
-                )
-            })
-            .collect();
+        let scroll = window.with_element_namespace(id.clone(), |window| {
+            window.use_keyed_state("scroll", cx, |_, _| UniformListScrollHandle::new())
+        });
+        let scroll_handle = scroll.read(cx).clone();
+
+        let rows_id = (id.clone(), "rows");
+        let scroll_id = (id.clone(), "scroll");
+        let items_for_rows = Arc::clone(&items);
+        let on_change_for_rows = on_change.clone();
+        let on_disclosure_for_rows = on_disclosure.clone();
+        let focus_for_rows = focus.clone();
+
+        // Padding insets the rows, leaving the scrollbar on the tree's edge.
+        let mut style = style;
+        let row_style = StyleRefinement {
+            padding: std::mem::take(&mut style.padding),
+            ..Default::default()
+        };
 
         v_flex()
-            .id(self.id)
-            .gap_0p5()
+            .relative()
+            .id(id)
             .text_sm()
-            .refine_style(&self.style)
+            .refine_style(&style)
+            .size_full()
             .track_focus(&focus)
             .focusable()
             .tab_stop(true)
             .role(Role::Tree)
             .aria_label(label)
-            .on_key_down({
-                let selected = self.selected;
-                let on_change = self.on_change.clone();
-                let on_disclosure = self.on_disclosure.clone();
-
-                move |event: &KeyDownEvent, window, cx| {
-                    if nav_key(&selectable, selected, &event.keystroke.key, |next| {
-                        if let Some(on_change) = &on_change {
-                            on_change(next, window, cx);
-                        }
-                    }) {
-                        cx.stop_propagation();
-                        return;
+            .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                if nav_key(&selectable, selected, &event.keystroke.key, |next| {
+                    if let Some(on_change) = &on_change {
+                        on_change(next, window, cx);
                     }
-                    match event.keystroke.key.as_str() {
-                        "left" | "right" => {
-                            let expanding = event.keystroke.key == "right";
-                            let mut disclose = None;
-                            let mut target = None;
-
-                            if let Some(index) = selected
-                                && let Some(item) = items.get(index)
-                                && !item.disabled
-                            {
-                                if item.expandable && item.expanded != expanding {
-                                    disclose = Some(index);
-                                } else if expanding {
-                                    target = Self::first_descendant(&items, &selectable, index);
-                                } else {
-                                    target = Self::parent_of(&items, index)
-                                        .filter(|parent| selectable.contains(parent));
-                                }
-                            }
-
-                            if let Some(index) = disclose
-                                && let Some(on_disclosure) = &on_disclosure
-                            {
-                                on_disclosure(index, window, cx);
-                            } else if let Some(next) = target
-                                && let Some(on_change) = &on_change
-                            {
-                                on_change(Some(next), window, cx);
-                            }
-                        }
-                        _ => return,
-                    }
+                }) {
                     cx.stop_propagation();
+                    return;
                 }
+                match event.keystroke.key.as_str() {
+                    "left" | "right" => {
+                        let expanding = event.keystroke.key == "right";
+                        let mut disclose = None;
+                        let mut target = None;
+
+                        if let Some(index) = selected
+                            && let Some(item) = items.get(index)
+                            && !item.disabled
+                        {
+                            if item.expandable && item.expanded != expanding {
+                                disclose = Some(index);
+                            } else if expanding {
+                                target = Self::first_descendant(&items, &selectable, index);
+                            } else {
+                                target = Self::parent_of(&items, index)
+                                    .filter(|parent| selectable.contains(parent));
+                            }
+                        }
+
+                        if let Some(index) = disclose
+                            && let Some(on_disclosure) = &on_disclosure
+                        {
+                            on_disclosure(index, window, cx);
+                        } else if let Some(next) = target
+                            && let Some(on_change) = &on_change
+                        {
+                            on_change(Some(next), window, cx);
+                        }
+                    }
+                    _ => return,
+                }
+                cx.stop_propagation();
             })
-            .children(rows)
+            .child(
+                uniform_list(rows_id, count, move |range, _, cx| {
+                    range
+                        .map(|index| {
+                            let Some(item) = items_for_rows.get(index) else {
+                                return div().into_any_element();
+                            };
+                            let (position_in_set, size_of_set) = sibling_sets[index];
+
+                            item.render_row(
+                                cx,
+                                index,
+                                position_in_set,
+                                size_of_set,
+                                selected == Some(index),
+                                &on_change_for_rows,
+                                &on_disclosure_for_rows,
+                                &focus_for_rows,
+                            )
+                        })
+                        .collect()
+                })
+                .track_scroll(&scroll_handle)
+                .refine_style(&row_style)
+                .size_full(),
+            )
+            .child(Scrollbar::vertical(scroll_id, scroll_handle))
     }
 }

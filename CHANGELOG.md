@@ -33,6 +33,7 @@
 - Fix text typed into a field under a panel appearing up to a quarter second late
 - Fix an open dialog taking keyboard focus back from the command palette or a toast button on every repaint
 - Fix the remove button of a Settings or grasp server row carrying its hover state over to the next row after a removal
+- Fix the file tree's scrollbar sitting inset from the sidebar's right border, it now rides beside it
 
 ## v0.2.0 - 2026/10/21
 

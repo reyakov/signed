@@ -29,7 +29,6 @@ use crate::components::common::{
     StyledExt as _, nav_key, paint_selectable_row, selectable_label_color,
 };
 use crate::components::grain::grain as grain_overlay;
-use crate::components::scroll_area::ScrollArea;
 use crate::theme::{ActiveTheme as _, BORDER_WIDTH, SIDEBAR_DEFAULT_WIDTH};
 
 /// The change reporter, fired with the next selected row by pointer and keys.
@@ -397,47 +396,47 @@ impl RenderOnce for Sidebar {
             .collect();
 
         let focus = crate::components::common::focus_handle(&id, window, cx);
-        let scroll = window.with_element_namespace(id.clone(), |window| {
-            window
-                .use_keyed_state("scroll", cx, |_, _| gpui::ScrollHandle::new())
-                .clone()
-        });
-        let scroll_area_id = (id.clone(), "entries");
 
         let row_count = entries
             .iter()
             .filter(|entry| matches!(entry, SidebarEntry::Row { .. }))
             .count();
+
         let mut row_position = 0usize;
+        let mut list_children = Vec::new();
+        let mut custom_children = Vec::new();
 
-        let children: Vec<AnyElement> = entries
-            .into_iter()
-            .enumerate()
-            .map(|(index, entry)| {
-                let is_row = matches!(entry, SidebarEntry::Row { .. });
+        for (index, entry) in entries.into_iter().enumerate() {
+            let is_row = matches!(entry, SidebarEntry::Row { .. });
+            let is_custom = matches!(entry, SidebarEntry::Custom(_));
 
-                if is_row {
-                    row_position += 1;
-                }
+            if is_row {
+                row_position += 1;
+            }
 
-                let (position_in_set, size_of_set) = if is_row {
-                    (row_position, row_count)
-                } else {
-                    (0, 0)
-                };
+            let (position_in_set, size_of_set) = if is_row {
+                (row_position, row_count)
+            } else {
+                (0, 0)
+            };
 
-                entry.render_entry(
-                    cx,
-                    index,
-                    position_in_set,
-                    size_of_set,
-                    selected == Some(index),
-                    material,
-                    &on_change,
-                    &focus,
-                )
-            })
-            .collect();
+            let rendered = entry.render_entry(
+                cx,
+                index,
+                position_in_set,
+                size_of_set,
+                selected == Some(index),
+                material,
+                &on_change,
+                &focus,
+            );
+
+            if is_custom {
+                custom_children.push(rendered);
+            } else {
+                list_children.push(rendered);
+            }
+        }
 
         let theme = cx.theme();
 
@@ -456,8 +455,7 @@ impl RenderOnce for Sidebar {
             .child(
                 div()
                     .id((id.clone(), "list"))
-                    .flex_1()
-                    .min_h_0()
+                    .flex_none()
                     .track_focus(&focus)
                     .focusable()
                     .tab_stop(true)
@@ -476,18 +474,21 @@ impl RenderOnce for Sidebar {
                         }
                     })
                     .child(
-                        ScrollArea::new(scroll_area_id)
-                            .handle(scroll.read(cx).clone())
-                            .h_full()
-                            .child(
-                                v_flex()
-                                    .gap_0p5()
-                                    .when(padded, |content| content.p_2())
-                                    .children(children),
-                            ),
-                    )
-                    .into_any_element(),
+                        v_flex()
+                            .gap_0p5()
+                            .when(padded, |content| content.p_2())
+                            .children(list_children),
+                    ),
             )
+            .when(!custom_children.is_empty(), |sidebar| {
+                sidebar.child(
+                    v_flex()
+                        .flex_1()
+                        .min_h_0()
+                        .when(padded, |content| content.pl_2())
+                        .children(custom_children),
+                )
+            })
             .when(material && grain, |sidebar| sidebar.child(grain_overlay()))
     }
 }

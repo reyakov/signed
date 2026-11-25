@@ -260,42 +260,38 @@ impl RepoFilesView {
         let change_view = view.clone();
         let disclosure_view = view;
 
-        div()
-            .flex_1()
-            .min_h_0()
-            .w_full()
-            .child(
-                Tree::new("repo-tree")
-                    .selected(selected)
-                    .items(move |_, _| Arc::clone(&rows))
-                    .on_change({
-                        let view = change_view;
-                        move |index, window, cx| {
-                            if let Some(index) = index
-                                && let Err(error) = view.update(cx, |this, cx| {
-                                    this.activate_row(index, window, cx);
-                                })
-                            {
-                                log::warn!("failed to activate tree row: {error}");
-                            }
+        // Mirrors the sidebar's left inset, so rows stay aligned while the scrollbar hugs its border.
+        Tree::new("repo-tree")
+            .pr_2()
+            .selected(selected)
+            .items(move |_, _| Arc::clone(&rows))
+            .on_change({
+                let view = change_view;
+                move |index, window, cx| {
+                    if let Some(index) = index
+                        && let Err(error) = view.update(cx, |this, cx| {
+                            this.activate_row(index, window, cx);
+                        })
+                    {
+                        log::warn!("failed to activate tree row: {error}");
+                    }
+                }
+            })
+            .on_disclosure({
+                let view = disclosure_view;
+                move |index, _, cx| {
+                    if let Err(error) = view.update(cx, |this, cx| {
+                        let id = this.rows.get(index).map(|row| row.key().to_string());
+                        if let Some(id) = id {
+                            this.toggle_folder(&id);
+                            cx.emit(RepoFilesEvent::Activated);
+                            cx.notify();
                         }
-                    })
-                    .on_disclosure({
-                        let view = disclosure_view;
-                        move |index, _, cx| {
-                            if let Err(error) = view.update(cx, |this, cx| {
-                                let id = this.rows.get(index).map(|row| row.key().to_string());
-                                if let Some(id) = id {
-                                    this.toggle_folder(&id);
-                                    cx.emit(RepoFilesEvent::Activated);
-                                    cx.notify();
-                                }
-                            }) {
-                                log::warn!("failed to toggle folder: {error}");
-                            }
-                        }
-                    }),
-            )
+                    }) {
+                        log::warn!("failed to toggle folder: {error}");
+                    }
+                }
+            })
             .into_any_element()
     }
 
