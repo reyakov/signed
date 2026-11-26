@@ -165,7 +165,7 @@ where
     T: Into<SharedString>,
 {
     div()
-        .text_base()
+        .text_sm()
         .w_full()
         .min_w_0()
         .child(value.into())
@@ -217,7 +217,7 @@ fn maintainers(
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .text_base()
+                        .text_sm()
                         .child(name),
                 )
                 .into_any_element()
@@ -244,7 +244,7 @@ fn list(id: &'static str, items: impl IntoIterator<Item = String>, cx: &App) -> 
                         .min_w_0()
                         .whitespace_nowrap()
                         .text_ellipsis()
-                        .text_base()
+                        .text_sm()
                         .child(SharedString::from(middle_truncate(&item, 28, 16))),
                 )
                 .child(ClipboardButton::new(

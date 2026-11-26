@@ -17,9 +17,9 @@ use ui::combobox::ComboboxState;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
 use ui::theme::ActiveTheme as _;
+use ui::tree::TreeItemSeed;
 
 use super::RepoDetailView;
-use ui::tree::TreeItemSeed;
 
 const GUTTER_WIDTH: f32 = 44.;
 pub const DIFF_ROW_HEIGHT: f32 = 20.;
@@ -234,7 +234,7 @@ pub(super) fn fork_row(
     let row = h_flex()
         .gap_1()
         .min_w_0()
-        .text_base()
+        .text_sm()
         .text_color(cx.theme().colors.muted_foreground)
         .child(Icon::named(IconRole::GitBranch).small())
         .child(
@@ -307,7 +307,7 @@ pub(super) fn bound_repo_label(
     h_flex()
         .flex_shrink_0()
         .gap_2()
-        .text_base()
+        .text_sm()
         .child("Initialized by")
         .text_color(cx.theme().colors.muted_foreground)
         .when_some(profile, |this, profile| {

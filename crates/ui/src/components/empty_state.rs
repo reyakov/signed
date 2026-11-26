@@ -127,7 +127,7 @@ impl RenderOnce for EmptyState {
             })
             .child(
                 div()
-                    .text_base()
+                    .text_sm()
                     .font_semibold()
                     .text_color(foreground)
                     .child(self.headline),

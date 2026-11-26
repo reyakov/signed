@@ -1432,7 +1432,7 @@ fn heading_row(
             .map(|frame| match level {
                 MarkdownHeading::H1 => frame.text_xl().font_semibold(),
                 MarkdownHeading::H2 => frame.text_lg().font_semibold(),
-                MarkdownHeading::H3 => frame.text_base().font_semibold(),
+                MarkdownHeading::H3 => frame.text_sm().font_semibold(),
                 MarkdownHeading::H4 | MarkdownHeading::H5 | MarkdownHeading::H6 => {
                     frame.text_sm().font_semibold()
                 }

@@ -41,7 +41,7 @@ impl Render for SyncErrorDialog {
             .title("Sync failed")
             .content(move |_, cx| {
                 div()
-                    .text_base()
+                    .text_sm()
                     .text_color(cx.theme().colors.muted_foreground)
                     .child(message.clone())
                     .into_any_element()
@@ -88,7 +88,7 @@ impl Render for DeleteRepositoryDialog {
             .title("Delete repository")
             .content(|_, cx| {
                 div()
-                    .text_base()
+                    .text_sm()
                     .text_color(cx.theme().colors.muted_foreground)
                     .child(WARNING)
                     .into_any_element()

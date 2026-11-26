@@ -1,13 +1,11 @@
-use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, div, px,
 };
 use metadata::ProfileDirectory;
-use nostr::prelude::{Event, EventId, PublicKey};
+use nostr::prelude::{Event, EventId};
 use signed_core::RepoStatus;
 use signed_state::RepoStore;
 use ui::avatar::Avatar;
-use ui::badge::{Badge, BadgeVariant};
 use ui::button::Button;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
@@ -76,98 +74,6 @@ pub(crate) fn filter_by_status<'a>(
     (visible, counts)
 }
 
-pub(crate) fn sidebar_section(
-    store: &Entity<RepoStore>,
-    id: EventId,
-    roots: &[Event],
-    top_gap: bool,
-    directory: &Entity<ProfileDirectory>,
-    cx: &App,
-) -> AnyElement {
-    let store = store.read(cx);
-    let Some(root) = roots.iter().find(|event| event.id == id) else {
-        return div().into_any_element();
-    };
-
-    let mut participants: Vec<PublicKey> = vec![root.pubkey];
-    participants.extend(store.comments_of(&root.id).map(|comment| comment.pubkey));
-    participants.sort_by_key(PublicKey::to_hex);
-    participants.dedup();
-
-    let labels: Vec<String> = root.tags.hashtags().map(|tag| tag.to_string()).collect();
-
-    v_flex()
-        .w(px(240.))
-        .h_full()
-        .flex_none()
-        .px_4()
-        .gap_4()
-        .border_l_1()
-        .border_color(cx.theme().colors.border)
-        .child(
-            v_flex()
-                .when(top_gap, |this| this.mt_4())
-                .gap_2()
-                .child(
-                    div()
-                        .text_xs()
-                        .font_medium()
-                        .text_color(cx.theme().colors.muted_foreground)
-                        .child("Participants"),
-                )
-                .children(participants.iter().map(|pubkey| {
-                    let profile = directory.read(cx).profile(pubkey, cx);
-                    let name = profile.name();
-
-                    h_flex()
-                        .gap_1()
-                        .child(
-                            Avatar::new(*pubkey)
-                                .name(name.clone())
-                                .picture(profile.picture())
-                                .small(),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .whitespace_nowrap()
-                                .text_base()
-                                .text_ellipsis()
-                                .child(name),
-                        )
-                        .into_any_element()
-                })),
-        )
-        .child(
-            v_flex()
-                .gap_2()
-                .child(
-                    div()
-                        .text_xs()
-                        .font_medium()
-                        .text_color(cx.theme().colors.muted_foreground)
-                        .child("Labels"),
-                )
-                .map(|this| {
-                    if labels.is_empty() {
-                        this.child(
-                            div()
-                                .text_base()
-                                .text_color(cx.theme().colors.muted_foreground)
-                                .child("None yet."),
-                        )
-                    } else {
-                        this.child(v_flex().gap_1().children(labels.iter().map(|label| {
-                            Badge::new(SharedString::from(format!("label:{label}")), label.clone())
-                                .variant(BadgeVariant::Outline)
-                        })))
-                    }
-                }),
-        )
-        .into_any_element()
-}
-
 pub(crate) fn comments_section(
     store: &Entity<RepoStore>,
     root: EventId,
@@ -180,7 +86,7 @@ pub(crate) fn comments_section(
 
     v_flex()
         .gap_4()
-        .child(div().text_xs().font_medium().child(title))
+        .child(div().text_xs().font_semibold().child(title))
         .children(comments.iter().map(|comment| {
             let profile = directory.read(cx).profile(&comment.pubkey, cx);
             let author = profile.name();
@@ -196,7 +102,7 @@ pub(crate) fn comments_section(
                 .child(
                     h_flex()
                         .gap_2()
-                        .text_base()
+                        .text_sm()
                         .child(
                             h_flex()
                                 .gap_1()
@@ -219,7 +125,7 @@ pub(crate) fn comments_section(
                                 .child(SharedString::from(age)),
                         ),
                 )
-                .child(div().text_base().child(content))
+                .child(div().text_sm().child(content))
         }))
         .into_any_element()
 }
@@ -242,8 +148,8 @@ pub(crate) fn comment_form(
         .gap_2()
         .child(
             Input::new("comment-input", comment_input.clone())
-                .rows(4)
-                .placeholder("Leave a comment..."),
+                .placeholder("Leave a comment...")
+                .rows(4),
         )
         .child(
             h_flex()

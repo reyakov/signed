@@ -21,7 +21,7 @@ pub fn repo_header(id: SharedString, name: SharedString, unread: usize) -> AnyEl
         .child(
             div()
                 .min_w_0()
-                .text_base()
+                .text_sm()
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .child(name),
@@ -79,7 +79,7 @@ pub fn thread(
         .child(
             h_flex()
                 .gap_2()
-                .text_base()
+                .text_sm()
                 .child(
                     h_flex()
                         .size_6()

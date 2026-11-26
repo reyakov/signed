@@ -373,7 +373,7 @@ impl<E: Styled> ControlSizing for E {
             Size::XSmall => self.text_xs(),
             Size::Small => self.text_xs(),
             Size::Medium => self.text_sm(),
-            Size::Large => self.text_base(),
+            Size::Large => self.text_sm(),
         }
     }
 

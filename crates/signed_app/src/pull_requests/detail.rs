@@ -5,7 +5,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, StyleRefinement,
-    Styled as _, Subscription, UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
+    Styled as _, Subscription, UniformListScrollHandle, WeakEntity, Window, div, px, uniform_list,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::{EventId, Kind, Url};
@@ -13,6 +13,7 @@ use signed_core::{GitEvent, PullRequest, RepoAddr};
 use signed_git::{FileCommit, PatchParser};
 use signed_state::{Backend, BackendEvent, Mirrors, RepoStore};
 use ui::avatar::Avatar;
+use ui::badge::{Badge, BadgeVariant};
 use ui::button::Button;
 use ui::clipboard::ClipboardButton;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
@@ -29,7 +30,7 @@ use ui::theme::ActiveTheme as _;
 use utils::{relative_time, relative_time_secs};
 
 use crate::app::AppRoot;
-use crate::issues::helpers::{comment_form, comments_section, sidebar_section};
+use crate::issues::helpers::{comment_form, comments_section};
 use crate::pull_requests::dialogs::update::UpdatePrDialog;
 use crate::repo::commit_diff::{CommitDiffView, DiffPane};
 use crate::repo::helpers::short_id;
@@ -401,6 +402,91 @@ impl PullRequestDetailView {
 
         let store = self.store.read(cx);
 
+        let details = store
+            .pull_requests
+            .iter()
+            .find(|pr| pr.id == root_id)
+            .map(|root| {
+                let mut participants = vec![root.pubkey];
+                participants.extend(store.comments_of(&root.id).map(|comment| comment.pubkey));
+                participants.sort_by_key(|key| key.to_hex());
+                participants.dedup();
+
+                let labels: Vec<String> = root.tags.hashtags().map(|tag| tag.to_string()).collect();
+
+                v_flex()
+                    .gap_4()
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(cx.theme().colors.muted_foreground)
+                                    .child("Participants"),
+                            )
+                            .children(participants.iter().map(|pubkey| {
+                                let profile = self.directory.read(cx).profile(pubkey, cx);
+                                let name = profile.name();
+
+                                h_flex()
+                                    .gap_1()
+                                    .child(
+                                        Avatar::new(*pubkey)
+                                            .name(name.clone())
+                                            .picture(profile.picture())
+                                            .small(),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .whitespace_nowrap()
+                                            .text_sm()
+                                            .text_ellipsis()
+                                            .child(name),
+                                    )
+                                    .into_any_element()
+                            })),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_medium()
+                                    .text_color(cx.theme().colors.muted_foreground)
+                                    .child("Labels"),
+                            )
+                            .map(|this| {
+                                if labels.is_empty() {
+                                    this.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().colors.muted_foreground)
+                                            .child("None yet."),
+                                    )
+                                } else {
+                                    this.child(v_flex().gap_1().items_start().children(
+                                        labels.iter().map(|label| {
+                                            Badge::new(
+                                                SharedString::from(format!("label:{label}")),
+                                                label.clone(),
+                                            )
+                                            .variant(BadgeVariant::Outline)
+                                            .small()
+                                            .flex_none()
+                                        }),
+                                    ))
+                                }
+                            }),
+                    )
+                    .into_any_element()
+            })
+            .unwrap_or_else(|| div().into_any_element());
+
         h_flex()
             .size_full()
             .min_h_0()
@@ -418,7 +504,7 @@ impl PullRequestDetailView {
                                     .child(
                                         h_flex()
                                             .gap_2()
-                                            .text_base()
+                                            .text_sm()
                                             .child(
                                                 h_flex()
                                                     .gap_1()
@@ -438,9 +524,7 @@ impl PullRequestDetailView {
                                             ),
                                     )
                                     .when(!self.description.is_empty(), |this| {
-                                        this.child(
-                                            div().text_base().child(self.description.clone()),
-                                        )
+                                        this.child(div().text_sm().child(self.description.clone()))
                                     }),
                             )
                             .child(comments_section(&self.store, root_id, &self.directory, cx))
@@ -454,14 +538,17 @@ impl PullRequestDetailView {
                             )),
                     ),
             )
-            .child(sidebar_section(
-                &self.store,
-                root_id,
-                &store.pull_requests,
-                true,
-                &self.directory,
-                cx,
-            ))
+            .child(
+                v_flex()
+                    .w(px(240.))
+                    .h_full()
+                    .flex_none()
+                    .px_4()
+                    .pt_4()
+                    .border_l_1()
+                    .border_color(cx.theme().colors.border)
+                    .child(details),
+            )
             .into_any_element()
     }
 

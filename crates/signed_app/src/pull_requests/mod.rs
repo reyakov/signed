@@ -406,7 +406,7 @@ impl Render for PullRequestsView {
                                                     .w_full()
                                                     .items_start()
                                                     .gap_2()
-                                                    .child(h_flex().w_24().child(status_badge(status)))
+                                                    .child(h_flex().w_20().child(status_badge(status)))
                                                     .child(
                                                         v_flex()
                                                             .flex_1()

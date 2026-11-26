@@ -86,7 +86,7 @@ impl Render for OnboardingDialog {
                     .gap_3()
                     .child(
                         div()
-                            .text_base()
+                            .text_sm()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Set up your Signed identity to get started."),
                     )

@@ -66,27 +66,27 @@ impl Render for ResetRemoteDialog {
                     .gap_2()
                     .child(
                         div()
-                            .text_base()
+                            .text_sm()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child(WARNING),
                     )
                     .when(!unreachable.is_empty(), |this| {
                         this.child(
                             div()
-                                .text_base()
+                                .text_sm()
                                 .text_color(cx.theme().ramps.destructive.base)
                                 .child(ERROR),
                         )
                         .children(unreachable.iter().map(|url| {
                             div()
-                                .text_base()
+                                .text_sm()
                                 .font_family(cx.theme().mono_font)
                                 .child(url.clone())
                         }))
                     })
                     .child(if deleted.is_empty() {
                         div()
-                            .text_base()
+                            .text_sm()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("No server refs will be deleted.")
                             .into_any_element()
@@ -95,7 +95,7 @@ impl Render for ResetRemoteDialog {
                             .gap_1()
                             .children(deleted.iter().map(|name| {
                                 div()
-                                    .text_base()
+                                    .text_sm()
                                     .font_family(cx.theme().mono_font)
                                     .child(name.clone())
                             }))

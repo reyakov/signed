@@ -100,7 +100,7 @@ impl DialogProgress {
 pub fn error_row(error: &Option<SharedString>, cx: &App) -> Option<AnyElement> {
     error.as_ref().map(|message| {
         div()
-            .text_base()
+            .text_sm()
             .text_color(cx.theme().ramps.destructive.base)
             .child(message.clone())
             .into_any_element()
@@ -121,14 +121,14 @@ pub fn push_steps_row(steps: &[PushStepStatus], cx: &App) -> Option<AnyElement> 
             match status {
                 PushStepStatus::Running(_) => h_flex()
                     .gap_2()
-                    .text_base()
+                    .text_sm()
                     .text_color(cx.theme().colors.muted_foreground)
                     .child(Spinner::new("push-step"))
                     .child(label)
                     .into_any_element(),
                 PushStepStatus::Done(_) => h_flex()
                     .gap_2()
-                    .text_base()
+                    .text_sm()
                     .text_color(cx.theme().colors.foreground)
                     .child(
                         Icon::named(IconRole::Check)
@@ -139,7 +139,7 @@ pub fn push_steps_row(steps: &[PushStepStatus], cx: &App) -> Option<AnyElement> 
                     .into_any_element(),
                 PushStepStatus::Failed(_, reason) => h_flex()
                     .gap_2()
-                    .text_base()
+                    .text_sm()
                     .text_color(cx.theme().ramps.destructive.base)
                     .child(
                         Icon::named(IconRole::Close)

@@ -264,38 +264,20 @@ impl Render for IssuesView {
                                             .border_color(cx.theme().colors.border)
                                             .hover(|this| this.bg(cx.theme().colors.muted_hover))
                                             .on_click(move |_, window, cx| {
-                                                let id =
-                                                    SharedString::from(format!("issue:{issue_id}"));
-                                                let store = store.clone();
-                                                log_dropped(workspace.update(cx, |root, cx| {
-                                                    root.panels().clone().update(
-                                                        cx,
-                                                        |panels, cx| {
-                                                            panels.open(
-                                                                PanelSlot::Main,
-                                                                id,
-                                                                move |_, cx| {
-                                                                    cx.new(|cx| {
-                                                                        IssueDetailView::new(
-                                                                            store.clone(),
-                                                                            issue_id,
-                                                                            cx,
-                                                                        )
-                                                                    })
-                                                                },
-                                                                window,
-                                                                cx,
-                                                            )
-                                                        },
-                                                    )
-                                                }));
+                                                IssueDetailView::open(
+                                                    &workspace,
+                                                    store.clone(),
+                                                    issue_id,
+                                                    window,
+                                                    cx,
+                                                );
                                             })
                                             .child(
                                                 h_flex()
                                                     .w_full()
                                                     .items_start()
                                                     .gap_2()
-                                                    .child(h_flex().w_24().child(status_badge(status)))
+                                                    .child(h_flex().w_20().child(status_badge(status)))
                                                     .child(
                                                         v_flex()
                                                             .flex_1()

@@ -65,7 +65,7 @@ impl Render for UpdatePrDialog {
                     .gap_3()
                     .child(
                         div()
-                            .text_base()
+                            .text_sm()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Publish a new revision with the output of `git format-patch`."),
                     )

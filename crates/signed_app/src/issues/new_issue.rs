@@ -135,7 +135,7 @@ impl Render for NewIssueView {
                     .child(
                         div()
                             .pr_16()
-                            .text_base()
+                            .text_sm()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Report a bug, ask a question, or propose a change."),
                     )

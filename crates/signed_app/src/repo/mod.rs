@@ -1132,7 +1132,7 @@ impl RepoDetailView {
                 .child(Spinner::new("repo-loading"))
                 .child(
                     div()
-                        .text_base()
+                        .text_sm()
                         .text_color(cx.theme().colors.muted_foreground)
                         .child(label),
                 )

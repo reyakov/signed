@@ -232,7 +232,7 @@ impl RenderOnce for CopyRow {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .when(self.large_text, |text| text.text_base())
+                    .when(self.large_text, |text| text.text_sm())
                     .when(!self.large_text, |text| {
                         text.font_family(theme.mono_font).text_xs()
                     })

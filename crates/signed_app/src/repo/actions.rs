@@ -61,19 +61,7 @@ pub fn open_repo_item(
     let store = cx.new(|cx| RepoStore::new(addr.clone(), hint.cloned(), cx));
     match item {
         RepoItem::Issue(issue_id) => {
-            let id = SharedString::from(format!("issue:{issue_id}"));
-            let store = store.clone();
-            log_dropped(workspace.update(cx, |root, cx| {
-                root.panels().update(cx, |panels, cx| {
-                    panels.open(
-                        PanelSlot::Main,
-                        id,
-                        move |_, cx| cx.new(|cx| IssueDetailView::new(store.clone(), issue_id, cx)),
-                        window,
-                        cx,
-                    )
-                })
-            }));
+            IssueDetailView::open(workspace, store, issue_id, window, cx);
         }
         RepoItem::PullRequest(pr_id) => {
             let id = SharedString::from(format!("pr:{pr_id}"));

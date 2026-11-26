@@ -167,7 +167,7 @@ impl Render for ImportDialog {
                     .gap_3()
                     .child(
                         div()
-                            .text_base()
+                            .text_sm()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child(description),
                     )
