@@ -328,6 +328,7 @@ impl NewPullRequestView {
 
         h_flex()
             .px_4()
+            .pr_16()
             .py_2()
             .w_full()
             .gap_3()
@@ -949,6 +950,10 @@ impl Panel for NewPullRequestView {
 
     fn loading(&self, _cx: &App) -> bool {
         self.loading
+    }
+
+    fn toolbar(&self, _cx: &App) -> bool {
+        true
     }
 }
 

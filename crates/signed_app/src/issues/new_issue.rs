@@ -116,6 +116,10 @@ impl Panel for NewIssueView {
     fn loading(&self, _cx: &App) -> bool {
         self.submitting
     }
+
+    fn toolbar(&self, _cx: &App) -> bool {
+        true
+    }
 }
 
 impl Render for NewIssueView {
@@ -130,6 +134,7 @@ impl Render for NewIssueView {
                     .gap_3()
                     .child(
                         div()
+                            .pr_16()
                             .text_base()
                             .text_color(cx.theme().colors.muted_foreground)
                             .child("Report a bug, ask a question, or propose a change."),

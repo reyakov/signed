@@ -15,10 +15,13 @@
 - Reuse the rendered file tree, commit diffs, README previews and split pane instead of rebuilding them on every repaint
 - Truncate long tab and file tree labels with an ellipsis instead of letting them widen their row
 - Open the New issue form in a split panel instead of a dialog, it now stays open until the issue is published and shows a failed publish in the form
+- Open issue and pull request details in a new tab instead of the split panel
+- Show the panel toolbar on the New issue, New pull request and Send patch split panels
 - Show each commit of the Commits list on one row with its author avatar and name, short id and summary
 
 ### Fixed
 
+- Fix the status badge on issue and pull request rows sitting below the title instead of centered with it
 - Fix opening a local repository or switching its branch discarding uncommitted changes, a checkout now refuses to overwrite uncommitted edits or untracked files and leaves the branch untouched when it fails
 - Fix viewing a commit diff crashing when the repository configures an external diff driver
 - Fix an unreadable `settings.json` being replaced by defaults on the next settings change, the file is now left untouched and the error is shown in Settings

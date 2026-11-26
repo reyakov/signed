@@ -137,6 +137,10 @@ impl Panel for SendPatchView {
     fn loading(&self, _cx: &App) -> bool {
         self.submitting
     }
+
+    fn toolbar(&self, _cx: &App) -> bool {
+        true
+    }
 }
 
 impl Render for SendPatchView {
@@ -149,7 +153,9 @@ impl Render for SendPatchView {
                     .p_4()
                     .flex_1()
                     .gap_2()
-                    .child(Input::new("patch-subject", self.subject.clone()).placeholder("Title"))
+                    .child(div().pr_16().child(
+                        Input::new("patch-subject", self.subject.clone()).placeholder("Title"),
+                    ))
                     .child(
                         Input::new("patch-description", self.description.clone())
                             .rows(2)

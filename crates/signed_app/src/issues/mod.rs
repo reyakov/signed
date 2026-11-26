@@ -259,7 +259,6 @@ impl Render for IssuesView {
                                             .id(SharedString::from(format!("issue:{id_hex}")))
                                             .w_full()
                                             .h_16()
-                                            .gap_4()
                                             .px_2()
                                             .border_b_1()
                                             .border_color(cx.theme().colors.border)
@@ -273,7 +272,7 @@ impl Render for IssuesView {
                                                         cx,
                                                         |panels, cx| {
                                                             panels.open(
-                                                                PanelSlot::Split,
+                                                                PanelSlot::Main,
                                                                 id,
                                                                 move |_, cx| {
                                                                     cx.new(|cx| {
@@ -291,49 +290,55 @@ impl Render for IssuesView {
                                                     )
                                                 }));
                                             })
-                                            .child(status_badge(status))
                                             .child(
-                                                v_flex()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .gap_1()
+                                                h_flex()
+                                                    .w_full()
+                                                    .items_start()
+                                                    .gap_2()
+                                                    .child(h_flex().w_24().child(status_badge(status)))
                                                     .child(
-                                                        div()
-                                                            .text_sm()
-                                                            .text_ellipsis()
-                                                            .whitespace_nowrap()
-                                                            .child(issue.activity_subject()),
-                                                    )
-                                                    .child(
-                                                        h_flex()
-                                                            .gap_2()
-                                                            .text_xs()
-                                                            .child(
-                                                                h_flex()
-                                                                    .gap_1()
-                                                                    .child(
-                                                                        Avatar::new(issue.pubkey)
-                                                                            .name(profile.name())
-                                                                            .picture(
-                                                                                profile.picture(),
-                                                                            )
-                                                                            .small(),
-                                                                    )
-                                                                    .child(
-                                                                        div().child(profile.name()),
-                                                                    ),
-                                                            )
-                                                            .child("opened")
+                                                        v_flex()
+                                                            .flex_1()
+                                                            .min_w_0()
+                                                            .gap_1()
                                                             .child(
                                                                 div()
-                                                                    .text_color(
-                                                                        cx.theme()
-                                                                            .colors
-                                                                            .muted_foreground,
-                                                                    )
-                                                                    .child(short_id(&id_hex)),
+                                                                    .text_sm()
+                                                                    .text_ellipsis()
+                                                                    .whitespace_nowrap()
+                                                                    .child(issue.activity_subject()),
                                                             )
-                                                            .child(relative_time(issue.created_at)),
+                                                            .child(
+                                                                h_flex()
+                                                                    .gap_2()
+                                                                    .text_xs()
+                                                                    .child(
+                                                                        h_flex()
+                                                                            .gap_1()
+                                                                            .child(
+                                                                                Avatar::new(issue.pubkey)
+                                                                                    .name(profile.name())
+                                                                                    .picture(
+                                                                                        profile.picture(),
+                                                                                    )
+                                                                                    .small(),
+                                                                            )
+                                                                            .child(
+                                                                                div().child(profile.name()),
+                                                                            ),
+                                                                    )
+                                                                    .child("opened")
+                                                                    .child(
+                                                                        div()
+                                                                            .text_color(
+                                                                                cx.theme()
+                                                                                    .colors
+                                                                                    .muted_foreground,
+                                                                            )
+                                                                            .child(short_id(&id_hex)),
+                                                                    )
+                                                                    .child(relative_time(issue.created_at)),
+                                                            ),
                                                     ),
                                             )
                                             .into_any_element()

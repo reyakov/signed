@@ -5,6 +5,8 @@ use signed_state::RepoStore;
 use ui::layout::panel::PanelSlot;
 
 use crate::app::AppRoot;
+use crate::issues::detail::IssueDetailView;
+use crate::pull_requests::PullRequestDetailView;
 use crate::repo::RepoDetailView;
 use crate::shared::log_dropped;
 
@@ -29,7 +31,7 @@ pub fn open_repo_panel(
     let workspace_for_build = workspace.clone();
 
     log_dropped(workspace.update(cx, |root, cx| {
-        root.panels().clone().update(cx, |panels, cx| {
+        root.panels().update(cx, |panels, cx| {
             panels.open(
                 PanelSlot::Main,
                 id,
@@ -62,19 +64,11 @@ pub fn open_repo_item(
             let id = SharedString::from(format!("issue:{issue_id}"));
             let store = store.clone();
             log_dropped(workspace.update(cx, |root, cx| {
-                root.panels().clone().update(cx, |panels, cx| {
+                root.panels().update(cx, |panels, cx| {
                     panels.open(
-                        PanelSlot::Split,
+                        PanelSlot::Main,
                         id,
-                        move |_, cx| {
-                            cx.new(|cx| {
-                                crate::issues::detail::IssueDetailView::new(
-                                    store.clone(),
-                                    issue_id,
-                                    cx,
-                                )
-                            })
-                        },
+                        move |_, cx| cx.new(|cx| IssueDetailView::new(store.clone(), issue_id, cx)),
                         window,
                         cx,
                     )
@@ -86,13 +80,13 @@ pub fn open_repo_item(
             let workspace_for_build = workspace.clone();
             let store = store.clone();
             log_dropped(workspace.update(cx, |root, cx| {
-                root.panels().clone().update(cx, |panels, cx| {
+                root.panels().update(cx, |panels, cx| {
                     panels.open(
-                        PanelSlot::Split,
+                        PanelSlot::Main,
                         id,
                         move |window, cx| {
                             cx.new(|cx| {
-                                crate::pull_requests::PullRequestDetailView::new(
+                                PullRequestDetailView::new(
                                     workspace_for_build.clone(),
                                     store.clone(),
                                     pr_id,

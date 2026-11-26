@@ -337,14 +337,15 @@ impl PanelStack {
     }
 
     /// Shows the panel under `id`, building it only when it is not open yet.
-    pub fn open<P, F>(
+    pub fn open<I, P, F>(
         &mut self,
         slot: PanelSlot,
-        id: impl Into<SharedString>,
+        id: I,
         build: F,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) where
+        I: Into<SharedString>,
         P: Panel + 'static,
         F: Fn(&mut Window, &mut App) -> Entity<P> + 'static,
     {

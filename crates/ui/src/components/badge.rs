@@ -14,7 +14,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyView, App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
     RenderOnce, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
-    Window, transparent_black,
+    Window, relative, transparent_black,
 };
 
 use crate::components::common::{ControlSizing, Sizable, StyledExt, h_flex};
@@ -163,9 +163,10 @@ impl RenderOnce for Badge {
             .border_color(border)
             .bg(background)
             .text_color(foreground)
+            .line_height(relative(1.0))
             .control_caption_text(size)
             .map(|badge| match size {
-                Size::XSmall | Size::Small => badge.h_5().min_w_5().px_1(),
+                Size::XSmall | Size::Small => badge.h_5().min_w_5().px_1p5(),
                 Size::Medium => badge.h_6().min_w_6().px_1p5(),
                 Size::Large => badge.h_7().min_w_7().px_2(),
             })
