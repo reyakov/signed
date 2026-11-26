@@ -15,7 +15,7 @@ use signed_core::{Announcement, RepoAddr};
 use signed_git::{FileCommit, GitCache, Repo};
 use signed_state::{
     Backend, BackendEvent, LocalReposStore, Mirrors, Nip34Binding, Nip34Kind, PushStepStatus,
-    RepoStore, SyncStatusDirectory,
+    RefreshGate, RefreshRequest, RepoStore, SyncStatusDirectory,
 };
 use ui::alert::{Alert, AlertSeverity};
 use ui::avatar::Avatar;
@@ -127,6 +127,8 @@ pub struct RepoDetailView {
     sync_directory: Entity<SyncStatusDirectory>,
     /// Only a commit sync reports push steps; republish stays silent.
     sync_progress: bool,
+    /// Folds mirror refreshes requested while one is running.
+    mirror_refresh: RefreshGate,
     pub(super) repo_menu_open: bool,
     pub(super) clone_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -193,43 +195,46 @@ impl RepoDetailView {
             )
         });
 
-        let subscriptions = vec![
-            cx.observe(&sync_directory, |this, _directory, cx| {
-                this.sync_history_source(cx);
+        let mut subscriptions = vec![];
+
+        subscriptions.push(
+            cx.observe_in(&sync_directory, window, |this, _, window, cx| {
+                this.sync_history_source(window, cx);
             }),
-            cx.subscribe(&backend, |this, _backend, event, cx| {
-                let BackendEvent::PushProgress { addr, status } = event else {
-                    return;
-                };
+        );
 
-                if !this.sync_progress {
-                    return;
-                }
+        subscriptions.push(cx.subscribe(&backend, |this, _, event, cx| {
+            let BackendEvent::PushProgress { addr, status } = event else {
+                return;
+            };
 
-                let current = this.store.read(cx).addr().cloned();
-                if current.as_ref() != Some(addr) {
-                    return;
-                }
+            if !this.sync_progress {
+                return;
+            }
 
-                cx.show_system_notification(Self::sync_progress_notification(addr, status));
-            }),
-            cx.subscribe(&files, |this, _files, _event, cx| {
-                if this.active_section != RepoSection::Files {
-                    this.active_section = RepoSection::Files;
-                    cx.notify();
-                }
-            }),
-        ];
+            let current = this.store.read(cx).addr().cloned();
 
+            if current.as_ref() != Some(addr) {
+                return;
+            }
+
+            cx.show_system_notification(Self::sync_progress_notification(addr, status));
+        }));
+
+        subscriptions.push(cx.subscribe(&files, |this, _, _, cx| {
+            if this.active_section != RepoSection::Files {
+                this.active_section = RepoSection::Files;
+                cx.notify();
+            }
+        }));
+
+        let store_for_attach = store.clone();
         let mut header = None;
         AboutModel::sync(&mut header, &store, cx);
 
-        let store_for_attach = store.clone();
-        window.defer(cx, move |window, cx| {
-            log_dropped(weak.update(cx, |this, cx| {
-                this.attach_store(&store_for_attach, window, cx);
-                this.load_repo(window, cx);
-            }));
+        cx.defer_in(window, move |this, window, cx| {
+            this.attach_store(&store_for_attach, window, cx);
+            this.load_repo(window, cx);
         });
 
         Self {
@@ -252,6 +257,7 @@ impl RepoDetailView {
             directory: ProfileDirectory::new(cx),
             sync_directory,
             sync_progress: false,
+            mirror_refresh: RefreshGate::default(),
             repo_menu_open: false,
             clone_open: false,
             _subscriptions: subscriptions,
@@ -367,18 +373,36 @@ impl RepoDetailView {
             .unwrap_or_else(|| displayed.to_path_buf())
     }
 
-    fn sync_history_source(&mut self, cx: &mut Context<Self>) {
+    fn sync_history_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(displayed) = self.worktree.clone() else {
+            return;
+        };
+
+        let reads_mirror = self.history.read(cx).worktree() == Some(displayed.as_path());
+        let lists_mirror = self.history_source(&displayed, cx) == displayed;
+
+        // A checkout that just caught up hands the list to a mirror lagging behind the sync.
+        if lists_mirror && !reads_mirror {
+            self.refresh_mirror(window, cx);
+        } else {
+            self.reload_history_source(false, cx);
+        }
+    }
+
+    /// Points the commit list at its source again, reloading a mirror whose HEAD moved.
+    fn reload_history_source(&mut self, mirror_head_moved: bool, cx: &mut Context<Self>) {
         let Some(displayed) = self.worktree.clone() else {
             return;
         };
 
         let source = self.history_source(&displayed, cx);
         self.history.update(cx, |history, cx| {
-            if history.worktree() == Some(source.as_path()) {
-                return;
+            if history.worktree() != Some(source.as_path()) {
+                history.set_worktree(Some(source));
+                history.reload(cx);
+            } else if mirror_head_moved && source == displayed {
+                history.reload(cx);
             }
-            history.set_worktree(Some(source));
-            history.reload(cx);
         });
     }
 
@@ -432,7 +456,6 @@ impl RepoDetailView {
 
         self.repo_started = true;
 
-        let store = self.store.downgrade();
         let addr = announcement.addr();
         let clone_urls: Vec<Url> = announcement.clone.clone();
 
@@ -469,24 +492,37 @@ impl RepoDetailView {
                     Ok(data) => this.apply_repo_data(data, window, cx),
                     Err(error) => this.error = Some(error.to_string().into()),
                 }
+
                 this.loading = false;
                 cx.notify();
+
+                // A cached mirror may lag behind the grasp servers since the last visit.
+                if had_clone && !this.store.read(cx).pushing {
+                    this.refresh_mirror(window, cx);
+                }
             })?;
 
-            if !had_clone {
-                return Ok(());
-            }
+            Ok(())
+        });
 
-            let pushing = store.read_with(cx, |this, _| this.pushing)?;
+        self.push_task(task);
+    }
 
-            if pushing {
-                return Ok(());
-            }
+    /// Fetches the mirror and fast-forwards its branches, showing the caught-up state.
+    fn refresh_mirror(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mirror_refresh.request() != RefreshRequest::Schedule {
+            return;
+        }
 
-            let refresh = {
-                let addr = addr.clone();
+        let Some(addr) = self.store.read(cx).addr().cloned() else {
+            return;
+        };
 
-                cx.background_spawn(async move {
+        self.mirror_refresh.begin();
+
+        let task: Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
+            let refresh = cx
+                .background_spawn(async move {
                     let Some(repo) = Mirrors::open(&addr)? else {
                         return Ok::<_, Error>(None);
                     };
@@ -503,14 +539,15 @@ impl RepoDetailView {
                     };
                     Ok::<_, Error>(Some((moved, repo.snapshot()?)))
                 })
-                .await
-            };
+                .await;
 
             this.update_in(cx, |this, window, cx| {
+                let again = this.mirror_refresh.finish();
+                let mut head_changed = false;
+
                 if let Ok(Some((moved, snapshot))) = refresh {
                     let branches: Vec<SharedString> =
                         snapshot.branches.iter().map(Into::into).collect();
-
                     let tags: Vec<SharedString> = snapshot.tags.iter().map(Into::into).collect();
                     let current_branch = snapshot.current_branch.clone();
                     let head_commit = snapshot.head_commit.clone();
@@ -525,7 +562,7 @@ impl RepoDetailView {
 
                     let new_head_commit = head_commit.as_ref().map(|c| &c.id);
                     let current_head_commit = this.head_commit.as_ref().map(|c| &c.id);
-                    let head_changed = new_head_commit != current_head_commit;
+                    head_changed = new_head_commit != current_head_commit;
                     this.head_commit = head_commit;
 
                     if moved {
@@ -535,6 +572,12 @@ impl RepoDetailView {
                     if branches_changed || tags_changed || head_changed {
                         cx.notify();
                     }
+                }
+
+                this.reload_history_source(head_changed, cx);
+
+                if again {
+                    this.refresh_mirror(window, cx);
                 }
             })?;
 

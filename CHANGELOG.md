@@ -38,6 +38,8 @@
 - Fix the remove button of a Settings or grasp server row carrying its hover state over to the next row after a removal
 - Fix the file tree's scrollbar sitting inset from the sidebar's right border, it now rides beside it
 - Fix the selected filter in the Explore, Issues and Pull requests views highlighting only after the pointer crossed it, it now highlights as soon as the filter is drawn
+- Fix the Commits list and its count badge lagging behind the header after a repository opened or after a Sync, they now follow the mirror once it caught up with the servers
+- Fix the Sync buttons, the repository menu and the Code button staying disabled or loading after a sync, republish, reset or download finished
 
 ## v0.2.0 - 2026/10/21
 

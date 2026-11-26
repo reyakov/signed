@@ -1275,6 +1275,9 @@ impl RepoStore {
             let result = push.await;
 
             this.update(cx, |this, cx| {
+                this.pushing = false;
+                this.push_steps.clear();
+
                 match &result {
                     Ok(outcome) => {
                         this.last_error = None;
@@ -1287,12 +1290,12 @@ impl RepoStore {
                             });
                         }
 
-                        // Re-probe so sync badges reflect the pushed state.
                         let sync_status = SyncStatusStore::global(cx);
                         let addr = pushed_checkout
                             .as_ref()
                             .map(|(addr, _)| addr.clone())
                             .or_else(|| this.addr.clone());
+
                         sync_status.read(cx).probe(addr);
                     }
                     Err(e) => {
@@ -1371,6 +1374,8 @@ impl RepoStore {
             let result = clone.await;
 
             this.update(cx, |this, cx| {
+                this.cloning = false;
+
                 match &result {
                     Ok(()) => {
                         let checkouts = CheckoutsStore::global(cx);
@@ -1387,7 +1392,6 @@ impl RepoStore {
             })?;
 
             guard.abort();
-
             result
         })
     }
@@ -1603,4 +1607,27 @@ fn comment_builder(
         .root(root_target)
         .into_event_builder()
         .tags([Tag::coordinate(addr.clone().into(), None)])
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use anyhow::anyhow;
+    use gpui::{AppContext as _, Task, TestAppContext};
+
+    use super::RepoStore;
+
+    #[gpui::test]
+    fn a_finished_push_releases_the_busy_flag(cx: &mut TestAppContext) {
+        let store = cx.new(|_| RepoStore::new_local(PathBuf::from("repo"), None));
+
+        let push = store.update(cx, |store, cx| {
+            store.run_push(Task::ready(Err(anyhow!("push refused"))), None, cx)
+        });
+        cx.run_until_parked();
+
+        assert!(push.is_ready());
+        assert!(!cx.update(|app| store.read(app).pushing));
+    }
 }

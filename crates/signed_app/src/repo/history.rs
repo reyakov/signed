@@ -12,7 +12,7 @@ use signed_git::{CommitList, FileCommit, Repo};
 use signed_state::{Backend, RepoStore, SyncStatusDirectory};
 use ui::alert::{Alert, AlertSeverity, AlertStyle};
 use ui::avatar::IdentityRow;
-use ui::button::{Button, ButtonSide, ButtonVariant};
+use ui::button::{Button, ButtonVariant};
 use ui::common::{Sizable as _, h_flex, v_flex};
 use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
@@ -290,7 +290,6 @@ impl Render for RepoHistoryView {
                                         .h_12()
                                         .w_full()
                                         .gap_2()
-                                        .text_sm()
                                         .border_b_1()
                                         .border_color(cx.theme().colors.border)
                                         .hover(|this| this.bg(cx.theme().colors.muted))
@@ -304,15 +303,15 @@ impl Render for RepoHistoryView {
                                             .truncate()
                                             .gap_2()
                                             .flex_none()
-                                            .w_32()
+                                            .w_40()
+                                            .text_xs()
                                             .text_color(cx.theme().colors.muted_foreground),
                                         )
                                         .child(
-                                            h_flex().w_24().child(
+                                            h_flex().w_20().child(
                                                 Button::new(format!("browse-commit:{}", commit.id))
                                                     .label(short_id(&commit.id))
                                                     .variant(ButtonVariant::Ghost)
-                                                    .side(ButtonSide::Left)
                                                     .small()
                                                     .tooltip(Tooltip::text(
                                                         "Browse files at commit",
@@ -335,6 +334,7 @@ impl Render for RepoHistoryView {
                                                 .flex_1()
                                                 .min_w_0()
                                                 .text_ellipsis()
+                                                .text_sm()
                                                 .whitespace_nowrap()
                                                 .child(commit.summary.clone()),
                                         )
@@ -347,10 +347,11 @@ impl Render for RepoHistoryView {
                                                 .child(relative_time_secs(commit.time)),
                                         )
                                         .when_some(ahead, |row, (ahead_id, path)| {
-                                            let detail = detail.clone();
                                             let path = path.clone();
                                             let target = ahead_id.clone();
-                                            let short = short_id(&commit.id);
+                                            let detail = detail.clone();
+                                            let tooltip =
+                                                format!("Sync up to {}", short_id(&commit.id));
 
                                             row.child(
                                                 Button::new(("sync-commit", ix))
@@ -358,10 +359,9 @@ impl Render for RepoHistoryView {
                                                     .icon(Icon::named(IconRole::ArrowUp))
                                                     .variant(ButtonVariant::Secondary)
                                                     .small()
+                                                    .loading(pushing)
                                                     .disabled(pushing)
-                                                    .tooltip(Tooltip::text(format!(
-                                                        "Sync up to {short}"
-                                                    )))
+                                                    .tooltip(Tooltip::text(tooltip))
                                                     .on_click(move |_, window, cx| {
                                                         cx.stop_propagation();
                                                         if let Some(detail) = detail.upgrade() {
