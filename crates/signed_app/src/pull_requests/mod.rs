@@ -371,35 +371,13 @@ impl Render for PullRequestsView {
                                             .border_color(cx.theme().colors.border)
                                             .hover(|this| this.bg(cx.theme().colors.muted_hover))
                                             .on_click(move |_, window, cx| {
-                                                let id = SharedString::from(format!("pr:{pr_id}"));
-                                                let workspace_for_build = workspace.clone();
-                                                let store = store.clone();
-
-                                                log_dropped(workspace.update(cx, |root, cx| {
-                                                    root.panels().clone().update(
-                                                        cx,
-                                                        |panels, cx| {
-                                                            panels.open(
-                                                                PanelSlot::Main,
-                                                                id,
-                                                                move |window, cx| {
-                                                                    cx.new(|cx| {
-                                                                        PullRequestDetailView::new(
-                                                                            workspace_for_build
-                                                                                .clone(),
-                                                                            store.clone(),
-                                                                            pr_id,
-                                                                            window,
-                                                                            cx,
-                                                                        )
-                                                                    })
-                                                                },
-                                                                window,
-                                                                cx,
-                                                            )
-                                                        },
-                                                    )
-                                                }));
+                                                PullRequestDetailView::open(
+                                                    &workspace,
+                                                    store.clone(),
+                                                    pr_id,
+                                                    window,
+                                                    cx,
+                                                );
                                             })
                                             .child(
                                                 h_flex()

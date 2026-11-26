@@ -928,6 +928,11 @@ diff --git a/b.txt b/b.txt
     assert_eq!(commits[1].summary, "second");
     assert_eq!(commits[1].author, "Bob");
     assert_eq!(commits[1].time, 1690975800);
+
+    let stats = PatchParser::patch_commits_with_stats(patch);
+    assert_eq!(stats.len(), 2);
+    assert_eq!((stats[0].1, stats[0].2), (1, 0));
+    assert_eq!((stats[1].1, stats[1].2), (1, 0));
 }
 
 #[test]

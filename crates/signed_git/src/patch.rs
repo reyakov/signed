@@ -31,33 +31,53 @@ impl PatchParser {
         Ok(CommitDiff::new(files))
     }
 
-    /// Lists the commits represented by the mbox messages that carry an id.
-    pub fn patch_commits(patch: &str) -> Vec<FileCommit> {
+    /// Lists the commits represented by the mbox messages that carry an id, with their total insertions and deletions.
+    pub fn patch_commits_with_stats(patch: &str) -> Vec<(FileCommit, usize, usize)> {
         Self::envelopes(patch)
             .into_iter()
             .filter(|message| !message.id.is_empty())
             .map(|message| {
-                let time = message
-                    .header("Date")
-                    .and_then(|value| gix::date::parse(value.trim(), None).ok());
-
-                FileCommit::new(
-                    message.id.to_string(),
-                    message
-                        .header("Subject")
-                        .map(Self::strip_patch_prefix)
-                        .unwrap_or_default(),
-                    None,
-                    message
-                        .header("From")
-                        .map(Self::name_from_address)
-                        .unwrap_or_default(),
-                    time.map(|time| time.seconds).unwrap_or(0),
-                    time.map(format_commit_date).unwrap_or_default(),
-                    Vec::new(),
-                )
+                let (insertions, deletions) = match Self::patch_diffs(message.text) {
+                    Ok(diff) => (
+                        diff.files.iter().map(|file| file.insertions).sum(),
+                        diff.files.iter().map(|file| file.deletions).sum(),
+                    ),
+                    Err(_) => (0, 0),
+                };
+                (Self::commit_from_envelope(&message), insertions, deletions)
             })
             .collect()
+    }
+
+    /// Lists the commits represented by the mbox messages that carry an id.
+    pub fn patch_commits(patch: &str) -> Vec<FileCommit> {
+        Self::patch_commits_with_stats(patch)
+            .into_iter()
+            .map(|(commit, _, _)| commit)
+            .collect()
+    }
+
+    /// Creates a commit from one parsed mbox message.
+    fn commit_from_envelope(message: &Envelope<'_>) -> FileCommit {
+        let time = message
+            .header("Date")
+            .and_then(|value| gix::date::parse(value.trim(), None).ok());
+
+        FileCommit::new(
+            message.id.to_string(),
+            message
+                .header("Subject")
+                .map(Self::strip_patch_prefix)
+                .unwrap_or_default(),
+            None,
+            message
+                .header("From")
+                .map(Self::name_from_address)
+                .unwrap_or_default(),
+            time.map(|time| time.seconds).unwrap_or(0),
+            time.map(format_commit_date).unwrap_or_default(),
+            Vec::new(),
+        )
     }
 
     /// Splits `patch` on `From <40-hex> <date>` envelopes, falling back to one message.

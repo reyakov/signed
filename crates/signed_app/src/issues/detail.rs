@@ -41,6 +41,32 @@ pub struct IssueDetailView {
 }
 
 impl IssueDetailView {
+    pub fn new(store: Entity<RepoStore>, issue_id: EventId, cx: &mut Context<Self>) -> Self {
+        let comment_input = InputState::builder().multiline().build(cx);
+        let directory = ProfileDirectory::new(cx);
+        let weak = cx.entity().downgrade();
+
+        let subscription = cx.observe(&store, |this, _store, cx| {
+            this.track_participants(cx);
+            cx.notify();
+        });
+
+        cx.defer(move |cx| {
+            log_dropped(weak.update(cx, |this, cx| {
+                this.track_participants(cx);
+            }));
+        });
+
+        Self {
+            store,
+            issue_id,
+            comment_input,
+            directory,
+            scroll_handle: ScrollHandle::new(),
+            _subscription: subscription,
+        }
+    }
+
     /// Opens the issue's detail as the main panel and its sidebar in the split pane.
     pub fn open(
         workspace: &WeakEntity<AppRoot>,
@@ -81,32 +107,6 @@ impl IssueDetailView {
                 );
             })
         }));
-    }
-
-    pub fn new(store: Entity<RepoStore>, issue_id: EventId, cx: &mut Context<Self>) -> Self {
-        let comment_input = InputState::builder().multiline().build(cx);
-        let directory = ProfileDirectory::new(cx);
-        let weak = cx.entity().downgrade();
-
-        let subscription = cx.observe(&store, |this, _store, cx| {
-            this.track_participants(cx);
-            cx.notify();
-        });
-
-        cx.defer(move |cx| {
-            log_dropped(weak.update(cx, |this, cx| {
-                this.track_participants(cx);
-            }));
-        });
-
-        Self {
-            store,
-            issue_id,
-            comment_input,
-            directory,
-            scroll_handle: ScrollHandle::new(),
-            _subscription: subscription,
-        }
     }
 
     /// Track the issue author, everyone who commented and the repository owner.

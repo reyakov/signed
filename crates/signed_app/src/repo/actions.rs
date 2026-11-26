@@ -64,30 +64,7 @@ pub fn open_repo_item(
             IssueDetailView::open(workspace, store, issue_id, window, cx);
         }
         RepoItem::PullRequest(pr_id) => {
-            let id = SharedString::from(format!("pr:{pr_id}"));
-            let workspace_for_build = workspace.clone();
-            let store = store.clone();
-            log_dropped(workspace.update(cx, |root, cx| {
-                root.panels().update(cx, |panels, cx| {
-                    panels.open(
-                        PanelSlot::Main,
-                        id,
-                        move |window, cx| {
-                            cx.new(|cx| {
-                                PullRequestDetailView::new(
-                                    workspace_for_build.clone(),
-                                    store.clone(),
-                                    pr_id,
-                                    window,
-                                    cx,
-                                )
-                            })
-                        },
-                        window,
-                        cx,
-                    )
-                })
-            }));
+            PullRequestDetailView::open(workspace, store.clone(), pr_id, window, cx);
         }
         // Opening a patch series directly is not a feature.
         _ => {}

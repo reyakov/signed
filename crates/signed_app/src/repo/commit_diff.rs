@@ -320,8 +320,12 @@ impl DiffPane {
         }
     }
 
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let view = cx.entity().downgrade();
+    fn render_toolbar(
+        &self,
+        show_tree_toggle: bool,
+        view: WeakEntity<Self>,
+        cx: &App,
+    ) -> AnyElement {
         let (insertions, deletions) = self.diff().map_or((0, 0), |diff| {
             (
                 diff.files.iter().map(|file| file.insertions).sum(),
@@ -338,22 +342,24 @@ impl DiffPane {
             .flex_none()
             .border_b_1()
             .border_color(cx.theme().colors.border)
-            .child(
-                Toggle::new("toggle-tree")
-                    .icon(Icon::named(IconRole::PanelLeft))
-                    .pressed(self.tree_visible)
-                    .accessibility_label("Toggle file tree")
-                    .on_change({
-                        let view = view.clone();
-                        move |pressed, _, cx| {
-                            if let Err(error) =
-                                view.update(cx, |this, cx| this.set_tree_visible(pressed, cx))
-                            {
-                                log::warn!("failed to toggle file tree: {error}");
+            .when(show_tree_toggle, |this| {
+                this.child(
+                    Toggle::new("toggle-tree")
+                        .icon(Icon::named(IconRole::PanelLeft))
+                        .pressed(self.tree_visible)
+                        .accessibility_label("Toggle file tree")
+                        .on_change({
+                            let view = view.clone();
+                            move |pressed, _, cx| {
+                                if let Err(error) =
+                                    view.update(cx, |this, cx| this.set_tree_visible(pressed, cx))
+                                {
+                                    log::warn!("failed to toggle file tree: {error}");
+                                }
                             }
-                        }
-                    }),
-            )
+                        }),
+                )
+            })
             .when(insertions > 0 || deletions > 0, |this| {
                 this.child(GroupedBadge::new(
                     "toolbar-diff-stats",
@@ -393,7 +399,7 @@ impl DiffPane {
                     .variant(ButtonVariant::Ghost)
                     .small()
                     .on_click({
-                        let view = view;
+                        let view = view.clone();
                         move |_, _, cx| {
                             if let Err(error) =
                                 view.update(cx, |this, cx| this.toggle_all_files(cx))
@@ -411,9 +417,13 @@ impl DiffPane {
                         .variant(ButtonVariant::Ghost)
                         .tooltip(Tooltip::text("Download commit"))
                         .small()
-                        .on_click(cx.listener(|_, _, _, cx| {
-                            cx.emit(DiffPaneEvent::DownloadCommit);
-                        })),
+                        .on_click(move |_, _, cx| {
+                            if let Err(error) = view.update(cx, |_, cx| {
+                                cx.emit(DiffPaneEvent::DownloadCommit);
+                            }) {
+                                log::warn!("failed to download commit patch: {error}");
+                            }
+                        }),
                 )
             })
             .into_any_element()
@@ -446,6 +456,39 @@ impl DiffPane {
                 .p_2(),
             )
             .child(Scrollbar::vertical("commit-diff-files", self.list.clone()))
+            .into_any_element()
+    }
+
+    /// Renders every diff row inline, for embedding in a page that scrolls as a whole.
+    pub fn render_flow(&self, view: WeakEntity<Self>, cx: &App) -> AnyElement {
+        let Some(diff) = self.diff.as_ref() else {
+            return div()
+                .p_4()
+                .text_sm()
+                .text_color(cx.theme().colors.muted_foreground)
+                .child("No changes")
+                .into_any_element();
+        };
+        if diff.files.is_empty() {
+            return div()
+                .p_4()
+                .text_sm()
+                .text_color(cx.theme().colors.muted_foreground)
+                .child("No files changed")
+                .into_any_element();
+        }
+
+        let wrap = self.wrap;
+        let rows = self
+            .pane_rows
+            .iter()
+            .map(|row| render_pane_row(row, &diff.files, &view, wrap, cx))
+            .collect::<Vec<_>>();
+
+        v_flex()
+            .w_full()
+            .child(self.render_toolbar(false, view, cx))
+            .child(v_flex().w_full().p_2().children(rows))
             .into_any_element()
     }
 }
@@ -572,7 +615,7 @@ impl Render for DiffPane {
             return EmptyState::centered("No files changed");
         }
 
-        let toolbar = self.render_toolbar(cx);
+        let toolbar = self.render_toolbar(true, cx.entity().downgrade(), cx);
         let file_list = self.render_file_list(cx);
 
         let content = if self.tree_visible {

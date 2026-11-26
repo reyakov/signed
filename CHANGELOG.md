@@ -9,6 +9,11 @@
 
 ### Changed
 
+- Show a pull request's description, commits and changes in one scrollable main panel, and its discussion with a pinned comment form in the split pane
+- Show the repository owner's avatar and the pull request title in a pull request's tab
+- Show each pull request commit's id, title and changed line counts on one row
+- Show who opened a pull request, when, and its target and source branches under the title
+- Show the commits and discussions titles with an icon and a count badge
 - Opening a repository no longer runs a forced checkout of its worktree
 - Deleting a repository now waits until its deletion events are accepted by a relay
 - Keep the Explore list at its scroll position across background refreshes, a new search or filter still starts at the top

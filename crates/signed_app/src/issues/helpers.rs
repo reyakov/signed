@@ -6,6 +6,7 @@ use nostr::prelude::{Event, EventId};
 use signed_core::RepoStatus;
 use signed_state::RepoStore;
 use ui::avatar::Avatar;
+use ui::badge::Badge;
 use ui::button::Button;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::icons::{Icon, IconRole};
@@ -82,11 +83,20 @@ pub(crate) fn comments_section(
 ) -> AnyElement {
     let store = store.read(cx);
     let comments: Vec<&Event> = store.comments_of(&root).collect();
-    let title = SharedString::from(format!("Discussions {}", comments.len()));
+    let count = comments.len();
 
     v_flex()
         .gap_4()
-        .child(div().text_xs().font_semibold().child(title))
+        .child(
+            h_flex()
+                .gap_2()
+                .child(Icon::named(IconRole::Message))
+                .child(div().text_sm().font_semibold().child("Discussions"))
+                .child(Badge::new(
+                    format!("discussion-count:{root}"),
+                    count.to_string(),
+                )),
+        )
         .children(comments.iter().map(|comment| {
             let profile = directory.read(cx).profile(&comment.pubkey, cx);
             let author = profile.name();
