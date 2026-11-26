@@ -180,6 +180,8 @@ where
     options: Vec<ComboboxOption<T>>,
     /// The chosen value. `None` while the text names nothing.
     selected: Option<T>,
+    /// A label shown in the field in place of a chosen option.
+    display_label: Option<SharedString>,
     query: Entity<InputState>,
     /// Indices into `options` that survived the filter, in popup row order.
     visible: Vec<usize>,
@@ -241,6 +243,7 @@ where
             placeholder: combobox.placeholder,
             options: combobox.options,
             selected: combobox.selected,
+            display_label: None,
             query,
             visible,
             highlight: None,
@@ -262,6 +265,7 @@ where
     /// Replaces the value; reports it when it actually changed.
     pub fn set_selected(&mut self, value: Option<T>, window: &mut Window, cx: &mut Context<Self>) {
         let changed = self.selected != value;
+        self.display_label = None;
         self.set_value(value, window, cx);
         if changed {
             let label = self.selected_label().unwrap_or_default();
@@ -279,13 +283,34 @@ where
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.selected == value {
+        if self.selected == value && self.display_label.is_none() {
             return;
         }
+
+        self.display_label = None;
         self.selected = value;
+
         let label = self.selected_label().unwrap_or_default();
-        self.query
-            .update(cx, |query, cx| query.set_value_silent(label, window, cx));
+        self.query.update(cx, |query, cx| {
+            query.set_value_silent(label, window, cx);
+        });
+        self.refilter("");
+
+        cx.notify();
+    }
+
+    /// Shows `label` in the field in place of the choice, reporting nothing; a choice replaces it.
+    pub fn set_display_label(
+        &mut self,
+        label: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected = None;
+        self.display_label = Some(label.clone());
+        self.query.update(cx, |query, cx| {
+            query.set_value_silent(label.to_string(), window, cx)
+        });
         self.refilter("");
         cx.notify();
     }
@@ -298,13 +323,16 @@ where
         cx.notify();
     }
 
-    /// The label of the chosen option, if there is one.
+    /// The label of the chosen option, or the display label's.
     fn selected_label(&self) -> Option<SharedString> {
-        let selected = self.selected.as_ref()?;
-        self.options
-            .iter()
-            .find(|(value, _)| value == selected)
-            .map(|(_, label)| label.clone())
+        if let Some(selected) = &self.selected {
+            return self
+                .options
+                .iter()
+                .find(|(value, _)| value == selected)
+                .map(|(_, label)| label.clone());
+        }
+        self.display_label.clone()
     }
 
     /// Recomputes `visible` for `query` and clamps the highlight onto it.
@@ -329,6 +357,7 @@ where
         if self.selected == value {
             return;
         }
+        self.display_label = None;
         self.selected = value.clone();
         if let Some(on_change) = self.on_change.clone() {
             let value = value.clone();
@@ -526,7 +555,9 @@ where
                                         if state.highlight.is_some() {
                                             state.highlight = None;
                                         } else {
-                                            if state.selected.is_some() {
+                                            if state.selected.is_some()
+                                                || state.display_label.is_some()
+                                            {
                                                 state.refilter("");
                                             } else {
                                                 let query =

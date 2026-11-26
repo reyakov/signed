@@ -85,6 +85,14 @@ pub(super) struct RepoData {
     pub(super) head_commit: Option<FileCommit>,
 }
 
+/// A commit's tree and README, as the file explorer shows them.
+pub(super) struct CommitTree {
+    pub(super) tree: Vec<TreeItemSeed>,
+    pub(super) paths: Vec<String>,
+    pub(super) readme_path: Option<PathBuf>,
+    pub(super) readme: Option<Vec<u8>>,
+}
+
 /// Sorted relative paths of a worktree snapshot.
 pub(crate) fn sorted_worktree_paths(entries: &[PathBuf]) -> Vec<String> {
     let mut paths: Vec<String> = entries
@@ -140,6 +148,24 @@ pub(super) fn snapshot_worktree(
     let tree = TreeItemSeed::from_paths(&snapshot.entries);
     let paths = sorted_worktree_paths(&snapshot.entries);
     Ok((snapshot, tree, paths))
+}
+
+/// Lists the tree and README of `commit` in the repository at `worktree`.
+pub(super) fn snapshot_commit(worktree: &Path, commit: &str) -> Result<CommitTree, Error> {
+    let repo = Repo::open_cached(worktree)?;
+    let entries = repo.entries_at(commit)?;
+    let readme_path = Repo::pick_readme(&entries);
+    let readme = match &readme_path {
+        Some(path) => repo.read_at(commit, path)?,
+        None => None,
+    };
+
+    Ok(CommitTree {
+        tree: TreeItemSeed::from_paths(&entries),
+        paths: sorted_worktree_paths(&entries),
+        readme_path,
+        readme,
+    })
 }
 
 pub(super) fn clone_group(label: &str, id: SharedString, command: &SharedString) -> AnyElement {

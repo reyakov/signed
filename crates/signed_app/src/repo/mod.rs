@@ -45,7 +45,7 @@ pub mod refs;
 use files::RepoFilesView;
 use helpers::{
     RepoData, announcement_display_name, bound_repo_label, clone_group, fork_row, load_repo_data,
-    nostr_clone_url, repo_display_name, snapshot_worktree,
+    nostr_clone_url, repo_display_name, snapshot_commit, snapshot_worktree,
 };
 use history::RepoHistoryView;
 use refs::RefSwitcher;
@@ -117,6 +117,8 @@ pub struct RepoDetailView {
     loading: bool,
     error: Option<SharedString>,
     head_commit: Option<FileCommit>,
+    /// The commit whose files are shown in place of the worktree.
+    browsed_commit: Option<FileCommit>,
     refs: RefSwitcher,
     tasks: Vec<Task<Result<(), Error>>>,
     /// Profiles rendered by the header and maintainers.
@@ -244,6 +246,7 @@ impl RepoDetailView {
             loading: true,
             error: None,
             head_commit: None,
+            browsed_commit: None,
             refs,
             tasks: Vec::new(),
             directory: ProfileDirectory::new(cx),
@@ -561,9 +564,12 @@ impl RepoDetailView {
 
         self.worktree = Some(worktree.clone());
         self.head_commit = head_commit;
+        self.browsed_commit = None;
+        self.refs.commit_label = None;
 
         self.files.update(cx, |files, cx| {
             files.set_worktree(worktree.clone());
+            files.pin_commit(None);
             files.apply_entries(tree, sorted_worktree_paths(&entries), cx);
             files.set_readme(readme_path, readme, cx);
         });
@@ -581,6 +587,59 @@ impl RepoDetailView {
         self.refs
             .set_branches(branches, current_branch.map(Into::into), window, cx);
         self.refs.set_tags(tags, window, cx);
+    }
+
+    /// Shows the files of `commit`, read from the repository at `source`, in place of the worktree.
+    fn browse_commit(
+        &mut self,
+        commit: FileCommit,
+        source: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.active_section = RepoSection::Files;
+        self.browsed_commit = Some(commit.clone());
+        self.refs.show_commit(short_id(&commit.id), window, cx);
+        cx.notify();
+
+        let loaded_id = commit.id.clone();
+        let shown = source.clone();
+
+        let task: Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { snapshot_commit(&source, &loaded_id) })
+                .await;
+
+            this.update_in(cx, |this, window, cx| {
+                // A later pick replaced this one while it loaded.
+                let current = this
+                    .browsed_commit
+                    .as_ref()
+                    .is_some_and(|current| current.id == commit.id);
+                if !current {
+                    return;
+                }
+
+                match result {
+                    Ok(tree) => this.files.update(cx, |files, cx| {
+                        files.set_worktree(shown);
+                        files.clear_previews();
+                        files.apply_entries(tree.tree, tree.paths, cx);
+                        files.pin_commit(Some(commit));
+                        files.set_readme(tree.readme_path, tree.readme, cx);
+                    }),
+                    Err(error) => {
+                        this.error = Some(error.to_string().into());
+                        this.reload_worktree(window, cx);
+                    }
+                }
+                cx.notify();
+            })?;
+
+            Ok(())
+        });
+
+        self.push_task(task);
     }
 
     fn clone_to_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -653,6 +712,8 @@ impl RepoDetailView {
             return;
         };
         let name = name.into();
+        let browsing = self.browsed_commit.is_some();
+        self.refs.commit_label = None;
 
         // Restored if the checkout fails while HEAD stays detached.
         let previous_tag = match kind {
@@ -684,6 +745,13 @@ impl RepoDetailView {
                     // A failed checkout leaves HEAD alone; report the branch it is still on.
                     let current = repo.as_ref().ok().and_then(|repo| repo.current_branch());
                     let checkout = match kind {
+                        // Browsing a commit leaves HEAD alone, so picking its branch again only
+                        // returns to the worktree.
+                        RefKind::Branch
+                            if browsing && current.as_deref() == Some(checkout_name.as_ref()) =>
+                        {
+                            Ok(())
+                        }
                         RefKind::Branch => {
                             repo.and_then(|repo| repo.checkout_branch(&checkout_name))
                         }
@@ -698,7 +766,7 @@ impl RepoDetailView {
 
             this.update_in(cx, |this, window, cx| {
                 match outcome {
-                    Ok(_) => this.reload_worktree(cx),
+                    Ok(_) => this.reload_worktree(window, cx),
                     Err((error, current)) => {
                         this.error = Some(format!("Failed to check out {name}: {error}").into());
                         this.refs.switching_ref = false;
@@ -714,6 +782,10 @@ impl RepoDetailView {
                         let tag = if detached { previous_tag } else { None };
                         this.refs
                             .restore_selection(&this.refs.tag_select, &tag, window, cx);
+
+                        if browsing {
+                            this.reload_worktree(window, cx);
+                        }
                     }
                 }
                 cx.notify();
@@ -725,29 +797,43 @@ impl RepoDetailView {
         self.push_task(task);
     }
 
-    fn reload_worktree(&mut self, cx: &mut Context<Self>) {
+    /// Reloads the worktree, ending a browsed commit.
+    fn reload_worktree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(worktree) = self.worktree.clone() else {
             return;
         };
 
-        let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
+        let displayed = worktree.clone();
+
+        let task: Task<Result<(), Error>> = cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_spawn(async move { snapshot_worktree(worktree) })
                 .await;
 
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 this.refs.switching_ref = false;
+                this.browsed_commit = None;
+                this.refs.commit_label = None;
+                this.files.update(cx, |files, _| files.pin_commit(None));
 
                 match result {
                     Ok((snapshot, tree, paths)) => {
                         this.head_commit = snapshot.head_commit.clone();
+                        let current_branch = snapshot.current_branch.map(Into::into);
                         let readme_path = snapshot.readme_path;
                         let readme = snapshot.readme;
                         this.files.update(cx, |files, cx| {
+                            files.set_worktree(displayed);
                             files.clear_previews();
                             files.apply_entries(tree, paths, cx);
                             files.set_readme(readme_path, readme, cx);
                         });
+                        this.refs.restore_selection(
+                            &this.refs.branch_select,
+                            &current_branch,
+                            window,
+                            cx,
+                        );
                         this.history.update(cx, |history, cx| history.reload(cx));
                     }
                     Err(error) => {
@@ -782,9 +868,12 @@ impl RepoDetailView {
             this.update(cx, |this, cx| match result {
                 Ok((snapshot, tree, paths)) => {
                     this.head_commit = snapshot.head_commit.clone();
-                    this.files.update(cx, |files, cx| {
-                        files.catch_up(&snapshot, tree, paths, cx);
-                    });
+                    // A browsed commit's tree does not follow the worktree.
+                    if this.browsed_commit.is_none() {
+                        this.files.update(cx, |files, cx| {
+                            files.catch_up(&snapshot, tree, paths, cx);
+                        });
+                    }
                     cx.notify();
                 }
                 Err(error) => {
@@ -1434,16 +1523,20 @@ impl RepoDetailView {
     }
 
     fn render_last_commit(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let commit = self.head_commit.as_ref()?;
+        let commit = self.browsed_commit.as_ref().or(self.head_commit.as_ref())?;
         let short = commit.id.get(..8).unwrap_or(&commit.id).to_owned();
         let history = self.history.clone();
         let commit_id = commit.id.clone();
+        let tooltip = match self.browsed_commit {
+            Some(_) => "View commit",
+            None => "View latest commit",
+        };
 
         Some(
             Button::new("last-commit")
                 .variant(ButtonVariant::Ghost)
                 .fully_rounded(true)
-                .tooltip(Tooltip::text("View latest commit"))
+                .tooltip(Tooltip::text(tooltip))
                 .on_click(move |_, window, cx| {
                     history.update(cx, |history, cx| {
                         history.open_commit_diff(&commit_id, window, cx);

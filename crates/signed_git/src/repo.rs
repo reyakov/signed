@@ -1084,15 +1084,48 @@ impl Repo {
     /// Lists every worktree path relative to the root, directories first.
     pub fn entries(&self) -> Result<Vec<PathBuf>> {
         let workdir = self.inner.workdir().context("repository has no worktree")?;
-
         let mut entries: Vec<(PathBuf, bool)> = Vec::new();
-        Self::collect_entries(workdir, workdir, &mut entries)?;
 
+        Self::collect_entries(workdir, workdir, &mut entries)?;
+        Self::sort_entries(&mut entries);
+
+        Ok(entries.into_iter().map(|(path, _)| path).collect())
+    }
+
+    /// Sorts directories before files, each alphabetically.
+    fn sort_entries(entries: &mut [(PathBuf, bool)]) {
         entries.sort_by(|(a, a_is_dir), (b, b_is_dir)| {
             b_is_dir
                 .cmp(a_is_dir)
                 .then_with(|| a.as_os_str().cmp(b.as_os_str()))
         });
+    }
+
+    /// Lists every path in the tree of commit `id`, directories first like `entries`.
+    pub fn entries_at(&self, id: &str) -> Result<Vec<PathBuf>> {
+        let commit_id = self.inner.rev_parse_single(id.as_bytes())?;
+        let tree = commit_id.object()?.into_commit().tree()?;
+
+        let mut entries: Vec<(PathBuf, bool)> = Vec::new();
+        for entry in tree.traverse().breadthfirst.files()? {
+            if !entry.mode.is_blob() {
+                continue;
+            }
+
+            let path = gix::path::from_bstring(entry.filepath);
+            for dir in path
+                .ancestors()
+                .skip(1)
+                .filter(|dir| !dir.as_os_str().is_empty())
+            {
+                entries.push((dir.to_path_buf(), true));
+            }
+            entries.push((path, false));
+        }
+
+        Self::sort_entries(&mut entries);
+        entries.dedup_by(|a, b| a.0 == b.0);
+
         Ok(entries.into_iter().map(|(path, _)| path).collect())
     }
 
@@ -1109,21 +1142,47 @@ impl Repo {
         }
     }
 
+    /// Reads a file from the tree of commit `id`, or `None` when it has no file at `rel`.
+    pub fn read_at(&self, id: &str, rel: &Path) -> Result<Option<Vec<u8>>> {
+        let commit_id = self.inner.rev_parse_single(id.as_bytes())?;
+        let tree = commit_id.object()?.into_commit().tree()?;
+
+        match tree.lookup_entry_by_path(rel)? {
+            Some(entry) if entry.mode().is_blob() => {
+                let mut blob = entry.object()?;
+                Ok(Some(std::mem::take(&mut blob.data)))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Finds the top-level README, preferring markdown extensions.
     pub fn find_readme(&self) -> Result<Option<PathBuf>> {
         let Some(workdir) = self.inner.workdir() else {
             return Ok(None);
         };
 
-        let mut candidates: Vec<PathBuf> = Vec::new();
+        let mut names = Vec::new();
         for entry in std::fs::read_dir(workdir)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if name.to_ascii_lowercase().starts_with("readme") {
-                candidates.push(entry.path());
-            }
+            names.push(PathBuf::from(entry?.file_name()));
         }
+
+        Ok(Self::pick_readme(&names))
+    }
+
+    /// The top-level README among `entries`, preferring markdown extensions.
+    pub fn pick_readme(entries: &[PathBuf]) -> Option<PathBuf> {
+        let mut candidates: Vec<PathBuf> = entries
+            .iter()
+            .filter(|path| {
+                path.components().count() == 1
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.to_ascii_lowercase().starts_with("readme"))
+            })
+            .cloned()
+            .collect();
 
         candidates.sort_by_key(|path| {
             let ext = path
@@ -1139,10 +1198,7 @@ impl Repo {
             }
         });
 
-        Ok(candidates
-            .into_iter()
-            .next()
-            .and_then(|path| path.strip_prefix(workdir).ok().map(Path::to_path_buf)))
+        candidates.into_iter().next()
     }
 
     /// Captures worktree entries, README, and ref state in one pass.

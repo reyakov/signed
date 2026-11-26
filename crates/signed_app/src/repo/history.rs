@@ -4,14 +4,15 @@ use std::sync::Arc;
 use anyhow::Error;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Task,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Task,
     UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
 };
 use signed_git::{CommitList, FileCommit, Repo};
 use signed_state::{Backend, RepoStore, SyncStatusDirectory};
 use ui::alert::{Alert, AlertSeverity, AlertStyle};
-use ui::button::{Button, ButtonVariant};
+use ui::avatar::IdentityRow;
+use ui::button::{Button, ButtonSide, ButtonVariant};
 use ui::common::{Sizable as _, h_flex, v_flex};
 use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
@@ -124,6 +125,14 @@ impl RepoHistoryView {
         self.load_task = Some(task);
     }
 
+    /// The panel id of `commit_id` in this repository's worktree, namespaced by `kind`.
+    fn panel_id(&self, kind: &str, commit_id: &str, worktree: &Path, cx: &App) -> SharedString {
+        match self.store.read(cx).addr() {
+            Some(addr) => SharedString::from(format!("{kind}:{addr}:{commit_id}")),
+            None => SharedString::from(format!("{kind}:{}:{commit_id}", worktree.display())),
+        }
+    }
+
     pub fn open_commit_diff(
         &mut self,
         commit_id: &str,
@@ -134,12 +143,8 @@ impl RepoHistoryView {
             return;
         };
 
-        let store = self.store.clone();
         let commit_id = commit_id.to_owned();
-        let id = match store.read(cx).addr() {
-            Some(addr) => SharedString::from(format!("commit:{addr}:{commit_id}")),
-            None => SharedString::from(format!("commit:{}:{}", worktree.display(), commit_id)),
-        };
+        let id = self.panel_id("commit", &commit_id, &worktree, cx);
         let workspace = self.workspace.clone();
 
         log_dropped(workspace.update(cx, |root, cx| {
@@ -162,6 +167,27 @@ impl RepoHistoryView {
                     cx,
                 )
             })
+        }));
+    }
+
+    /// Shows the files of the listed commit `commit_id` in the repository panel.
+    fn browse_commit(&mut self, commit_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // The list comes from this worktree, which may be another checkout than the panel shows.
+        let Some(source) = self.worktree.clone() else {
+            return;
+        };
+
+        let Some(commit) = self
+            .commits
+            .iter()
+            .find(|commit| commit.id == commit_id)
+            .cloned()
+        else {
+            return;
+        };
+
+        log_dropped(self.detail.update(cx, |detail, cx| {
+            detail.browse_commit(commit, source, window, cx);
         }));
     }
 }
@@ -250,7 +276,10 @@ impl Render for RepoHistoryView {
                                     };
 
                                     let row_id = commit.id.clone();
+                                    let browse_id = commit.id.clone();
                                     let view = view.clone();
+                                    let browse_view = view.clone();
+
                                     let ahead = ahead
                                         .iter()
                                         .find(|(id, _)| id.starts_with(commit.id.as_str()));
@@ -258,51 +287,64 @@ impl Render for RepoHistoryView {
                                     h_flex()
                                         .id(commit.id.clone())
                                         .px_4()
-                                        .h_16()
+                                        .h_12()
                                         .w_full()
-                                        .gap_3()
+                                        .gap_2()
+                                        .text_sm()
                                         .border_b_1()
                                         .border_color(cx.theme().colors.border)
-                                        .hover(|this| this.bg(cx.theme().colors.muted_hover))
+                                        .hover(|this| this.bg(cx.theme().colors.muted))
                                         .child(
-                                            v_flex()
+                                            IdentityRow::new(
+                                                commit.author.clone(),
+                                                commit.author.clone(),
+                                                None,
+                                            )
+                                            .small()
+                                            .truncate()
+                                            .gap_2()
+                                            .flex_none()
+                                            .w_32()
+                                            .text_color(cx.theme().colors.muted_foreground),
+                                        )
+                                        .child(
+                                            h_flex().w_24().child(
+                                                Button::new(format!("browse-commit:{}", commit.id))
+                                                    .label(short_id(&commit.id))
+                                                    .variant(ButtonVariant::Ghost)
+                                                    .side(ButtonSide::Left)
+                                                    .small()
+                                                    .tooltip(Tooltip::text(
+                                                        "Browse files at commit",
+                                                    ))
+                                                    .on_click(move |_, window, cx| {
+                                                        cx.stop_propagation();
+                                                        log_dropped(browse_view.update(
+                                                            cx,
+                                                            |this, cx| {
+                                                                this.browse_commit(
+                                                                    &browse_id, window, cx,
+                                                                );
+                                                            },
+                                                        ));
+                                                    }),
+                                            ),
+                                        )
+                                        .child(
+                                            div()
                                                 .flex_1()
                                                 .min_w_0()
-                                                .justify_center()
-                                                .child(
-                                                    h_flex()
-                                                        .gap_2()
-                                                        .overflow_hidden()
-                                                        .child(
-                                                            div()
-                                                                .text_sm()
-                                                                .text_color(
-                                                                    cx.theme()
-                                                                        .colors
-                                                                        .muted_foreground,
-                                                                )
-                                                                .child(short_id(&commit.id)),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .flex_1()
-                                                                .min_w_0()
-                                                                .text_sm()
-                                                                .text_ellipsis()
-                                                                .whitespace_nowrap()
-                                                                .child(commit.summary.clone()),
-                                                        ),
-                                                )
-                                                .child(
-                                                    h_flex()
-                                                        .gap_2()
-                                                        .text_xs()
-                                                        .text_color(
-                                                            cx.theme().colors.muted_foreground,
-                                                        )
-                                                        .child(commit.author.clone())
-                                                        .child(relative_time_secs(commit.time)),
-                                                ),
+                                                .text_ellipsis()
+                                                .whitespace_nowrap()
+                                                .child(commit.summary.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .text_xs()
+                                                .text_color(cx.theme().colors.muted_foreground)
+                                                .whitespace_nowrap()
+                                                .child(relative_time_secs(commit.time)),
                                         )
                                         .when_some(ahead, |row, (ahead_id, path)| {
                                             let detail = detail.clone();

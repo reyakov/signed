@@ -992,3 +992,72 @@ fn parses_real_format_patch_output() {
     assert_eq!(file.insertions, 0);
     assert_eq!(file.deletions, 0);
 }
+
+#[test]
+fn entries_at_lists_a_commits_files_directories_first() {
+    let (_dir, repo) = fixture(&[
+        ("README", b"plain"),
+        ("docs/README.md", b"# Docs"),
+        ("notes.txt", b"one"),
+        ("readme.md", b"# Title"),
+        ("src/lib.rs", b"fn old() {}"),
+    ]);
+    commit_all(&repo, "initial");
+    let first = repo.head_commit().expect("head").expect("commit").id;
+
+    let expected = vec![
+        PathBuf::from("docs"),
+        PathBuf::from("src"),
+        PathBuf::from("README"),
+        PathBuf::from("docs/README.md"),
+        PathBuf::from("notes.txt"),
+        PathBuf::from("readme.md"),
+        PathBuf::from("src/lib.rs"),
+    ];
+
+    let entries = repo.entries_at(&first).expect("entries");
+    assert_eq!(entries, expected);
+    assert_eq!(repo.entries().expect("entries"), expected);
+    assert_eq!(
+        Repo::pick_readme(&entries).as_deref(),
+        Some(Path::new("readme.md"))
+    );
+    assert_eq!(
+        repo.find_readme().expect("readme").as_deref(),
+        Some(Path::new("readme.md"))
+    );
+}
+
+#[test]
+fn read_at_reads_the_files_of_that_commit() {
+    let (dir, repo) = fixture(&[("notes.txt", b"one"), ("src/lib.rs", b"fn old() {}")]);
+    commit_all(&repo, "initial");
+    let first = repo.head_commit().expect("head").expect("commit").id;
+
+    std::fs::write(dir.path().join("src/lib.rs"), b"fn new() {}").expect("write");
+    std::fs::remove_file(dir.path().join("notes.txt")).expect("remove");
+    commit_all(&repo, "second");
+    let second = repo.head_commit().expect("head").expect("commit").id;
+
+    assert_eq!(
+        repo.read_at(&first, Path::new("src/lib.rs"))
+            .expect("read")
+            .as_deref(),
+        Some(b"fn old() {}".as_slice())
+    );
+    assert_eq!(
+        repo.read_at(&second, Path::new("src/lib.rs"))
+            .expect("read")
+            .as_deref(),
+        Some(b"fn new() {}".as_slice())
+    );
+    assert_eq!(
+        repo.read_at(&second, Path::new("notes.txt")).expect("read"),
+        None
+    );
+    assert_eq!(repo.read_at(&second, Path::new("src")).expect("read"), None);
+    assert!(
+        repo.read_at("0000000000000000000000000000000000000000", Path::new("src"))
+            .is_err()
+    );
+}

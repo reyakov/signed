@@ -11,6 +11,8 @@ pub(super) struct RefSwitcher {
     ref_branches: Vec<SharedString>,
     ref_tags: Vec<SharedString>,
     pub(super) switching_ref: bool,
+    /// The commit shown in place of the branch while the panel browses one.
+    pub(super) commit_label: Option<SharedString>,
 }
 
 impl RefSwitcher {
@@ -60,6 +62,7 @@ impl RefSwitcher {
             ref_branches: Vec::new(),
             ref_tags: Vec::new(),
             switching_ref: false,
+            commit_label: None,
         }
     }
 
@@ -70,6 +73,13 @@ impl RefSwitcher {
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
+        // A shown commit keeps its label until a ref is picked.
+        let selected = if self.commit_label.is_some() {
+            None
+        } else {
+            selected
+        };
+
         sync_selector(
             &self.branch_select,
             &mut self.ref_branches,
@@ -87,6 +97,13 @@ impl RefSwitcher {
         cx: &mut App,
     ) -> bool {
         sync_selector(&self.tag_select, &mut self.ref_tags, tags, None, window, cx)
+    }
+
+    /// Shows `label` in the branch selector until a ref is picked.
+    pub(super) fn show_commit(&mut self, label: SharedString, window: &mut Window, cx: &mut App) {
+        self.commit_label = Some(label.clone());
+        self.branch_select
+            .update(cx, |state, cx| state.set_display_label(label, window, cx));
     }
 
     pub(super) fn restore_selection(

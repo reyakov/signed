@@ -5,6 +5,7 @@
 ### Added
 
 - Add a confirmation dialog before deleting a repository
+- Browse the files of a commit as of that commit from the Commits list, the short id on a row shows the commit's files in place of the worktree and the branch selector shows the commit until a branch or tag is picked again
 
 ### Changed
 
@@ -14,6 +15,7 @@
 - Reuse the rendered file tree, commit diffs, README previews and split pane instead of rebuilding them on every repaint
 - Truncate long tab and file tree labels with an ellipsis instead of letting them widen their row
 - Open the New issue form in a split panel instead of a dialog, it now stays open until the issue is published and shows a failed publish in the form
+- Show each commit of the Commits list on one row with its author avatar and name, short id and summary
 
 ### Fixed
 

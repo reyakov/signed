@@ -38,6 +38,20 @@ enum FileContent {
     Failed(String),
 }
 
+impl FileContent {
+    /// Classifies raw bytes, refusing files too large to preview.
+    fn from_bytes(bytes: Vec<u8>) -> Self {
+        if bytes.len() > MAX_PREVIEW_BYTES {
+            return Self::TooLarge;
+        }
+
+        match String::from_utf8(bytes) {
+            Ok(text) => Self::Text(text),
+            Err(_) => Self::Binary,
+        }
+    }
+}
+
 struct MarkdownView {
     /// `None` means the repository README.
     path: Option<SharedString>,
@@ -72,6 +86,8 @@ pub struct RepoFilesView {
     commits: HashMap<String, FileCommit>,
     pending_commits: Vec<String>,
     loading_commits: bool,
+    /// The commit whose tree is browsed instead of the worktree.
+    commit: Option<FileCommit>,
     tasks: Vec<Task<Result<(), Error>>>,
     /// Bumped when the previews are cleared, so loads started before it are dropped.
     generation: u64,
@@ -99,6 +115,7 @@ impl RepoFilesView {
             commits: HashMap::new(),
             pending_commits: Vec::new(),
             loading_commits: false,
+            commit: None,
             tasks: Vec::new(),
             generation: 0,
         }
@@ -106,6 +123,11 @@ impl RepoFilesView {
 
     pub fn set_worktree(&mut self, path: PathBuf) {
         self.worktree = Some(path);
+    }
+
+    /// Browses the files of `commit` instead of the worktree, or the worktree when `None`.
+    pub fn pin_commit(&mut self, commit: Option<FileCommit>) {
+        self.commit = commit;
     }
 
     pub fn apply_entries(
@@ -544,6 +566,7 @@ impl RepoFilesView {
 
         self.loading_files.insert(path.to_string());
         let path = path.to_string();
+        let commit = self.commit.as_ref().map(|commit| commit.id.clone());
 
         self.load_commit(&path, cx);
 
@@ -553,25 +576,34 @@ impl RepoFilesView {
             let path_for_read = path.clone();
             let content = cx
                 .background_spawn(async move {
-                    let full = worktree.join(&path_for_read);
+                    match commit {
+                        Some(commit) => Repo::open_cached(&worktree)
+                            .and_then(|repo| repo.read_at(&commit, Path::new(&path_for_read)))
+                            .map(|bytes| {
+                                bytes.map_or_else(
+                                    || FileContent::Failed("File is not in this commit".into()),
+                                    FileContent::from_bytes,
+                                )
+                            }),
+                        None => {
+                            let full = worktree.join(&path_for_read);
 
-                    let metadata = match std::fs::metadata(&full) {
-                        Ok(metadata) => metadata,
-                        Err(error) => return Err(anyhow::anyhow!("{}", error)),
-                    };
+                            let metadata = match std::fs::metadata(&full) {
+                                Ok(metadata) => metadata,
+                                Err(error) => return Err(anyhow::anyhow!("{}", error)),
+                            };
 
-                    if metadata.len() > MAX_PREVIEW_BYTES as u64 {
-                        return Ok(FileContent::TooLarge);
-                    }
+                            if metadata.len() > MAX_PREVIEW_BYTES as u64 {
+                                return Ok(FileContent::TooLarge);
+                            }
 
-                    let bytes = match std::fs::read(&full) {
-                        Ok(bytes) => bytes,
-                        Err(error) => return Err(anyhow::anyhow!("{}", error)),
-                    };
+                            let bytes = match std::fs::read(&full) {
+                                Ok(bytes) => bytes,
+                                Err(error) => return Err(anyhow::anyhow!("{}", error)),
+                            };
 
-                    match String::from_utf8(bytes) {
-                        Ok(text) => Ok(FileContent::Text(text)),
-                        Err(_) => Ok(FileContent::Binary),
+                            Ok(FileContent::from_bytes(bytes))
+                        }
                     }
                 })
                 .await;
@@ -668,6 +700,12 @@ impl RepoFilesView {
     }
 
     fn load_commit(&mut self, path: &str, cx: &mut Context<Self>) {
+        // A pinned tree labels every file with the commit being browsed.
+        if let Some(commit) = &self.commit {
+            self.commits.insert(path.to_string(), commit.clone());
+            return;
+        }
+
         if self.commits.contains_key(path) || self.pending_commits.iter().any(|p| p == path) {
             return;
         }
