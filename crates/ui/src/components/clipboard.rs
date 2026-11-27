@@ -16,19 +16,19 @@ use std::time::Duration;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyView, App, ClipboardItem, ElementId, IntoElement, ParentElement as _, RenderOnce,
-    SharedString, StyleRefinement, Styled as _, Task, Window, div,
+    SharedString, StyleRefinement, Styled, Task, Window, div,
 };
 
 use crate::components::button::{Button, ButtonVariant};
-use crate::components::common::{ResultLogErr as _, Sizable, StyledExt as _, h_flex};
+use crate::components::common::{
+    ResultLogErr as _, Sizable, StyledExt as _, TooltipBuilder, h_flex,
+};
 use crate::icons::IconRole;
 use crate::theme::{ActiveTheme as _, Size};
 
 /// How long the check mark shows before reverting to the copy icon.
 const COPIED_DURATION: Duration = Duration::from_secs(1);
 
-/// The tooltip view builder gpui's `.tooltip(...)` expects.
-type TooltipBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyView>;
 /// Runs after the value lands on the clipboard.
 type CopiedHandler = Box<dyn Fn(&mut App)>;
 
@@ -44,6 +44,12 @@ pub struct ClipboardButton {
     tooltip: Option<TooltipBuilder>,
     on_copied: Option<CopiedHandler>,
     style: StyleRefinement,
+}
+
+/// The transient copied marker keyed per button.
+struct CopiedState {
+    generation: u64,
+    task: Option<Task<()>>,
 }
 
 impl ClipboardButton {
@@ -105,10 +111,10 @@ impl Sizable for ClipboardButton {
     }
 }
 
-/// The transient copied marker keyed per button.
-struct CopiedState {
-    generation: u64,
-    task: Option<Task<()>>,
+impl Styled for ClipboardButton {
+    fn style(&mut self) -> &mut StyleRefinement {
+        &mut self.style
+    }
 }
 
 impl RenderOnce for ClipboardButton {
@@ -143,9 +149,10 @@ impl RenderOnce for ClipboardButton {
                 button.tooltip(move |window, cx| tooltip(window, cx))
             })
             .on_click({
+                let weak = copied.downgrade();
                 let value = self.value;
-                let copied = copied.clone();
                 let on_copied = self.on_copied;
+
                 move |_, window, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(value.to_string()));
 
@@ -155,17 +162,18 @@ impl RenderOnce for ClipboardButton {
                         state.generation
                     });
 
-                    let weak = copied.downgrade();
+                    let task_weak = weak.clone();
                     let task = window.spawn(cx, async move |cx| {
                         cx.background_executor().timer(COPIED_DURATION).await;
                         cx.update(|_, cx| {
-                            weak.update(cx, |state, cx| {
-                                if state.generation == generation {
-                                    state.generation = 0;
-                                    cx.notify();
-                                }
-                            })
-                            .log_err();
+                            task_weak
+                                .update(cx, |state, cx| {
+                                    if state.generation == generation {
+                                        state.generation = 0;
+                                        cx.notify();
+                                    }
+                                })
+                                .log_err();
                         })
                         .log_err();
                     });
@@ -174,7 +182,6 @@ impl RenderOnce for ClipboardButton {
                         state.task = Some(task);
                     });
 
-                    // Invoke the callback after copying
                     if let Some(on_copied) = &on_copied {
                         on_copied(cx);
                     }
@@ -187,7 +194,7 @@ impl RenderOnce for ClipboardButton {
 #[derive(IntoElement)]
 #[must_use]
 pub struct CopyRow {
-    id: SharedString,
+    id: ElementId,
     value: SharedString,
     large_text: bool,
 }
@@ -196,7 +203,7 @@ impl CopyRow {
     /// Monospace `value` in a secondary-background row (the clone-command look).
     pub fn new<ID, V>(id: ID, value: V) -> Self
     where
-        ID: Into<SharedString>,
+        ID: Into<ElementId>,
         V: Into<SharedString>,
     {
         Self {
@@ -238,12 +245,9 @@ impl RenderOnce for CopyRow {
                     })
                     .child(self.value.clone()),
             )
-            .child(if self.large_text {
-                ClipboardButton::new(self.id, self.value).into_any_element()
-            } else {
+            .child(
                 ClipboardButton::new(self.id, self.value)
-                    .xsmall()
-                    .into_any_element()
-            })
+                    .when(!self.large_text, |button| button.xsmall()),
+            )
     }
 }

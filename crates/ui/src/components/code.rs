@@ -5,24 +5,25 @@
 //!
 //! The view is the state: build a [`CodeViewState`] in a [`gpui::Entity`]
 //! and render the entity, then mutate the state to update the view.
-//! [`bind_code_view_keys`] installs the selection copy chord once at
+//! [`CodeViewState::bind_keys`] installs the selection copy chord once at
 //! startup.
 //!
 //! # Examples
 //!
 //! ```no_run
 //! use gpui::{App, AppContext as _};
-//! use ui::code::{CodeViewState, bind_code_view_keys};
+//! use ui::code::CodeViewState;
 //! use ui::highlight::Language;
 //!
 //! fn source_pane(cx: &mut App) -> gpui::Entity<CodeViewState> {
-//!     bind_code_view_keys(cx);
+//!     CodeViewState::bind_keys(cx);
 //!     let view = cx.new(|cx| CodeViewState::new("source", "fn main() {}\n", Language::Rust, cx));
 //!     view.update(cx, |state, cx| state.set_source("fn hello() {}\n", Language::Rust, cx));
 //!     view
 //! }
 //! ```
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -42,10 +43,10 @@ use crate::theme::{
     WASH_ALPHA_SOFT,
 };
 
-actions!(code_view, [Copy]);
-
 /// The key context the code view declares while it holds focus.
 pub const CODE_VIEW_CONTEXT: &str = "CodeView";
+
+actions!(code_view, [Copy]);
 
 /// A point in the source, in lines and characters (not bytes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -66,7 +67,8 @@ impl SelectionPoint {
 /// The source-derived part of one rendered line, cached between frames.
 struct CodeLineLayout {
     text: String,
-    roles: Vec<Role>,
+    /// Byte ranges of same-role runs, built once per source change.
+    runs: Vec<(std::ops::Range<usize>, Role)>,
 }
 
 /// Retained state for a code view.
@@ -170,22 +172,26 @@ impl CodeViewState {
             .iter()
             .map(|line| {
                 let mut text = String::new();
+                let mut runs: Vec<(std::ops::Range<usize>, Role)> = Vec::new();
+
                 for span in &line.spans {
+                    let start = text.len();
                     text.push_str(&span.text);
-                }
+                    let end = text.len();
 
-                let char_count = text.chars().count();
-                let mut roles = vec![Role::Text; char_count];
-                let mut offset = 0usize;
-                for span in &line.spans {
-                    let chars = span.text.chars().count();
-                    for slot in &mut roles[offset..offset + chars] {
-                        *slot = span.role;
+                    if start == end {
+                        continue;
                     }
-                    offset += chars;
+
+                    match runs.last_mut() {
+                        Some((range, role)) if *role == span.role && range.end == start => {
+                            range.end = end;
+                        }
+                        _ => runs.push((start..end, span.role)),
+                    }
                 }
 
-                CodeLineLayout { text, roles }
+                CodeLineLayout { text, runs }
             })
             .collect()
     }
@@ -200,8 +206,7 @@ impl CodeViewState {
         &self.code
     }
 
-    /// Scrolls `line` to the top of the view; past-the-end lines clamp to
-    /// the last line.
+    /// Scrolls `line` to the top of the view; past-the-end lines clamp to the last line.
     pub fn scroll_to_line(&self, line: usize) {
         self.handle.scroll_to_item(
             line.min(self.code.lines.len().saturating_sub(1)),
@@ -305,60 +310,69 @@ impl CodeViewState {
     ) -> gpui::AnyElement {
         let layout = self.line_layouts.get(line_ix);
         let text = layout.map_or("", |layout| layout.text.as_str());
-        let roles = layout.map_or(&[][..], |layout| layout.roles.as_slice());
-        let char_count = text.chars().count();
+        let runs = layout.map_or(&[][..], |layout| layout.runs.as_slice());
 
-        let mut selected = vec![false; char_count];
-
-        if let Some((start, end)) = selection
-            && line_ix >= start.row
-            && line_ix <= end.row
-        {
-            let start_col = if line_ix == start.row {
-                start.col.min(char_count)
-            } else {
-                0
-            };
-
-            let end_col = if line_ix == end.row {
-                end.col.min(char_count)
-            } else {
-                char_count
-            };
-
-            for slot in &mut selected[start_col..end_col] {
-                *slot = true;
+        // The selection is in char columns; convert once to byte offsets on this line.
+        let selected = selection.and_then(|(start, end)| {
+            if line_ix < start.row || line_ix > end.row {
+                return None;
             }
-        }
+
+            let start_col = if line_ix == start.row { start.col } else { 0 };
+            let end_col = if line_ix == end.row {
+                end.col
+            } else {
+                usize::MAX
+            };
+
+            Some((
+                byte_offset_of_char(text, start_col),
+                byte_offset_of_char(text, end_col),
+            ))
+        });
 
         let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
-        let mut run_start = 0usize;
-        let mut run_end = 0usize;
-        let mut run_role = Role::Text;
-        let mut run_selected = false;
+        for (range, role) in runs {
+            match selected {
+                None => push_highlight(&mut highlights, range.clone(), *role, false, colors, ramps),
+                Some((start, end)) => {
+                    if range.end <= start || range.start >= end {
+                        push_highlight(&mut highlights, range.clone(), *role, false, colors, ramps);
+                        continue;
+                    }
 
-        for (char_ix, (byte_ix, character)) in text.char_indices().enumerate() {
-            let fresh =
-                char_ix == 0 || roles[char_ix] != run_role || selected[char_ix] != run_selected;
-            if fresh {
-                if char_ix > 0 {
-                    highlights.push((
-                        run_start..run_end,
-                        run_role.run_style(run_selected, colors, ramps),
-                    ));
+                    if range.start < start {
+                        push_highlight(
+                            &mut highlights,
+                            range.start..start,
+                            *role,
+                            false,
+                            colors,
+                            ramps,
+                        );
+                    }
+
+                    push_highlight(
+                        &mut highlights,
+                        range.start.max(start)..range.end.min(end),
+                        *role,
+                        true,
+                        colors,
+                        ramps,
+                    );
+
+                    if range.end > end {
+                        push_highlight(
+                            &mut highlights,
+                            end..range.end,
+                            *role,
+                            false,
+                            colors,
+                            ramps,
+                        );
+                    }
                 }
-                run_start = byte_ix;
-                run_role = roles[char_ix];
-                run_selected = selected[char_ix];
             }
-            run_end = byte_ix + character.len_utf8();
-        }
-
-        if run_end > run_start || !text.is_empty() {
-            highlights.push((
-                run_start..run_end,
-                run_role.run_style(run_selected, colors, ramps),
-            ));
         }
 
         let style = TextStyle {
@@ -410,6 +424,30 @@ impl CodeViewState {
             )
             .into_any_element()
     }
+
+    /// Binds the code view's copy chord: cmd-c on macOS, ctrl-c elsewhere.
+    ///
+    /// Call once at startup. Without it, selection copy has no key.
+    pub fn bind_keys(cx: &mut App) {
+        let context = match KeyBindingContextPredicate::parse(CODE_VIEW_CONTEXT) {
+            Ok(context) => Some(Rc::new(context)),
+            Err(error) => {
+                log::error!("failed to parse code view key context: {error}");
+                return;
+            }
+        };
+
+        let binding =
+            match KeyBinding::load("secondary-c", Box::new(Copy), context, false, None, cx) {
+                Ok(binding) => binding,
+                Err(error) => {
+                    log::error!("failed to parse code view copy keystroke: {error}");
+                    return;
+                }
+            };
+
+        cx.bind_keys([binding]);
+    }
 }
 
 impl gpui::Focusable for CodeViewState {
@@ -434,8 +472,7 @@ impl Render for CodeViewState {
         let selection = self.selection();
         let gutter_width = CODE_GUTTER_WIDTH;
 
-        let bounds_cell: std::rc::Rc<std::cell::RefCell<Option<Bounds<Pixels>>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let bounds_cell: Rc<RefCell<Option<Bounds<Pixels>>>> = Rc::new(RefCell::new(None));
 
         div()
             .id((id.clone(), "view"))
@@ -607,23 +644,23 @@ impl Render for CodeViewState {
     }
 }
 
-/// Binds the code view's copy chord: cmd-c on macOS, ctrl-c elsewhere.
-///
-/// Call once at startup. Without it, selection copy has no key.
-pub fn bind_code_view_keys(cx: &mut App) {
-    let context = match KeyBindingContextPredicate::parse(CODE_VIEW_CONTEXT) {
-        Ok(context) => Some(Rc::new(context)),
-        Err(error) => {
-            log::error!("failed to parse code view key context: {error}");
-            return;
-        }
-    };
-    let binding = match KeyBinding::load("secondary-c", Box::new(Copy), context, false, None, cx) {
-        Ok(binding) => binding,
-        Err(error) => {
-            log::error!("failed to parse code view copy keystroke: {error}");
-            return;
-        }
-    };
-    cx.bind_keys([binding]);
+/// The byte offset of a char column, clamped to the text length.
+fn byte_offset_of_char(text: &str, column: usize) -> usize {
+    text.char_indices()
+        .nth(column)
+        .map_or(text.len(), |(offset, _)| offset)
+}
+
+/// Appends one styled run, skipping empty ranges.
+fn push_highlight(
+    highlights: &mut Vec<(std::ops::Range<usize>, HighlightStyle)>,
+    range: std::ops::Range<usize>,
+    role: Role,
+    selected: bool,
+    colors: ColorTokens,
+    ramps: Ramps,
+) {
+    if !range.is_empty() {
+        highlights.push((range, role.run_style(selected, colors, ramps)));
+    }
 }

@@ -12,9 +12,11 @@ pub use icons::{Assets, Icon, IconRole};
 /// Initializes the theme and every key binding the UI layer owns.
 pub fn init(cx: &mut App) {
     theme::Theme::init(cx);
-    components::input::bind_input_keys(cx);
-    components::combobox::bind_combobox_keys(cx);
-    components::command_palette::bind_command_palette_keys(cx);
-    components::code::bind_code_view_keys(cx);
-    components::markdown::bind_text_view_keys(cx);
+    components::input::InputState::bind_keys(cx);
+    components::combobox::Combobox::<()>::bind_keys(cx);
+    components::command_palette::CommandPaletteState::bind_keys(cx);
+    components::code::CodeViewState::bind_keys(cx);
+    components::markdown::MarkdownViewState::bind_keys(cx);
+    components::menu::Menu::bind_keys(cx);
+    components::dialog::Dialog::bind_keys(cx);
 }

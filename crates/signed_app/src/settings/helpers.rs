@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Div, Entity, IntoElement, ParentElement as _,
-    PathPromptOptions, SharedString, Styled as _, Window, div, px,
+    AnyElement, App, AppContext as _, Div, ElementId, Entity, IntoElement, ParentElement as _,
+    PathPromptOptions, SharedString, Styled as _, WeakEntity, Window, div, px,
 };
 use settings::{AppearanceMode, EventFetchingStrategy, SettingsStore};
 use ui::button::{Button, ButtonVariant};
@@ -13,7 +13,8 @@ use ui::select::{Select, SelectOption};
 use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 
-use crate::repo::dialogs::grasp_servers::{normalize_server, server_host};
+use crate::settings::{PathRow, ServerRow, SettingsDialog};
+use crate::shared::labels::ServerInputExt as _;
 
 /// The title and description a settings row or block opens with.
 fn setting_header(
@@ -83,30 +84,38 @@ pub fn appearance_select(cx: &App) -> Select<AppearanceMode> {
 }
 
 pub fn event_fetching_select(cx: &App) -> Select<EventFetchingStrategy> {
-    let current = SettingsStore::global(cx).read(cx).settings().event_fetching;
+    let store = SettingsStore::global(cx);
+    let current = store.read(cx).settings().event_fetching;
+
     Select::new("settings-event-fetching")
         .options(vec![
             SelectOption::new(EventFetchingStrategy::Curated, "Curated"),
             SelectOption::new(EventFetchingStrategy::Uncensored, "Uncensored"),
         ])
         .selected(Some(current))
-        .on_change(|value, _, cx| {
+        .on_change(move |value, _, cx| {
             let Some(strategy) = value else {
                 return;
             };
-            SettingsStore::global(cx).update(cx, |store, cx| {
-                store.edit(|settings| settings.event_fetching = strategy, cx);
+
+            store.update(cx, |store, cx| {
+                store.edit(
+                    |settings| {
+                        settings.event_fetching = strategy;
+                    },
+                    cx,
+                );
             });
         })
 }
 
 /// One editable value: a muted row with a trailing remove button.
 fn editor_value_row(
-    id: String,
+    id: ElementId,
     text: SharedString,
     on_remove: impl Fn(&mut App) + 'static,
     cx: &App,
-) -> AnyElement {
+) -> Div {
     h_flex()
         .gap_1()
         .child(
@@ -125,27 +134,25 @@ fn editor_value_row(
                 .icon(Icon::named(IconRole::Close))
                 .variant(ButtonVariant::Ghost)
                 .tooltip(Tooltip::text("Remove"))
-                .on_click(move |_, _, cx| on_remove(cx)),
+                .on_click(move |_, _, cx| {
+                    on_remove(cx);
+                }),
         )
-        .into_any_element()
 }
 
-pub fn grasp_servers_editor(input: &Entity<InputState>, cx: &App) -> AnyElement {
-    let store = SettingsStore::global(cx);
-    let servers = store
-        .read(cx)
-        .settings()
-        .grasp_servers
-        .default_servers
-        .clone();
-
+pub fn grasp_servers_editor(
+    input: &Entity<InputState>,
+    servers: &[ServerRow],
+    cx: &App,
+) -> AnyElement {
     v_flex()
         .gap_2()
         .children(servers.iter().map(|server| {
-            let server = server.clone();
+            let url = server.url.clone();
+
             editor_value_row(
-                format!("settings-remove-server:{server}"),
-                display_server(&server),
+                server.id.clone(),
+                server.host.clone(),
                 move |cx| {
                     let store = SettingsStore::global(cx);
                     store.update(cx, |store, cx| {
@@ -154,7 +161,7 @@ pub fn grasp_servers_editor(input: &Entity<InputState>, cx: &App) -> AnyElement 
                                 settings
                                     .grasp_servers
                                     .default_servers
-                                    .retain(|known| known != &server);
+                                    .retain(|known| known != &url);
                             },
                             cx,
                         );
@@ -187,52 +194,18 @@ pub fn grasp_servers_editor(input: &Entity<InputState>, cx: &App) -> AnyElement 
         .into_any_element()
 }
 
-fn display_server(server: &str) -> SharedString {
-    match normalize_server(server) {
-        Some((_, relay)) => server_host(&relay),
-        None => SharedString::from(server.to_owned()),
-    }
-}
-
-fn add_server(input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
-    let settings = SettingsStore::global(cx);
-    let value = input.read(cx).value().trim().to_owned();
-
-    if value.is_empty() {
-        return;
-    }
-
-    let Some((normalized, _)) = normalize_server(&value) else {
-        return;
-    };
-
-    settings.update(cx, |store, cx| {
-        store.edit(
-            |settings| {
-                if !settings.grasp_servers.default_servers.contains(&normalized) {
-                    settings
-                        .grasp_servers
-                        .default_servers
-                        .push(normalized.clone());
-                }
-            },
-            cx,
-        );
-    });
-    input.update(cx, |input, cx| input.set_value("", window, cx));
-}
-
-pub fn scan_paths_editor(cx: &App) -> AnyElement {
-    let store = SettingsStore::global(cx);
-    let scan_paths = store.read(cx).settings().local_repos.scan_paths.clone();
-
+pub fn scan_paths_editor(
+    this: &WeakEntity<SettingsDialog>,
+    scan_paths: &[PathRow],
+    cx: &App,
+) -> AnyElement {
     v_flex()
         .gap_2()
-        .children(scan_paths.iter().map(|path| {
-            let path = path.clone();
+        .children(scan_paths.iter().map(|row| {
+            let path = row.path.clone();
             editor_value_row(
-                format!("settings-remove-path:{}", path.display()),
-                SharedString::from(path.display().to_string()),
+                row.id.clone(),
+                row.label.clone(),
                 move |cx| {
                     let store = SettingsStore::global(cx);
                     store.update(cx, |store, cx| {
@@ -255,20 +228,79 @@ pub fn scan_paths_editor(cx: &App) -> AnyElement {
                 Button::new("settings-add-path")
                     .icon(Icon::named(IconRole::Plus))
                     .label("Add directory")
-                    .on_click(|_, _, cx| add_scan_path(cx)),
+                    .on_click({
+                        let this = this.clone();
+                        move |_, _, cx| {
+                            add_scan_path(&this, cx);
+                        }
+                    }),
             ),
         )
         .into_any_element()
 }
 
-fn add_scan_path(cx: &mut App) {
+pub fn default_folder_selector(
+    default_folder: &Entity<InputState>,
+    this: &WeakEntity<SettingsDialog>,
+) -> AnyElement {
+    let folder = default_folder.clone();
+    h_flex()
+        .gap_1()
+        .child(
+            div()
+                .flex_1()
+                .child(Input::new("settings-default-folder", folder.clone())),
+        )
+        .child(
+            Button::new("settings-choose-folder")
+                .icon(Icon::named(IconRole::Folder))
+                .variant(ButtonVariant::Ghost)
+                .tooltip(Tooltip::text("Choose folder"))
+                .on_click({
+                    let this = this.clone();
+                    move |_, window, cx| choose_default_folder(&folder, &this, window, cx)
+                }),
+        )
+        .into_any_element()
+}
+
+fn add_server(input: &Entity<InputState>, window: &mut Window, cx: &mut App) {
+    let settings = SettingsStore::global(cx);
+    let value = input.read(cx).value().trim().to_owned();
+
+    if value.is_empty() {
+        return;
+    }
+
+    let Some((normalized, _)) = value.normalize_server() else {
+        return;
+    };
+
+    settings.update(cx, |store, cx| {
+        store.edit(
+            |settings| {
+                if !settings.grasp_servers.default_servers.contains(&normalized) {
+                    settings
+                        .grasp_servers
+                        .default_servers
+                        .push(normalized.clone());
+                }
+            },
+            cx,
+        );
+    });
+    input.update(cx, |input, cx| input.set_value("", window, cx));
+}
+
+fn add_scan_path(this: &WeakEntity<SettingsDialog>, cx: &mut App) {
     let prompt = cx.prompt_for_paths(PathPromptOptions {
         files: false,
         directories: true,
         multiple: true,
         prompt: Some("Choose directories".into()),
     });
-    cx.spawn(async move |cx| {
+
+    let task = cx.spawn(async move |cx| {
         if let Ok(Ok(Some(paths))) = prompt.await {
             cx.update(|cx| {
                 let store = SettingsStore::global(cx);
@@ -292,41 +324,31 @@ fn add_scan_path(cx: &mut App) {
                 });
             });
         }
+    });
+
+    this.update(cx, |dialog, _cx| {
+        dialog.tasks.push(task);
     })
-    .detach();
+    .ok();
 }
 
-pub fn default_folder_selector(default_folder: &Entity<InputState>) -> AnyElement {
-    let folder = default_folder.clone();
-    h_flex()
-        .gap_1()
-        .child(
-            div()
-                .flex_1()
-                .child(Input::new("settings-default-folder", folder.clone())),
-        )
-        .child(
-            Button::new("settings-choose-folder")
-                .icon(Icon::named(IconRole::Folder))
-                .variant(ButtonVariant::Ghost)
-                .tooltip(Tooltip::text("Choose folder"))
-                .on_click(move |_, window, cx| {
-                    choose_default_folder(&folder, window, cx);
-                }),
-        )
-        .into_any_element()
-}
-
-fn choose_default_folder(default_folder: &Entity<InputState>, window: &mut Window, cx: &mut App) {
+fn choose_default_folder(
+    default_folder: &Entity<InputState>,
+    this: &WeakEntity<SettingsDialog>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let handle = window.window_handle();
     let default_folder = default_folder.clone();
+
     let prompt = cx.prompt_for_paths(PathPromptOptions {
         files: false,
         directories: true,
         multiple: false,
         prompt: Some("Choose default folder".into()),
     });
-    cx.spawn(async move |cx| {
+
+    let task = cx.spawn(async move |cx| {
         if let Ok(Ok(Some(mut paths))) = prompt.await
             && let Some(path) = paths.pop()
         {
@@ -344,6 +366,10 @@ fn choose_default_folder(default_folder: &Entity<InputState>, window: &mut Windo
                 log::warn!("failed to apply default folder: {error}");
             }
         }
+    });
+
+    this.update(cx, |dialog, _cx| {
+        dialog.tasks.push(task);
     })
-    .detach();
+    .ok();
 }

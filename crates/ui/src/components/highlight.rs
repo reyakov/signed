@@ -15,6 +15,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::Path;
 
 use gpui::SharedString;
 #[cfg(not(target_arch = "wasm32"))]
@@ -36,6 +37,24 @@ pub enum Language {
     JavaScript,
     TypeScript,
     Python,
+}
+
+impl Language {
+    /// The grammar for a file path's extension; unknown extensions are plain text.
+    pub fn from_path(path: &str) -> Self {
+        let extension = Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| extension.to_ascii_lowercase());
+
+        match extension.as_deref() {
+            Some("rs") => Self::Rust,
+            Some("ts" | "mts" | "cts" | "tsx") => Self::TypeScript,
+            Some("js" | "mjs" | "cjs" | "jsx") => Self::JavaScript,
+            Some("py") => Self::Python,
+            _ => Self::Plain,
+        }
+    }
 }
 
 /// The semantic role a span plays.

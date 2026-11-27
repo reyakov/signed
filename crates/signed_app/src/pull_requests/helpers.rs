@@ -8,7 +8,7 @@ use ui::menu::MenuItem;
 use utils::middle_truncate;
 
 use super::NewPullRequestView;
-use crate::repo::helpers::announcement_display_name;
+use crate::shared::labels::AnnouncementExt as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PullRequestFilter {
@@ -90,9 +90,9 @@ pub fn source_menu_items(
                     let Some(path) = associated.get(index).cloned() else {
                         return;
                     };
-                    if let Err(error) =
-                        target.update(cx, |this, cx| this.apply_folder_path(path, window, cx))
-                    {
+                    if let Err(error) = target.update(cx, |this, cx| {
+                        this.apply_folder_path(path, window, cx);
+                    }) {
                         log::warn!("failed to apply checkout: {error}");
                     }
                 }),
@@ -102,8 +102,9 @@ pub fn source_menu_items(
     let folder_view = view.clone();
     items.push(
         MenuItem::new("Choose another folder…").handler(move |window, cx| {
-            if let Err(error) = folder_view.update(cx, |this, cx| this.choose_checkout(window, cx))
-            {
+            if let Err(error) = folder_view.update(cx, |this, cx| {
+                this.choose_checkout(window, cx);
+            }) {
                 log::warn!("failed to choose checkout: {error}");
             }
         }),
@@ -120,7 +121,7 @@ pub fn source_menu_items(
                 SharedString::from(format!("by {}", shorten_owner(&candidate.owner)))
             };
 
-            let title = format!("{} — {}", announcement_display_name(candidate), subtitle);
+            let title = format!("{} — {}", candidate.display_name(), subtitle);
             let target = view.clone();
             let candidates = Arc::clone(&candidates);
             let checked = active_fork == Some(candidate.addr());
@@ -132,9 +133,9 @@ pub fn source_menu_items(
                         let Some(announcement) = candidates.get(index).cloned() else {
                             return;
                         };
-                        if let Err(error) =
-                            target.update(cx, |this, cx| this.choose_fork(announcement, window, cx))
-                        {
+                        if let Err(error) = target.update(cx, |this, cx| {
+                            this.choose_fork(announcement, window, cx);
+                        }) {
                             log::warn!("failed to choose fork: {error}");
                         }
                     }),

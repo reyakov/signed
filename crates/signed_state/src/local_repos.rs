@@ -28,7 +28,7 @@ impl LocalReposStore {
     }
 
     pub fn new(roots: Vec<PathBuf>, cx: &mut Context<Self>) -> Self {
-        let weak = cx.entity().downgrade();
+        let weak = cx.weak_entity();
         cx.defer(move |cx| {
             if let Err(error) = weak.update(cx, |this, cx| this.rescan(cx)) {
                 log::warn!("local repos store dropped before initial scan could run: {error}");

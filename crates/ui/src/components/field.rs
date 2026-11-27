@@ -103,84 +103,94 @@ impl RenderOnce for Field {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let error_color = theme.ramps.destructive.base;
+        let row = self.variant == FieldVariant::Row;
         let id = self.id.clone();
-
-        let title = div()
-            .debug_selector({
-                let id = id.clone();
-                move || format!("{id}-label")
-            })
-            .when(self.description.is_some(), |title| {
-                title.text_sm().font_semibold()
-            })
-            .when(self.description.is_none(), |title| title.text_sm())
-            .child(self.label.clone());
-
-        let control = h_flex()
-            .items_center()
-            .gap_2()
-            .debug_selector({
-                let id = id.clone();
-                move || format!("{id}-control")
-            })
-            .children(self.control);
-
-        let error = self.error.map(|error| {
-            div()
-                .debug_selector({
-                    let id = id.clone();
-                    move || format!("{id}-error")
-                })
-                .text_xs()
-                .text_color(error_color)
-                .child(error)
-        });
-
-        let description_text = |cx: &App| {
-            div()
-                .text_xs()
-                .text_color(cx.theme().colors.muted_foreground)
-        };
-
-        let content = if self.variant == FieldVariant::Row {
-            v_flex()
-                .gap_1()
-                .child(
-                    h_flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_4()
-                        .child(title.flex_1().min_w_0())
-                        .child(control.flex_none()),
-                )
-                .when_some(self.description.clone(), |field, description| {
-                    field.child(description_text(cx).child(description))
-                })
-                .when_some(error, |field, error| field.child(error))
-        } else {
-            v_flex()
-                .gap_2()
-                .child(
-                    v_flex()
-                        .gap_0p5()
-                        .child(title)
-                        .when_some(self.description.clone(), |slot, description| {
-                            slot.child(description_text(cx).child(description))
-                        }),
-                )
-                .child(control)
-                .when_some(error, |field, error| field.child(error))
-        };
 
         div()
             .id(self.id)
             .w_full()
             .role(Role::Group)
             .aria_label(self.label.clone())
-            .when_some(self.description, |field, description| {
+            .when_some(self.description.clone(), |field, description| {
                 field.aria_description(description)
             })
             .refine_style(&self.style)
-            .child(content)
+            .child(
+                v_flex()
+                    .gap_1()
+                    .when(!row, |field| field.gap_2())
+                    .child(
+                        div()
+                            .flex()
+                            .when(row, |field| {
+                                field.flex_row().items_center().justify_between().gap_4()
+                            })
+                            .when(!row, |field| field.flex_col().gap_2())
+                            .child(
+                                div()
+                                    .when(row, |label| label.flex_1().min_w_0())
+                                    .when(!row, |label| label.flex().flex_col().gap_0p5())
+                                    .child(
+                                        div()
+                                            .debug_selector({
+                                                let id = id.clone();
+                                                move || format!("{id}-label")
+                                            })
+                                            .text_sm()
+                                            .when(self.description.is_some(), |title| {
+                                                title.font_semibold()
+                                            })
+                                            .child(self.label.clone()),
+                                    )
+                                    .when(!row, |label| {
+                                        label.when_some(
+                                            self.description.clone(),
+                                            |slot, description| {
+                                                slot.child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(theme.colors.muted_foreground)
+                                                        .child(description),
+                                                )
+                                            },
+                                        )
+                                    }),
+                            )
+                            .child(
+                                div().when(row, |control| control.flex_none()).child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .debug_selector({
+                                            let id = id.clone();
+                                            move || format!("{id}-control")
+                                        })
+                                        .children(self.control),
+                                ),
+                            ),
+                    )
+                    .when(row, |field| {
+                        field.when_some(self.description.clone(), |field, description| {
+                            field.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.colors.muted_foreground)
+                                    .child(description),
+                            )
+                        })
+                    })
+                    .when_some(self.error, |field, error| {
+                        field.child(
+                            div()
+                                .debug_selector({
+                                    let id = id.clone();
+                                    move || format!("{id}-error")
+                                })
+                                .text_xs()
+                                .text_color(error_color)
+                                .child(error),
+                        )
+                    }),
+            )
     }
 }

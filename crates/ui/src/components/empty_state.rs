@@ -11,8 +11,8 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, IntoElement, ParentElement as _, RenderOnce, SharedString, StyleRefinement,
-    Styled as _, Window, div, rems,
+    AnyElement, App, Div, IntoElement, ParentElement as _, RenderOnce, SharedString,
+    StyleRefinement, Styled as _, Window, div, rems,
 };
 
 use crate::components::common::{StyledExt, v_flex};
@@ -26,7 +26,7 @@ pub struct EmptyState {
     icon: Option<Icon>,
     headline: SharedString,
     hint: Option<SharedString>,
-    action: Option<gpui::AnyElement>,
+    action: Option<AnyElement>,
     style: StyleRefinement,
 }
 
@@ -46,7 +46,7 @@ impl EmptyState {
     }
 
     /// The empty state centered in the full available space.
-    pub fn centered<L>(message: L) -> AnyElement
+    pub fn centered<L>(message: L) -> impl IntoElement
     where
         L: Into<SharedString>,
     {
@@ -55,7 +55,6 @@ impl EmptyState {
             .items_center()
             .justify_center()
             .child(Self::new(message))
-            .into_any_element()
     }
 
     /// Sets a large muted icon above the headline.
@@ -87,7 +86,7 @@ impl EmptyState {
 
     /// A compact inline caption for popups with nothing to show.
     #[must_use]
-    pub fn compact<L>(label: L, cx: &App) -> gpui::Div
+    pub fn compact<L>(label: L, cx: &App) -> Div
     where
         L: Into<SharedString>,
     {

@@ -7,9 +7,9 @@ use gpui::{
     AnyElement, App, AppContext as _, Axis, Context, Entity, EventEmitter, InteractiveElement as _,
     IntoElement, ListAlignment, ListState, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, div,
-    list, px,
+    list, px, rems,
 };
-use signed_git::{CommitDiff, FileCommit, FileDiff, Repo};
+use signed_git::{CommitDiff, DiffLineKind, FileCommit, FileDiff, Repo};
 use ui::avatar::Avatar;
 use ui::badge::GroupedBadge;
 use ui::button::{Button, ButtonVariant};
@@ -29,14 +29,96 @@ use ui::tooltip::Tooltip;
 use ui::tree::{Tree, TreeItem, TreeItemSeed};
 use utils::relative_time_secs;
 
-use super::helpers::{DiffRow, co_authors, diff_rows, short_id};
+use crate::shared::labels::ShortIdExt as _;
+
+const GUTTER_WIDTH: f32 = 44.;
+pub const DIFF_ROW_HEIGHT: f32 = 20.;
+
+/// One virtualized row of a single file's diff.
+#[derive(Clone)]
+enum DiffRow {
+    Hunk {
+        old_start: u32,
+        old_lines: u32,
+        new_start: u32,
+        new_lines: u32,
+    },
+    Line {
+        kind: DiffLineKind,
+        /// The old-side line number, empty for additions.
+        old: SharedString,
+        /// The new-side line number, empty for deletions.
+        new: SharedString,
+        text: SharedString,
+    },
+}
+
+impl DiffRow {
+    /// The rows of `file`, hunks interleaved with their lines.
+    fn from_file(file: &FileDiff) -> Vec<Self> {
+        let mut rows = Vec::new();
+        for hunk in file.hunks.iter() {
+            rows.push(Self::Hunk {
+                old_start: hunk.old_start,
+                old_lines: hunk.old_lines,
+                new_start: hunk.new_start,
+                new_lines: hunk.new_lines,
+            });
+            rows.extend(hunk.lines.iter().map(|line| {
+                Self::Line {
+                    kind: line.kind,
+                    old: line
+                        .old
+                        .map(|number| SharedString::from(number.to_string()))
+                        .unwrap_or_default(),
+                    new: line
+                        .new
+                        .map(|number| SharedString::from(number.to_string()))
+                        .unwrap_or_default(),
+                    text: SharedString::from(line.text.clone()),
+                }
+            }));
+        }
+        rows
+    }
+
+    /// Renders one diff row against the file's hunks.
+    fn render(&self, wrap: bool, cx: &App) -> AnyElement {
+        match self {
+            Self::Hunk {
+                old_start,
+                old_lines,
+                new_start,
+                new_lines,
+            } => div()
+                .px_2()
+                .w_full()
+                .h(px(DIFF_ROW_HEIGHT))
+                .font_family(cx.theme().mono_font)
+                .text_xs()
+                .bg(cx.theme().colors.muted)
+                .border_y_1()
+                .border_color(cx.theme().colors.border)
+                .text_color(cx.theme().colors.muted_foreground)
+                .child(SharedString::from(format!(
+                    "@@ -{},{} +{},{} @@",
+                    old_start, old_lines, new_start, new_lines
+                )))
+                .into_any_element(),
+            Self::Line {
+                kind,
+                old,
+                new,
+                text,
+            } => render_diff_line(*kind, old, new, text, wrap, cx),
+        }
+    }
+}
 
 /// Emitted when the user activates the Download commit button.
 pub enum DiffPaneEvent {
     DownloadCommit,
 }
-
-impl EventEmitter<DiffPaneEvent> for DiffPane {}
 
 /// One virtualized row of the multi-file diff list.
 #[derive(Clone)]
@@ -51,10 +133,17 @@ enum PaneRow {
         last: bool,
     },
     Line {
-        file_index: usize,
         row: DiffRow,
         last: bool,
     },
+}
+
+/// The commit's header strings, built once when the commit loads.
+struct CommitHeader {
+    /// `(label, shown)` for the date's day label.
+    date_label: SharedString,
+    relative: SharedString,
+    co_authors: Vec<SharedString>,
 }
 
 pub struct DiffPane {
@@ -67,13 +156,16 @@ pub struct DiffPane {
     split: Entity<ResizableState>,
     expanded_files: HashSet<String>,
     pane_rows: Arc<Vec<PaneRow>>,
+    files: Arc<[FileDiff]>,
     list: ListState,
+    /// Scroll state of the inline flow rows.
+    flow: ListState,
     wrap: bool,
     downloadable: bool,
 }
 
 impl DiffPane {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(downloadable: bool, cx: &mut Context<Self>) -> Self {
         let split = ResizableState::new(cx);
         split.update(cx, |split, cx| {
             split.set_sizes([px(260.)], cx);
@@ -89,9 +181,11 @@ impl DiffPane {
             split,
             expanded_files: HashSet::new(),
             pane_rows: Arc::default(),
+            files: Arc::default(),
             list: ListState::new(0, ListAlignment::Top, px(320.)),
+            flow: ListState::new(0, ListAlignment::Top, px(24.)),
             wrap: false,
-            downloadable: false,
+            downloadable,
         }
     }
 
@@ -111,6 +205,7 @@ impl DiffPane {
         self.expanded = TreeItemSeed::collect_expanded(&self.seeds);
         self.rows = Arc::new(TreeItemSeed::flatten_all(&self.seeds, &self.expanded));
         self.selected_index = None;
+        self.files = diff.files.clone().into();
         self.diff = Some(Arc::new(diff));
 
         self.expanded_files.clear();
@@ -121,6 +216,7 @@ impl DiffPane {
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.diff = None;
+        self.files = Arc::default();
         self.seeds.clear();
         self.expanded.clear();
         self.rows = Arc::default();
@@ -136,14 +232,8 @@ impl DiffPane {
         cx.notify();
     }
 
-    pub fn set_downloadable(&mut self, downloadable: bool, cx: &mut Context<Self>) {
-        self.downloadable = downloadable;
-        cx.notify();
-    }
-
     pub fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
         self.wrap = !self.wrap;
-        self.rebuild_rows();
         cx.notify();
     }
 
@@ -180,6 +270,7 @@ impl DiffPane {
             .rows
             .iter()
             .position(|row| row.key().to_string() == path);
+
         if self.expanded_files.insert(path.to_owned()) {
             self.rebuild_rows();
         }
@@ -192,9 +283,11 @@ impl DiffPane {
                 .is_some_and(|file| file.path == path),
             _ => false,
         });
+
         if let Some(header_index) = header_index {
             self.list.scroll_to_reveal_item(header_index);
         }
+
         cx.notify();
     }
 
@@ -234,14 +327,13 @@ impl DiffPane {
                 continue;
             }
 
-            let rows = diff_rows(file);
+            let rows = DiffRow::from_file(file);
             let last_row = rows.len().saturating_sub(1);
 
             pane_rows.extend(
                 rows.into_iter()
                     .enumerate()
                     .map(|(row_index, row)| PaneRow::Line {
-                        file_index,
                         row,
                         last: row_index == last_row,
                     }),
@@ -250,6 +342,7 @@ impl DiffPane {
 
         self.pane_rows = Arc::new(pane_rows);
         self.list.reset(self.pane_rows.len());
+        self.flow.reset(self.pane_rows.len());
     }
 
     fn toggle_folder(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -268,7 +361,7 @@ impl DiffPane {
     fn render_tree_column(&self, cx: &mut Context<Self>) -> AnyElement {
         let rows = Arc::clone(&self.rows);
         let selected = self.selected_index;
-        let view = cx.entity().downgrade();
+        let view = cx.weak_entity();
         let change_view = view.clone();
 
         v_flex()
@@ -309,6 +402,7 @@ impl DiffPane {
         let Some(row) = self.rows.get(index) else {
             return;
         };
+
         let id = row.key().to_string();
         let expandable = row.is_expandable();
         self.selected_index = Some(index);
@@ -332,6 +426,7 @@ impl DiffPane {
                 diff.files.iter().map(|file| file.deletions).sum(),
             )
         });
+
         let files = self.diff().map_or(0, |diff| diff.files.len());
         let all_expanded = self.all_expanded();
 
@@ -371,7 +466,7 @@ impl DiffPane {
                 div()
                     .text_xs()
                     .text_color(cx.theme().colors.muted_foreground)
-                    .child(format!("{files} changed files")),
+                    .child(SharedString::from(format!("{files} changed files"))),
             )
             .child(div().flex_1())
             .child(
@@ -430,14 +525,9 @@ impl DiffPane {
     }
 
     fn render_file_list(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(diff) = self.diff.as_ref() else {
-            return EmptyState::centered("No changes");
-        };
-
-        let diff = Arc::clone(diff);
-        let pane_rows = Arc::clone(&self.pane_rows);
-        let wrap = self.wrap;
-        let view = cx.entity().downgrade();
+        if self.diff.is_none() {
+            return EmptyState::centered("No changes").into_any_element();
+        }
 
         div()
             .relative()
@@ -446,17 +536,25 @@ impl DiffPane {
             .h_full()
             .debug_selector(|| "commit-diff-files-list".to_owned())
             .child(
-                list(self.list.clone(), move |ix, _, cx| {
-                    match pane_rows.get(ix) {
-                        Some(row) => render_pane_row(row, &diff.files, &view, wrap, cx),
-                        None => div().into_any_element(),
-                    }
-                })
+                list(
+                    self.list.clone(),
+                    cx.processor(|this, ix: usize, _window, cx| this.render_pane_row(ix, cx)),
+                )
                 .size_full()
                 .p_2(),
             )
             .child(Scrollbar::vertical("commit-diff-files", self.list.clone()))
             .into_any_element()
+    }
+
+    /// One virtualized row of the file list.
+    fn render_pane_row(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(row) = self.pane_rows.get(ix) else {
+            return div().into_any_element();
+        };
+
+        let view = cx.weak_entity();
+        row.render(&self.files, &view, self.wrap, cx)
     }
 
     /// Renders every diff row inline, for embedding in a page that scrolls as a whole.
@@ -469,6 +567,7 @@ impl DiffPane {
                 .child("No changes")
                 .into_any_element();
         };
+
         if diff.files.is_empty() {
             return div()
                 .p_4()
@@ -479,128 +578,133 @@ impl DiffPane {
         }
 
         let wrap = self.wrap;
-        let rows = self
-            .pane_rows
-            .iter()
-            .map(|row| render_pane_row(row, &diff.files, &view, wrap, cx))
-            .collect::<Vec<_>>();
+        let rows = Arc::clone(&self.pane_rows);
+        let files = Arc::clone(&self.files);
 
         v_flex()
             .w_full()
-            .child(self.render_toolbar(false, view, cx))
-            .child(v_flex().w_full().p_2().children(rows))
+            .child(self.render_toolbar(false, view.clone(), cx))
+            .child(
+                v_flex()
+                    .w_full()
+                    .p_2()
+                    .max_h(rems(24.))
+                    .min_h_0()
+                    .occlude()
+                    .child(list(self.flow.clone(), move |ix, _window, cx| {
+                        rows.get(ix)
+                            .map(|row| row.render(&files, &view, wrap, cx))
+                            .unwrap_or_else(|| div().into_any_element())
+                    })),
+            )
             .into_any_element()
     }
 }
 
-fn render_pane_row(
-    row: &PaneRow,
-    files: &[FileDiff],
-    pane: &WeakEntity<DiffPane>,
-    wrap: bool,
-    cx: &App,
-) -> AnyElement {
-    let border = cx.theme().colors.border;
-    let surface = cx.theme().colors.surface;
+impl EventEmitter<DiffPaneEvent> for DiffPane {}
 
-    match row {
-        PaneRow::Header {
-            file_index,
-            gap,
-            expanded,
-        } => {
-            let Some(file) = files.get(*file_index) else {
-                return div().into_any_element();
-            };
-            let path = file.path.clone();
-            let title = match &file.old_path {
-                Some(old) => SharedString::from(format!("{old} → {}", file.path)),
-                None => SharedString::from(file.path.clone()),
-            };
+impl PaneRow {
+    /// Renders one row of the inline flow.
+    fn render(
+        &self,
+        files: &[FileDiff],
+        pane: &WeakEntity<DiffPane>,
+        wrap: bool,
+        cx: &App,
+    ) -> AnyElement {
+        let border = cx.theme().colors.border;
+        let surface = cx.theme().colors.surface;
 
-            div()
-                .w_full()
-                .when(*gap, |this| this.pt_2())
-                .child(
-                    h_flex()
-                        .id(("file-header", *file_index))
-                        .debug_selector(move || format!("commit-diff-file-card-{file_index}"))
-                        .h_10()
-                        .px_2()
-                        .gap_2()
-                        .bg(surface)
-                        .border_1()
-                        .border_color(border)
-                        .cursor_pointer()
-                        .hover(|this| this.bg(cx.theme().colors.muted_hover))
-                        .when(*expanded, |this| this.rounded_t_lg().border_b_0())
-                        .when(!*expanded, |this| this.rounded_lg())
-                        .child(
-                            Icon::named(if *expanded {
-                                IconRole::ChevronDown
-                            } else {
-                                IconRole::ChevronRight
+        match self {
+            PaneRow::Header {
+                file_index,
+                gap,
+                expanded,
+            } => {
+                let Some(file) = files.get(*file_index) else {
+                    return div().into_any_element();
+                };
+                let path = file.path.clone();
+                let title = match &file.old_path {
+                    Some(old) => SharedString::from(format!("{old} → {}", file.path)),
+                    None => SharedString::from(file.path.clone()),
+                };
+
+                div()
+                    .w_full()
+                    .when(*gap, |this| this.pt_2())
+                    .child(
+                        h_flex()
+                            .id(("file-header", *file_index))
+                            .debug_selector(move || format!("commit-diff-file-card-{file_index}"))
+                            .h_10()
+                            .px_2()
+                            .gap_2()
+                            .bg(surface)
+                            .border_1()
+                            .border_color(border)
+                            .cursor_pointer()
+                            .hover(|this| this.bg(cx.theme().colors.muted_hover))
+                            .when(*expanded, |this| this.rounded_t_lg().border_b_0())
+                            .when(!*expanded, |this| this.rounded_lg())
+                            .child(
+                                Icon::named(if *expanded {
+                                    IconRole::ChevronDown
+                                } else {
+                                    IconRole::ChevronRight
+                                })
+                                .color(cx.theme().colors.muted_foreground),
+                            )
+                            .child(div().min_w_0().truncate().text_sm().child(title))
+                            .when(file.insertions > 0 || file.deletions > 0, |this| {
+                                this.child(GroupedBadge::new(
+                                    ("file-diff-stats", *file_index),
+                                    file.insertions,
+                                    file.deletions,
+                                ))
                             })
-                            .color(cx.theme().colors.muted_foreground),
-                        )
-                        .child(div().min_w_0().truncate().text_sm().child(title))
-                        .when(file.insertions > 0 || file.deletions > 0, |this| {
-                            this.child(GroupedBadge::new(
-                                ("file-diff-stats", *file_index),
-                                file.insertions,
-                                file.deletions,
-                            ))
-                        })
-                        .child(div().flex_1())
-                        .child(
-                            Button::new(("view-file", *file_index))
-                                .label("View file")
-                                .icon(Icon::named(IconRole::Eye))
-                                .variant(ButtonVariant::Ghost)
-                                .small()
-                                .on_click(|_, _, cx| cx.stop_propagation()),
-                        )
-                        .on_click({
-                            let pane = pane.clone();
-                            move |_, _, cx| {
-                                if let Err(error) =
-                                    pane.update(cx, |this, cx| this.toggle_file(&path, cx))
-                                {
-                                    log::warn!("failed to toggle diff file: {error}");
+                            .child(div().flex_1())
+                            .child(
+                                Button::new(("view-file", *file_index))
+                                    .label("View file")
+                                    .icon(Icon::named(IconRole::Eye))
+                                    .variant(ButtonVariant::Ghost)
+                                    .small()
+                                    .on_click(|_, _, cx| cx.stop_propagation()),
+                            )
+                            .on_click({
+                                let pane = pane.clone();
+                                move |_, _, cx| {
+                                    if let Err(error) =
+                                        pane.update(cx, |this, cx| this.toggle_file(&path, cx))
+                                    {
+                                        log::warn!("failed to toggle diff file: {error}");
+                                    }
                                 }
-                            }
-                        }),
-                )
-                .into_any_element()
-        }
-        PaneRow::Note { message, last, .. } => div()
-            .w_full()
-            .border_x_1()
-            .border_color(border)
-            .bg(surface)
-            .px_3()
-            .py_2()
-            .text_xs()
-            .text_color(cx.theme().colors.muted_foreground)
-            .when(*last, |this| this.border_b_1().rounded_b_lg())
-            .child(message.clone())
-            .into_any_element(),
-        PaneRow::Line {
-            file_index,
-            row,
-            last,
-        } => {
-            let Some(file) = files.get(*file_index) else {
-                return div().into_any_element();
-            };
-            div()
+                            }),
+                    )
+                    .into_any_element()
+            }
+            PaneRow::Note { message, last, .. } => div()
+                .w_full()
+                .border_x_1()
+                .border_color(border)
+                .bg(surface)
+                .px_3()
+                .py_2()
+                .text_xs()
+                .text_color(cx.theme().colors.muted_foreground)
+                .when(*last, |this| this.border_b_1().rounded_b_lg())
+                .child(message.clone())
+                .into_any_element(),
+            PaneRow::Line { row, last, .. } => div()
                 .w_full()
                 .border_x_1()
                 .border_color(border)
                 .bg(surface)
                 .when(*last, |this| this.border_b_1().rounded_b_lg())
-                .child(row.render(&file.hunks, wrap, cx))
-                .into_any_element()
+                .child(row.render(wrap, cx))
+                .into_any_element(),
         }
     }
 }
@@ -608,14 +712,14 @@ fn render_pane_row(
 impl Render for DiffPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(diff) = self.diff.as_ref() else {
-            return EmptyState::centered("No changes");
+            return EmptyState::centered("No changes").into_any_element();
         };
 
         if diff.files.is_empty() {
-            return EmptyState::centered("No files changed");
+            return EmptyState::centered("No files changed").into_any_element();
         }
 
-        let toolbar = self.render_toolbar(true, cx.entity().downgrade(), cx);
+        let toolbar = self.render_toolbar(true, cx.weak_entity(), cx);
         let file_list = self.render_file_list(cx);
 
         let content = if self.tree_visible {
@@ -655,6 +759,7 @@ impl Render for DiffPane {
 pub struct CommitDiffView {
     worktree: PathBuf,
     commit: FileCommit,
+    header: CommitHeader,
     /// The diff is being computed on a background task.
     loading: bool,
     error: Option<SharedString>,
@@ -671,24 +776,23 @@ impl CommitDiffView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let pane = cx.new(|cx| {
-            let mut pane = DiffPane::new(cx);
-            pane.set_downloadable(downloadable, cx);
-            pane
-        });
+        let pane = cx.new(|cx| DiffPane::new(downloadable, cx));
+
         let subscription = cx.subscribe(&pane, |this, _, DiffPaneEvent::DownloadCommit, cx| {
             this.download_patch(cx);
         });
 
-        let weak = cx.entity().downgrade();
-        window.defer(cx, move |window, cx| {
-            if let Err(error) = weak.update(cx, |this, cx| this.load(window, cx)) {
-                log::warn!("failed to load commit diff: {error}");
-            }
+        cx.defer_in(window, |this, window, cx| {
+            this.load(window, cx);
         });
 
         Self {
             worktree,
+            header: CommitHeader {
+                date_label: SharedString::default(),
+                relative: SharedString::default(),
+                co_authors: Vec::new(),
+            },
             commit: FileCommit {
                 id: commit_id,
                 summary: String::new(),
@@ -704,12 +808,6 @@ impl CommitDiffView {
             tasks: Vec::new(),
             _download_subscription: subscription,
         }
-    }
-
-    /// Reaps finished tasks, then queues another.
-    fn push_task(&mut self, task: Task<Result<(), anyhow::Error>>) {
-        self.tasks.retain(|task| !task.is_ready());
-        self.tasks.push(task);
     }
 
     fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -728,6 +826,7 @@ impl CommitDiffView {
                     async move { Repo::open(&worktree).and_then(|repo| repo.commit(&id)) }
                 })
                 .await;
+
             let diff = cx
                 .background_spawn({
                     let worktree = worktree.clone();
@@ -738,9 +837,24 @@ impl CommitDiffView {
 
             this.update_in(cx, |this, _window, cx| {
                 this.loading = false;
+
                 if let Ok(Some(commit)) = commit {
+                    this.header = CommitHeader {
+                        date_label: if commit.date_label.is_empty() {
+                            SharedString::default()
+                        } else {
+                            SharedString::from(format!("({})", commit.date_label))
+                        },
+                        relative: SharedString::from(relative_time_secs(commit.time)),
+                        co_authors: commit
+                            .description
+                            .as_deref()
+                            .map(co_authors)
+                            .unwrap_or_default(),
+                    };
                     this.commit = commit;
                 }
+
                 match diff {
                     Ok(diff) => {
                         this.pane.update(cx, |pane, cx| pane.set_diff(diff, cx));
@@ -749,20 +863,21 @@ impl CommitDiffView {
                         this.error = Some(error.to_string().into());
                     }
                 }
+
                 cx.notify();
             })?;
 
             Ok(())
         });
 
-        self.push_task(task);
+        self.tasks.push(task);
     }
 
     fn download_patch(&mut self, cx: &mut Context<Self>) {
         let worktree = self.worktree.clone();
         let id = self.commit.id.clone();
 
-        let suggested_name = format!("{}.patch", short_id(&id));
+        let suggested_name = format!("{}.patch", id.short_id());
         let prompt = cx.prompt_for_new_path(&worktree, Some(suggested_name.as_str()));
 
         let task: Task<Result<(), anyhow::Error>> = cx.spawn(async move |this, cx| {
@@ -790,10 +905,11 @@ impl CommitDiffView {
                     cx.notify();
                 })?;
             }
+
             Ok(())
         });
 
-        self.push_task(task);
+        self.tasks.push(task);
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -825,7 +941,6 @@ impl CommitDiffView {
                     .pr_16()
                     .font_semibold()
                     .truncate()
-                    .text_ellipsis()
                     .child(SharedString::from(commit.summary.clone())),
             )
             .when_some(commit.description.as_ref(), |this, description| {
@@ -854,37 +969,32 @@ impl CommitDiffView {
                     .into_any_element(),
             ))
             .children(
-                commit
-                    .description
-                    .as_ref()
-                    .map_or_else(Vec::new, |description| {
-                        co_authors(description)
-                            .into_iter()
-                            .map(|name| {
-                                row(
-                                    "Co-author",
-                                    h_flex()
-                                        .gap_2()
-                                        .child(Avatar::new(name.clone()).name(name.clone()).small())
-                                        .child(
-                                            div().min_w_0().truncate().text_ellipsis().child(name),
-                                        )
-                                        .into_any_element(),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    }),
+                self.header
+                    .co_authors
+                    .iter()
+                    .cloned()
+                    .map(|name| {
+                        row(
+                            "Co-author",
+                            h_flex()
+                                .gap_2()
+                                .child(Avatar::new(name.clone()).name(name.clone()).small())
+                                .child(div().min_w_0().truncate().child(name))
+                                .into_any_element(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
             )
             .child(row(
                 "Date",
                 h_flex()
                     .gap_2()
-                    .child(relative_time_secs(commit.time))
-                    .when(!commit.date_label.is_empty(), |this| {
+                    .child(self.header.relative.clone())
+                    .when(!self.header.date_label.is_empty(), |this| {
                         this.child(
                             div()
                                 .text_color(muted)
-                                .child(SharedString::from(format!("({})", commit.date_label))),
+                                .child(self.header.date_label.clone()),
                         )
                     })
                     .into_any_element(),
@@ -896,7 +1006,6 @@ impl CommitDiffView {
                     .child(
                         div()
                             .min_w_0()
-                            .text_ellipsis()
                             .truncate()
                             .child(SharedString::from(commit.id.clone())),
                     )
@@ -911,7 +1020,6 @@ impl CommitDiffView {
                         .child(
                             div()
                                 .min_w_0()
-                                .text_ellipsis()
                                 .truncate()
                                 .child(SharedString::from(parent.clone())),
                         )
@@ -940,18 +1048,104 @@ impl Panel for CommitDiffView {
 
 impl Render for CommitDiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = if self.loading {
-            Spinner::centered("commit-diff-loading")
-        } else if let Some(error) = self.error.clone() {
-            EmptyState::centered(error)
-        } else {
-            self.pane.clone().into_any_element()
-        };
-
         v_flex()
             .size_full()
             .min_h_0()
             .child(self.render_header(cx))
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .when(self.loading, |this| {
+                        this.child(Spinner::centered("commit-diff-loading"))
+                    })
+                    .when(!self.loading, |this| {
+                        this.when_some(self.error.clone(), |this, error| {
+                            this.child(EmptyState::centered(error))
+                        })
+                        .when(self.error.is_none(), |this| this.child(self.pane.clone()))
+                    }),
+            )
     }
+}
+
+/// The co-author names credited in a commit body, deduplicated in order.
+fn co_authors(description: &str) -> Vec<SharedString> {
+    let mut names: Vec<SharedString> = Vec::new();
+
+    for line in description.lines() {
+        let trimmed = line.trim();
+        if !trimmed.to_lowercase().starts_with("co-authored-by:") {
+            continue;
+        }
+
+        let name = trimmed
+            .split_once(':')
+            .map(|(_, value)| value.trim())
+            .unwrap_or_default()
+            .split('<')
+            .next()
+            .unwrap_or_default()
+            .trim();
+
+        if !name.is_empty() && !names.iter().any(|existing| existing.as_ref() == name) {
+            names.push(SharedString::from(name.to_owned()));
+        }
+    }
+
+    names
+}
+
+/// Renders one diff line with its old and new gutter numbers.
+fn render_diff_line(
+    kind: DiffLineKind,
+    old: &SharedString,
+    new: &SharedString,
+    text: &SharedString,
+    wrap: bool,
+    cx: &App,
+) -> AnyElement {
+    let bg = match kind {
+        DiffLineKind::Addition => Some(cx.theme().ramps.success.base.opacity(0.2)),
+        DiffLineKind::Deletion => Some(cx.theme().ramps.destructive.base.opacity(0.2)),
+        DiffLineKind::Context => None,
+    };
+    let gutter = cx.theme().colors.muted_foreground;
+
+    h_flex()
+        .w_full()
+        .when(wrap, |row| row.min_h(px(DIFF_ROW_HEIGHT)))
+        .when(!wrap, |row| row.h(px(DIFF_ROW_HEIGHT)))
+        .font_family(cx.theme().mono_font)
+        .text_xs()
+        .when_some(bg, |this, bg| this.bg(bg))
+        .child(
+            div()
+                .w(px(GUTTER_WIDTH))
+                .flex_none()
+                .pr_2()
+                .text_right()
+                .text_color(gutter)
+                .child(old.clone()),
+        )
+        .child(
+            div()
+                .w(px(GUTTER_WIDTH))
+                .flex_none()
+                .pr_2()
+                .text_right()
+                .text_color(gutter)
+                .child(new.clone()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_color(cx.theme().colors.foreground)
+                .when(!wrap, |content| {
+                    content.overflow_hidden().whitespace_nowrap()
+                })
+                .child(text.clone()),
+        )
+        .into_any_element()
 }

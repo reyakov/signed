@@ -4,8 +4,6 @@
 
 use windows::Foundation::TypedEventHandler;
 use windows::UI::ViewManagement::{AccessibilitySettings, UIColorType, UISettings};
-use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
-use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
 use windows::core::IInspectable;
 
 use super::ThemeSource;
@@ -56,7 +54,7 @@ pub(crate) struct WindowsSource {
 }
 
 impl WindowsSource {
-    fn new() -> Option<Self> {
+    pub(crate) fn new() -> Option<Self> {
         let ui_settings = match UISettings::new() {
             Ok(ui_settings) => ui_settings,
             Err(error) => {
@@ -185,24 +183,5 @@ impl ThemeSource for WindowsSource {
 
     fn label(&self) -> &'static str {
         SourceKind::Windows.label()
-    }
-}
-
-pub(crate) fn platform_source() -> Box<dyn ThemeSource> {
-    // SAFETY: WinRT activation requires COM on this thread,
-    // the STA matches the UI thread's message pump,
-    // and RPC_E_CHANGED_MODE means COM is already initialized in another apartment.
-    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
-
-    if initialized.is_err() && initialized != RPC_E_CHANGED_MODE {
-        log::error!("theme: COM initialization failed: {initialized:?}");
-    }
-
-    match WindowsSource::new() {
-        Some(source) => Box::new(source),
-        None => {
-            log::warn!("theme: Windows system theme unavailable; using fallback");
-            Box::new(super::fallback::FallbackSource)
-        }
     }
 }

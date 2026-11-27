@@ -8,12 +8,12 @@
 
 mod colors;
 mod definition;
-mod presets;
 mod ramps;
 mod resolve;
 mod source;
 mod system;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 pub use colors::{
@@ -22,11 +22,13 @@ pub use colors::{
 };
 pub use definition::ThemeDefinition;
 use gpui::{
-    App, Global, Hsla, Pixels, Rems, SpringConfig, WindowAppearance, WindowBackgroundAppearance,
-    px, rems,
+    App, BoxShadow, Global, Hsla, Pixels, Rems, SpringConfig, Window, WindowAppearance,
+    WindowBackgroundAppearance, point, px, rems,
 };
 pub use ramps::{AccentShades, Oklch};
 pub use resolve::{Ramps, ResolvedTheme};
+use source::fallback::FallbackSource;
+use source::{ThemeSource, platform_source};
 pub use system::{AccessibilityPreferences, SourceKind, SystemTheme};
 
 /// The hairline width of the control border every button and field paints.
@@ -130,6 +132,25 @@ pub const DEFAULT_TRANSPARENCY: u8 = 80;
 pub const MIN_MATERIAL_FILL_LIGHT: f32 = 0.45;
 /// The dark-mode floor of the material fill.
 pub const MIN_MATERIAL_FILL_DARK: f32 = 0.15;
+
+/// Reads the resolved theme global from any app context.
+pub trait ActiveTheme {
+    fn theme(&self) -> &Theme;
+
+    /// The engine that produced [`Self::theme`].
+    fn theme_engine(&self) -> &ThemeEngine;
+}
+
+impl ActiveTheme for App {
+    fn theme(&self) -> &Theme {
+        Theme::global(self)
+    }
+
+    fn theme_engine(&self) -> &ThemeEngine {
+        self.global::<ThemeEngine>()
+    }
+}
+
 /// The opacity of the grain overlay's noise.
 pub const GRAIN_ALPHA: f32 = 0.08;
 
@@ -172,7 +193,7 @@ pub enum Size {
 }
 
 /// The resolved theme, installed as the app-wide global.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     pub variant: ThemeVariant,
     pub colors: ColorTokens,
@@ -227,31 +248,67 @@ impl Theme {
         }
     }
 
-    /// Installs the engine global, its platform watchers, and the initial resolved theme.
+    /// Installs the engine with the platform source, its watchers, and the initial theme.
     pub fn init(cx: &mut App) {
+        Self::init_with(cx, platform_source());
+    }
+
+    /// Installs the engine with the given source, its watchers, and the initial theme.
+    pub fn init_with(cx: &mut App, source: Box<dyn ThemeSource>) {
         let mut engine = ThemeEngine {
-            source: source::platform_source(),
+            source,
             mode_override: None,
             preset: None,
             custom: None,
         };
         engine.source.install_watchers(cx.to_async());
         cx.set_global(engine);
-        reapply(cx);
+        ThemeEngine::reapply(cx);
+    }
+
+    /// The source that reads no platform state, for tests.
+    pub fn fallback_source() -> Box<dyn ThemeSource> {
+        Box::new(FallbackSource)
+    }
+
+    /// The focus ring's shadow, at half ink.
+    pub fn focus_ring(&self) -> Vec<BoxShadow> {
+        vec![
+            BoxShadow::new(px(0.), px(0.), self.colors.ring.alpha(FOCUS_RING_ALPHA))
+                .spread_radius(FOCUS_RING_SPREAD),
+        ]
+    }
+
+    /// A selectable row's label and icon color.
+    pub fn selectable_label_color(&self, selected: bool, disabled: bool) -> Hsla {
+        if disabled {
+            self.colors.muted_foreground
+        } else if selected {
+            self.colors.primary_foreground
+        } else {
+            self.colors.foreground
+        }
     }
 
     /// Synchronizes the theme from the window's appearance.
-    pub fn sync_from_window(window: &mut gpui::Window, cx: &mut App) {
+    pub fn sync_from_window(window: &mut Window, cx: &mut App) {
         let window_variant = ThemeVariant::from_appearance(window.appearance());
         let theme = cx.global::<Theme>();
         let engine = cx.global::<ThemeEngine>();
-        if engine.mode_override.is_none() && theme.variant != window_variant {
-            reapply(cx);
+        if engine.mode_override.is_none()
+            && engine
+                .preset
+                .as_ref()
+                .and_then(|(_, def)| def.mode())
+                .is_none()
+            && theme.variant != window_variant
+        {
+            ThemeEngine::reapply(cx);
         }
     }
 
     /// Sizes the window's rem to the theme's root font size.
-    pub fn sync_window_rem_size(window: &mut gpui::Window, cx: &App) {
+    pub fn sync_window_rem_size(window: &mut Window, cx: &App) {
         let theme = cx.global::<Theme>();
         window.set_rem_size(theme.root_font_size);
     }
@@ -298,7 +355,7 @@ impl Shadow {
             offset_y: px(0.),
             blur_radius: px(0.),
             spread_radius: px(0.),
-            color: colors::scrim(0.),
+            color: ColorTokens::scrim(0.),
         }
     }
 
@@ -308,40 +365,51 @@ impl Shadow {
             offset_y: px(offset_y),
             blur_radius: px(blur_radius),
             spread_radius: px(0.),
-            color: colors::scrim(alpha),
+            color: ColorTokens::scrim(alpha),
         }
     }
 }
 
 /// The drop shadow stack of a floating layer.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Elevation {
     /// Key shadow first, ambient grounding second.
     pub layers: [Shadow; 2],
+    /// The gpui shadow stack an overlay panel paints with.
+    shadows: Arc<[BoxShadow]>,
 }
 
 impl Elevation {
+    fn new(layers: [Shadow; 2]) -> Self {
+        let shadows = layers
+            .iter()
+            .filter(|layer| layer.color.a > 0.)
+            .map(|layer| BoxShadow {
+                color: layer.color,
+                offset: point(layer.offset_x, layer.offset_y),
+                blur_radius: layer.blur_radius,
+                spread_radius: layer.spread_radius,
+                inset: false,
+            })
+            .collect();
+        Self { layers, shadows }
+    }
+
     /// No shadow: dark floating layers separate by border.
     fn none() -> Self {
-        Self {
-            layers: [Shadow::none(), Shadow::none()],
-        }
+        Self::new([Shadow::none(), Shadow::none()])
     }
 
     fn single(key: Shadow) -> Self {
-        Self {
-            layers: [key, Shadow::none()],
-        }
+        Self::new([key, Shadow::none()])
     }
 
     fn layered(key: Shadow, ambient: Shadow) -> Self {
-        Self {
-            layers: [key, ambient],
-        }
+        Self::new([key, ambient])
     }
 
     /// How far the shadow layers paint past the element's bounds.
-    pub fn bleed(self) -> Pixels {
+    pub fn bleed(&self) -> Pixels {
         self.layers.iter().fold(px(0.), |bleed, layer| {
             if layer.color.a > 0. {
                 bleed.max(
@@ -356,23 +424,13 @@ impl Elevation {
     }
 
     /// The gpui shadow list an overlay panel paints with.
-    pub fn shadows(self) -> Vec<gpui::BoxShadow> {
-        self.layers
-            .iter()
-            .filter(|layer| layer.color.a > 0.)
-            .map(|layer| gpui::BoxShadow {
-                color: layer.color,
-                offset: gpui::point(layer.offset_x, layer.offset_y),
-                blur_radius: layer.blur_radius,
-                spread_radius: layer.spread_radius,
-                inset: false,
-            })
-            .collect()
+    pub fn shadows(&self) -> Arc<[BoxShadow]> {
+        Arc::clone(&self.shadows)
     }
 }
 
 /// The drop shadows of each floating layer class.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Elevations {
     /// Popovers, menus, and pushed alerts ride above content.
     pub popover: Elevation,
@@ -446,7 +504,7 @@ impl Default for Scrollbar {
 }
 
 /// User customizations layered over the resolved theme.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CustomTheme {
     pub root_font_size: Option<Pixels>,
     pub sm_radius: Option<Pixels>,
@@ -462,8 +520,8 @@ pub struct CustomTheme {
 }
 
 /// The engine's knobs and its platform source.
-struct ThemeEngine {
-    source: Box<dyn source::ThemeSource>,
+pub struct ThemeEngine {
+    source: Box<dyn ThemeSource>,
     mode_override: Option<ThemeVariant>,
     preset: Option<(&'static str, ThemeDefinition)>,
     custom: Option<CustomTheme>,
@@ -471,107 +529,93 @@ struct ThemeEngine {
 
 impl Global for ThemeEngine {}
 
-/// Reads the resolved theme global from any app context.
-pub trait ActiveTheme {
-    fn theme(&self) -> &Theme;
-}
+impl ThemeEngine {
+    /// Reapplies the theme to the application.
+    pub(crate) fn reapply(cx: &mut App) {
+        let (preset, mode_override, custom, system) = {
+            let engine = cx.global::<Self>();
+            let system_appearance = ThemeVariant::from_appearance(cx.window_appearance());
+            let preset = engine.preset.as_ref().map(|(_, def)| def.clone());
+            let mode_override = engine.mode_override;
+            let custom = engine.custom.clone();
+            let variant = mode_override
+                .or(preset.as_ref().and_then(|def| def.mode()))
+                .unwrap_or(system_appearance);
+            (
+                preset,
+                mode_override,
+                custom,
+                engine.source.snapshot(variant),
+            )
+        };
 
-impl ActiveTheme for App {
-    fn theme(&self) -> &Theme {
-        Theme::global(self)
+        let resolved = ResolvedTheme::resolve(&system, preset.as_ref(), mode_override, custom);
+
+        cx.set_reduce_motion(resolved.accessibility.reduce_motion);
+        let theme = Theme::from_resolved(resolved);
+        let theme_changed = cx.try_global::<Theme>() != Some(&theme);
+        if theme_changed {
+            cx.set_global(theme);
+            cx.refresh_windows();
+        }
     }
-}
 
-/// Reapplies the theme to the application.
-pub(crate) fn reapply(cx: &mut App) {
-    let (preset, mode_override, custom, system) = {
-        let engine = cx.global::<ThemeEngine>();
-        let system_appearance = ThemeVariant::from_appearance(cx.window_appearance());
-        let preset = engine.preset.as_ref().map(|(_, def)| def.clone());
-        let mode_override = engine.mode_override;
-        let custom = engine.custom;
-        let variant = mode_override
-            .or(preset.as_ref().and_then(|def| def.mode()))
-            .unwrap_or(system_appearance);
-        (
-            preset,
-            mode_override,
-            custom,
-            engine.source.snapshot(variant),
-        )
-    };
-
-    let resolved = resolve::resolve(&system, preset.as_ref(), mode_override, custom);
-
-    cx.set_reduce_motion(resolved.accessibility.reduce_motion);
-    let theme = Theme::from_resolved(resolved);
-    let theme_changed = cx.try_global::<Theme>() != Some(&theme);
-    cx.set_global(theme);
-    if theme_changed {
-        cx.refresh_windows();
+    /// Forces a variant, independent of the OS. `None` follows the system.
+    pub fn set_mode_override(variant: Option<ThemeVariant>, cx: &mut App) {
+        cx.global_mut::<Self>().mode_override = variant;
+        Self::reapply(cx);
     }
-}
 
-/// Forces a variant, independent of the OS. `None` follows the system.
-pub fn set_mode_override(variant: Option<ThemeVariant>, cx: &mut App) {
-    let engine = cx.global_mut::<ThemeEngine>();
-    engine.mode_override = variant;
-    reapply(cx);
-}
-
-/// Installs a built-in preset, or `None` to follow the system again.
-pub fn set_preset(name: Option<&str>, cx: &mut App) -> anyhow::Result<()> {
-    let preset = name
-        .map(|name| {
-            presets::builtin(name).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "unknown preset: {name}; available: {}",
-                    presets::preset_names().collect::<Vec<_>>().join(", ")
-                )
+    /// Installs a built-in preset, or `None` to follow the system again.
+    pub fn set_preset(name: Option<&str>, cx: &mut App) -> anyhow::Result<()> {
+        let preset = name
+            .map(|name| {
+                ThemeDefinition::builtin(name).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown preset: {name}; available: {}",
+                        ThemeDefinition::preset_names()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
             })
-        })
-        .transpose()?;
-    let engine = cx.global_mut::<ThemeEngine>();
-    engine.preset = preset;
-    reapply(cx);
-    Ok(())
-}
+            .transpose()?;
+        cx.global_mut::<Self>().preset = preset;
+        Self::reapply(cx);
+        Ok(())
+    }
 
-/// Installs the user's custom theme, or `None` to follow the current scheme.
-pub fn set_custom_theme(custom: Option<CustomTheme>, cx: &mut App) {
-    let engine = cx.global_mut::<ThemeEngine>();
-    engine.custom = custom;
-    reapply(cx);
-}
+    /// Installs the user's custom theme, or `None` to follow the current scheme.
+    pub fn set_custom_theme(custom: Option<CustomTheme>, cx: &mut App) {
+        cx.global_mut::<Self>().custom = custom;
+        Self::reapply(cx);
+    }
 
-/// The variant the mode override forces, if any.
-pub fn mode_override(cx: &App) -> Option<ThemeVariant> {
-    let engine = cx.global::<ThemeEngine>();
-    engine.mode_override
-}
+    /// Clears the mode override and preset; the theme follows the system again.
+    pub fn follow_system(cx: &mut App) {
+        let engine = cx.global_mut::<Self>();
+        engine.mode_override = None;
+        engine.preset = None;
+        Self::reapply(cx);
+    }
 
-/// The installed custom theme, if any.
-pub fn custom_theme(cx: &App) -> Option<CustomTheme> {
-    let engine = cx.global::<ThemeEngine>();
-    engine.custom
-}
+    /// The variant the mode override forces, if any.
+    pub fn mode_override(&self) -> Option<ThemeVariant> {
+        self.mode_override
+    }
 
-/// The active preset name, if one is installed.
-pub fn active_preset(cx: &App) -> Option<&'static str> {
-    let engine = cx.global::<ThemeEngine>();
-    engine.preset.as_ref().map(|(name, _)| *name)
-}
+    /// The installed custom theme, if any.
+    pub fn custom_theme(&self) -> Option<CustomTheme> {
+        self.custom.clone()
+    }
 
-/// Clears the mode override and preset; the theme follows the system again.
-pub fn follow_system(cx: &mut App) {
-    let engine = cx.global_mut::<ThemeEngine>();
-    engine.mode_override = None;
-    engine.preset = None;
-    reapply(cx);
-}
+    /// The active preset name, if one is installed.
+    pub fn active_preset(&self) -> Option<&'static str> {
+        self.preset.as_ref().map(|(name, _)| *name)
+    }
 
-/// Which adapter produced the current system snapshot.
-pub fn detected_source(cx: &App) -> &'static str {
-    let engine = cx.global::<ThemeEngine>();
-    engine.source.label()
+    /// Which adapter produced the current system snapshot.
+    pub fn detected_source(&self) -> &'static str {
+        self.source.label()
+    }
 }

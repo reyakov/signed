@@ -64,7 +64,7 @@ pub struct RepoStore {
 
 impl RepoStore {
     pub fn new(addr: RepoAddr, hint: Option<Announcement>, cx: &mut Context<Self>) -> Self {
-        let weak = cx.entity().downgrade();
+        let weak = cx.weak_entity();
         let subscription = Self::subscribe_backend(cx);
 
         let announced_relays = hint

@@ -79,7 +79,7 @@ impl Backend {
     }
 
     pub(crate) fn new(client: Client, signer: UniversalSigner, cx: &mut Context<Self>) -> Self {
-        let weak = cx.entity().downgrade();
+        let weak = cx.weak_entity();
         let pump_client = client.clone();
 
         let pump: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {

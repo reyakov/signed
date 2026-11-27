@@ -1,7 +1,7 @@
 //! Semantic color roles. This module is the only place in the workspace
 //! allowed to hold color literals.
 
-use gpui::{Hsla, hsla, rgb};
+use gpui::{Hsla, hsla, rgb, white};
 
 use crate::theme::{
     DEFAULT_TRANSPARENCY, MIN_MATERIAL_FILL_DARK, MIN_MATERIAL_FILL_LIGHT, ThemeVariant,
@@ -12,7 +12,7 @@ pub const WINDOWS_CLOSE_HOVER: Hsla = hsla(0.986043, 0.863406, 0.488235, 1.0);
 /// The close-button hover dimmed while pressed.
 pub const WINDOWS_CLOSE_PRESSED: Hsla = hsla(0.986043, 0.863406, 0.488235, 0.8);
 /// The close glyph's color over the red hover.
-pub const WINDOWS_CLOSE_FOREGROUND: Hsla = gpui::white();
+pub const WINDOWS_CLOSE_FOREGROUND: Hsla = white();
 
 /// The semantic color roles components paint from.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,32 +52,32 @@ impl ColorTokens {
     /// Neutral light palette; the fallback when no system theme applies.
     pub fn light() -> Self {
         Self {
-            background: hex(0xffffff),
-            foreground: hex(0x18181b),
-            surface: hex(0xfafafa),
-            surface_foreground: hex(0x18181b),
-            primary: hex(0x2563eb),
-            primary_foreground: hex(0xffffff),
-            secondary: hex(0xf4f4f5),
-            secondary_foreground: hex(0x18181b),
-            muted: hex(0xf4f4f5),
-            muted_hover: hex(0xe4e4e7),
-            muted_foreground: hex(0x71717a),
-            accent: hex(0x2563eb),
-            accent_foreground: hex(0xffffff),
-            destructive: hex(0xdc2626),
-            destructive_foreground: hex(0xffffff),
-            success: hex(0x16a34a),
-            success_foreground: hex(0xffffff),
-            warning: hex(0xd97706),
-            warning_foreground: hex(0xffffff),
-            info: hex(0x0284c7),
-            info_foreground: hex(0xffffff),
-            border: hex(0xe4e4e7),
-            input: hex(0xffffff),
-            ring: hex(0x2563eb),
-            selection: hex(0xdbeafe),
-            overlay: scrim(0.25),
+            background: Self::hex(0xffffff),
+            foreground: Self::hex(0x18181b),
+            surface: Self::hex(0xfafafa),
+            surface_foreground: Self::hex(0x18181b),
+            primary: Self::hex(0x2563eb),
+            primary_foreground: Self::hex(0xffffff),
+            secondary: Self::hex(0xf4f4f5),
+            secondary_foreground: Self::hex(0x18181b),
+            muted: Self::hex(0xf4f4f5),
+            muted_hover: Self::hex(0xe4e4e7),
+            muted_foreground: Self::hex(0x71717a),
+            accent: Self::hex(0x2563eb),
+            accent_foreground: Self::hex(0xffffff),
+            destructive: Self::hex(0xdc2626),
+            destructive_foreground: Self::hex(0xffffff),
+            success: Self::hex(0x16a34a),
+            success_foreground: Self::hex(0xffffff),
+            warning: Self::hex(0xd97706),
+            warning_foreground: Self::hex(0xffffff),
+            info: Self::hex(0x0284c7),
+            info_foreground: Self::hex(0xffffff),
+            border: Self::hex(0xe4e4e7),
+            input: Self::hex(0xffffff),
+            ring: Self::hex(0x2563eb),
+            selection: Self::hex(0xdbeafe),
+            overlay: Self::scrim(0.25),
             // macOS light overlay thumbs are translucent black.
             scrollbar_thumb: hsla(0., 0., 0., 0.25),
         }
@@ -86,35 +86,45 @@ impl ColorTokens {
     /// Neutral dark palette; the fallback when no system theme applies.
     pub fn dark() -> Self {
         Self {
-            background: hex(0x09090b),
-            foreground: hex(0xfafafa),
-            surface: hex(0x18181b),
-            surface_foreground: hex(0xfafafa),
-            primary: hex(0x3b82f6),
-            primary_foreground: hex(0xffffff),
-            secondary: hex(0x27272a),
-            secondary_foreground: hex(0xfafafa),
-            muted: hex(0x27272a),
-            muted_hover: hex(0x3f3f46),
-            muted_foreground: hex(0xa1a1aa),
-            accent: hex(0x3b82f6),
-            accent_foreground: hex(0xffffff),
-            destructive: hex(0xef4444),
-            destructive_foreground: hex(0xffffff),
-            success: hex(0x22c55e),
-            success_foreground: hex(0x052e16),
-            warning: hex(0xf59e0b),
-            warning_foreground: hex(0x451a03),
-            info: hex(0x38bdf8),
-            info_foreground: hex(0x082f49),
-            border: hex(0x27272a),
-            input: hex(0x09090b),
-            ring: hex(0x3b82f6),
-            selection: hex(0x1e3a8a),
-            overlay: scrim(0.45),
+            background: Self::hex(0x09090b),
+            foreground: Self::hex(0xfafafa),
+            surface: Self::hex(0x18181b),
+            surface_foreground: Self::hex(0xfafafa),
+            primary: Self::hex(0x3b82f6),
+            primary_foreground: Self::hex(0xffffff),
+            secondary: Self::hex(0x27272a),
+            secondary_foreground: Self::hex(0xfafafa),
+            muted: Self::hex(0x27272a),
+            muted_hover: Self::hex(0x3f3f46),
+            muted_foreground: Self::hex(0xa1a1aa),
+            accent: Self::hex(0x3b82f6),
+            accent_foreground: Self::hex(0xffffff),
+            destructive: Self::hex(0xef4444),
+            destructive_foreground: Self::hex(0xffffff),
+            success: Self::hex(0x22c55e),
+            success_foreground: Self::hex(0x052e16),
+            warning: Self::hex(0xf59e0b),
+            warning_foreground: Self::hex(0x451a03),
+            info: Self::hex(0x38bdf8),
+            info_foreground: Self::hex(0x082f49),
+            border: Self::hex(0x27272a),
+            input: Self::hex(0x09090b),
+            ring: Self::hex(0x3b82f6),
+            selection: Self::hex(0x1e3a8a),
+            overlay: Self::scrim(0.45),
             // macOS dark overlay thumbs are translucent light gray.
             scrollbar_thumb: hsla(0., 0., 1., 0.3),
         }
+    }
+
+    /// An opaque `0xrrggbb` color.
+    fn hex(hex: u32) -> Hsla {
+        rgb(hex).into()
+    }
+
+    /// The dim scrim behind modal layers; always a translucent black.
+    pub(crate) fn scrim(alpha: f32) -> Hsla {
+        hsla(0., 0., 0., alpha)
     }
 }
 
@@ -161,13 +171,4 @@ impl MaterialTokens {
             selection: selection.alpha(0.85),
         }
     }
-}
-
-fn hex(hex: u32) -> Hsla {
-    rgb(hex).into()
-}
-
-/// The dim scrim behind modal layers; always a translucent black.
-pub(crate) fn scrim(alpha: f32) -> Hsla {
-    hsla(0., 0., 0., alpha)
 }

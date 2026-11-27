@@ -2,17 +2,17 @@ use std::path::PathBuf;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Task, WeakEntity, Window, div, px,
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
+    Styled as _, Task, WeakEntity, Window, div, px,
 };
 use settings::SettingsStore;
-use signed_core::RepoAddr;
 use signed_git::Repo;
 use signed_state::Backend;
+use ui::button::Button;
 use ui::common::{ResultLogErr as _, v_flex};
 use ui::dialog::{Dialog, DialogHandle};
 use ui::field::Field;
-use ui::icons::IconRole;
+use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState};
 use ui::layout::h_flex;
 use ui::select::{Select, SelectOption};
@@ -20,9 +20,7 @@ use ui::theme::ActiveTheme as _;
 
 use super::grasp_servers::{GraspServersState, grasp_servers_field, load_user_grasp_servers};
 use crate::repo::RepoDetailView;
-use crate::shared::progress::{
-    DialogProgress, dialog_submit_button, error_row, push_steps_row, run_dialog_task_with,
-};
+use crate::shared::log_dropped;
 
 pub struct InitRepoDialog {
     handle: DialogHandle,
@@ -30,13 +28,20 @@ pub struct InitRepoDialog {
     name_input: Entity<InputState>,
     desc_input: Entity<InputState>,
     relay_input: Entity<InputState>,
-    state: Entity<DialogProgress>,
+    busy: bool,
+    error: Option<SharedString>,
     grasp_state: Entity<GraspServersState>,
     branches: Vec<SharedString>,
+    /// `Select` options for `branches`, rebuilt when they load.
+    branch_options: Vec<SelectOption<SharedString>>,
+    /// The folder shown in the form, formatted once.
+    folder_label: SharedString,
     selected_branch: Option<SharedString>,
     view: WeakEntity<RepoDetailView>,
     /// Held so the grasp-server load is cancelled when the dialog drops.
     task: Option<Task<()>>,
+    /// Holds the default-branch load so it is cancelled when the dialog drops.
+    branches_task: Option<Task<()>>,
 }
 
 impl InitRepoDialog {
@@ -46,18 +51,15 @@ impl InitRepoDialog {
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<Self> {
+        let settings = SettingsStore::global(cx);
+        let grasp_settings = settings.read(cx).settings().grasp_servers.clone();
+        let grasp_state = cx.new(|_| GraspServersState::new_default(&grasp_settings));
+        let local_path_label = local_path.display().to_string();
+
         let default_name = local_path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let grasp_settings = SettingsStore::global(cx)
-            .read(cx)
-            .settings()
-            .grasp_servers
-            .clone();
-
-        let state = cx.new(|_| DialogProgress::default());
-        let grasp_state = cx.new(|_| GraspServersState::new_default(&grasp_settings));
 
         let name_input = InputState::builder()
             .text(default_name)
@@ -67,10 +69,12 @@ impl InitRepoDialog {
         let desc_input = InputState::builder().multiline().build(cx);
         let relay_input = InputState::new(cx);
 
-        let dialog = cx.new(|cx| {
+        cx.new(|cx| {
             cx.defer_in(window, move |this: &mut Self, window, cx| {
                 let task = load_user_grasp_servers(this.grasp_state.clone(), window, cx);
                 this.task = Some(task);
+
+                this.load_branches(cx);
             });
 
             Self {
@@ -79,27 +83,29 @@ impl InitRepoDialog {
                 name_input,
                 desc_input,
                 relay_input,
-                state,
+                busy: false,
+                error: None,
                 grasp_state,
                 branches: Vec::new(),
+                branch_options: Vec::new(),
+                folder_label: SharedString::from(local_path_label),
                 selected_branch: None,
                 view,
                 task: None,
+                branches_task: None,
             }
-        });
-
-        load_branches(dialog.clone(), cx);
-        dialog
+        })
     }
 
     fn init_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.state.read(cx).busy {
+        if self.busy {
             return;
         }
 
         let name = self.name_input.read(cx).value().trim().to_owned();
         let description = self.desc_input.read(cx).value().trim().to_owned();
         let servers = self.grasp_state.read(cx).grasp_servers.clone();
+
         let default_branch = self
             .selected_branch
             .as_ref()
@@ -107,48 +113,39 @@ impl InitRepoDialog {
             .filter(|branch| !branch.is_empty());
 
         if name.is_empty() {
-            self.state.update(cx, |state, cx| {
-                state.fail("Repository name is required");
-                cx.notify();
-            });
+            self.error = Some("Repository name is required".into());
+            cx.notify();
             return;
         }
+
         if servers.is_empty() {
-            self.state.update(cx, |state, cx| {
-                state.fail("Add at least one grasp server");
-                cx.notify();
-            });
+            self.error = Some("Add at least one grasp server".into());
+            cx.notify();
             return;
         }
 
         let backend = Backend::global(cx);
-        let Some(user) = backend.read(cx).current_user() else {
-            self.state.update(cx, |state, cx| {
-                state.fail("Sign in to publish a repository");
-                cx.notify();
-            });
+        let Some(_user) = backend.read(cx).current_user() else {
+            self.error = Some("Sign in to publish a repository".into());
+            cx.notify();
             return;
         };
 
-        let addr = RepoAddr::new(user, RepoAddr::identifier_from_name(&name));
-        self.state.update(cx, |state, cx| {
-            state.begin_push(addr, cx);
-            cx.notify();
-        });
+        self.busy = true;
+        self.error = None;
+        cx.notify();
 
         let local_path = self.local_path.clone();
         let task = backend.update(cx, |backend, cx| {
             backend.publish_local_repo(local_path, &name, &description, servers, default_branch, cx)
         });
-        let state = self.state.clone();
+
         let view = self.view.clone();
         let close = self.handle.clone();
         let handle = window.window_handle();
 
-        run_dialog_task_with(
-            task,
-            cx,
-            move |announcement, cx| {
+        self.task = Some(cx.spawn(async move |this, cx| match task.await {
+            Ok(announcement) => {
                 cx.update_window(handle, |_, _window, cx| {
                     close.close(cx);
                     if let Some(view) = view.upgrade() {
@@ -156,14 +153,54 @@ impl InitRepoDialog {
                     }
                 })
                 .log_err();
-            },
-            move |error, cx| {
-                state.update(cx, |state, cx| {
-                    state.fail(error.to_string());
+            }
+            Err(error) => {
+                log_dropped(this.update(cx, |this, cx| {
+                    this.busy = false;
+                    this.error = Some(error.to_string().into());
                     cx.notify();
-                });
-            },
-        );
+                }));
+            }
+        }));
+    }
+
+    /// Lists the repository's branches for the default-branch selector.
+    fn load_branches(&mut self, cx: &mut Context<Self>) {
+        let local_path = self.local_path.clone();
+
+        self.branches_task = Some(cx.spawn(async move |this, cx| {
+            let loaded = cx
+                .background_spawn(async move {
+                    let repo = Repo::open(&local_path)?;
+                    let current: Option<SharedString> = repo.current_branch().map(Into::into);
+                    Ok::<_, anyhow::Error>((repo.branches()?, current))
+                })
+                .await;
+
+            let (branches, current) = match loaded {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    log::warn!("failed to list branches for the default branch selector: {error}");
+                    let _ = this.update(cx, |this, cx| {
+                        this.error = Some("Could not list the repository's branches".into());
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+
+            let _ = this.update(cx, |this, cx| {
+                this.branches = branches.into_iter().map(Into::into).collect();
+                this.branch_options = this
+                    .branches
+                    .iter()
+                    .cloned()
+                    .map(|branch| SelectOption::new(branch.clone(), branch))
+                    .collect();
+                this.selected_branch = current;
+                cx.notify();
+            });
+        }));
     }
 }
 
@@ -172,14 +209,14 @@ impl Render for InitRepoDialog {
         let name_input = self.name_input.clone();
         let desc_input = self.desc_input.clone();
         let relay_input = self.relay_input.clone();
-        let state = self.state.clone();
+        let error = self.error.clone();
         let grasp_state = self.grasp_state.clone();
-        let action_state = state.clone();
-        let this = cx.entity().downgrade();
-        let folder = self.local_path.display().to_string();
-        let branches = self.branches.clone();
+        let folder = self.folder_label.clone();
+        let branch_options = self.branch_options.clone();
         let selected_branch = self.selected_branch.clone();
-        let busy = state.read(cx).busy;
+        let busy = self.busy;
+
+        let this = cx.weak_entity();
 
         Dialog::new("init-repo-dialog")
             .handle(self.handle.clone())
@@ -188,8 +225,6 @@ impl Render for InitRepoDialog {
             .min_width(px(520.))
             .title("Initialize repository")
             .content(move |_, cx| {
-                let progress = state.read(cx);
-
                 v_flex()
                     .gap_3()
                     .child(
@@ -220,7 +255,9 @@ impl Render for InitRepoDialog {
                                     .text_sm()
                                     .text_color(cx.theme().colors.muted_foreground)
                                     .rounded(cx.theme().radius.control)
-                                    .child(folder.clone()),
+                                    .child(
+                                        div().flex_1().min_w_0().truncate().child(folder.clone()),
+                                    ),
                             ),
                     )
                     .child(
@@ -228,77 +265,38 @@ impl Render for InitRepoDialog {
                             .description("The local branch to announce as the default")
                             .child(
                                 Select::new("init-branch-select")
-                                    .options(
-                                        branches
-                                            .iter()
-                                            .cloned()
-                                            .map(|branch| SelectOption::new(branch.clone(), branch))
-                                            .collect::<Vec<_>>(),
-                                    )
+                                    .options(branch_options.clone())
                                     .selected(selected_branch.clone())
                                     .placeholder("Select branch"),
                             ),
                     )
                     .child(grasp_servers_field(&grasp_state, &relay_input, cx))
-                    .when_some(push_steps_row(&progress.push_steps, cx), |el, steps| {
-                        el.child(steps)
+                    .when_some(error.clone(), |el, error| {
+                        el.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().ramps.destructive.base)
+                                .child(error),
+                        )
                     })
-                    .when_some(error_row(&progress.error, cx), |el, error| el.child(error))
                     .into_any_element()
             })
-            .actions(move |_, cx| {
-                let busy = action_state.read(cx).busy;
+            .actions(move |_, _cx| {
                 let this = this.clone();
 
-                let init: AnyElement = dialog_submit_button(
-                    "initialize-repository",
-                    "Initialize",
-                    Some(IconRole::Plus),
-                    busy,
-                    &this,
-                    |this, window, cx| {
-                        this.init_repository(window, cx);
-                        Ok(())
-                    },
-                )
-                .into_any_element();
-
-                vec![init]
+                vec![
+                    Button::new("initialize-repository")
+                        .label("Initialize")
+                        .icon(Icon::named(IconRole::Plus))
+                        .loading(busy)
+                        .disabled(busy)
+                        .on_click(move |_, window, cx| {
+                            log_dropped(this.update(cx, |this, cx| {
+                                this.init_repository(window, cx);
+                            }));
+                        })
+                        .into_any_element(),
+                ]
             })
     }
-}
-
-fn load_branches(dialog: Entity<InitRepoDialog>, cx: &mut App) {
-    let local_path = dialog.read(cx).local_path.clone();
-
-    cx.spawn(async move |cx| {
-        let loaded = cx
-            .background_spawn(async move {
-                let repo = Repo::open(&local_path)?;
-                let current: Option<SharedString> = repo.current_branch().map(Into::into);
-                Ok::<_, anyhow::Error>((repo.branches()?, current))
-            })
-            .await;
-
-        let (branches, current) = match loaded {
-            Ok(loaded) => loaded,
-            Err(error) => {
-                log::warn!("failed to list branches for the default branch selector: {error}");
-                dialog.update(cx, |dialog, cx| {
-                    dialog.state.update(cx, |state, cx| {
-                        state.fail("Could not list the repository's branches");
-                        cx.notify();
-                    });
-                });
-                return;
-            }
-        };
-
-        dialog.update(cx, |dialog, cx| {
-            dialog.branches = branches.into_iter().map(Into::into).collect();
-            dialog.selected_branch = current;
-            cx.notify();
-        });
-    })
-    .detach();
 }

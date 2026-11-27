@@ -19,13 +19,11 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     AnimationExt as _, App, Bounds, ElementId, Entity, InteractiveElement as _, IntoElement,
     KeyDownEvent, ParentElement as _, Pixels, Point, RenderOnce, Role, SharedString,
-    SpringAnimation, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Toggled,
-    Window, canvas, div,
+    SpringAnimation, StatefulInteractiveElement as _, StyleRefinement, Styled, Toggled, Window,
+    canvas, div,
 };
 
-use crate::components::common::{
-    ControlSizing, Sizable, StyledExt, focus_handle, focus_ring, h_flex,
-};
+use crate::components::common::{ControlSizing, ElementIdExt as _, Sizable, StyledExt, h_flex};
 use crate::icons::Icon;
 use crate::theme::{ActiveTheme as _, CONTROL_SPRING, Size};
 
@@ -158,6 +156,20 @@ where
         self.a11y_label = Some(label.into());
         self
     }
+
+    /// Stores what a frame measured and requests the frame that draws from it.
+    fn measure<S: 'static>(
+        state: &Entity<S>,
+        record: impl Fn(&mut S, Bounds<Pixels>) -> bool + 'static,
+    ) -> impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static {
+        let state = state.clone();
+        move |bounds, window, cx| {
+            let changed = state.update(cx, |state, _| record(state, bounds));
+            if changed {
+                window.request_animation_frame();
+            }
+        }
+    }
 }
 
 impl<T> Sizable for Segmented<T>
@@ -169,7 +181,7 @@ where
     }
 }
 
-impl<T> gpui::Styled for Segmented<T>
+impl<T> Styled for Segmented<T>
 where
     T: Clone + PartialEq + 'static,
 {
@@ -188,9 +200,8 @@ where
         let surface = theme.colors.surface;
         let foreground = theme.colors.foreground;
         let muted_foreground = theme.colors.muted_foreground;
-        let ring = theme.colors.ring;
+        let ring = theme.focus_ring();
         let radius = theme.radius.full;
-        let plate_shadow = theme.elevations.control.shadows();
 
         let selected_index = self
             .options
@@ -215,7 +226,7 @@ where
             let track_origin: Entity<Option<Point<Pixels>>> =
                 window.use_keyed_state("segmented-track-origin", cx, |_, _| None);
 
-            let focus = focus_handle(&self.id, window, cx);
+            let focus = self.id.focus_handle(window, cx);
             let track_point = *track_origin.read(cx);
 
             let plate_target = geometry
@@ -263,7 +274,7 @@ where
                         .when_some(segment.label.clone(), |segment, label| segment.child(label))
                         .child(
                             canvas(
-                                measure(&geometry, move |geometry, bounds| {
+                                Self::measure(&geometry, move |geometry, bounds| {
                                     if geometry.get(index) == Some(&Some(bounds)) {
                                         return false;
                                     }
@@ -296,7 +307,7 @@ where
                     .track_focus(&focus)
                     .focusable()
                     .tab_stop(true)
-                    .focus_visible(|style| style.shadow(focus_ring(ring)))
+                    .focus_visible(|style| style.shadow(ring))
                     .role(Role::RadioGroup)
                     .aria_label(label)
                     .flex()
@@ -311,7 +322,7 @@ where
                     .control_text(self.size)
                     .child(
                         canvas(
-                            measure(&track_origin, |origin, bounds| {
+                            Self::measure(&track_origin, |origin, bounds| {
                                 if *origin == Some(bounds.origin) {
                                     return false;
                                 }
@@ -324,6 +335,7 @@ where
                         .inset_0(),
                     )
                     .when_some(plate_target, |track, (x, width)| {
+                        let plate_shadow = cx.theme().elevations.control.shadows();
                         track.child(
                             div()
                                 .id("segmented-plate")
@@ -333,7 +345,7 @@ where
                                 .bottom(self.size.plate_inset_rems())
                                 .rounded(radius)
                                 .bg(surface)
-                                .shadow(plate_shadow.clone())
+                                .shadow(plate_shadow.to_vec())
                                 .with_spring(
                                     "segmented-plate-x",
                                     SpringAnimation::new(CONTROL_SPRING).to(x),
@@ -378,19 +390,5 @@ where
                     .refine_style(&self.style),
             )
         })
-    }
-}
-
-/// Stores what a frame measured and requests the frame that draws from it.
-fn measure<S: 'static>(
-    state: &Entity<S>,
-    record: impl Fn(&mut S, Bounds<Pixels>) -> bool + 'static,
-) -> impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static {
-    let state = state.clone();
-    move |bounds, window, cx| {
-        let changed = state.update(cx, |state, _| record(state, bounds));
-        if changed {
-            window.request_animation_frame();
-        }
     }
 }

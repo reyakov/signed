@@ -45,23 +45,6 @@ impl Render for StripHarness {
     }
 }
 
-fn strip_window(
-    cx: &mut TestAppContext,
-    changed: Rc<RefCell<Vec<usize>>>,
-    reordered: Rc<RefCell<Vec<(usize, usize)>>>,
-    pinned: bool,
-) -> VisualTestContext {
-    cx.update(Theme::init);
-    let window = cx.open_window(size(px(800.), px(600.)), |_, _| StripHarness {
-        changed,
-        reordered,
-        pinned,
-    });
-    let cx = VisualTestContext::from_window(window.into(), cx);
-    cx.run_until_parked();
-    cx
-}
-
 struct CloseHarness {
     closed: Rc<RefCell<Vec<usize>>>,
 }
@@ -81,6 +64,22 @@ impl Render for CloseHarness {
                 .on_close(move |index, _, _| closed.borrow_mut().push(index)),
         )
     }
+}
+fn strip_window(
+    cx: &mut TestAppContext,
+    changed: Rc<RefCell<Vec<usize>>>,
+    reordered: Rc<RefCell<Vec<(usize, usize)>>>,
+    pinned: bool,
+) -> VisualTestContext {
+    cx.update(|cx| Theme::init_with(cx, Theme::fallback_source()));
+    let window = cx.open_window(size(px(800.), px(600.)), |_, _| StripHarness {
+        changed,
+        reordered,
+        pinned,
+    });
+    let cx = VisualTestContext::from_window(window.into(), cx);
+    cx.run_until_parked();
+    cx
 }
 
 #[gpui::test]
@@ -103,7 +102,7 @@ fn a_pinned_tab_draws_inline_and_selects_itself(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_closeable_tab_reports_its_close(cx: &mut TestAppContext) {
-    cx.update(Theme::init);
+    cx.update(|cx| Theme::init_with(cx, Theme::fallback_source()));
     let closed = Rc::new(RefCell::new(Vec::new()));
     let window = cx.open_window(size(px(800.), px(600.)), |_, _| CloseHarness {
         closed: closed.clone(),

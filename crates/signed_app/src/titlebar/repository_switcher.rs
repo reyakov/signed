@@ -33,6 +33,8 @@ pub(super) struct RepositoryEntry {
     pub(super) index: usize,
     pub(super) key: SharedString,
     pub(super) label: SharedString,
+    /// `label` lowercased, for the search filter.
+    pub(super) label_lower: SharedString,
     pub(super) owner: Option<PublicKey>,
 }
 
@@ -96,8 +98,9 @@ impl RepositorySwitcher {
 
 impl Render for RepositorySwitcher {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = *cx.theme();
-        let weak = cx.entity().downgrade();
+        let colors = cx.theme().colors;
+        let avatar_radius = cx.theme().radius.full;
+        let weak = cx.weak_entity();
         let entries = Arc::clone(&self.entries);
         let search = self.search.clone();
         let directory = self.directory.clone();
@@ -151,9 +154,7 @@ impl Render for RepositorySwitcher {
                 let visible: Arc<Vec<RepositoryEntry>> = Arc::new(
                     entries
                         .iter()
-                        .filter(|entry| {
-                            query.is_empty() || entry.label.to_lowercase().contains(&query)
-                        })
+                        .filter(|entry| query.is_empty() || entry.label_lower.contains(&query))
                         .cloned()
                         .collect(),
                 );
@@ -163,6 +164,8 @@ impl Render for RepositorySwitcher {
                 let list_entries = Arc::clone(&visible);
                 let list_directory = directory.clone();
                 let list_weak = row_weak.clone();
+                let list_radius = avatar_radius;
+                let list_muted = colors.muted;
                 let list_on_open = on_open.clone();
                 let list_scroll_handle = scroll_handle.clone();
                 v_flex()
@@ -176,17 +179,17 @@ impl Render for RepositorySwitcher {
                             .prefix(
                                 Icon::named(IconRole::Search)
                                     .small()
-                                    .color(theme.colors.muted_foreground),
+                                    .color(colors.muted_foreground),
                             )
-                            .bg(theme.colors.muted)
-                            .border_color(theme.colors.muted),
+                            .bg(colors.muted)
+                            .border_color(colors.muted),
                     )
                     .map(|this| {
                         if visible.is_empty() {
                             this.child(
                                 div()
                                     .p_3()
-                                    .text_color(theme.colors.muted_foreground)
+                                    .text_color(colors.muted_foreground)
                                     .text_center()
                                     .text_sm()
                                     .child("No repositories found"),
@@ -217,9 +220,9 @@ impl Render for RepositorySwitcher {
                                                         .h(row_height)
                                                         .px_3()
                                                         .gap_2()
-                                                        .rounded(theme.radius.full)
+                                                        .rounded(list_radius)
                                                         .text_sm()
-                                                        .hover(|row| row.bg(theme.colors.muted))
+                                                        .hover(|row| row.bg(list_muted))
                                                         .child(entry.avatar(&list_directory, cx))
                                                         .child(
                                                             div()

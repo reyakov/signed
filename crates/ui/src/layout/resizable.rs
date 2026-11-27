@@ -1,17 +1,28 @@
 //! The resizable group: stacked panes with drag dividers, outside the dock.
 
+use std::rc::Rc;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Axis, Bounds, Context, ElementId, Entity,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, RenderOnce, SharedString,
-    StyleRefinement, Styled, Window, canvas, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, RenderOnce, StyleRefinement,
+    Styled, Window, canvas, div, px,
 };
 
 use crate::layout::StyledExt as _;
 use crate::layout::resize_handle::ResizeHandle;
-use crate::theme::{PANE_DEFAULT_SIZE, PANE_MIN_SIZE};
+use crate::theme::{PANE_DEFAULT_SIZE, PANE_MIN_SIZE, RESIZE_HANDLE_WIDTH};
 
-type DebugSelector = std::rc::Rc<dyn Fn() -> String>;
+type DebugSelector = Rc<dyn Fn() -> String>;
+
+/// How the first pane opens beside a split of the given width.
+#[derive(Clone, Copy)]
+enum Opening {
+    /// The first pane is the split.
+    Fixed(Pixels),
+    /// The first pane is the main pane, which keeps what the split leaves of the extent.
+    Remainder(Pixels),
+}
 
 /// The retained pane sizes of one resizable group.
 #[derive(Default)]
@@ -20,6 +31,8 @@ pub struct ResizableState {
     sizes: Vec<Pixels>,
     /// The group's main-axis extent, captured at paint for drag clamping.
     measured: Option<Pixels>,
+    /// The split the first pane opened beside, followed across resizes until a drag.
+    opening: Option<Opening>,
 }
 
 impl ResizableState {
@@ -42,6 +55,27 @@ impl ResizableState {
         cx.notify();
     }
 
+    /// Forgets every pane size and opening.
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        if self.sizes.is_empty() && self.opening.is_none() {
+            return;
+        }
+        self.sizes.clear();
+        self.opening = None;
+        cx.notify();
+    }
+
+    /// Opens the first pane beside a split of `width`, keeping it across resizes until a drag; `remainder` when the first pane is the main pane.
+    pub fn open_pane(&mut self, width: Pixels, remainder: bool, cx: &mut Context<Self>) {
+        self.opening = Some(if remainder {
+            Opening::Remainder(width)
+        } else {
+            Opening::Fixed(width)
+        });
+        self.sizes.clear();
+        cx.notify();
+    }
+
     /// Records the group's measured extent, notifying only when it changes.
     fn set_measured(&mut self, extent: Pixels, cx: &mut Context<Self>) {
         if self.measured != Some(extent) {
@@ -50,21 +84,33 @@ impl ResizableState {
         }
     }
 
-    /// The equal split of the measured extent, or the default pane size unmeasured.
-    fn equal_split(&self, pane_count: usize) -> Pixels {
-        match self.measured {
+    /// The equal split of an extent, or the default pane size unmeasured.
+    fn equal_split(extent: Option<Pixels>, pane_count: usize) -> Pixels {
+        match extent {
             // usize can exceed f32's exact integer range; bound it via u32 before casting.
             Some(extent) => extent / u32::try_from(pane_count).unwrap_or(u32::MAX) as f32,
             None => PANE_DEFAULT_SIZE,
         }
     }
 
-    /// The size pane `ix` renders at: its stored size, or the equal split.
-    fn pane_size(&self, ix: usize, pane_count: usize) -> Pixels {
+    /// The size pane `ix` renders at within `extent` (the measured extent when unmeasured): its opening, its stored size, or the equal split.
+    fn pane_size(&self, ix: usize, pane_count: usize, extent: Option<Pixels>) -> Pixels {
+        if ix == 0
+            && let Some(opening) = self.opening
+        {
+            return match opening {
+                Opening::Fixed(width) => width,
+                Opening::Remainder(width) => {
+                    extent.unwrap_or(PANE_DEFAULT_SIZE) - RESIZE_HANDLE_WIDTH - width
+                }
+            }
+            .max(PANE_MIN_SIZE);
+        }
+
         self.sizes
             .get(ix)
             .copied()
-            .unwrap_or_else(|| self.equal_split(pane_count))
+            .unwrap_or_else(|| Self::equal_split(extent.or(self.measured), pane_count))
     }
 
     /// Applies a drag at divider `ix` (between pane ix and ix+1).
@@ -75,7 +121,7 @@ impl ResizableState {
 
         let pane_count = mins.len();
 
-        let previous = self.pane_size(ix, pane_count);
+        let previous = self.pane_size(ix, pane_count, None);
         let mut size = previous + delta;
         size = size.max(floor);
 
@@ -93,12 +139,13 @@ impl ResizableState {
 
         // Earlier panes hold the equal split they already render at,
         // so the first drag does not snap them to a backfilled default.
-        let backfill = self.equal_split(pane_count);
+        let backfill = Self::equal_split(self.measured, pane_count);
         while self.sizes.len() <= ix {
             self.sizes.push(backfill);
         }
 
         self.sizes[ix] = size;
+        self.opening = None;
 
         // A drag clamped at its floor or ceiling lands here on every mouse move,
         // only a change to the rendered size is worth a frame.
@@ -107,29 +154,20 @@ impl ResizableState {
         }
     }
 
-    /// Sets pane `ix`'s width, backfilling earlier panes.
-    pub fn set_pane_width(&mut self, ix: usize, width: Pixels, cx: &mut Context<Self>) {
-        // Persisted layouts can carry negative sizes.
-        let width = width.max(PANE_MIN_SIZE);
-
-        while self.sizes.len() <= ix {
-            self.sizes.push(width);
-        }
-
-        if self.sizes[ix] != width {
-            self.sizes[ix] = width;
-            cx.notify();
-        }
-    }
-
     /// Restores pane `ix` to the equal split, as a double-click does.
     fn reset_pane(&mut self, ix: usize, pane_count: usize, cx: &mut Context<Self>) {
-        let split = self.equal_split(pane_count);
+        let split = Self::equal_split(self.measured, pane_count);
+
         while self.sizes.len() <= ix {
             self.sizes.push(split);
         }
-        self.sizes[ix] = split;
-        cx.notify();
+
+        self.opening = None;
+
+        if self.sizes[ix] != split {
+            self.sizes[ix] = split;
+            cx.notify();
+        }
     }
 }
 
@@ -171,6 +209,7 @@ pub struct Resizable {
     axis: Axis,
     panes: Vec<ResizablePane>,
     debug_selector: Option<DebugSelector>,
+    extent: Option<Pixels>,
     style: StyleRefinement,
 }
 
@@ -186,6 +225,7 @@ impl Resizable {
             axis: Axis::Vertical,
             panes: Vec::new(),
             debug_selector: None,
+            extent: None,
             style: StyleRefinement::default(),
         }
     }
@@ -214,12 +254,18 @@ impl Resizable {
         self
     }
 
+    /// Sets the group's main-axis extent its owner knows before layout, so panes size right on the frame the extent changes.
+    pub fn extent(mut self, extent: Pixels) -> Self {
+        self.extent = Some(extent);
+        self
+    }
+
     /// Sets the debug-bounds selector of each pane, suffixed with its index.
     pub fn debug_selector<F>(mut self, selector: F) -> Self
     where
         F: Fn() -> String + 'static,
     {
-        self.debug_selector = Some(std::rc::Rc::new(selector));
+        self.debug_selector = Some(Rc::new(selector));
         self
     }
 }
@@ -236,14 +282,12 @@ impl RenderOnce for Resizable {
         let state = self.state.clone();
 
         let pane_count = self.panes.len();
-        let mins: Vec<Pixels> = self.panes.iter().map(|pane| pane.min).collect();
+        let extent = self.extent;
+        let mins: Rc<[Pixels]> = self.panes.iter().map(|pane| pane.min).collect();
         let debug_selector = self.debug_selector;
 
-        let sizes: Vec<Pixels> = (0..pane_count)
-            .map(|ix| state.read(cx).pane_size(ix, pane_count))
-            .collect();
-
         div()
+            .id(self.id)
             .flex()
             .overflow_hidden()
             .when(axis == Axis::Vertical, |group| group.flex_col())
@@ -251,10 +295,12 @@ impl RenderOnce for Resizable {
             .refine_style(&self.style)
             .children(self.panes.into_iter().enumerate().flat_map(|(ix, pane)| {
                 let remainder = ix + 1 == pane_count;
+                let size = state.read(cx).pane_size(ix, pane_count, extent);
+                let min = pane.min;
 
                 let divider = (!remainder).then(|| {
-                    // The positional index is a stable id: panes are append-only, never reordered.
-                    ResizeHandle::new(SharedString::from(format!("{}-divider-{ix}", self.id)))
+                    // Positional: panes are append-only, never reordered.
+                    ResizeHandle::new(ElementId::from(("divider", ix)))
                         .axis(axis)
                         .on_resize({
                             let state = state.clone();
@@ -279,14 +325,15 @@ impl RenderOnce for Resizable {
                         .when(remainder, |pane_element| {
                             pane_element
                                 .flex_1()
-                                .when(axis == Axis::Vertical, |p| p.min_h(pane.min))
-                                .when(axis == Axis::Horizontal, |p| p.min_w(pane.min))
+                                .min_h_0()
+                                .when(axis == Axis::Vertical, |pane| pane.min_h(min))
+                                .when(axis == Axis::Horizontal, |pane| pane.min_w(min).min_w_0())
                         })
                         .when(!remainder, |pane_element| {
                             pane_element
                                 .flex_none()
-                                .when(axis == Axis::Vertical, |p| p.h(sizes[ix]).w_full())
-                                .when(axis == Axis::Horizontal, |p| p.w(sizes[ix]).h_full())
+                                .when(axis == Axis::Vertical, |pane| pane.h(size).w_full())
+                                .when(axis == Axis::Horizontal, |pane| pane.w(size).h_full())
                         })
                         .when_some(debug_selector.clone(), |pane_element, selector| {
                             let prefix = selector();

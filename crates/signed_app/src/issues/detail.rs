@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, ScrollHandle, SharedString, Styled as _, Subscription,
-    WeakEntity, Window, div, px,
+    AnyElement, App, AppContext as _, Context, ElementId, Entity, IntoElement, ListAlignment,
+    ListSizingBehavior, ListState, ParentElement as _, Pixels, Render, ScrollHandle, SharedString,
+    Styled as _, Subscription, Window, div, list, px, rems,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::EventId;
@@ -12,19 +12,21 @@ use signed_core::GitEvent;
 use signed_state::RepoStore;
 use ui::avatar::Avatar;
 use ui::badge::{Badge, BadgeVariant};
+use ui::button::Button;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::empty_state::EmptyState;
-use ui::input::InputState;
-use ui::layout::panel::{Panel, PanelSlot, SplitSide};
+use ui::icons::{Icon, IconRole};
+use ui::input::{Input, InputState};
+use ui::layout::panel::{Panel, PanelSlot, PanelStack, SplitSide};
 use ui::scroll_area::ScrollArea;
 use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
+use ui::tooltip::Tooltip;
 use utils::relative_time;
 
-use crate::app::AppRoot;
-use crate::issues::helpers::{comment_form, comments_section};
+use crate::shared::labels::ProfileDirectoryExt as _;
+use crate::shared::log_dropped;
 use crate::shared::widgets::status_badge;
-use crate::shared::{log_dropped, track_event_participants};
 
 /// The split pane showing the issue's participants and labels.
 const SIDEBAR_ID: &str = "Issue details";
@@ -37,6 +39,7 @@ pub struct IssueDetailView {
     /// Profiles for the author, commenters and the repository owner.
     directory: Entity<ProfileDirectory>,
     scroll_handle: ScrollHandle,
+    comments_scroll: ListState,
     _subscription: Subscription,
 }
 
@@ -44,7 +47,7 @@ impl IssueDetailView {
     pub fn new(store: Entity<RepoStore>, issue_id: EventId, cx: &mut Context<Self>) -> Self {
         let comment_input = InputState::builder().multiline().build(cx);
         let directory = ProfileDirectory::new(cx);
-        let weak = cx.entity().downgrade();
+        let weak = cx.weak_entity();
 
         let subscription = cx.observe(&store, |this, _store, cx| {
             this.track_participants(cx);
@@ -63,13 +66,14 @@ impl IssueDetailView {
             comment_input,
             directory,
             scroll_handle: ScrollHandle::new(),
+            comments_scroll: ListState::new(0, ListAlignment::Top, px(48.)),
             _subscription: subscription,
         }
     }
 
     /// Opens the issue's detail as the main panel and its sidebar in the split pane.
     pub fn open(
-        workspace: &WeakEntity<AppRoot>,
+        panels: &Entity<PanelStack>,
         store: Entity<RepoStore>,
         issue_id: EventId,
         window: &mut Window,
@@ -78,35 +82,33 @@ impl IssueDetailView {
         let id = SharedString::from(format!("issue:{issue_id}"));
         let sidebar_store = store.clone();
 
-        log_dropped(workspace.update(cx, |root, cx| {
-            root.panels().update(cx, |panels, cx| {
-                panels.open(
-                    PanelSlot::Main,
-                    id,
-                    {
-                        let store = store.clone();
-                        move |_, cx| cx.new(|cx| IssueDetailView::new(store.clone(), issue_id, cx))
-                    },
-                    window,
-                    cx,
-                );
+        panels.update(cx, |panels, cx| {
+            panels.open(
+                PanelSlot::Main,
+                id,
+                {
+                    let store = store.clone();
+                    move |_, cx| cx.new(|cx| IssueDetailView::new(store.clone(), issue_id, cx))
+                },
+                window,
+                cx,
+            );
 
-                let sidebar = cx.new(|cx| IssueSidebarView {
-                    store: sidebar_store.clone(),
-                    issue_id,
-                    directory: ProfileDirectory::new(cx),
-                    scroll_handle: ScrollHandle::new(),
-                });
+            let sidebar = cx.new(|cx| IssueSidebarView {
+                store: sidebar_store.clone(),
+                issue_id,
+                directory: ProfileDirectory::new(cx),
+                scroll_handle: ScrollHandle::new(),
+            });
 
-                panels.insert_split_at(
-                    SIDEBAR_ID,
-                    SIDEBAR_WIDTH,
-                    SplitSide::Trailing,
-                    Arc::new(sidebar),
-                    cx,
-                );
-            })
-        }));
+            panels.insert_split_at(
+                SIDEBAR_ID,
+                SIDEBAR_WIDTH,
+                SplitSide::Trailing,
+                Arc::new(sidebar),
+                cx,
+            );
+        });
     }
 
     /// Track the issue author, everyone who commented and the repository owner.
@@ -125,7 +127,81 @@ impl IssueDetailView {
             .map(|comment| comment.pubkey)
             .collect();
 
-        track_event_participants(author, owner, comments.into_iter(), &self.directory, cx);
+        self.directory
+            .track_participants(author, owner, comments.into_iter(), cx);
+    }
+
+    /// One comment card of the issue's discussion.
+    fn render_comment(&self, ix: usize, cx: &App) -> AnyElement {
+        let Some(comment) = self.store.read(cx).comments_of(&self.issue_id).nth(ix) else {
+            return div().into_any_element();
+        };
+
+        let profile = self.directory.read(cx).profile(&comment.pubkey, cx);
+        let author = profile.name();
+        let age = relative_time(comment.created_at);
+        let content = SharedString::from(comment.content.as_str());
+
+        v_flex()
+            .gap_1()
+            .p_3()
+            .border_1()
+            .border_color(cx.theme().colors.border)
+            .rounded(cx.theme().radius.control)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_sm()
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Avatar::new(comment.pubkey)
+                                    .name(author.clone())
+                                    .picture(profile.picture())
+                                    .small(),
+                            )
+                            .child(author),
+                    )
+                    .child(
+                        div()
+                            .text_color(cx.theme().colors.muted_foreground)
+                            .child("commented"),
+                    )
+                    .child(
+                        div()
+                            .text_color(cx.theme().colors.muted_foreground)
+                            .child(SharedString::from(age)),
+                    ),
+            )
+            .child(div().text_sm().child(content))
+            .into_any_element()
+    }
+
+    /// Posts the composer's text as a comment on this issue.
+    fn submit_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let content = self.comment_input.read(cx).value().trim().to_string();
+        if content.is_empty() {
+            return;
+        }
+
+        let event = self
+            .store
+            .read(cx)
+            .issues
+            .iter()
+            .find(|event| event.id == self.issue_id)
+            .cloned();
+
+        if let Some(event) = event {
+            self.store.update(cx, |store, cx| {
+                store.comment(&event, content, cx);
+            });
+        }
+
+        self.comment_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+        });
     }
 }
 
@@ -174,9 +250,9 @@ impl Render for IssueDetailView {
         let Some(issue) = store.issues.iter().find(|issue| issue.id == self.issue_id) else {
             // A not-yet-loaded store is not the same as a missing issue.
             return if store.loaded {
-                EmptyState::centered("Issue not found")
+                EmptyState::centered("Issue not found").into_any_element()
             } else {
-                Spinner::centered("issue-loading")
+                Spinner::centered("issue-loading").into_any_element()
             };
         };
 
@@ -199,75 +275,125 @@ impl Render for IssueDetailView {
         };
         let picture = self.directory.read(cx).profile(&pubkey, cx).picture();
 
-        div()
-            .id("issue-detail")
+        ScrollArea::new("issue-detail-scroll")
+            .handle(self.scroll_handle.clone())
             .size_full()
             .child(
-                ScrollArea::new("issue-detail-scroll")
-                    .handle(self.scroll_handle.clone())
-                    .size_full()
+                v_flex()
+                    .p_4()
+                    .gap_6()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(status_badge(status))
+                            .child(div().flex_1().min_w_0().font_semibold().child(title)),
+                    )
                     .child(
                         v_flex()
-                            .p_4()
-                            .gap_6()
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .child(status_badge(status))
-                                    .child(div().flex_1().min_w_0().font_semibold().child(title)),
-                            )
+                            .gap_8()
                             .child(
                                 v_flex()
-                                    .gap_8()
+                                    .gap_4()
                                     .child(
-                                        v_flex()
-                                            .gap_4()
+                                        h_flex()
+                                            .gap_2()
+                                            .text_sm()
                                             .child(
                                                 h_flex()
-                                                    .gap_2()
-                                                    .text_sm()
+                                                    .gap_1()
                                                     .child(
-                                                        h_flex()
-                                                            .gap_1()
-                                                            .child(
-                                                                Avatar::new(pubkey)
-                                                                    .name(author.clone())
-                                                                    .picture(picture)
-                                                                    .small(),
-                                                            )
-                                                            .child(author),
+                                                        Avatar::new(pubkey)
+                                                            .name(author.clone())
+                                                            .picture(picture)
+                                                            .small(),
                                                     )
-                                                    .child(
-                                                        div()
-                                                            .text_color(
-                                                                cx.theme().colors.muted_foreground,
-                                                            )
-                                                            .child("opened"),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_color(
-                                                                cx.theme().colors.muted_foreground,
-                                                            )
-                                                            .child(SharedString::from(age)),
-                                                    ),
+                                                    .child(author),
                                             )
-                                            .child(content),
+                                            .child(
+                                                div()
+                                                    .text_color(cx.theme().colors.muted_foreground)
+                                                    .child("opened"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_color(cx.theme().colors.muted_foreground)
+                                                    .child(SharedString::from(age)),
+                                            ),
                                     )
-                                    .child(comments_section(
-                                        &self.store,
-                                        issue_id,
-                                        &self.directory,
-                                        cx,
-                                    ))
-                                    .child(comment_form(
-                                        &self.store,
-                                        issue_id,
-                                        &store.issues,
-                                        &self.comment_input,
-                                        "comment",
-                                        cx,
-                                    )),
+                                    .child(content),
+                            )
+                            .child({
+                                let comments = self.store.read(cx).comments_of(&issue_id).count();
+
+                                if self.comments_scroll.item_count() != comments {
+                                    self.comments_scroll.reset(comments);
+                                }
+
+                                v_flex()
+                                    .gap_4()
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(Icon::named(IconRole::Message))
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_semibold()
+                                                    .child("Discussions"),
+                                            )
+                                            .child(Badge::new(
+                                                format!("discussion-count:{issue_id}"),
+                                                comments.to_string(),
+                                            )),
+                                    )
+                                    .child(
+                                        v_flex().max_h(rems(24.)).min_h_0().child(
+                                            list(
+                                                self.comments_scroll.clone(),
+                                                cx.processor(|this, ix, _, cx| {
+                                                    this.render_comment(ix, cx)
+                                                }),
+                                            )
+                                            .with_sizing_behavior(ListSizingBehavior::Infer),
+                                        ),
+                                    )
+                            })
+                            .child(
+                                v_flex()
+                                    .gap_2()
+                                    .child(
+                                        Input::new("comment-input", self.comment_input.clone())
+                                            .placeholder("Leave a comment...")
+                                            .rows(4),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .justify_between()
+                                            .child(
+                                                h_flex()
+                                                    .gap_1()
+                                                    .text_xs()
+                                                    .text_color(cx.theme().colors.muted_foreground)
+                                                    .child(
+                                                        Icon::named(IconRole::Markdown)
+                                                            .size(px(12.))
+                                                            .color(
+                                                                cx.theme().colors.muted_foreground,
+                                                            ),
+                                                    )
+                                                    .child("Markdown is supported"),
+                                            )
+                                            .child(
+                                                Button::new("comment")
+                                                    .label("Comment")
+                                                    .tooltip(Tooltip::text("Post comment"))
+                                                    .on_click(cx.listener(
+                                                        |this, _, window, cx| {
+                                                            this.submit_comment(window, cx)
+                                                        },
+                                                    )),
+                                            ),
+                                    ),
                             ),
                     ),
             )
@@ -292,78 +418,79 @@ impl Panel for IssueSidebarView {
 impl Render for IssueSidebarView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let store = self.store.read(cx);
+        let root = store.issues.iter().find(|issue| issue.id == self.issue_id);
 
-        let details = store
-            .issues
-            .iter()
-            .find(|issue| issue.id == self.issue_id)
-            .map(|root| {
+        ScrollArea::new("issue-sidebar-scroll")
+            .handle(self.scroll_handle.clone())
+            .size_full()
+            .child(v_flex().w_full().p_4().when_some(root, |this, root| {
                 let mut participants = vec![root.pubkey];
                 participants.extend(store.comments_of(&root.id).map(|comment| comment.pubkey));
-                participants.sort_by_key(|key| key.to_hex());
+                participants.sort_by_key(|key| key.to_bytes());
                 participants.dedup();
 
-                let labels: Vec<String> = root.tags.hashtags().map(|tag| tag.to_string()).collect();
+                let labels: Vec<SharedString> =
+                    root.tags.hashtags().map(SharedString::from).collect();
 
-                v_flex()
-                    .gap_4()
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_medium()
-                                    .text_color(cx.theme().colors.muted_foreground)
-                                    .child("Participants"),
-                            )
-                            .children(participants.iter().map(|pubkey| {
-                                let profile = self.directory.read(cx).profile(pubkey, cx);
-                                let name = profile.name();
+                this.child(
+                    v_flex()
+                        .gap_4()
+                        .child(
+                            v_flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_medium()
+                                        .text_color(cx.theme().colors.muted_foreground)
+                                        .child("Participants"),
+                                )
+                                .children(participants.iter().map(|pubkey| {
+                                    let profile = self.directory.read(cx).profile(pubkey, cx);
+                                    let name = profile.name();
 
-                                h_flex()
-                                    .gap_1()
-                                    .child(
-                                        Avatar::new(*pubkey)
-                                            .name(name.clone())
-                                            .picture(profile.picture())
-                                            .small(),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .whitespace_nowrap()
-                                            .text_sm()
-                                            .text_ellipsis()
-                                            .child(name),
-                                    )
-                                    .into_any_element()
-                            })),
-                    )
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_medium()
-                                    .text_color(cx.theme().colors.muted_foreground)
-                                    .child("Labels"),
-                            )
-                            .map(|this| {
-                                if labels.is_empty() {
+                                    h_flex()
+                                        .gap_1()
+                                        .child(
+                                            Avatar::new(*pubkey)
+                                                .name(name.clone())
+                                                .picture(profile.picture())
+                                                .small(),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .whitespace_nowrap()
+                                                .text_sm()
+                                                .text_ellipsis()
+                                                .child(name),
+                                        )
+                                })),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_medium()
+                                        .text_color(cx.theme().colors.muted_foreground)
+                                        .child("Labels"),
+                                )
+                                .when(labels.is_empty(), |this| {
                                     this.child(
                                         div()
                                             .text_sm()
                                             .text_color(cx.theme().colors.muted_foreground)
                                             .child("None yet."),
                                     )
-                                } else {
+                                })
+                                .when(!labels.is_empty(), |this| {
                                     this.child(v_flex().gap_1().items_start().children(
                                         labels.iter().map(|label| {
                                             Badge::new(
-                                                SharedString::from(format!("label:{label}")),
+                                                (ElementId::from("label"), label.clone()),
                                                 label.clone(),
                                             )
                                             .variant(BadgeVariant::Outline)
@@ -371,16 +498,9 @@ impl Render for IssueSidebarView {
                                             .flex_none()
                                         }),
                                     ))
-                                }
-                            }),
-                    )
-                    .into_any_element()
-            })
-            .unwrap_or_else(|| div().into_any_element());
-
-        ScrollArea::new("issue-sidebar-scroll")
-            .handle(self.scroll_handle.clone())
-            .size_full()
-            .child(v_flex().w_full().p_4().child(details))
+                                }),
+                        ),
+                )
+            }))
     }
 }

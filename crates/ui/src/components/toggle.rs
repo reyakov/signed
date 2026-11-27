@@ -14,10 +14,10 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Role,
-    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Toggled, Window,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Toggled, Window,
 };
 
-use crate::components::common::{ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt as _, h_flex};
 use crate::icons::Icon;
 use crate::theme::{ActiveTheme as _, DISABLED_OPACITY, Size};
 
@@ -107,7 +107,7 @@ impl Toggle {
     }
 }
 
-impl gpui::Styled for Toggle {
+impl Styled for Toggle {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
@@ -123,6 +123,7 @@ impl RenderOnce for Toggle {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let colors = theme.colors;
+        let ring = theme.focus_ring();
         let ramps = theme.ramps;
         let size = self.size;
         let on_change = self.on_change;
@@ -159,7 +160,7 @@ impl RenderOnce for Toggle {
                     .cursor_pointer()
                     .focusable()
                     .tab_stop(true)
-                    .focus_visible(|style| style.shadow(focus_ring(colors.ring)))
+                    .focus_visible(|style| style.shadow(ring))
                     .when_some(on_change, |toggle, on_change| {
                         toggle.on_click(move |_, window, cx| on_change(next, window, cx))
                     })

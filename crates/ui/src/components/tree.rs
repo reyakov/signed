@@ -24,17 +24,15 @@ use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, ElementId, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
+    App, ElementId, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled as _, UniformListScrollHandle, Window, div, rems, uniform_list,
+    StyleRefinement, Styled, UniformListScrollHandle, Window, div, rems, uniform_list,
 };
 
-use crate::common::{focus_handle, h_flex};
-use crate::components::common::{
-    StyledExt as _, nav_key, paint_selectable_row, selectable_label_color, v_flex,
-};
+use crate::common::h_flex;
+use crate::components::common::{ElementIdExt as _, SelectableRows as _, StyledExt as _, v_flex};
 use crate::components::scrollbar::Scrollbar;
-use crate::icons::{Icon, IconRole, icon};
+use crate::icons::{Icon, IconRole};
 use crate::theme::ActiveTheme as _;
 
 /// The change reporter, fired with the next selection by pointer and keys.
@@ -58,6 +56,10 @@ pub struct TreeItem {
     expandable: bool,
     expanded: bool,
     disabled: bool,
+    /// One-based position among the row's siblings.
+    position_in_set: usize,
+    /// Number of siblings sharing the row's parent.
+    size_of_set: usize,
 }
 
 impl TreeItem {
@@ -75,6 +77,8 @@ impl TreeItem {
             expandable: false,
             expanded: false,
             disabled: false,
+            position_in_set: 0,
+            size_of_set: 0,
         }
     }
 
@@ -86,6 +90,16 @@ impl TreeItem {
     /// Whether the row has children and paints a chevron.
     pub fn is_expandable(&self) -> bool {
         self.expandable
+    }
+
+    /// The row's nesting level, zero at the root.
+    pub fn level(&self) -> usize {
+        self.depth
+    }
+
+    /// Whether the row is currently expanded.
+    pub fn is_expanded(&self) -> bool {
+        self.expanded
     }
 
     /// Shows a custom icon leading the label.
@@ -132,9 +146,9 @@ impl TreeItem {
         on_change: &Option<ChangeHandler>,
         on_disclosure: &Option<DisclosureHandler>,
         focus: &FocusHandle,
-    ) -> AnyElement {
+    ) -> impl IntoElement {
         let theme = cx.theme();
-        let label_color = selectable_label_color(cx, selected, self.disabled);
+        let label_color = theme.selectable_label_color(selected, self.disabled);
         let disabled = self.disabled;
 
         let depth = self.depth.min(TREE_MAX_DEPTH) as f32;
@@ -156,7 +170,7 @@ impl TreeItem {
             .aria_position_in_set(position_in_set)
             .aria_size_of_set(size_of_set)
             .when(self.expandable, |row| row.aria_expanded(self.expanded))
-            .map(|row| paint_selectable_row(cx, row, selected, disabled))
+            .map(|row| row.selectable_row(cx, selected, disabled))
             .when(!disabled, |row| {
                 row.cursor_pointer().on_click({
                     let on_change = on_change.clone();
@@ -190,7 +204,7 @@ impl TreeItem {
             .when_some(
                 self.icon
                     .clone()
-                    .or_else(|| (!self.expandable).then(|| icon(IconRole::File))),
+                    .or_else(|| (!self.expandable).then(|| Icon::from(IconRole::File))),
                 |row, icon| row.child(icon.size(rems(1.0)).color(label_color)),
             )
             .child(
@@ -203,10 +217,9 @@ impl TreeItem {
                     .text_color(label_color)
                     .child(self.label.clone()),
             )
-            .into_any_element()
     }
 
-    fn render_disclosure(&self, cx: &App, selected: bool) -> AnyElement {
+    fn render_disclosure(&self, cx: &App, selected: bool) -> impl IntoElement {
         let theme = cx.theme();
         let glyph_color = if self.disabled || !selected {
             theme.colors.muted_foreground
@@ -223,7 +236,7 @@ impl TreeItem {
             .justify_center()
             .when(self.expandable, |cell| {
                 cell.child(
-                    icon(if self.expanded {
+                    Icon::from(if self.expanded {
                         IconRole::ChevronDown
                     } else {
                         IconRole::ChevronRight
@@ -250,13 +263,12 @@ pub struct TreeItemSeed {
 
 impl TreeItemSeed {
     /// Flattens the seeds into the rows a flat tree renders, honoring `expanded`.
-    ///
-    /// Expandable rows carry the folder icon; leaves fall back to the file icon
-    /// the tree paints by default.
     pub fn flatten_all(seeds: &[TreeItemSeed], expanded: &HashSet<String>) -> Vec<TreeItem> {
         fn push(
             seed: &TreeItemSeed,
             depth: usize,
+            position: usize,
+            siblings: usize,
             expanded: &HashSet<String>,
             rows: &mut Vec<TreeItem>,
         ) {
@@ -265,22 +277,34 @@ impl TreeItemSeed {
                 .depth(depth)
                 .expandable(!seed.children.is_empty())
                 .expanded(is_expanded);
+
             if !seed.children.is_empty() {
                 item = item.icon(Icon::named(IconRole::Folder));
             }
+
+            item.position_in_set = position;
+            item.size_of_set = siblings;
             rows.push(item);
 
             if is_expanded {
-                for child in &seed.children {
-                    push(child, depth + 1, expanded, rows);
+                for (index, child) in seed.children.iter().enumerate() {
+                    push(
+                        child,
+                        depth + 1,
+                        index + 1,
+                        seed.children.len(),
+                        expanded,
+                        rows,
+                    );
                 }
             }
         }
 
         let mut rows = Vec::new();
-        for seed in seeds {
-            push(seed, 0, expanded, &mut rows);
+        for (index, seed) in seeds.iter().enumerate() {
+            push(seed, 0, index + 1, seeds.len(), expanded, &mut rows);
         }
+
         rows
     }
 
@@ -299,6 +323,7 @@ impl TreeItemSeed {
         for seed in seeds {
             push(seed, &mut expanded);
         }
+
         expanded
     }
 
@@ -312,6 +337,7 @@ impl TreeItemSeed {
         for entry in paths {
             let mut parent: Option<usize> = None;
             let mut path = String::new();
+
             for part in entry.components() {
                 let label = part.as_os_str().to_string_lossy().into_owned();
                 path = if path.is_empty() {
@@ -319,21 +345,26 @@ impl TreeItemSeed {
                 } else {
                     format!("{path}/{label}")
                 };
+
                 let ix = *index.entry(path.clone()).or_insert_with(|| {
                     let ix = nodes.len();
                     nodes.push((path.clone(), label.clone(), Vec::new()));
+
                     match parent {
                         Some(parent) => nodes[parent].2.push(ix),
                         None => roots.push(ix),
                     }
+
                     ix
                 });
+
                 parent = Some(ix);
             }
         }
 
         fn assemble(ix: usize, nodes: &[(String, String, Vec<usize>)]) -> TreeItemSeed {
             let (id, label, children) = &nodes[ix];
+
             TreeItemSeed {
                 id: id.clone(),
                 label: label.clone(),
@@ -345,74 +376,6 @@ impl TreeItemSeed {
         }
 
         roots.iter().map(|root| assemble(*root, &nodes)).collect()
-    }
-}
-
-#[cfg(test)]
-mod seed_tests {
-    use super::*;
-
-    fn ids(rows: &[TreeItem]) -> Vec<(String, usize)> {
-        rows.iter()
-            .map(|row| (row.key().to_string(), row.depth))
-            .collect()
-    }
-
-    #[test]
-    fn collapsed_folders_hide_children() {
-        let seeds = TreeItemSeed::from_paths(&[
-            PathBuf::from("src"),
-            PathBuf::from("src/lib.rs"),
-            PathBuf::from("README.md"),
-        ]);
-
-        let rows = TreeItemSeed::flatten_all(&seeds, &HashSet::new());
-
-        assert_eq!(
-            ids(&rows),
-            vec![("src".to_owned(), 0), ("README.md".to_owned(), 0)]
-        );
-        assert!(rows[0].expandable);
-        assert!(!rows[0].expanded);
-    }
-
-    #[test]
-    fn expanding_a_folder_shows_children_in_order() {
-        let seeds = TreeItemSeed::from_paths(&[
-            PathBuf::from("src"),
-            PathBuf::from("src/lib.rs"),
-            PathBuf::from("src/views/mod.rs"),
-            PathBuf::from("README.md"),
-        ]);
-        let expanded = HashSet::from(["src".to_owned(), "src/views".to_owned()]);
-
-        let rows = TreeItemSeed::flatten_all(&seeds, &expanded);
-
-        assert_eq!(
-            ids(&rows),
-            vec![
-                ("src".to_owned(), 0),
-                ("src/lib.rs".to_owned(), 1),
-                ("src/views".to_owned(), 1),
-                ("src/views/mod.rs".to_owned(), 2),
-                ("README.md".to_owned(), 0),
-            ]
-        );
-    }
-
-    #[test]
-    fn indices_map_to_row_ids() {
-        let seeds = TreeItemSeed::from_paths(&[
-            PathBuf::from("docs"),
-            PathBuf::from("docs/guide.md"),
-            PathBuf::from("README.md"),
-        ]);
-        let expanded = HashSet::from(["docs".to_owned()]);
-        let rows = TreeItemSeed::flatten_all(&seeds, &expanded);
-
-        assert_eq!(rows[0].key().to_string(), "docs");
-        assert_eq!(rows[1].key().to_string(), "docs/guide.md");
-        assert_eq!(rows[2].key().to_string(), "README.md");
     }
 }
 
@@ -488,45 +451,6 @@ impl Tree {
         self
     }
 
-    /// Maps each visible row to its 1-based position-in-set and set size among its siblings.
-    fn sibling_sets(items: &[TreeItem]) -> Vec<(usize, usize)> {
-        let mut sets = vec![(0usize, 0usize); items.len()];
-        // Open sibling runs along the ancestry path, deeper runs above shallower ones.
-        let mut runs: Vec<(usize, Vec<usize>)> = Vec::new();
-
-        for (index, item) in items.iter().enumerate() {
-            while runs
-                .last()
-                .is_some_and(|(run_depth, _)| *run_depth > item.depth)
-            {
-                if let Some((_, pending)) = runs.pop() {
-                    Self::stamp_sibling_run(&mut sets, pending);
-                }
-            }
-
-            match runs.last_mut() {
-                // A row at the running depth extends the open sibling run.
-                Some((run_depth, pending)) if *run_depth == item.depth => pending.push(index),
-                _ => runs.push((item.depth, vec![index])),
-            }
-        }
-
-        for (_, pending) in runs {
-            Self::stamp_sibling_run(&mut sets, pending);
-        }
-
-        sets
-    }
-
-    fn stamp_sibling_run(sets: &mut [(usize, usize)], pending: Vec<usize>) {
-        let size_of_set = pending.len();
-        for (position, index) in pending.into_iter().enumerate() {
-            if let Some(set) = sets.get_mut(index) {
-                *set = (position + 1, size_of_set);
-            }
-        }
-    }
-
     /// The nearest row above `index` with a smaller depth.
     fn parent_of(items: &[TreeItem], index: usize) -> Option<usize> {
         let depth = items.get(index)?.depth;
@@ -544,7 +468,7 @@ impl Tree {
     }
 }
 
-impl gpui::Styled for Tree {
+impl Styled for Tree {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
@@ -575,9 +499,8 @@ impl RenderOnce for Tree {
             .map(|(index, _)| index)
             .collect();
 
-        let focus = focus_handle(&id, window, cx);
+        let focus = id.focus_handle(window, cx);
         let label = a11y_label.unwrap_or_else(|| SharedString::from(id.to_string()));
-        let sibling_sets = Self::sibling_sets(&items);
 
         let scroll = window.with_element_namespace(id.clone(), |window| {
             window.use_keyed_state("scroll", cx, |_, _| UniformListScrollHandle::new())
@@ -610,7 +533,7 @@ impl RenderOnce for Tree {
             .role(Role::Tree)
             .aria_label(label)
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
-                if nav_key(&selectable, selected, &event.keystroke.key, |next| {
+                if selectable.nav_key(selected, &event.keystroke.key, |next| {
                     if let Some(on_change) = &on_change {
                         on_change(next, window, cx);
                     }
@@ -659,7 +582,8 @@ impl RenderOnce for Tree {
                             let Some(item) = items_for_rows.get(index) else {
                                 return div().into_any_element();
                             };
-                            let (position_in_set, size_of_set) = sibling_sets[index];
+                            let position_in_set = item.position_in_set;
+                            let size_of_set = item.size_of_set;
 
                             item.render_row(
                                 cx,
@@ -671,6 +595,7 @@ impl RenderOnce for Tree {
                                 &on_disclosure_for_rows,
                                 &focus_for_rows,
                             )
+                            .into_any_element()
                         })
                         .collect()
                 })

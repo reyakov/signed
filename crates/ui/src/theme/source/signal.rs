@@ -3,6 +3,8 @@
 
 use gpui::{AsyncApp, Task};
 
+use crate::theme::ThemeEngine;
+
 pub(crate) struct ReapplySignal {
     sender: async_channel::Sender<()>,
     _task: Task<()>,
@@ -17,7 +19,8 @@ impl ReapplySignal {
 
         let task = executor.spawn(async move {
             while events.recv().await.is_ok() {
-                async_cx.update(crate::theme::reapply);
+                while events.try_recv().is_ok() {}
+                async_cx.update(ThemeEngine::reapply);
             }
         });
 

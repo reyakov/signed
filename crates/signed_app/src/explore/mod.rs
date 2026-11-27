@@ -1,3 +1,6 @@
+mod helpers;
+
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
@@ -5,7 +8,7 @@ use gpui::{
     ObjectFit, ParentElement as _, Pixels, Render, SharedString, Styled as _, StyledImage as _,
     Subscription, WeakEntity, Window, div, img, list, px,
 };
-use helpers::{RepoFilter, render_card};
+use helpers::{CardData, RepoCard, RepoFilter};
 use metadata::ProfileDirectory;
 use nostr::prelude::PublicKey;
 use signed_state::{Backend, RepoListStore};
@@ -14,23 +17,20 @@ use ui::common::{h_flex, v_flex};
 use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
 use ui::input::{Input, InputState, InputStateEvent};
-use ui::layout::panel::{Panel, PanelSlot, SplitSide};
-use ui::layout::root::RootContext as _;
+use ui::layout::panel::{Panel, PanelSlot, PanelStack, SplitSide};
 use ui::scrollbar::Scrollbar;
 use ui::segmented::{Segmented, SegmentedOption};
 use ui::theme::ActiveTheme as _;
 
 use crate::app::AppRoot;
-use crate::explore::helpers::pick_banner;
-use crate::identity::import::ImportDialog;
-use crate::identity::onboarding::OnboardingDialog;
 use crate::shared::log_dropped;
-
-mod helpers;
 
 const COLUMNS: usize = 2;
 // Name row, avatar strip, meta row, and their borders and gaps, in px.
 const CARD_HEIGHT: f32 = 40. + 64. + 48. + 2. + 6.;
+
+/// Applies a new explore filter.
+type FilterHandler = Rc<dyn Fn(RepoFilter, &mut Window, &mut App)>;
 
 pub struct ExploreView {
     store: Entity<RepoListStore>,
@@ -39,6 +39,8 @@ pub struct ExploreView {
     filter: RepoFilter,
     /// Indices matching [`Self::filter`] into the store's `announcements`.
     visible: Vec<usize>,
+    /// The visible cards' display strings, rebuilt with `visible`.
+    cards: Arc<Vec<CardData>>,
     search: Entity<InputState>,
     /// Profiles for the card owners.
     directory: Entity<ProfileDirectory>,
@@ -53,28 +55,28 @@ impl ExploreView {
     pub(crate) const PANEL_ID: &'static str = "Explore";
 
     /// Opens the explore panel in the main panel, reusing it when it is already cached.
-    pub(crate) fn open(workspace: &WeakEntity<AppRoot>, window: &mut Window, cx: &mut App) {
-        log_dropped(workspace.update(cx, |root, cx| {
-            root.panels().clone().update(cx, |panels, cx| {
-                panels.open(
-                    PanelSlot::Main,
-                    Self::PANEL_ID,
-                    {
-                        let workspace = workspace.clone();
-                        move |_, cx| cx.new(|cx| Self::new(workspace.clone(), cx))
-                    },
-                    window,
-                    cx,
-                )
-            })
-        }));
+    pub(crate) fn open(
+        panels: &Entity<PanelStack>,
+        workspace: WeakEntity<AppRoot>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        panels.update(cx, |panels, cx| {
+            panels.open(
+                PanelSlot::Main,
+                Self::PANEL_ID,
+                move |_, cx| cx.new(|cx| Self::new(workspace.clone(), cx)),
+                window,
+                cx,
+            );
+        });
     }
 
     pub fn new(workspace: WeakEntity<AppRoot>, cx: &mut Context<Self>) -> Self {
         let store = RepoListStore::global(cx);
         let directory = ProfileDirectory::new(cx);
 
-        let weak = cx.entity().downgrade();
+        let weak = cx.weak_entity();
         let search = InputState::new(cx);
 
         let search_subscription = cx.subscribe(&search, |this, _search, event, cx| {
@@ -103,6 +105,7 @@ impl ExploreView {
             scroll_handle: ListState::new(1, ListAlignment::Top, px(320.)),
             filter: RepoFilter::default(),
             visible: Vec::new(),
+            cards: Arc::new(Vec::new()),
             search,
             directory,
             _search_subscription: search_subscription,
@@ -118,6 +121,21 @@ impl ExploreView {
         let store = self.store.read(cx);
 
         self.visible = filter.visible(store, &query);
+        self.cards = Arc::new(
+            self.visible
+                .iter()
+                .filter_map(|ix| {
+                    let announcement = store.announcements.get(*ix)?;
+                    let activity = store.last_activity.get(&announcement.addr()).copied();
+                    Some(CardData::new(
+                        *ix,
+                        announcement,
+                        &store.announcements,
+                        activity,
+                    ))
+                })
+                .collect(),
+        );
 
         let owners: Vec<PublicKey> = self
             .visible
@@ -156,8 +174,10 @@ impl ExploreView {
             log::warn!("failed to watch the panel stack: the app root is gone");
             return;
         };
-        self._stack_subscription =
-            Some(cx.observe(&stack, |this, _stack, cx| this.sync_sidebar(cx)));
+
+        self._stack_subscription = Some(cx.observe(&stack, |this, _stack, cx| {
+            this.sync_sidebar(cx);
+        }));
         self.sync_sidebar(cx);
     }
 
@@ -172,7 +192,9 @@ impl ExploreView {
                 let shown = signed_out && stack.is_active(PanelSlot::Main, &explore);
 
                 if shown && !stack.is_open(PanelSlot::Split, &sidebar) {
-                    let view = Arc::new(cx.new(|_| OnboardingSidebar));
+                    let view = Arc::new(cx.new(|_| OnboardingSidebar {
+                        workspace: self.workspace.clone(),
+                    }));
                     stack.insert_split_at(
                         sidebar.clone(),
                         OnboardingSidebar::WIDTH,
@@ -180,7 +202,7 @@ impl ExploreView {
                         view,
                         cx,
                     );
-                } else if !shown {
+                } else if !shown && stack.is_open(PanelSlot::Split, &sidebar) {
                     stack.close(PanelSlot::Split, &sidebar, cx);
                 }
             })
@@ -191,12 +213,63 @@ impl ExploreView {
         }
     }
 
+    /// One list row: the search header, or one strip of repository cards.
+    fn render_list_item(&mut self, item: usize, cx: &mut Context<Self>) -> AnyElement {
+        if item == 0 {
+            let on_filter: FilterHandler =
+                Rc::new(cx.processor(|this, filter: RepoFilter, _, cx| {
+                    this.filter = filter;
+                    this.rebuild_rows(false, cx);
+                }));
+            return Self::render_header(self.search.clone(), self.filter, on_filter, cx)
+                .into_any_element();
+        }
+
+        if self.visible.is_empty() {
+            return v_flex()
+                .w_full()
+                .h(px(320.))
+                .items_center()
+                .justify_center()
+                .child(EmptyState::new("No repositories match your search"))
+                .into_any_element();
+        }
+
+        let store = self.store.read(cx);
+        let row = item - 1;
+        let mut rendered = Vec::with_capacity(COLUMNS);
+
+        for col in 0..COLUMNS {
+            let Some(data) = self.cards.get(row * COLUMNS + col) else {
+                break;
+            };
+            let Some(announcement) = store.announcements.get(data.ix) else {
+                break;
+            };
+            rendered.push(RepoCard::new(
+                data,
+                announcement,
+                &self.directory,
+                &self.workspace,
+            ));
+        }
+
+        h_flex()
+            .w_full()
+            .h(px(CARD_HEIGHT))
+            .gap_3()
+            .px_4()
+            .pt_4()
+            .children(rendered)
+            .into_any_element()
+    }
+
     fn render_header(
         search: Entity<InputState>,
         filter: RepoFilter,
-        weak: WeakEntity<Self>,
+        on_filter: FilterHandler,
         cx: &App,
-    ) -> AnyElement {
+    ) -> impl IntoElement {
         let muted = cx.theme().colors.muted_foreground;
 
         div()
@@ -231,17 +304,11 @@ impl ExploreView {
                                 .label("Recent")
                                 .icon(Icon::named(IconRole::Clock).small().color(muted)),
                         ])
-                        .on_change(move |filter, _, cx| {
-                            if let Err(error) = weak.update(cx, |this, cx| {
-                                this.filter = filter;
-                                this.rebuild_rows(false, cx);
-                            }) {
-                                log::warn!("failed to change explore filter: {error}");
-                            }
+                        .on_change(move |filter, window, cx| {
+                            on_filter(filter, window, cx);
                         }),
                 ),
             )
-            .into_any_element()
     }
 }
 
@@ -262,67 +329,16 @@ impl Panel for ExploreView {
 
 impl Render for ExploreView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let store = self.store.read(cx);
-        let announcements = store.announcements.clone();
-        let last_activity = store.last_activity.clone();
-        let visible = self.visible.clone();
-        let directory = self.directory.clone();
-        let workspace = self.workspace.clone();
-        let has_repos = !visible.is_empty();
-        let search = self.search.clone();
-        let filter = self.filter;
-        let weak = cx.entity().downgrade();
         let scroll_handle = self.scroll_handle.clone();
 
         div()
             .relative()
             .size_full()
             .child(
-                list(self.scroll_handle.clone(), move |item, _, cx| {
-                    if item == 0 {
-                        return Self::render_header(search.clone(), filter, weak.clone(), cx);
-                    }
-
-                    if !has_repos {
-                        return v_flex()
-                            .w_full()
-                            .h(px(320.))
-                            .items_center()
-                            .justify_center()
-                            .child(EmptyState::new("No repositories match your search"))
-                            .into_any_element();
-                    }
-
-                    let row = item - 1;
-                    let mut cards = Vec::with_capacity(COLUMNS);
-
-                    for col in 0..COLUMNS {
-                        let Some(&ix) = visible.get(row * COLUMNS + col) else {
-                            break;
-                        };
-                        let Some(announcement) = announcements.get(ix) else {
-                            break;
-                        };
-                        let activity = last_activity.get(&announcement.addr()).copied();
-                        cards.push(render_card(
-                            announcement,
-                            activity,
-                            &announcements,
-                            &directory,
-                            &workspace,
-                            cx,
-                        ));
-                    }
-
-                    h_flex()
-                        .w_full()
-                        .h(px(CARD_HEIGHT))
-                        .gap_3()
-                        .px_4()
-                        .pt_4()
-                        .children(cards)
-                        .into_any_element()
-                })
+                list(
+                    self.scroll_handle.clone(),
+                    cx.processor(|this, item: usize, _window, cx| this.render_list_item(item, cx)),
+                )
                 .size_full(),
             )
             .child(Scrollbar::vertical("explore-scroll", scroll_handle))
@@ -330,13 +346,27 @@ impl Render for ExploreView {
 }
 
 /// The onboarding sidebar shown beside the explore panel while signed out.
-struct OnboardingSidebar;
+struct OnboardingSidebar {
+    workspace: WeakEntity<AppRoot>,
+}
 
 impl OnboardingSidebar {
     /// The identifier of the sidebar in the panel stack; shown as its tab label.
     const PANEL_ID: &'static str = "Onboarding";
     /// The width the sidebar opens at.
     const WIDTH: Pixels = px(300.);
+
+    /// One of the three banner photos, picked per process launch.
+    fn banner() -> SharedString {
+        static BANNER: std::sync::LazyLock<SharedString> = std::sync::LazyLock::new(|| {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|now| now.subsec_nanos())
+                .unwrap_or(0);
+            SharedString::from(format!("backgrounds/banner{}.jpg", nanos % 3 + 1))
+        });
+        BANNER.clone()
+    }
 }
 
 impl Panel for OnboardingSidebar {
@@ -349,6 +379,7 @@ impl Render for OnboardingSidebar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let colors = theme.colors;
+        let workspace = self.workspace.clone();
 
         v_flex()
             .size_full()
@@ -358,7 +389,7 @@ impl Render for OnboardingSidebar {
             .overflow_hidden()
             .child(
                 div().absolute().inset_0().child(
-                    img(pick_banner())
+                    img(OnboardingSidebar::banner())
                         .size_full()
                         .object_fit(ObjectFit::Cover)
                         .rounded(theme.radius.overlay),
@@ -379,18 +410,26 @@ impl Render for OnboardingSidebar {
                                 Button::new("join")
                                     .label("Join now")
                                     .variant(ButtonVariant::Primary)
-                                    .on_click(|_, _, cx| {
-                                        let dialog = OnboardingDialog::new(cx);
-                                        cx.open_dialog(dialog)
+                                    .on_click({
+                                        let workspace = workspace.clone();
+                                        move |_, _, cx| {
+                                            log_dropped(workspace.update(cx, |root, cx| {
+                                                root.open_onboarding_dialog(cx)
+                                            }));
+                                        }
                                     }),
                             )
                             .child(
                                 Button::new("import")
                                     .label("Import identity")
                                     .variant(ButtonVariant::Secondary)
-                                    .on_click(|_, _, cx| {
-                                        let dialog = ImportDialog::new(cx);
-                                        cx.open_dialog(dialog)
+                                    .on_click({
+                                        let workspace = workspace.clone();
+                                        move |_, window, cx| {
+                                            log_dropped(workspace.update(cx, |root, cx| {
+                                                root.open_import_dialog(window, cx)
+                                            }));
+                                        }
                                     }),
                             ),
                     ),

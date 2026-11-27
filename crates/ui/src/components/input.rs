@@ -3,16 +3,16 @@
 //! The state is a [`gpui::Entity`] the application owns across frames: read it
 //! with [`InputState::value`], write it with [`InputState::set_value`], and
 //! subscribe to [`InputStateEvent`] for changes. [`Input`] is the view built
-//! from that state each frame. Call [`bind_input_keys`] once at startup to
+//! from that state each frame. Call [`InputState::bind_keys`] once at startup to
 //! register the editing keybindings.
 //!
 //! # Examples
 //!
 //! ```no_run
-//! use ui::input::{Input, InputState, bind_input_keys};
+//! use ui::input::{Input, InputState};
 //!
 //! # let mut cx: gpui::App = unimplemented!();
-//! bind_input_keys(&mut cx);
+//! InputState::bind_keys(&mut cx);
 //!
 //! let state = InputState::builder()
 //!     .text("Ada Lovelace")
@@ -33,8 +33,8 @@ use gpui::{
     EntityInputHandler, EventEmitter, Font, HitboxBehavior, InteractiveElement as _, IntoElement,
     KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement as _, Pixels, RenderOnce, Role, ScrollDelta, ScrollEvent, SharedString,
-    StatefulInteractiveElement as _, StyleRefinement, Styled as _, TextAlign, TextRun,
-    UTF16Selection, Window, WrappedLine, actions, canvas, div, fill, point, px,
+    StatefulInteractiveElement as _, StyleRefinement, Styled as _, Subscription, TextAlign,
+    TextRun, UTF16Selection, Window, WrappedLine, actions, canvas, div, fill, point, px,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -128,7 +128,7 @@ actions!(
     ]
 );
 
-/// The keybindings [`bind_input_keys`] registers on the application.
+/// The keybindings [`InputState::bind_keys`] registers on the application.
 ///
 /// A `None` field leaves its action unbound. Start from [`InputBindings::default`]
 /// to rebind one action and keep the platform defaults.
@@ -473,7 +473,7 @@ impl HistoryEntry {
 /// Everything `shape_text` consumes, for cache reuse between frames.
 #[derive(Clone, PartialEq)]
 struct ShapeCacheKey {
-    text: String,
+    text: SharedString,
     wrap_width: Option<Pixels>,
     font_size: Pixels,
     font: Font,
@@ -586,6 +586,10 @@ pub struct InputState {
     layout: Option<InputLayout>,
     /// The last shaped buffer, reused while no shaping input changed.
     shaped_cache: std::cell::RefCell<Option<(ShapeCacheKey, ShapedText)>>,
+    /// Focus-in, while the field is painted; armed once per mount.
+    focus_in: Option<Subscription>,
+    /// Focus-out, while the field is painted; armed once per mount.
+    focus_out: Option<Subscription>,
 }
 
 impl EventEmitter<InputStateEvent> for InputState {}
@@ -623,6 +627,8 @@ impl InputState {
             caret_epoch_started: Instant::now(),
             layout: None,
             shaped_cache: std::cell::RefCell::new(None),
+            focus_in: None,
+            focus_out: None,
         }
     }
 
@@ -680,6 +686,7 @@ impl InputState {
             cx.emit(InputStateEvent::TextChanged);
         }
         self.notify(window, cx);
+        window.notify_text_input_changed(&self.focus_handle);
     }
 
     /// Sets how long consecutive edits keep merging into one undo entry.
@@ -747,11 +754,9 @@ impl InputState {
             let last_end = last.range.start + last.new_len;
 
             if self.marked_range.is_some() {
-                // A pre-edit step overlapping the previous entry's region.
-                if range.start >= last.range.start {
-                    last.new_len += new_len;
-                    let replaced = range.len();
-                    last.new_len -= replaced;
+                // A pre-edit step overlapping the previous entry's replaced region.
+                if range.start >= last.range.start && range.end <= last_end {
+                    last.new_len += new_len - range.len();
                     last.timestamp = now;
                     return;
                 }
@@ -807,13 +812,12 @@ impl InputState {
         self.cursor.min(self.anchor)..self.cursor.max(self.anchor)
     }
 
-    fn notify(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn notify(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         cx.notify();
         self.scroll_to_caret_pending = true;
         self.goal_x = None;
         self.caret_epoch += 1;
         self.caret_epoch_started = Instant::now();
-        window.notify_text_input_changed(&self.focus_handle);
     }
 
     /// Scrolls the field by a wheel delta, clamped at paint.
@@ -918,6 +922,7 @@ impl InputState {
 
         cx.emit(InputStateEvent::TextChanged);
         self.notify(window, cx);
+        window.notify_text_input_changed(&self.focus_handle);
     }
 
     /// Deletes the selection, or one character/word before the caret.
@@ -966,6 +971,7 @@ impl InputState {
         self.cursor = cursor;
         self.anchor = anchor;
         self.notify(window, cx);
+        window.notify_text_selection_changed(&self.focus_handle);
     }
 
     /// Selects `range`.
@@ -976,6 +982,7 @@ impl InputState {
         self.anchor = range.start;
         self.cursor = range.end;
         self.notify(window, cx);
+        window.notify_text_selection_changed(&self.focus_handle);
     }
 
     /// Copies the selected text to the clipboard.
@@ -1017,9 +1024,17 @@ impl InputState {
 
         let font_size = text_style.font_size.to_pixels(window.rem_size());
 
-        if !self.masked()
-            && let Some((cached_key, shaped)) = self.shaped_cache.borrow().as_ref()
-            && cached_key.text == self.text
+        let masked = if self.masked() {
+            Some(masked_display(&self.text))
+        } else {
+            None
+        };
+        let display = masked
+            .as_ref()
+            .map_or_else(|| self.text.as_str(), |(display, _)| display.as_str());
+
+        if let Some((cached_key, shaped)) = self.shaped_cache.borrow().as_ref()
+            && cached_key.text.as_ref() == display
             && cached_key.wrap_width == wrap_width
             && cached_key.font_size == font_size
             && cached_key.font == font
@@ -1028,10 +1043,9 @@ impl InputState {
             return shaped.clone();
         }
 
-        let (text, mask_map) = if self.masked() {
-            masked_display(&self.text)
-        } else {
-            (self.text.clone(), None)
+        let (text, mask_map) = match masked {
+            Some((display, mask_map)) => (SharedString::from(display), mask_map),
+            None => (SharedString::from(self.text.as_str()), None),
         };
 
         let key = ShapeCacheKey {
@@ -1051,10 +1065,9 @@ impl InputState {
             strikethrough: None,
         }];
 
-        let shaped =
-            window
-                .text_system()
-                .shape_text(text.into(), font_size, &runs, wrap_width, None);
+        let shaped = window
+            .text_system()
+            .shape_text(text, font_size, &runs, wrap_width, None);
 
         let mut lines = Vec::new();
         match shaped {
@@ -1294,9 +1307,6 @@ impl InputState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let focused = self.focus_handle.is_focused(window);
-        self.sync_focus(focused, cx);
-
         let text_style = window.text_style();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let line_height = text_style
@@ -1304,6 +1314,7 @@ impl InputState {
             .to_pixels(text_style.font_size, window.rem_size());
 
         let origin = self.store_layout(text, bounds, padding, line_height);
+        let focused = self.focus_handle.is_focused(window);
 
         if focused && !self.selection().is_empty() {
             self.paint_selection(origin, colors.selection, window);
@@ -1682,6 +1693,7 @@ impl InputState {
 
         cx.emit(InputStateEvent::TextChanged);
         self.notify(window, cx);
+        window.notify_text_input_changed(&self.focus_handle);
     }
 
     fn redo(&mut self, _: &Redo, window: &mut Window, cx: &mut Context<Self>) {
@@ -1704,6 +1716,7 @@ impl InputState {
 
         cx.emit(InputStateEvent::TextChanged);
         self.notify(window, cx);
+        window.notify_text_input_changed(&self.focus_handle);
     }
 
     fn submit(&mut self, _: &Submit, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1734,6 +1747,12 @@ impl InputState {
 
     fn escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
         window.blur(cx);
+        cx.propagate();
+    }
+
+    /// Registers the input keybindings on the application, once at startup.
+    pub fn bind_keys(cx: &mut App) {
+        cx.bind_keys(InputBindings::default().into_bindings());
     }
 }
 
@@ -1772,8 +1791,10 @@ impl EntityInputHandler for InputState {
             .map(|range| utf8_range_to_utf16(&self.text, range))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
-        self.marked_range = None;
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.marked_range.take().is_some() {
+            cx.notify();
+        }
     }
 
     fn replace_text_in_range(
@@ -2111,6 +2132,31 @@ impl RenderOnce for Input {
                             window.set_cursor_style(CursorStyle::IBeam, &hitbox);
                         }
 
+                        // Focus transitions are events, not paint samples: a field that is
+                        // never painted again still emits Blurred when focus leaves it.
+                        if state.read(cx).focus_in.is_none() {
+                            let listener = state.downgrade();
+                            let subscription = window.on_focus_in(&focus, cx, move |_, cx| {
+                                let _ = listener.update(cx, |state, cx| {
+                                    state.focus_in = None;
+                                    state.sync_focus(true, cx);
+                                    cx.notify();
+                                });
+                            });
+                            state.update(cx, |state, _| state.focus_in = Some(subscription));
+                        }
+                        if state.read(cx).focus_out.is_none() {
+                            let listener = state.downgrade();
+                            let subscription = window.on_focus_out(&focus, cx, move |_, _, cx| {
+                                let _ = listener.update(cx, |state, cx| {
+                                    state.focus_out = None;
+                                    state.sync_focus(false, cx);
+                                    cx.notify();
+                                });
+                            });
+                            state.update(cx, |state, _| state.focus_out = Some(subscription));
+                        }
+
                         let dragging = state.update(cx, |state, cx| {
                             state.paint(text, bounds, field_padding, colors, window, cx)
                         });
@@ -2129,7 +2175,7 @@ impl RenderOnce for Input {
                             let state = state.clone();
                             move |event: &ScrollEvent, phase, window, cx| {
                                 if phase != DispatchPhase::Bubble
-                                    || !bounds.contains(&event.position)
+                                    || !hitbox.should_handle_scroll(window)
                                 {
                                     return;
                                 }
@@ -2168,11 +2214,10 @@ impl RenderOnce for Input {
                 canvas
                     .with_animation(
                         animation_id,
-                        // The blink needs four repaints per period,
-                        // not the display's refresh rate.
+                        // The blink needs two repaints per period, not the display's rate.
                         Animation::new(CARET_BLINK_INTERVAL * 2)
                             .repeat()
-                            .with_max_fps(4.0),
+                            .with_steps(2),
                         |canvas, _| canvas,
                     )
                     .into_any_element()
@@ -2489,11 +2534,6 @@ impl RenderOnce for Input {
                 }
             })
     }
-}
-
-/// Registers the input keybindings on the application, once at startup.
-pub fn bind_input_keys(cx: &mut App) {
-    cx.bind_keys(InputBindings::default().into_bindings());
 }
 
 /// The row holding `display`.

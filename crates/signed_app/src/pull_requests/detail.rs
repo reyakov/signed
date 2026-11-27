@@ -1,11 +1,13 @@
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, Pixels, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div, px,
+    AnyElement, App, AppContext as _, Context, ElementId, Entity, InteractiveElement as _,
+    IntoElement, ListAlignment, ListSizingBehavior, ListState, ParentElement as _, Pixels, Render,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    WeakEntity, Window, div, list, px, rems, uniform_list,
 };
 use metadata::ProfileDirectory;
 use nostr::prelude::{EventId, Kind, Url};
@@ -18,21 +20,21 @@ use ui::button::Button;
 use ui::common::{Sizable as _, StyledExt as _, h_flex, v_flex};
 use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
-use ui::input::InputState;
-use ui::layout::panel::{Panel, PanelSlot, SplitSide};
+use ui::input::{Input, InputState};
+use ui::layout::panel::{Panel, PanelSlot, PanelStack, SplitSide};
 use ui::layout::root::RootContext as _;
 use ui::scroll_area::ScrollArea;
 use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
+use ui::tooltip::Tooltip;
 use utils::relative_time;
 
 use crate::app::AppRoot;
-use crate::issues::helpers::{comment_form, comments_section};
 use crate::pull_requests::dialogs::update::UpdatePrDialog;
-use crate::repo::commit_diff::{CommitDiffView, DiffPane};
-use crate::repo::helpers::short_id;
+use crate::shared::commit_diff::{CommitDiffView, DiffPane};
+use crate::shared::labels::{ProfileDirectoryExt as _, ShortIdExt as _};
+use crate::shared::log_dropped;
 use crate::shared::widgets::status_badge;
-use crate::shared::{log_dropped, track_event_participants};
 
 const NOT_FOUND: &str = "Pull request not found";
 const SIDEBAR_ID: &str = "Discussion";
@@ -41,7 +43,7 @@ const SIDEBAR_WIDTH: Pixels = px(320.);
 #[derive(Clone, PartialEq, Eq)]
 struct PrBinding {
     description: String,
-    patch: String,
+    patch: Arc<str>,
     tip: Option<String>,
     base: Option<String>,
     clone_urls: Vec<Url>,
@@ -51,8 +53,31 @@ struct PrBinding {
 
 struct CommitRow {
     commit: FileCommit,
+    /// The row's element id.
+    id: SharedString,
+    /// The abbreviated commit id shown in the row.
+    short: SharedString,
+    /// The stats badge's element id.
+    stats_id: SharedString,
     insertions: usize,
     deletions: usize,
+}
+
+impl CommitRow {
+    fn new(commit: FileCommit, insertions: usize, deletions: usize) -> Self {
+        let id = SharedString::from(commit.id.clone());
+        let short = commit.id.short_id();
+        let stats_id = SharedString::from(format!("pr-commit-stats:{}", commit.id));
+
+        Self {
+            commit,
+            id,
+            short,
+            stats_id,
+            insertions,
+            deletions,
+        }
+    }
 }
 
 pub struct PullRequestDetailView {
@@ -68,9 +93,10 @@ pub struct PullRequestDetailView {
     error: Option<SharedString>,
     bound: Option<PrBinding>,
     load_generation: u64,
+    _store_subscription: Subscription,
     pane: Entity<DiffPane>,
     scroll_handle: ScrollHandle,
-    tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
+    load_task: Option<gpui::Task<Result<(), anyhow::Error>>>,
 }
 
 impl PullRequestDetailView {
@@ -82,7 +108,12 @@ impl PullRequestDetailView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let pane = cx.new(DiffPane::new);
+        let pane = cx.new(|cx| DiffPane::new(false, cx));
+
+        // A new revision or a rebind must reach the panel without reopening it.
+        let store_subscription = cx.observe(&store, |this, _store, cx| {
+            this.sync(cx);
+        });
 
         cx.defer_in(window, move |this, _window, cx| {
             this.sync(cx);
@@ -101,14 +132,16 @@ impl PullRequestDetailView {
             error: None,
             bound: None,
             load_generation: 0,
+            _store_subscription: store_subscription,
             pane,
             scroll_handle: ScrollHandle::new(),
-            tasks: Vec::new(),
+            load_task: None,
         }
     }
 
     /// Opens the pull request in the main panel and its discussion in the split pane.
     pub fn open(
+        panels: &Entity<PanelStack>,
         workspace: &WeakEntity<AppRoot>,
         store: Entity<RepoStore>,
         pr_id: EventId,
@@ -120,47 +153,61 @@ impl PullRequestDetailView {
         let detail_store = store.clone();
         let directory = ProfileDirectory::new(cx);
 
-        log_dropped(workspace.update(cx, |root, cx| {
-            root.panels().update(cx, |panels, cx| {
-                panels.open(
-                    PanelSlot::Main,
-                    id,
-                    {
-                        let directory = directory.clone();
-                        move |window, cx| {
-                            cx.new(|cx| {
-                                Self::new(
-                                    workspace_for_build.clone(),
-                                    detail_store.clone(),
-                                    pr_id,
-                                    directory.clone(),
-                                    window,
-                                    cx,
-                                )
-                            })
-                        }
-                    },
-                    window,
-                    cx,
-                );
+        panels.update(cx, |panels, cx| {
+            panels.open(
+                PanelSlot::Main,
+                id,
+                {
+                    let directory = directory.clone();
+                    move |window, cx| {
+                        cx.new(|cx| {
+                            Self::new(
+                                workspace_for_build.clone(),
+                                detail_store.clone(),
+                                pr_id,
+                                directory.clone(),
+                                window,
+                                cx,
+                            )
+                        })
+                    }
+                },
+                window,
+                cx,
+            );
 
-                let sidebar = cx.new(|cx| {
-                    PullRequestSidebarView::new(store.clone(), pr_id, directory.clone(), cx)
-                });
+            let sidebar = cx
+                .new(|cx| PullRequestSidebarView::new(store.clone(), pr_id, directory.clone(), cx));
 
-                panels.insert_split_at(
-                    SIDEBAR_ID,
-                    SIDEBAR_WIDTH,
-                    SplitSide::Trailing,
-                    Arc::new(sidebar),
-                    cx,
-                );
-            })
-        }));
+            panels.insert_split_at(
+                SIDEBAR_ID,
+                SIDEBAR_WIDTH,
+                SplitSide::Trailing,
+                Arc::new(sidebar),
+                cx,
+            );
+        });
+    }
+
+    /// Opens the update dialog for the pull request's current revision.
+    fn open_update_dialog(&mut self, cx: &mut Context<Self>) {
+        let root = self
+            .store
+            .read(cx)
+            .pull_requests
+            .iter()
+            .find(|pr| pr.id == self.pr_id && pr.kind == Kind::GitPullRequest)
+            .cloned();
+
+        if let Some(root) = root {
+            let dialog = UpdatePrDialog::new(self.store.clone(), root, cx);
+            cx.open_dialog(dialog);
+        }
     }
 
     fn sync(&mut self, cx: &mut Context<Self>) {
         let loaded = self.store.read(cx).loaded;
+
         let binding = {
             let store = self.store.read(cx);
             store.addr().and_then(|addr| {
@@ -185,7 +232,7 @@ impl PullRequestDetailView {
 
                         PrBinding {
                             description: root.content.clone(),
-                            patch: PullRequest::new(root).patch(store.patches.iter()),
+                            patch: PullRequest::new(root).patch(store.patches.iter()).into(),
                             tip,
                             base,
                             clone_urls,
@@ -237,24 +284,22 @@ impl PullRequestDetailView {
             ..
         } = binding;
 
-        let task: gpui::Task<Result<(), anyhow::Error>> = cx.spawn(async move |this, cx| {
+        let task: Task<Result<(), anyhow::Error>> = cx.spawn(async move |this, cx| {
             let nostr_diff = cx
                 .background_spawn({
-                    let patch = patch.clone();
+                    let patch = Arc::clone(&patch);
                     async move { PatchParser::patch_diffs(&patch) }
                 })
                 .await;
 
             let nostr_commits = cx
                 .background_spawn({
-                    let patch = patch.clone();
+                    let patch = Arc::clone(&patch);
                     async move {
                         PatchParser::patch_commits_with_stats(&patch)
                             .into_iter()
-                            .map(|(commit, insertions, deletions)| CommitRow {
-                                commit,
-                                insertions,
-                                deletions,
+                            .map(|(commit, insertions, deletions)| {
+                                CommitRow::new(commit, insertions, deletions)
                             })
                             .collect::<Vec<_>>()
                     }
@@ -273,6 +318,7 @@ impl PullRequestDetailView {
                 let clone_urls = clone_urls.clone();
                 let base = base.clone();
                 let tip = tip.clone();
+
                 Some(
                     cx.background_spawn(async move {
                         let repo = Mirrors::ensure(&addr, &clone_urls)?;
@@ -315,11 +361,7 @@ impl PullRequestDetailView {
                                         (0, 0)
                                     }
                                 };
-                                CommitRow {
-                                    insertions,
-                                    deletions,
-                                    commit,
-                                }
+                                CommitRow::new(commit, insertions, deletions)
                             })
                             .collect::<Vec<_>>();
 
@@ -354,7 +396,8 @@ impl PullRequestDetailView {
             Ok(())
         });
 
-        self.tasks.push(task);
+        // Assigning drops the previous load task, cancelling superseded work.
+        self.load_task = Some(task);
     }
 
     fn open_commit_diff(
@@ -395,9 +438,9 @@ impl PullRequestDetailView {
         }));
     }
 
-    fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_body(&self, cx: &mut Context<Self>) -> impl IntoElement {
         if self.bound.is_none() {
-            return div().into_any_element();
+            return div();
         }
 
         let description = if self.description.is_empty() {
@@ -413,13 +456,10 @@ impl PullRequestDetailView {
             .p_2()
             .text_sm()
             .child(description)
-            .into_any_element()
     }
 
-    fn render_commits(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_commits(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.commits.len();
-        let worktree = self.worktree.clone();
-        let view = cx.entity().downgrade();
 
         v_flex()
             .w_full()
@@ -445,60 +485,68 @@ impl PullRequestDetailView {
                         .child("No commits found"),
                 )
             })
-            .children(self.commits.iter().map(|row| {
-                let commit = &row.commit;
-                let row_id = commit.id.clone();
-                let worktree = worktree.clone();
-                let view = view.clone();
+            .when(count > 0, |this| {
+                this.child(v_flex().max_h(px(320.)).min_h_0().child(uniform_list(
+                    "pr-commits",
+                    count,
+                    cx.processor(|this, range: Range<usize>, _window, cx| {
+                        range.map(|index| this.render_commit(index, cx)).collect()
+                    }),
+                )))
+            })
+    }
 
-                h_flex()
-                    .id(commit.id.clone())
-                    .px_2()
-                    .h_12()
-                    .w_full()
-                    .gap_3()
-                    .border_b_1()
-                    .border_color(cx.theme().colors.border)
-                    .hover(|this| this.bg(cx.theme().colors.muted_hover))
-                    .child(
-                        div()
-                            .w_20()
-                            .flex_none()
-                            .text_sm()
-                            .text_color(cx.theme().colors.muted_foreground)
-                            .child(short_id(&commit.id)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_sm()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .child(commit.summary.clone()),
-                    )
-                    .child(GroupedBadge::new(
-                        format!("pr-commit-stats:{}", commit.id),
-                        row.insertions,
-                        row.deletions,
-                    ))
-                    .on_click(move |_, window, cx| {
-                        if let Some(worktree) = worktree.clone() {
-                            log_dropped(view.update(cx, |this, cx| {
-                                this.open_commit_diff(worktree, &row_id, window, cx);
-                            }));
-                        }
-                    })
-                    .into_any_element()
+    /// One commit row of the patch series.
+    fn render_commit(&mut self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(row) = self.commits.get(index) else {
+            return div().into_any_element();
+        };
+
+        let commit = &row.commit;
+        let row_id = row.id.clone();
+        let worktree = self.worktree.clone();
+        let theme = cx.theme();
+
+        h_flex()
+            .id(row.id.clone())
+            .px_2()
+            .h_12()
+            .w_full()
+            .gap_3()
+            .border_b_1()
+            .border_color(theme.colors.border)
+            .hover(|this| this.bg(theme.colors.muted_hover))
+            .child(
+                div()
+                    .w_20()
+                    .flex_none()
+                    .text_sm()
+                    .text_color(theme.colors.muted_foreground)
+                    .child(row.short.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .child(commit.summary.clone()),
+            )
+            .child(GroupedBadge::new(
+                row.stats_id.clone(),
+                row.insertions,
+                row.deletions,
+            ))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if let Some(worktree) = worktree.clone() {
+                    this.open_commit_diff(worktree, &row_id, window, cx);
+                }
             }))
             .into_any_element()
     }
 
-    fn render_changes(&self, cx: &App) -> AnyElement {
-        self.pane.read(cx).render_flow(self.pane.downgrade(), cx)
-    }
-
-    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, status, branch, author, created_at, target_branch) = {
             let store = self.store.read(cx);
             let Some(root) = store
@@ -506,7 +554,7 @@ impl PullRequestDetailView {
                 .iter()
                 .find(|pr| pr.id == self.pr_id && pr.kind == Kind::GitPullRequest)
             else {
-                return div().into_any_element();
+                return div();
             };
             (
                 root.activity_subject(),
@@ -524,7 +572,6 @@ impl PullRequestDetailView {
 
         let backend = Backend::global(cx);
         let can_update = backend.read(cx).current_user() == Some(author);
-        let weak = cx.entity().downgrade();
         let muted = cx.theme().colors.muted_foreground;
 
         v_flex()
@@ -548,6 +595,7 @@ impl PullRequestDetailView {
                     .child(div().text_color(muted).child("opened by"))
                     .child(
                         h_flex()
+                            .min_w_0()
                             .gap_1()
                             .child(
                                 Avatar::new(author)
@@ -555,7 +603,7 @@ impl PullRequestDetailView {
                                     .picture(author_picture)
                                     .small(),
                             )
-                            .child(author_name),
+                            .child(div().min_w_0().truncate().child(author_name)),
                     )
                     .child(
                         div()
@@ -565,46 +613,41 @@ impl PullRequestDetailView {
                     .when_some(target_branch, |this, target| {
                         this.child(div().text_color(muted).child("targeting"))
                             .child(
-                                Badge::new(format!("target-branch:{target}"), target)
-                                    .variant(BadgeVariant::Outline)
-                                    .small()
-                                    .flex_none(),
+                                Badge::new(
+                                    (
+                                        ElementId::from("target-branch"),
+                                        SharedString::from(target.clone()),
+                                    ),
+                                    target.clone(),
+                                )
+                                .variant(BadgeVariant::Outline)
+                                .small()
+                                .flex_none(),
                             )
                     })
                     .when_some(branch, |this, branch| {
                         this.child(div().text_color(muted).child("from")).child(
-                            Badge::new(format!("source-branch:{branch}"), branch)
-                                .variant(BadgeVariant::Outline)
-                                .small()
-                                .flex_none(),
+                            Badge::new(
+                                (
+                                    ElementId::from("source-branch"),
+                                    SharedString::from(branch.clone()),
+                                ),
+                                branch.clone(),
+                            )
+                            .variant(BadgeVariant::Outline)
+                            .small()
+                            .flex_none(),
                         )
                     })
                     .child(div().flex_1())
                     .when(can_update, |this| {
                         this.child(Button::new("update-pr").label("Update").small().on_click(
-                            move |_, _, cx| {
-                                log_dropped(weak.update(cx, |this, cx| {
-                                    let root = this
-                                        .store
-                                        .read(cx)
-                                        .pull_requests
-                                        .iter()
-                                        .find(|pr| {
-                                            pr.id == this.pr_id && pr.kind == Kind::GitPullRequest
-                                        })
-                                        .cloned();
-
-                                    if let Some(root) = root {
-                                        let dialog =
-                                            UpdatePrDialog::new(this.store.clone(), root, cx);
-                                        cx.open_dialog(dialog);
-                                    }
-                                }));
-                            },
+                            cx.listener(|this, _, _, cx| {
+                                this.open_update_dialog(cx);
+                            }),
                         ))
                     }),
             )
-            .into_any_element()
     }
 }
 
@@ -615,6 +658,7 @@ struct PullRequestSidebarView {
     comment_input: Entity<InputState>,
     directory: Entity<ProfileDirectory>,
     scroll_handle: ScrollHandle,
+    comments_scroll: ListState,
     _subscription: Subscription,
 }
 
@@ -626,7 +670,7 @@ impl PullRequestSidebarView {
         cx: &mut Context<Self>,
     ) -> Self {
         let comment_input = InputState::builder().multiline().build(cx);
-        let weak = cx.entity().downgrade();
+        let weak = cx.weak_entity();
 
         let subscription = cx.observe(&store, |this, _store, cx| {
             this.track_participants(cx);
@@ -645,6 +689,7 @@ impl PullRequestSidebarView {
             comment_input,
             directory,
             scroll_handle: ScrollHandle::new(),
+            comments_scroll: ListState::new(0, ListAlignment::Top, px(48.)),
             _subscription: subscription,
         }
     }
@@ -664,7 +709,79 @@ impl PullRequestSidebarView {
             .map(|comment| comment.pubkey)
             .collect();
 
-        track_event_participants(author, owner, comments.into_iter(), &self.directory, cx);
+        self.directory
+            .track_participants(author, owner, comments.into_iter(), cx);
+    }
+
+    /// One comment card of the pull request's discussion.
+    fn render_comment(&self, ix: usize, cx: &App) -> AnyElement {
+        let Some(comment) = self.store.read(cx).comments_of(&self.pr_id).nth(ix) else {
+            return div().into_any_element();
+        };
+
+        let profile = self.directory.read(cx).profile(&comment.pubkey, cx);
+        let author = profile.name();
+        let age = relative_time(comment.created_at);
+        let content = SharedString::from(comment.content.as_str());
+
+        v_flex()
+            .gap_1()
+            .p_3()
+            .border_1()
+            .border_color(cx.theme().colors.border)
+            .rounded(cx.theme().radius.control)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_sm()
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Avatar::new(comment.pubkey)
+                                    .name(author.clone())
+                                    .picture(profile.picture())
+                                    .small(),
+                            )
+                            .child(author),
+                    )
+                    .child(
+                        div()
+                            .text_color(cx.theme().colors.muted_foreground)
+                            .child("commented"),
+                    )
+                    .child(
+                        div()
+                            .text_color(cx.theme().colors.muted_foreground)
+                            .child(SharedString::from(age)),
+                    ),
+            )
+            .child(div().text_sm().child(content))
+            .into_any_element()
+    }
+
+    /// Posts the sidebar composer's text as a comment on this pull request.
+    fn submit_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let content = self.comment_input.read(cx).value().trim().to_string();
+        if content.is_empty() {
+            return;
+        }
+
+        let event = self
+            .store
+            .read(cx)
+            .pull_requests
+            .iter()
+            .find(|event| event.id == self.pr_id)
+            .cloned();
+
+        if let Some(event) = event {
+            self.store
+                .update(cx, |store, cx| store.comment(&event, content, cx));
+        }
+
+        self.comment_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
     }
 }
 
@@ -684,37 +801,89 @@ impl Render for PullRequestSidebarView {
             .find(|pr| pr.id == self.pr_id && pr.kind == Kind::GitPullRequest)
         else {
             return if store.loaded {
-                EmptyState::centered(NOT_FOUND)
+                EmptyState::centered(NOT_FOUND).into_any_element()
             } else {
-                Spinner::centered("pr-loading")
+                Spinner::centered("pr-loading").into_any_element()
             };
         };
-        let root_id = root.id;
 
-        let discussion = ScrollArea::new("pr-discussion-scroll")
-            .handle(self.scroll_handle.clone())
-            .flex_1()
-            .min_h_0()
-            .child(v_flex().p_2().child(comments_section(
-                &self.store,
-                root_id,
-                &self.directory,
-                cx,
-            )))
-            .into_any_element();
+        let root_id = root.id;
+        let comments = self.store.read(cx).comments_of(&root_id).count();
+
+        if self.comments_scroll.item_count() != comments {
+            self.comments_scroll.reset(comments);
+        }
 
         v_flex()
             .size_full()
             .min_h_0()
-            .child(discussion)
-            .child(div().flex_none().p_2().child(comment_form(
-                &self.store,
-                root_id,
-                &store.pull_requests,
-                &self.comment_input,
-                "pr-comment",
-                cx,
-            )))
+            .child(
+                ScrollArea::new("pr-discussion-scroll")
+                    .handle(self.scroll_handle.clone())
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        v_flex()
+                            .p_2()
+                            .gap_4()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(Icon::named(IconRole::Message))
+                                    .child(div().text_sm().font_semibold().child("Discussion"))
+                                    .child(Badge::new(
+                                        format!("discussion-count:{root_id}"),
+                                        comments.to_string(),
+                                    )),
+                            )
+                            .child(
+                                v_flex().max_h(rems(24.)).min_h_0().child(
+                                    list(
+                                        self.comments_scroll.clone(),
+                                        cx.processor(|this, ix: usize, _window, cx| {
+                                            this.render_comment(ix, cx)
+                                        }),
+                                    )
+                                    .with_sizing_behavior(ListSizingBehavior::Infer),
+                                ),
+                            ),
+                    ),
+            )
+            .child(
+                div().flex_none().p_2().child(
+                    v_flex()
+                        .gap_2()
+                        .child(
+                            Input::new("pr-comment-input", self.comment_input.clone())
+                                .placeholder("Leave a comment...")
+                                .rows(4),
+                        )
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .child(
+                                    h_flex()
+                                        .gap_1()
+                                        .text_xs()
+                                        .text_color(cx.theme().colors.muted_foreground)
+                                        .child(
+                                            Icon::named(IconRole::Markdown)
+                                                .size(px(12.))
+                                                .color(cx.theme().colors.muted_foreground),
+                                        )
+                                        .child("Markdown is supported"),
+                                )
+                                .child(
+                                    Button::new("pr-comment")
+                                        .label("Comment")
+                                        .tooltip(Tooltip::text("Post comment"))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.submit_comment(window, cx)
+                                        })),
+                                ),
+                        ),
+                ),
+            )
             .into_any_element()
     }
 }
@@ -780,7 +949,7 @@ impl Render for PullRequestDetailView {
                     .child(self.render_header(cx))
                     .child(self.render_body(cx))
                     .child(self.render_commits(cx))
-                    .child(self.render_changes(cx)),
+                    .child(self.pane.read(cx).render_flow(self.pane.downgrade(), cx)),
             )
             .into_any_element()
     }

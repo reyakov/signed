@@ -6,20 +6,19 @@ use anyhow::Error;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, IntoElement,
-    ParentElement as _, Render, SharedString, StyleRefinement, Styled as _, Task, WeakEntity,
-    Window, div, px,
+    ParentElement as _, Render, SharedString, StyleRefinement, Styled as _, Task, Window, div, px,
 };
 use signed_git::{FileCommit, Repo, WorktreeSnapshot};
 use ui::code::CodeViewState;
 use ui::common::{StyledExt as _, h_flex, v_flex};
 use ui::empty_state::EmptyState;
+use ui::highlight::Language;
 use ui::markdown::MarkdownViewState;
 use ui::spinner::Spinner;
 use ui::theme::ActiveTheme as _;
 use ui::tree::{Tree, TreeItem, TreeItemSeed};
 
-use super::helpers::{code_language, is_markdown_path, source_hash};
-use crate::repo::helpers::short_id;
+use crate::shared::labels::{ShortIdExt as _, StrExt as _};
 
 const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
 const MAX_PREVIEWED_FILES: usize = 32;
@@ -163,8 +162,8 @@ impl RepoFilesView {
     /// Point the README pane at `path`/`bytes`, or clear it when absent.
     pub fn set_readme(
         &mut self,
-        path: Option<PathBuf>,
-        bytes: Option<Vec<u8>>,
+        path: Option<&Path>,
+        bytes: Option<&[u8]>,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some((path, bytes)) = path.zip(bytes) else {
@@ -179,8 +178,8 @@ impl RepoFilesView {
         self.readme_name = Some(name);
         self.load_commit(&path.to_string_lossy(), cx);
 
-        if let Ok(text) = String::from_utf8(bytes) {
-            changed |= self.set_markdown(None, &text, cx);
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            changed |= self.set_markdown(None, text, cx);
         }
 
         changed
@@ -246,7 +245,11 @@ impl RepoFilesView {
         }
 
         if self.selected_file.is_none() {
-            changed |= self.set_readme(snapshot.readme_path.clone(), snapshot.readme.clone(), cx);
+            changed |= self.set_readme(
+                snapshot.readme_path.as_deref(),
+                snapshot.readme.as_deref(),
+                cx,
+            );
         }
 
         changed
@@ -276,69 +279,12 @@ impl RepoFilesView {
         cx.notify();
     }
 
-    pub fn render_tree(&self, view: WeakEntity<Self>) -> AnyElement {
-        let rows = Arc::clone(&self.rows);
-        let selected = self.selected_index;
-        let change_view = view.clone();
-        let disclosure_view = view;
-
-        Tree::new("repo-tree")
-            .pr_2()
-            .selected(selected)
-            .items(move |_, _| Arc::clone(&rows))
-            .on_change({
-                let view = change_view;
-                move |index, window, cx| {
-                    if let Some(index) = index
-                        && let Err(error) = view.update(cx, |this, cx| {
-                            this.activate_row(index, window, cx);
-                        })
-                    {
-                        log::warn!("failed to activate tree row: {error}");
-                    }
-                }
-            })
-            .on_disclosure({
-                let view = disclosure_view;
-                move |index, _, cx| {
-                    if let Err(error) = view.update(cx, |this, cx| {
-                        let id = this.rows.get(index).map(|row| row.key().to_string());
-                        if let Some(id) = id {
-                            this.toggle_folder(&id);
-                            cx.emit(RepoFilesEvent::Activated);
-                            cx.notify();
-                        }
-                    }) {
-                        log::warn!("failed to toggle folder: {error}");
-                    }
-                }
-            })
-            .into_any_element()
-    }
-
     pub fn render_content(&self, cx: &App) -> AnyElement {
+        const BINARY: &str = "Binary file - preview not supported";
+        const TOO_LARGE: &str = "File is too large to preview";
+        const NO_README: &str = "No README found";
+
         let pane_title = self.pane_title();
-        let body: AnyElement = if let Some(path) = self.selected_file.clone() {
-            match self.files.get(path.as_ref()) {
-                Some(FileContent::Text(_)) => {
-                    if is_markdown_path(path.as_ref()) {
-                        self.markdown_element(Some(path.as_ref()))
-                    } else {
-                        self.code_element(path.as_ref())
-                    }
-                }
-                Some(FileContent::Binary) => {
-                    EmptyState::centered("Binary file - preview not supported")
-                }
-                Some(FileContent::TooLarge) => EmptyState::centered("File is too large to preview"),
-                Some(FileContent::Failed(message)) => EmptyState::centered(message),
-                None => Spinner::centered("repo-preview-spinner"),
-            }
-        } else if self.readme_name.is_some() {
-            self.markdown_element(None)
-        } else {
-            EmptyState::centered("No README found")
-        };
 
         let commit = match &self.selected_file {
             Some(path) => self.commits.get(path.as_ref()),
@@ -366,8 +312,7 @@ impl RepoFilesView {
                             .min_w_0()
                             .text_xs()
                             .font_medium()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
+                            .truncate()
                             .child(pane_title),
                     )
                     .when_some(commit, |this, commit| {
@@ -379,20 +324,50 @@ impl RepoFilesView {
                                     div()
                                         .text_xs()
                                         .font_family(cx.theme().mono_font)
-                                        .child(short_id(&commit.id)),
+                                        .child(commit.id.short_id()),
                                 )
                                 .child(
                                     div()
                                         .max_w(px(250.))
+                                        .min_w_0()
                                         .text_xs()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
+                                        .truncate()
                                         .child(commit.summary.clone()),
                                 ),
                         )
                     }),
             )
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .when_some(self.selected_file.clone(), |this, path| {
+                        this.child(match self.files.get(path.as_ref()) {
+                            Some(FileContent::Text(_)) if path.as_ref().is_markdown_path() => {
+                                self.markdown_element(Some(path.as_ref()))
+                            }
+                            Some(FileContent::Text(_)) => self.code_element(path.as_ref()),
+                            Some(FileContent::Binary) => {
+                                EmptyState::centered(BINARY).into_any_element()
+                            }
+                            Some(FileContent::TooLarge) => {
+                                EmptyState::centered(TOO_LARGE).into_any_element()
+                            }
+                            Some(FileContent::Failed(message)) => {
+                                EmptyState::centered(message).into_any_element()
+                            }
+                            None => Spinner::centered("repo-preview-spinner").into_any_element(),
+                        })
+                    })
+                    .when(
+                        self.selected_file.is_none() && self.readme_name.is_some(),
+                        |this| this.child(self.markdown_element(None)),
+                    )
+                    .when(
+                        self.selected_file.is_none() && self.readme_name.is_none(),
+                        |this| this.child(EmptyState::centered(NO_README)),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -402,7 +377,7 @@ impl RepoFilesView {
         text: &str,
         cx: &mut Context<Self>,
     ) -> bool {
-        let hash = source_hash(text);
+        let hash = text.source_hash();
 
         if let Some(md) = &self.md
             && md.path == path
@@ -425,7 +400,7 @@ impl RepoFilesView {
             return true;
         }
 
-        let state = cx.new(|_| MarkdownViewState::new("repo-readme", text));
+        let state = cx.new(|cx| MarkdownViewState::new("repo-readme", text, cx));
         self.md = Some(MarkdownView {
             path,
             state,
@@ -437,7 +412,7 @@ impl RepoFilesView {
 
     fn markdown_element(&self, path: Option<&str>) -> AnyElement {
         let Some(md) = &self.md else {
-            return Spinner::centered("repo-preview-spinner");
+            return Spinner::centered("repo-preview-spinner").into_any_element();
         };
 
         let ready = match path {
@@ -446,7 +421,7 @@ impl RepoFilesView {
         };
 
         if !ready {
-            return Spinner::centered("repo-preview-spinner");
+            return Spinner::centered("repo-preview-spinner").into_any_element();
         }
 
         div()
@@ -462,8 +437,8 @@ impl RepoFilesView {
     }
 
     fn set_code(&mut self, path: SharedString, text: &str, cx: &mut Context<Self>) {
-        let hash = source_hash(text);
-        let language = code_language(path.as_ref());
+        let hash = text.source_hash();
+        let language = Language::from_path(path.as_ref());
 
         if let Some(code) = &self.code
             && code.path == path
@@ -496,10 +471,11 @@ impl RepoFilesView {
 
     fn code_element(&self, path: &str) -> AnyElement {
         let Some(code) = &self.code else {
-            return Spinner::centered("repo-preview-spinner");
+            return Spinner::centered("repo-preview-spinner").into_any_element();
         };
+
         if code.path.as_ref() != path {
-            return Spinner::centered("repo-preview-spinner");
+            return Spinner::centered("repo-preview-spinner").into_any_element();
         }
 
         div()
@@ -513,19 +489,14 @@ impl RepoFilesView {
             .into_any_element()
     }
 
-    /// Reaps finished tasks, then queues another.
-    fn push_task(&mut self, task: Task<Result<(), Error>>) {
-        self.tasks.retain(|task| !task.is_ready());
-        self.tasks.push(task);
-    }
-
     fn open_file(&mut self, path: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.selected_file = Some(path.into());
 
         if self.files.contains_key(path) {
             if let Some(FileContent::Text(text)) = self.files.get(path) {
                 let text = text.clone();
-                if is_markdown_path(path) {
+
+                if path.is_markdown_path() {
                     if self.md.as_ref().map(|md| md.path.as_deref()) != Some(Some(path)) {
                         self.set_markdown(Some(path.into()), &text, cx);
                     }
@@ -533,11 +504,10 @@ impl RepoFilesView {
                     self.set_code(path.into(), &text, cx);
                 }
             }
-            cx.notify();
             return;
         }
+
         if self.loading_files.contains(path) {
-            cx.notify();
             return;
         }
 
@@ -617,7 +587,7 @@ impl RepoFilesView {
                 match content {
                     Ok(kind) => {
                         if let FileContent::Text(text) = &kind {
-                            if is_markdown_path(&path) {
+                            if path.is_markdown_path() {
                                 let same = this.md.as_ref().map(|md| md.path.as_deref())
                                     == Some(Some(path.as_str()));
                                 if !same {
@@ -641,13 +611,14 @@ impl RepoFilesView {
                             .insert(path, FileContent::Failed(error.to_string()));
                     }
                 }
+
                 cx.notify();
             })?;
 
             Ok(())
         });
 
-        self.push_task(task);
+        self.tasks.push(task);
     }
 
     fn drop_preview_of(&mut self, path: &str) {
@@ -660,9 +631,11 @@ impl RepoFilesView {
         if self.selected_file.as_deref() == Some(path) {
             self.selected_file = None;
         }
+
         if self.md.as_ref().and_then(|md| md.path.as_deref()) == Some(path) {
             self.md = None;
         }
+
         if self.code.as_ref().map(|code| code.path.as_ref()) == Some(path) {
             self.code = None;
         }
@@ -685,9 +658,11 @@ impl RepoFilesView {
             if let Some(FileContent::Text(text)) = self.files.remove(&path) {
                 self.preview_bytes -= text.len();
             }
+
             if self.md.as_ref().and_then(|md| md.path.as_deref()) == Some(path.as_str()) {
                 self.md = None;
             }
+
             if self
                 .code
                 .as_ref()
@@ -766,12 +741,31 @@ impl RepoFilesView {
             Ok(())
         });
 
-        self.push_task(task);
+        self.tasks.push(task);
     }
 }
 
 impl Render for RepoFilesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.render_tree(cx.entity().downgrade())
+        let rows = Arc::clone(&self.rows);
+        let selected = self.selected_index;
+
+        Tree::new("repo-tree")
+            .pr_2()
+            .selected(selected)
+            .items(move |_, _| Arc::clone(&rows))
+            .on_change(cx.processor(|this, index: Option<usize>, window, cx| {
+                if let Some(index) = index {
+                    this.activate_row(index, window, cx);
+                }
+            }))
+            .on_disclosure(cx.processor(|this, index: usize, _window, cx| {
+                let id = this.rows.get(index).map(|row| row.key().to_string());
+                if let Some(id) = id {
+                    this.toggle_folder(&id);
+                    cx.emit(RepoFilesEvent::Activated);
+                    cx.notify();
+                }
+            }))
     }
 }

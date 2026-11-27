@@ -11,13 +11,15 @@
 //!     .picture(Some("https://example.com/ada.png"));
 //! ```
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Display;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Role,
-    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window, div,
+    App, Bounds, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
+    RenderOnce, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled,
+    Window, canvas, div, fill, img, point, size,
 };
 
 use crate::components::common::{ControlSizing, Sizable, StyledExt, h_flex};
@@ -36,6 +38,12 @@ const FILL_PROBABILITY: f32 = 0.42;
 const SHADE_PROBABILITY: f32 = 0.25;
 /// Minimum number of filled left-half cells.
 const MIN_FILLED: usize = 5;
+
+// Computed identicon patterns per seed, so avatars do not reroll their PRNG every frame.
+thread_local! {
+    static PATTERN_CACHE: RefCell<HashMap<u64, [u8; GRID_SIZE * GRID_SIZE]>> =
+        RefCell::new(HashMap::new());
+}
 
 /// An avatar for a user or other entity.
 #[derive(IntoElement)]
@@ -98,8 +106,8 @@ impl Sizable for Avatar {
     }
 }
 
-impl gpui::Styled for Avatar {
-    fn style(&mut self) -> &mut gpui::StyleRefinement {
+impl Styled for Avatar {
+    fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
 }
@@ -116,7 +124,11 @@ impl RenderOnce for Avatar {
             theme.radius.sm
         };
 
-        let base = h_flex()
+        let has_picture = self.picture.is_some();
+        let picture = self.picture;
+        let seed = PixelAvatar::seed(&self.id);
+
+        h_flex()
             .id(ElementId::from(self.id.clone()))
             .flex_none()
             .justify_center()
@@ -126,90 +138,16 @@ impl RenderOnce for Avatar {
             .rounded(radius)
             .role(Role::Image)
             .aria_label(self.name.clone().unwrap_or_else(|| self.id.clone()))
-            .refine_style(&self.style);
-
-        match self.picture {
-            Some(url) => base.child(gpui::img(url).size_full().rounded(radius)),
-            None => base.child(PixelAvatar {
-                seed: fnv1a(self.id.as_bytes()),
-                side,
-                radius,
-                fully_rounded: self.fully_rounded,
-            }),
-        }
-        .into_any_element()
-    }
-}
-
-/// An avatar with the display name beside it.
-#[derive(IntoElement)]
-#[must_use]
-pub struct IdentityRow {
-    id: SharedString,
-    name: SharedString,
-    picture: Option<SharedString>,
-    size: Size,
-    truncate: bool,
-    style: StyleRefinement,
-}
-
-impl IdentityRow {
-    /// Creates the row for `id` (the pixel-fallback seed) showing `name`.
-    pub fn new<ID, N>(id: ID, name: N, picture: Option<SharedString>) -> Self
-    where
-        ID: Into<SharedString>,
-        N: Into<SharedString>,
-    {
-        Self {
-            id: id.into(),
-            name: name.into(),
-            picture,
-            size: Size::default(),
-            truncate: false,
-            style: StyleRefinement::default(),
-        }
-    }
-
-    /// Truncates the name to one line inside the available width.
-    pub fn truncate(mut self) -> Self {
-        self.truncate = true;
-        self
-    }
-}
-
-impl Sizable for IdentityRow {
-    fn apply_size(&mut self, size: Size) {
-        self.size = size;
-    }
-}
-
-impl gpui::Styled for IdentityRow {
-    fn style(&mut self) -> &mut StyleRefinement {
-        &mut self.style
-    }
-}
-
-impl RenderOnce for IdentityRow {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
-        h_flex()
             .refine_style(&self.style)
-            .child(
-                Avatar::new(self.id.clone())
-                    .name(self.name.clone())
-                    .picture(self.picture)
-                    .with_size(self.size),
-            )
-            .child(
-                div()
-                    .when(self.truncate, |name| {
-                        name.flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                    })
-                    .child(self.name),
-            )
+            .children(picture.map(|url| img(url).size_full().rounded(radius)))
+            .when(!has_picture, |avatar| {
+                avatar.child(PixelAvatar {
+                    seed,
+                    side,
+                    radius,
+                    fully_rounded: self.fully_rounded,
+                })
+            })
     }
 }
 
@@ -217,16 +155,39 @@ impl RenderOnce for IdentityRow {
 #[derive(IntoElement)]
 struct PixelAvatar {
     seed: u64,
-    side: gpui::Pixels,
-    radius: gpui::Pixels,
+    side: Pixels,
+    radius: Pixels,
     fully_rounded: bool,
+}
+
+impl PixelAvatar {
+    /// Hashes `id` into the pattern seed.
+    fn seed(id: &str) -> u64 {
+        // FNV-1a 64-bit hash, stable across platforms and runs.
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for &byte in id.as_bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
+    /// The pattern for `seed`, computed once.
+    fn pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
+        let cached = PATTERN_CACHE.with(|cache| cache.borrow().get(&seed).copied());
+        if let Some(cached) = cached {
+            return cached;
+        }
+        let computed = PixelRng::new(seed).pattern();
+        PATTERN_CACHE.with(|cache| cache.borrow_mut().insert(seed, computed));
+        computed
+    }
 }
 
 impl RenderOnce for PixelAvatar {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
-        let pattern = pattern(self.seed);
-        let mut cells = Vec::new();
+        let pattern = Self::pattern(self.seed);
 
         let hue = (self.seed as f32 / u64::MAX as f32) * 360.0;
         let accent = Oklch::from_hsla(theme.colors.accent);
@@ -249,46 +210,46 @@ impl RenderOnce for PixelAvatar {
         let inset = if self.fully_rounded {
             self.side / GRID_SIZE as f32
         } else {
-            gpui::Pixels::ZERO
+            Pixels::ZERO
         };
 
-        for row in 0..GRID_SIZE {
-            for col in 0..GRID_SIZE {
-                let value = pattern[row * GRID_SIZE + col];
-                if value != 0 {
-                    let color = if value == 2 { shade } else { main };
-                    cells.push(
-                        div()
-                            .row_start(row as i16 + 1)
-                            .row_end(row as i16 + 2)
-                            .col_start(col as i16 + 1)
-                            .col_end(col as i16 + 2)
-                            .bg(color),
-                    );
-                }
-            }
-        }
-
         div()
-            .grid()
-            .grid_cols(GRID_SIZE as u16)
-            .grid_rows(GRID_SIZE as u16)
-            .size(self.side)
             .flex_none()
+            .size(self.side)
             .p(inset)
             .rounded(self.radius)
-            .bg(gpui::Hsla {
+            .bg(Hsla {
                 a: PIXEL_AVATAR_TINT_ALPHA,
                 ..main
             })
-            .children(cells)
+            .child(
+                canvas(
+                    |bounds, _, _| bounds.size,
+                    move |bounds, area, window, _| {
+                        let cell = area.width / GRID_SIZE as f32;
+                        for (index, value) in pattern.iter().enumerate() {
+                            if *value == 0 {
+                                continue;
+                            }
+                            let color = if *value == 2 { shade } else { main };
+                            let top_left = bounds.origin
+                                + point(
+                                    (index % GRID_SIZE) as f32 * cell,
+                                    (index / GRID_SIZE) as f32 * cell,
+                                );
+                            window.paint_quad(fill(
+                                Bounds {
+                                    origin: top_left,
+                                    size: size(cell, cell),
+                                },
+                                color,
+                            ));
+                        }
+                    },
+                )
+                .size_full(),
+            )
     }
-}
-
-// Computed identicon patterns per seed, so avatars do not reroll their PRNG every frame.
-thread_local! {
-    static PATTERN_CACHE: std::cell::RefCell<HashMap<u64, [u8; GRID_SIZE * GRID_SIZE]>> =
-        std::cell::RefCell::new(HashMap::new());
 }
 
 /// Tiny xorshift64* PRNG for deriving the pattern from the seed.
@@ -297,6 +258,53 @@ struct PixelRng(u64);
 impl PixelRng {
     fn new(seed: u64) -> Self {
         Self(seed.max(1))
+    }
+
+    /// Fills the left half of the art area at random and mirrors it.
+    fn pattern(&mut self) -> [u8; GRID_SIZE * GRID_SIZE] {
+        /// Fill `cell (row, col)` and its horizontal mirror.
+        fn set_cell(pattern: &mut [u8; GRID_SIZE * GRID_SIZE], row: usize, col: usize, value: u8) {
+            pattern[row * GRID_SIZE + col] = value;
+            pattern[row * GRID_SIZE + (GRID_SIZE - 1 - col)] = value;
+        }
+
+        let mut pattern = [0u8; GRID_SIZE * GRID_SIZE];
+        let mut filled = 0usize;
+
+        let art_rows = GRID_SIZE - 2 * MARGIN;
+        let art_columns = GRID_SIZE / 2 - MARGIN;
+
+        for row in MARGIN..GRID_SIZE - MARGIN {
+            for col in MARGIN..GRID_SIZE / 2 {
+                if self.chance(FILL_PROBABILITY) {
+                    let shade = self.chance(SHADE_PROBABILITY);
+                    set_cell(&mut pattern, row, col, if shade { 2 } else { 1 });
+                    filled += 1;
+                }
+            }
+        }
+
+        if filled < MIN_FILLED {
+            let total = art_rows * art_columns;
+            let start = (self.next() % total as u64) as usize;
+
+            for offset in 0..total {
+                if filled >= MIN_FILLED {
+                    break;
+                }
+
+                let flat_index = (start + offset) % total;
+                let row = MARGIN + flat_index / art_columns;
+                let col = MARGIN + flat_index % art_columns;
+
+                if pattern[row * GRID_SIZE + col] == 0 {
+                    set_cell(&mut pattern, row, col, 1);
+                    filled += 1;
+                }
+            }
+        }
+
+        pattern
     }
 
     fn next(&mut self) -> u64 {
@@ -311,71 +319,4 @@ impl PixelRng {
     fn chance(&mut self, probability: f32) -> bool {
         self.next() as f32 / (u64::MAX as f32) < probability
     }
-}
-
-fn pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
-    let cached = PATTERN_CACHE.with(|cache| cache.borrow().get(&seed).copied());
-    if let Some(cached) = cached {
-        return cached;
-    }
-    let computed = compute_pattern(seed);
-    PATTERN_CACHE.with(|cache| cache.borrow_mut().insert(seed, computed));
-    computed
-}
-
-fn compute_pattern(seed: u64) -> [u8; GRID_SIZE * GRID_SIZE] {
-    let mut rng = PixelRng::new(seed);
-    let mut pattern = [0u8; GRID_SIZE * GRID_SIZE];
-    let mut filled = 0usize;
-
-    let art_rows = GRID_SIZE - 2 * MARGIN;
-    let art_columns = GRID_SIZE / 2 - MARGIN;
-
-    for row in MARGIN..GRID_SIZE - MARGIN {
-        for col in MARGIN..GRID_SIZE / 2 {
-            if rng.chance(FILL_PROBABILITY) {
-                let shade = rng.chance(SHADE_PROBABILITY);
-                set_cell(&mut pattern, row, col, if shade { 2 } else { 1 });
-                filled += 1;
-            }
-        }
-    }
-
-    if filled < MIN_FILLED {
-        let total = art_rows * art_columns;
-        let start = (rng.next() % total as u64) as usize;
-
-        for offset in 0..total {
-            if filled >= MIN_FILLED {
-                break;
-            }
-
-            let flat_index = (start + offset) % total;
-            let row = MARGIN + flat_index / art_columns;
-            let col = MARGIN + flat_index % art_columns;
-
-            if pattern[row * GRID_SIZE + col] == 0 {
-                set_cell(&mut pattern, row, col, 1);
-                filled += 1;
-            }
-        }
-    }
-
-    pattern
-}
-
-/// Fill `cell (row, col)` and its horizontal mirror.
-fn set_cell(pattern: &mut [u8; GRID_SIZE * GRID_SIZE], row: usize, col: usize, value: u8) {
-    pattern[row * GRID_SIZE + col] = value;
-    pattern[row * GRID_SIZE + (GRID_SIZE - 1 - col)] = value;
-}
-
-/// FNV-1a 64-bit hash, stable across platforms and runs.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for &byte in bytes {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
 }

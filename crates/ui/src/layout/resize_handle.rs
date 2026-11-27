@@ -8,11 +8,12 @@ use gpui::{
     App, Axis, Bounds, CursorStyle, DispatchPhase, ElementId, HitboxBehavior,
     InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, RenderOnce, Role,
-    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window, canvas,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, canvas,
     deferred, div, fill, point, px,
 };
 
-use crate::layout::{StyledExt as _, focus_handle, focus_ring};
+use crate::components::common::ElementIdExt as _;
+use crate::layout::StyledExt as _;
 use crate::theme::{
     ActiveTheme as _, BORDER_WIDTH, DISABLED_OPACITY, HAIRLINE_WIDTH, RESIZE_HANDLE_WIDTH,
     RESIZE_KEYBOARD_STEP,
@@ -102,7 +103,7 @@ impl ResizeHandle {
     }
 }
 
-impl gpui::Styled for ResizeHandle {
+impl Styled for ResizeHandle {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
@@ -112,6 +113,7 @@ impl RenderOnce for ResizeHandle {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let ring = theme.colors.ring;
+        let focus_ring = theme.focus_ring();
         let thickness = RESIZE_HANDLE_WIDTH;
 
         let label = self
@@ -128,7 +130,7 @@ impl RenderOnce for ResizeHandle {
                 .clone()
         });
 
-        let focus = focus_handle(&self.id, window, cx);
+        let focus = self.id.focus_handle(window, cx);
         let dragging = drag.read(cx).dragging;
         let axis = self.axis;
         let disabled = self.disabled;
@@ -160,7 +162,7 @@ impl RenderOnce for ResizeHandle {
                         .track_focus(&focus)
                         .focusable()
                         .tab_stop(true)
-                        .focus_visible(|style| style.shadow(focus_ring(ring)))
+                        .focus_visible(|style| style.shadow(focus_ring))
                         .on_mouse_down_out({
                             let focus = focus.clone();
                             move |_, window, cx| {

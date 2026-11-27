@@ -35,18 +35,13 @@ use gpui::{
 };
 
 use crate::components::common::{
-    DIALOG_LAYER, StyledExt as _, floating_panel, h_flex, paint_highlighted_row, v_flex,
-    wrapping_adjacent_selectable,
+    DIALOG_LAYER, ElementIdExt as _, SelectableRows as _, StyledExt as _, h_flex, v_flex,
 };
 use crate::components::empty_state::EmptyState;
 use crate::components::input::{Input, InputState, InputStateEvent};
+use crate::components::menu::focus_capture;
 use crate::icons::Icon;
 use crate::theme::{ActiveTheme as _, POPUP_MAX_HEIGHT};
-
-actions!(
-    command_palette,
-    [HighlightNext, HighlightPrevious, Choose, Dismiss]
-);
 
 /// The key context the palette's panel declares.
 pub const COMMAND_PALETTE_CONTEXT: &str = "CommandPalette";
@@ -55,6 +50,11 @@ pub const COMMAND_PALETTE_CONTEXT: &str = "CommandPalette";
 pub type CommandMatcher = Rc<dyn Fn(&str, &[Command]) -> Vec<Command>>;
 /// Runs the chosen command.
 pub type CommandHandler = Rc<dyn Fn(&Command, &mut Window, &mut App)>;
+
+actions!(
+    command_palette,
+    [HighlightNext, HighlightPrevious, Choose, Dismiss]
+);
 
 /// A command the palette can run: a stable id and the label the matcher sees.
 #[derive(Clone)]
@@ -311,8 +311,10 @@ impl CommandPaletteState {
         if self.matches.is_empty() {
             return;
         }
+
         let rows: Vec<usize> = (0..self.matches.len()).collect();
-        let next = wrapping_adjacent_selectable(&rows, self.highlight, delta > 0);
+        let next = rows.wrapping_adjacent(self.highlight, delta > 0);
+
         self.highlight = next;
         cx.notify();
     }
@@ -346,10 +348,30 @@ impl CommandPaletteState {
         }
         self.close(cx);
     }
+
+    /// Binds the palette's four keys: down, up, enter, and escape.
+    pub fn bind_keys(cx: &mut App) {
+        let under_input = Some("CommandPalette > Input");
+        cx.bind_keys([
+            KeyBinding::new("down", HighlightNext, under_input),
+            KeyBinding::new("up", HighlightPrevious, under_input),
+            KeyBinding::new("enter", Choose, under_input),
+            KeyBinding::new("escape", Dismiss, under_input),
+            KeyBinding::new("down", HighlightNext, Some(COMMAND_PALETTE_CONTEXT)),
+            KeyBinding::new("up", HighlightPrevious, Some(COMMAND_PALETTE_CONTEXT)),
+            KeyBinding::new("enter", Choose, Some(COMMAND_PALETTE_CONTEXT)),
+            KeyBinding::new("escape", Dismiss, Some(COMMAND_PALETTE_CONTEXT)),
+        ]);
+    }
 }
 
 impl Render for CommandPaletteState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Restores the trigger's focus when the palette closes.
+        let overlay_focus = self.query.read(cx).focus_handle();
+        self.id
+            .track_overlay_focus(&overlay_focus, self.open, window, cx);
+
         if !self.open {
             return div().into_any_element();
         }
@@ -409,7 +431,7 @@ impl Render for CommandPaletteState {
                             .text_sm()
                             .line_height(relative(1.0))
                             .rounded(radius_sm)
-                            .map(|row| paint_highlighted_row(cx, row, highlighted, false))
+                            .highlighted_row(cx, highlighted, false)
                             .on_mouse_move({
                                 let state = state.clone();
                                 move |_, _window, cx| {
@@ -482,79 +504,59 @@ impl Render for CommandPaletteState {
                         }),
                 )
                 .child(
-                    floating_panel(
-                        cx,
-                        radius.overlay,
-                        v_flex()
-                            .id((id.clone(), "panel"))
-                            .debug_selector({
-                                let id = id.clone();
-                                move || format!("{id}-panel")
-                            })
-                            .key_context(COMMAND_PALETTE_CONTEXT)
-                            .role(Role::Dialog)
-                            .aria_label(self.name.clone())
-                            .w_full()
-                            .max_w(relative(0.6))
-                            .p_2()
-                            .gap_2()
-                            .text_color(colors.foreground),
-                        shadows,
-                    )
-                    .overflow_hidden()
-                    .refine_style(&self.style)
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_action({
-                        let state = state.clone();
-                        move |_: &HighlightNext, _window, cx| {
-                            state.update(cx, |state, cx| state.move_highlight(1, cx));
-                        }
-                    })
-                    .on_action({
-                        let state = state.clone();
-                        move |_: &HighlightPrevious, _window, cx| {
-                            state.update(cx, |state, cx| state.move_highlight(-1, cx));
-                        }
-                    })
-                    .on_action({
-                        let state = state.clone();
-                        move |_: &Choose, window, cx| {
-                            state.update(cx, |state, cx| state.choose(window, cx));
-                        }
-                    })
-                    .on_action({
-                        let state = state.clone();
-                        move |_: &Dismiss, window, cx| {
-                            state.update(cx, |state, cx| state.dismiss(window, cx));
-                        }
-                    })
-                    .child(
-                        Input::new((id.clone(), "query"), self.query.clone())
-                            .placeholder(self.placeholder.clone()),
-                    )
-                    .child(rows)
-                    .child(crate::components::menu::focus_capture(
-                        query_focus.clone(),
-                        move |window, cx| !query_focus.contains_focused(window, cx),
-                    )),
+                    v_flex()
+                        .id((id.clone(), "panel"))
+                        .debug_selector({
+                            let id = id.clone();
+                            move || format!("{id}-panel")
+                        })
+                        .key_context(COMMAND_PALETTE_CONTEXT)
+                        .role(Role::Dialog)
+                        .aria_label(self.name.clone())
+                        .w_full()
+                        .max_w(relative(0.6))
+                        .p_2()
+                        .gap_2()
+                        .text_color(colors.foreground)
+                        .floating_panel(cx, radius.overlay, shadows)
+                        .overflow_hidden()
+                        .refine_style(&self.style)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_action({
+                            let state = state.clone();
+                            move |_: &HighlightNext, _window, cx| {
+                                state.update(cx, |state, cx| state.move_highlight(1, cx));
+                            }
+                        })
+                        .on_action({
+                            let state = state.clone();
+                            move |_: &HighlightPrevious, _window, cx| {
+                                state.update(cx, |state, cx| state.move_highlight(-1, cx));
+                            }
+                        })
+                        .on_action({
+                            let state = state.clone();
+                            move |_: &Choose, window, cx| {
+                                state.update(cx, |state, cx| state.choose(window, cx));
+                            }
+                        })
+                        .on_action({
+                            let state = state.clone();
+                            move |_: &Dismiss, window, cx| {
+                                state.update(cx, |state, cx| state.dismiss(window, cx));
+                            }
+                        })
+                        .child(
+                            Input::new((id.clone(), "query"), self.query.clone())
+                                .placeholder(self.placeholder.clone()),
+                        )
+                        .child(rows)
+                        .child(focus_capture(query_focus.clone(), move |window, cx| {
+                            !query_focus.contains_focused(window, cx)
+                        })),
                 ),
         )
         .with_priority(DIALOG_LAYER)
         .into_any_element()
     }
-}
-
-/// Binds the palette's four keys: down, up, enter, and escape.
-pub fn bind_command_palette_keys(cx: &mut App) {
-    let under_input = Some("CommandPalette > Input");
-    cx.bind_keys([
-        KeyBinding::new("down", HighlightNext, under_input),
-        KeyBinding::new("up", HighlightPrevious, under_input),
-        KeyBinding::new("enter", Choose, under_input),
-        KeyBinding::new("escape", Dismiss, under_input),
-        KeyBinding::new("down", HighlightNext, Some(COMMAND_PALETTE_CONTEXT)),
-        KeyBinding::new("up", HighlightPrevious, Some(COMMAND_PALETTE_CONTEXT)),
-        KeyBinding::new("enter", Choose, Some(COMMAND_PALETTE_CONTEXT)),
-        KeyBinding::new("escape", Dismiss, Some(COMMAND_PALETTE_CONTEXT)),
-    ]);
 }

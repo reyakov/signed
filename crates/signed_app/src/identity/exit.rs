@@ -1,6 +1,6 @@
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    Styled as _, Window, div, px,
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
+    Window, div, px,
 };
 use signed_state::Backend;
 use ui::button::{Button, ButtonVariant};
@@ -41,27 +41,28 @@ impl Render for ExitDialog {
                     )
                     .into_any_element()
             })
-            .actions(move |_, _| {
+            .actions(move |_, cx| {
+                let backend = Backend::global(cx);
                 let cancel_close = cancel_close.clone();
                 let confirm_close = confirm_close.clone();
 
-                let cancel: AnyElement = Button::new("cancel-exit")
-                    .label("Cancel")
-                    .variant(ButtonVariant::Secondary)
-                    .on_click(move |_, _, cx| cancel_close.close(cx))
-                    .into_any_element();
-
-                let exit: AnyElement = Button::new("confirm-exit")
-                    .label("Exit")
-                    .variant(ButtonVariant::Destructive)
-                    .on_click(move |_, _, cx| {
-                        let backend = Backend::global(cx);
-                        backend.update(cx, |backend, cx| backend.sign_out(cx));
-                        confirm_close.close(cx);
-                    })
-                    .into_any_element();
-
-                vec![cancel, exit]
+                vec![
+                    Button::new("cancel-exit")
+                        .label("Cancel")
+                        .variant(ButtonVariant::Secondary)
+                        .on_click(move |_, _, cx| {
+                            cancel_close.close(cx);
+                        })
+                        .into_any_element(),
+                    Button::new("confirm-exit")
+                        .label("Exit")
+                        .variant(ButtonVariant::Destructive)
+                        .on_click(move |_, _, cx| {
+                            backend.update(cx, |backend, cx| backend.sign_out(cx));
+                            confirm_close.close(cx);
+                        })
+                        .into_any_element(),
+                ]
             })
     }
 }

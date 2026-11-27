@@ -53,6 +53,25 @@ panic = "unwind"
 inherits = "release"
 debug = true
 
+# Frame pacing in dev builds is dominated by unoptimized layout, text, render and
+# syntax crates. These overrides keep `cargo run` representative; release builds
+# (`opt-level = "z"`, lto) remain the reference for performance.
+[profile.dev.package]
+gpui = { opt-level = 3 }
+gpui_platform = { opt-level = 3 }
+gpui_wgpu = { opt-level = 3 }
+gpui_macos = { opt-level = 3 }
+taffy = { opt-level = 3 }
+cosmic-text = { opt-level = 3 }
+swash = { opt-level = 3 }
+wgpu = { opt-level = 3 }
+wgpu-core = { opt-level = 3 }
+wgpu-hal = { opt-level = 3 }
+naga = { opt-level = 3 }
+resvg = { opt-level = 3 }
+usvg = { opt-level = 3 }
+tree-sitter = { opt-level = 3 }
+
 [workspace.lints.clippy]
 all = "deny"
 perf = "deny"

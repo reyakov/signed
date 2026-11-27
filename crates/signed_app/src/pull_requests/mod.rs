@@ -1,3 +1,6 @@
+use std::ops::Range;
+use std::sync::Arc;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
@@ -5,8 +8,8 @@ use gpui::{
     Subscription, UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
 };
 use metadata::ProfileDirectory;
-use nostr::prelude::{Kind, PublicKey};
-use signed_core::GitEvent;
+use nostr::prelude::{EventId, Kind, PublicKey};
+use signed_core::{GitEvent, RepoStatus};
 use signed_state::RepoStore;
 use ui::alert::{Alert, AlertSeverity};
 use ui::avatar::Avatar;
@@ -33,16 +36,27 @@ pub use new::NewPullRequestView;
 pub use send_patch::SendPatchView;
 
 use crate::app::AppRoot;
-use crate::issues::helpers::{StatusCounts, filter_by_status};
-use crate::repo::helpers::short_id;
+use crate::shared::labels::ShortIdExt as _;
 use crate::shared::log_dropped;
-use crate::shared::widgets::status_badge;
+use crate::shared::widgets::{StatusCounts, status_badge};
+
+/// One pull request row, with its display strings built on rebuild.
+struct PrRow {
+    id: EventId,
+    /// The row's element id.
+    element_id: SharedString,
+    status: RepoStatus,
+    subject: SharedString,
+    author: PublicKey,
+    age: SharedString,
+    short: SharedString,
+}
 
 pub struct PullRequestsView {
     workspace: WeakEntity<AppRoot>,
     store: Entity<RepoStore>,
     filter: PullRequestFilter,
-    visible_prs: Vec<usize>,
+    rows: Arc<Vec<PrRow>>,
     counts: StatusCounts,
     synced_filter: PullRequestFilter,
     scroll_handle: UniformListScrollHandle,
@@ -57,7 +71,7 @@ impl PullRequestsView {
         store: Entity<RepoStore>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let weak = cx.entity().downgrade();
+        let weak = cx.weak_entity();
         let subscription = cx.observe(&store, |this, _store, cx| {
             this.rebuild(cx);
         });
@@ -72,7 +86,7 @@ impl PullRequestsView {
             workspace,
             store,
             filter: PullRequestFilter::Open,
-            visible_prs: Vec::new(),
+            rows: Arc::new(Vec::new()),
             counts: StatusCounts::default(),
             synced_filter: PullRequestFilter::Open,
             scroll_handle: UniformListScrollHandle::new(),
@@ -97,12 +111,28 @@ impl PullRequestsView {
                 .iter()
                 .filter(|pr| pr.kind == Kind::GitPullRequest);
 
-            filter_by_status(
+            StatusCounts::filter(
                 roots,
                 |pr| store.status_of(pr),
                 |status| filter.matches(status),
             )
         };
+
+        let rows: Vec<PrRow> = visible_prs
+            .iter()
+            .filter_map(|index| {
+                let pr = store.pull_requests.get(*index)?;
+                Some(PrRow {
+                    id: pr.id,
+                    element_id: SharedString::from(format!("pr:{}", pr.id.to_hex())),
+                    status: store.status_of(pr),
+                    subject: SharedString::from(pr.activity_subject()),
+                    author: pr.pubkey,
+                    age: SharedString::from(relative_time(pr.created_at)),
+                    short: pr.id.to_hex().short_id(),
+                })
+            })
+            .collect();
 
         let mut keys: Vec<PublicKey> = store
             .pull_requests
@@ -124,12 +154,14 @@ impl PullRequestsView {
         });
 
         let filter_changed = self.synced_filter != filter;
-        if !filter_changed && self.visible_prs == visible_prs && self.counts == counts {
+        if !filter_changed && self.rows.len() == rows.len() && self.counts == counts {
             return;
         }
+
         self.synced_filter = filter;
-        self.visible_prs = visible_prs;
+        self.rows = Arc::new(rows);
         self.counts = counts;
+
         cx.notify();
     }
 
@@ -199,14 +231,102 @@ impl PullRequestsView {
         }));
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// One pull request row of the list.
+    fn render_pr(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(row) = self.rows.get(ix) else {
+            return div().into_any_element();
+        };
+
+        let profile = self.directory.read(cx).profile(&row.author, cx);
+        let pr_id = row.id;
+        let status = row.status;
+
+        h_flex()
+            .id(row.element_id.clone())
+            .w_full()
+            .h_16()
+            .px_2()
+            .border_b_1()
+            .border_color(cx.theme().colors.border)
+            .hover(|this| this.bg(cx.theme().colors.muted_hover))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_pr(pr_id, window, cx);
+            }))
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_start()
+                    .gap_2()
+                    .child(h_flex().w_20().child(status_badge(status)))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .child(row.subject.clone()),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .text_xs()
+                                    .child(
+                                        h_flex()
+                                            .min_w_0()
+                                            .gap_1()
+                                            .child(
+                                                Avatar::new(row.author)
+                                                    .name(profile.name())
+                                                    .picture(profile.picture())
+                                                    .small(),
+                                            )
+                                            .child(
+                                                div().min_w_0().truncate().child(profile.name()),
+                                            ),
+                                    )
+                                    .child("opened")
+                                    .child(
+                                        div()
+                                            .text_color(cx.theme().colors.muted_foreground)
+                                            .child(row.short.clone()),
+                                    )
+                                    .child(row.age.clone()),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Opens this pull request's detail panel in the split stack.
+    fn open_pr(&mut self, pr_id: EventId, window: &mut Window, cx: &mut Context<Self>) {
+        let panels = self
+            .workspace
+            .read_with(cx, |root, _| root.panels().clone());
+
+        let Ok(panels) = panels else {
+            log::warn!("pull request list outlived the app shell");
+            return;
+        };
+
+        PullRequestDetailView::open(
+            &panels,
+            &self.workspace,
+            self.store.clone(),
+            pr_id,
+            window,
+            cx,
+        );
+    }
+
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let counts = self.counts;
         let colors = cx.theme().colors;
         let muted = colors.muted_foreground;
-        let weak = cx.entity().downgrade();
-        let open_weak = cx.entity().downgrade();
-        let menu_open_weak = cx.entity().downgrade();
-        let patch_weak = cx.entity().downgrade();
+        let patch_weak = cx.weak_entity();
 
         h_flex()
             .px_2()
@@ -235,14 +355,10 @@ impl PullRequestsView {
                             .label(format!("Merged ({})", counts.applied))
                             .icon(Icon::named(IconRole::GitPullRequestMerged).color(muted)),
                     ])
-                    .on_change(move |filter, _, cx| {
-                        if let Err(error) = weak.update(cx, |this, cx| {
-                            this.filter = filter;
-                            this.rebuild(cx);
-                        }) {
-                            log::warn!("failed to switch PR filter: {error}");
-                        }
-                    }),
+                    .on_change(cx.processor(|this, filter: PullRequestFilter, _, cx| {
+                        this.filter = filter;
+                        this.rebuild(cx);
+                    })),
             )
             .child(div().flex_1())
             .child(
@@ -251,19 +367,11 @@ impl PullRequestsView {
                     .icon(Icon::named(IconRole::GitPullRequest))
                     .small()
                     .open(self.new_pr_menu_open)
-                    .on_click(move |_, window, cx| {
-                        if let Err(error) =
-                            open_weak.update(cx, |this, cx| this.open_new(window, cx))
-                        {
-                            log::warn!("failed to open new PR: {error}");
-                        }
-                    })
-                    .on_open_change(move |open, _, cx| {
-                        log_dropped(menu_open_weak.update(cx, |this, cx| {
-                            this.new_pr_menu_open = open;
-                            cx.notify();
-                        }));
-                    })
+                    .on_click(cx.listener(|this, _, window, cx| this.open_new(window, cx)))
+                    .on_open_change(cx.processor(|this, open: bool, _, cx| {
+                        this.new_pr_menu_open = open;
+                        cx.notify();
+                    }))
                     .items(move |_, _| {
                         vec![MenuItem::new("Send Patch").handler({
                             let weak = patch_weak.clone();
@@ -275,7 +383,6 @@ impl PullRequestsView {
                         })]
                     }),
             )
-            .into_any_element()
     }
 }
 
@@ -288,11 +395,6 @@ impl Panel for PullRequestsView {
 impl Render for PullRequestsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filter = self.filter;
-        let visible = self.visible_prs.clone();
-        let directory = self.directory.clone();
-        let store = self.store.clone();
-        let workspace = self.workspace.clone();
-
         let (last_error, last_warning) = {
             let store = self.store.read(cx);
             (store.last_error.clone(), store.last_warning.clone())
@@ -302,7 +404,7 @@ impl Render for PullRequestsView {
         let dismiss_error_store = self.store.clone();
 
         let scroll_handle = self.scroll_handle.clone();
-        let count = visible.len();
+        let count = self.rows.len();
 
         v_flex()
             .size_full()
@@ -345,95 +447,13 @@ impl Render for PullRequestsView {
                     .child(self.render_header(cx))
                     .when(count > 0, |this| {
                         this.child(
-                            uniform_list("prl", count, move |range, _, cx| {
-                                range
-                                    .map(|ix| {
-                                        // The store re-read per frame can shrink below a captured index.
-                                        let Some(pr) = visible.get(ix).and_then(|pr_ix| {
-                                            store.read(cx).pull_requests.get(*pr_ix)
-                                        }) else {
-                                            return div().into_any_element();
-                                        };
-
-                                        let profile = directory.read(cx).profile(&pr.pubkey, cx);
-                                        let pr_id = pr.id;
-                                        let id_hex = pr.id.to_hex();
-                                        let status = store.read(cx).status_of(pr);
-                                        let workspace = workspace.clone();
-                                        let store = store.clone();
-
-                                        h_flex()
-                                            .id(SharedString::from(format!("pr:{id_hex}")))
-                                            .w_full()
-                                            .h_16()
-                                            .px_2()
-                                            .border_b_1()
-                                            .border_color(cx.theme().colors.border)
-                                            .hover(|this| this.bg(cx.theme().colors.muted_hover))
-                                            .on_click(move |_, window, cx| {
-                                                PullRequestDetailView::open(
-                                                    &workspace,
-                                                    store.clone(),
-                                                    pr_id,
-                                                    window,
-                                                    cx,
-                                                );
-                                            })
-                                            .child(
-                                                h_flex()
-                                                    .w_full()
-                                                    .items_start()
-                                                    .gap_2()
-                                                    .child(h_flex().w_20().child(status_badge(status)))
-                                                    .child(
-                                                        v_flex()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .gap_1()
-                                                            .child(
-                                                                div()
-                                                                    .text_sm()
-                                                                    .text_ellipsis()
-                                                                    .whitespace_nowrap()
-                                                                    .child(pr.activity_subject()),
-                                                            )
-                                                            .child(
-                                                                h_flex()
-                                                                    .gap_2()
-                                                                    .text_xs()
-                                                                    .child(
-                                                                        h_flex()
-                                                                            .gap_1()
-                                                                            .child(
-                                                                                Avatar::new(pr.pubkey)
-                                                                                    .name(profile.name())
-                                                                                    .picture(
-                                                                                        profile.picture(),
-                                                                                    )
-                                                                                    .small(),
-                                                                            )
-                                                                            .child(
-                                                                                div().child(profile.name()),
-                                                                            ),
-                                                                    )
-                                                                    .child("opened")
-                                                                    .child(
-                                                                        div()
-                                                                            .text_color(
-                                                                                cx.theme()
-                                                                                    .colors
-                                                                                    .muted_foreground,
-                                                                            )
-                                                                            .child(short_id(&id_hex)),
-                                                                    )
-                                                                    .child(relative_time(pr.created_at)),
-                                                            ),
-                                                    ),
-                                            )
-                                            .into_any_element()
-                                    })
-                                    .collect()
-                            })
+                            uniform_list(
+                                "prl",
+                                count,
+                                cx.processor(|this, range: Range<usize>, _window, cx| {
+                                    range.map(|ix| this.render_pr(ix, cx)).collect()
+                                }),
+                            )
                             .track_scroll(&scroll_handle)
                             .size_full(),
                         )

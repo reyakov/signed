@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::prelude::FluentBuilder as _;
@@ -28,10 +29,9 @@ use utils::relative_time_secs;
 
 use super::helpers::{ForkCompare, truncate_label};
 use crate::app::AppRoot;
-use crate::repo::commit_diff::{CommitDiffView, DiffPane};
-use crate::repo::helpers::{announcement_display_name, short_id};
+use crate::shared::commit_diff::{CommitDiffView, DiffPane};
+use crate::shared::labels::{AnnouncementExt as _, ShortIdExt as _};
 use crate::shared::log_dropped;
-use crate::shared::progress::error_row;
 
 pub struct NewPullRequestView {
     workspace: WeakEntity<AppRoot>,
@@ -58,6 +58,8 @@ pub struct NewPullRequestView {
     scroll_handle: UniformListScrollHandle,
     pub(super) tasks: Vec<gpui::Task<Result<(), anyhow::Error>>>,
     source_open: bool,
+    /// The compare bar's source label, derived from `fork`/`repo_path`.
+    source_label: SharedString,
     /// The checkouts, forks, and user the source menu lists.
     checkouts: Arc<Vec<PathBuf>>,
     forks: Arc<Vec<Announcement>>,
@@ -80,8 +82,8 @@ impl NewPullRequestView {
         let subject = InputState::new(cx);
         let description = InputState::builder().multiline().build(cx);
 
-        let pane = cx.new(DiffPane::new);
-        let weak = cx.entity().downgrade();
+        let pane = cx.new(|cx| DiffPane::new(false, cx));
+        let weak = cx.weak_entity();
 
         let base_select = cx.new(|cx| {
             ComboboxState::new(
@@ -188,6 +190,7 @@ impl NewPullRequestView {
             scroll_handle: UniformListScrollHandle::new(),
             tasks: Vec::new(),
             source_open: false,
+            source_label: SharedString::from("No source"),
             checkouts: Arc::default(),
             forks: Arc::default(),
             user: None,
@@ -195,22 +198,19 @@ impl NewPullRequestView {
         }
     }
 
-    /// Reaps finished tasks, then queues another.
-    pub(super) fn push_task(&mut self, task: gpui::Task<Result<(), anyhow::Error>>) {
-        self.tasks.retain(|task| !task.is_ready());
-        self.tasks.push(task);
-    }
-
     fn submit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.submitting || self.loading {
             return;
         }
+
         let Some(merge_base) = self.merge_base.clone() else {
             return;
         };
+
         let Some(repo_path) = self.work_path() else {
             return;
         };
+
         let subject = self.subject.read(cx).value().to_string();
         let description = self.description.read(cx).value().to_string();
         let branch_name = self.compare.to_string();
@@ -236,6 +236,7 @@ impl NewPullRequestView {
                     cx,
                 )
             });
+
             if let Err(error) = publish.await {
                 this.update(cx, |this, cx| {
                     this.submitting = false;
@@ -244,29 +245,36 @@ impl NewPullRequestView {
                 })?;
                 return Ok(());
             }
+
             this.update(cx, |this, _cx| {
                 this.submitting = false;
             })?;
+
             log_dropped(workspace.update(cx, |root, cx| {
                 root.panels().clone().update(cx, |panels, cx| {
                     panels.close(PanelSlot::Split, &panel_id, cx)
                 })
             }));
+
             Ok(())
         });
-        self.push_task(task);
+
+        self.tasks.push(task);
     }
 
     fn open_commit_diff(&mut self, commit_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(repo_path) = self.work_path() else {
             return;
         };
+
         let id = match self.store.read(cx).addr() {
             Some(addr) => SharedString::from(format!("commit:{addr}:{commit_id}")),
             None => SharedString::from(format!("commit:{}:{commit_id}", repo_path.display())),
         };
+
         let workspace = self.workspace.clone();
         let commit_id = commit_id.to_owned();
+
         log_dropped(workspace.update(cx, |root, cx| {
             root.panels().clone().update(cx, |panels, cx| {
                 panels.open(
@@ -303,9 +311,7 @@ impl NewPullRequestView {
     }
 
     fn render_compare_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let weak = cx.entity().downgrade();
-        let weak_menu = cx.entity().downgrade();
-        let source_view = cx.entity().downgrade();
+        let source_view = cx.weak_entity();
         let associated = Arc::clone(&self.checkouts);
 
         let active_path = (self.fork.is_none())
@@ -313,17 +319,11 @@ impl NewPullRequestView {
             .flatten();
 
         let candidates = Arc::clone(&self.forks);
-        let user = signed_state::Backend::global(cx).read(cx).current_user();
+        let user = self.user;
         let active_fork = self.fork.as_ref().map(|fork| fork.announcement.addr());
         let can_submit = self.submit_enabled(cx);
 
-        let source_label = match &self.fork {
-            Some(fork) => truncate_label(&announcement_display_name(&fork.announcement)),
-            None => self.repo_path.as_ref().map_or_else(
-                || SharedString::from("No source"),
-                |path| truncate_label(&path.display().to_string()),
-            ),
-        };
+        let source_label = self.source_label.clone();
         let refresh_fork = self.fork.as_ref().map(|fork| fork.announcement.clone());
 
         h_flex()
@@ -352,12 +352,10 @@ impl NewPullRequestView {
                     .child(
                         Menu::new("pr-source")
                             .open(self.source_open)
-                            .on_change(move |open, _, cx| {
-                                log_dropped(weak_menu.update(cx, |this, cx| {
-                                    this.source_open = open;
-                                    cx.notify();
-                                }));
-                            })
+                            .on_change(cx.processor(|this, open: bool, _, cx| {
+                                this.source_open = open;
+                                cx.notify();
+                            }))
                             .trigger(move |_, _| {
                                 Button::new("compare-source")
                                     .label(source_label.clone())
@@ -392,9 +390,9 @@ impl NewPullRequestView {
                     .icon(Icon::named(IconRole::Plus))
                     .loading(self.submitting)
                     .disabled(!can_submit)
-                    .on_click(move |_, window, cx| {
-                        log_dropped(weak.update(cx, |this, cx| this.submit(window, cx)));
-                    }),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.submit(window, cx);
+                    })),
             )
             .into_any_element()
     }
@@ -402,7 +400,6 @@ impl NewPullRequestView {
     fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
         let files = self.pane.read(cx).diff().map_or(0, |diff| diff.files.len());
         let commits = self.commits.as_ref().map_or(0, |commits| commits.len());
-        let weak = cx.entity().downgrade();
 
         Tabs::new("new-pr-tabs")
             .selected(self.active_tab)
@@ -413,26 +410,25 @@ impl NewPullRequestView {
                         .lead(Icon::named(IconRole::GitCommit)),
                 ]
             })
-            .on_change(move |index, _, cx| {
-                log_dropped(weak.update(cx, |this, cx| {
-                    this.active_tab = index;
-                    cx.notify();
-                }));
-            })
+            .on_change(cx.processor(|this, index: usize, _, cx| {
+                this.active_tab = index;
+                cx.notify();
+            }))
             .into_any_element()
     }
 
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.loading {
-            return Spinner::centered("new-pr-loading");
+            return Spinner::centered("new-pr-loading").into_any_element();
         }
 
         if !self.has_source() {
-            return EmptyState::centered("Choose a local checkout or an announced fork to compare");
+            return EmptyState::centered("Choose a local checkout or an announced fork to compare")
+                .into_any_element();
         }
 
         if self.commits.is_none() && self.error.is_some() {
-            return EmptyState::centered("Nothing to compare");
+            return EmptyState::centered("Nothing to compare").into_any_element();
         }
 
         match self.active_tab {
@@ -447,16 +443,19 @@ impl NewPullRequestView {
 
     fn render_commits(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(commits) = self.commits.as_ref() else {
-            return EmptyState::centered("No commits");
+            return EmptyState::centered("No commits").into_any_element();
         };
 
         if commits.is_empty() {
-            return EmptyState::centered("No commits between the branches");
+            return EmptyState::centered("No commits between the branches").into_any_element();
         }
 
         let commits = Arc::clone(commits);
-        let view = cx.entity().downgrade();
         let scroll_handle = self.scroll_handle.clone();
+
+        let open_commit = Rc::new(cx.processor(|this, commit_id: String, window, cx| {
+            this.open_commit_diff(&commit_id, window, cx);
+        }));
 
         v_flex()
             .relative()
@@ -470,7 +469,7 @@ impl NewPullRequestView {
                                 return div().into_any_element();
                             };
                             let row_id = commit.id.clone();
-                            let view = view.clone();
+                            let open_commit = open_commit.clone();
 
                             h_flex()
                                 .id(commit.id.clone())
@@ -489,6 +488,7 @@ impl NewPullRequestView {
                                         .justify_center()
                                         .child(
                                             h_flex()
+                                                .min_w_0()
                                                 .gap_2()
                                                 .overflow_hidden()
                                                 .child(
@@ -498,7 +498,7 @@ impl NewPullRequestView {
                                                         .text_color(
                                                             cx.theme().colors.muted_foreground,
                                                         )
-                                                        .child(short_id(&commit.id)),
+                                                        .child(commit.id.short_id()),
                                                 )
                                                 .child(
                                                     div()
@@ -520,9 +520,7 @@ impl NewPullRequestView {
                                         ),
                                 )
                                 .on_click(move |_, window, cx| {
-                                    log_dropped(view.update(cx, |this, cx| {
-                                        this.open_commit_diff(&row_id, window, cx);
-                                    }));
+                                    open_commit(row_id.clone(), window, cx);
                                 })
                                 .into_any_element()
                         })
@@ -581,7 +579,8 @@ impl NewPullRequestView {
                 })?;
                 Ok(())
             });
-        self.push_task(task);
+
+        self.tasks.push(task);
     }
 
     pub(crate) fn apply_folder_path(
@@ -593,6 +592,7 @@ impl NewPullRequestView {
         self.fork_generation = self.fork_generation.wrapping_add(1);
         let generation = self.fork_generation;
         let path_string = path.to_string_lossy().to_string();
+
         let task: gpui::Task<Result<(), anyhow::Error>> =
             cx.spawn_in(window, async move |this, cx| {
                 let info = cx
@@ -618,7 +618,8 @@ impl NewPullRequestView {
                 })?;
                 Ok(())
             });
-        self.push_task(task);
+
+        self.tasks.push(task);
     }
 
     fn apply_checkout(
@@ -661,6 +662,7 @@ impl NewPullRequestView {
 
         self.repo_path = Some(PathBuf::from(&path));
         self.error = None;
+        self.refresh_source_label();
         self.branches = branches.into_iter().map(SharedString::from).collect();
 
         if let Some(addr) = self.store.read(cx).addr().cloned() {
@@ -681,6 +683,7 @@ impl NewPullRequestView {
             .iter()
             .map(|branch| (branch.clone(), branch.clone()))
             .collect();
+
         let base = self.base.clone();
         let compare = self.compare.clone();
 
@@ -688,6 +691,7 @@ impl NewPullRequestView {
             state.set_options(options.clone(), cx);
             state.set_selected(Some(base), window, cx);
         });
+
         self.compare_select.update(cx, |state, cx| {
             state.set_options(options, cx);
             state.set_selected(Some(compare), window, cx);
@@ -709,8 +713,10 @@ impl NewPullRequestView {
 
         let checkouts = CheckoutsStore::global(cx);
         let repositories = RepoListStore::global(cx);
+
         let backend = Backend::global(cx);
         let user = backend.read(cx).current_user();
+
         let checkouts = addr
             .as_ref()
             .map_or_else(Vec::new, |addr| checkouts.read(cx).associations_of(addr));
@@ -750,9 +756,11 @@ impl NewPullRequestView {
         let Some(base) = self.store.read(cx).addr().cloned() else {
             return;
         };
+
         let mirror_path = Mirrors::path(&base);
         let namespace = GitCache::fork_namespace(&announcement);
         let clone_urls: Vec<Url> = announcement.clone.clone();
+
         let base_clone_urls: Vec<Url> = self
             .store
             .read(cx)
@@ -760,6 +768,7 @@ impl NewPullRequestView {
             .as_ref()
             .map(|a| a.clone.clone())
             .unwrap_or_default();
+
         self.fork_generation = self.fork_generation.wrapping_add(1);
         let generation = self.fork_generation;
         let handle = window.window_handle();
@@ -775,12 +784,14 @@ impl NewPullRequestView {
                     let mirror_path = mirror_path.clone();
                     async move {
                         Mirrors::ensure(&base, &base_clone_urls)?;
+
                         let repo = Repo::open(&mirror_path)?;
                         repo.delete_refs_with_prefix("refs/fork")?;
                         repo.fetch_refs(
                             &clone_urls,
                             &format!("+refs/heads/*:refs/fork/{namespace}/*"),
                         )?;
+
                         let strip = |refs: Vec<String>, prefix: &str| {
                             let mut names: Vec<String> = refs
                                 .into_iter()
@@ -793,14 +804,17 @@ impl NewPullRequestView {
                             names.sort();
                             names
                         };
+
                         let base_branches = strip(
                             repo.refs_with_prefix("refs/remotes/origin")?,
                             "refs/remotes/origin",
                         );
+
                         let compare_branches = strip(
                             repo.refs_with_prefix(&format!("refs/fork/{namespace}"))?,
                             &format!("refs/fork/{namespace}"),
                         );
+
                         Ok::<_, anyhow::Error>((base_branches, compare_branches))
                     }
                 })
@@ -816,9 +830,11 @@ impl NewPullRequestView {
             }) {
                 log::warn!("failed to apply fork: {error}");
             }
+
             Ok(())
         });
-        self.push_task(task);
+
+        self.tasks.push(task);
     }
 
     fn apply_fork(
@@ -868,6 +884,7 @@ impl NewPullRequestView {
             mirror_path,
         });
         self.error = None;
+        self.refresh_source_label();
         self.base = SharedString::from(base);
         self.compare = compare;
         self.branches = base_branches.into_iter().map(SharedString::from).collect();
@@ -875,23 +892,28 @@ impl NewPullRequestView {
         self.reload_compare(cx);
     }
 
+    /// Recomputes the compare bar's source label after a fork or checkout change.
+    fn refresh_source_label(&mut self) {
+        self.source_label = match &self.fork {
+            Some(fork) => truncate_label(&fork.announcement.display_name()),
+            None => self.repo_path.as_ref().map_or_else(
+                || SharedString::from("No source"),
+                |path| truncate_label(&path.display().to_string()),
+            ),
+        };
+    }
+
     pub(super) fn reload_compare(&mut self, cx: &mut Context<Self>) {
         let Some(repo_path) = self.work_path() else {
             return;
         };
+
         let base = self.base_ref();
         let compare = self.compare_ref();
         let base_name = self.base.to_string();
         let compare_name = self.compare.to_string();
 
-        self.loading = true;
-        self.error = None;
-        self.compare_generation = self.compare_generation.wrapping_add(1);
-        let generation = self.compare_generation;
-        cx.notify();
-
         if base == compare {
-            self.loading = false;
             self.merge_base = None;
             self.commits = None;
             self.pane.update(cx, |pane, cx| pane.clear(cx));
@@ -899,6 +921,13 @@ impl NewPullRequestView {
             cx.notify();
             return;
         }
+
+        self.loading = true;
+        self.error = None;
+        self.compare_generation = self.compare_generation.wrapping_add(1);
+
+        let generation = self.compare_generation;
+        cx.notify();
 
         let task: gpui::Task<Result<(), anyhow::Error>> = cx.spawn(async move |this, cx| {
             let result = cx
@@ -922,6 +951,7 @@ impl NewPullRequestView {
                     return;
                 }
                 this.loading = false;
+
                 match result {
                     Ok((merge_base, commits, diff)) => {
                         this.merge_base = Some(merge_base);
@@ -935,11 +965,14 @@ impl NewPullRequestView {
                         this.error = Some(error.to_string().into());
                     }
                 }
+
                 cx.notify();
             })?;
+
             Ok(())
         });
-        self.push_task(task);
+
+        self.tasks.push(task);
     }
 }
 
@@ -978,7 +1011,14 @@ impl Render for NewPullRequestView {
                                     .rows(3)
                                     .placeholder("Describe..."),
                             )
-                            .when_some(error_row(&self.error, cx), |this, error| this.child(error)),
+                            .when_some(self.error.clone(), |this, error| {
+                                this.child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().ramps.destructive.base)
+                                        .child(error),
+                                )
+                            }),
                     )
                     .child(self.render_tabs(cx)),
             )

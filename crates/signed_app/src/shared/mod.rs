@@ -1,9 +1,5 @@
-use gpui::{App, Entity};
-use metadata::ProfileDirectory;
-use nostr::prelude::PublicKey;
-
-pub mod progress;
-
+pub mod commit_diff;
+pub mod labels;
 pub mod widgets;
 
 /// Logs a discarded `Result` with its source location instead of dropping it silently.
@@ -17,18 +13,4 @@ pub fn log_dropped<T>(result: Result<T, anyhow::Error>) {
             location.line()
         );
     }
-}
-
-/// Tracks a detail view's author, commenters, and owner for profile prefetch.
-pub fn track_event_participants(
-    author: Option<PublicKey>,
-    owner: Option<PublicKey>,
-    comments: impl Iterator<Item = PublicKey>,
-    directory: &Entity<ProfileDirectory>,
-    cx: &mut App,
-) {
-    let mut keys: Vec<PublicKey> = author.into_iter().collect();
-    keys.extend(comments);
-    keys.extend(owner);
-    directory.update(cx, |directory, cx| directory.track(keys, cx));
 }

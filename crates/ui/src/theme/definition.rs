@@ -7,6 +7,10 @@ use serde::Deserialize;
 
 use crate::theme::ThemeVariant;
 
+/// The bundled presets: `(name, TOML source)`. Enumeration and lookup both
+/// read this one table.
+const PRESETS: &[(&str, &str)] = &[("tokyo-night", include_str!("presets/tokyo-night.toml"))];
+
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct ThemeDefinition {
     mode: Option<ThemeVariant>,
@@ -49,6 +53,44 @@ impl ThemeDefinition {
 
     pub fn mode(&self) -> Option<ThemeVariant> {
         self.mode
+    }
+
+    /// Parses `#rgb` or `#rrggbb` into an opaque color.
+    pub fn parse_hex(value: &str) -> Option<Hsla> {
+        let digits = value.strip_prefix('#')?;
+        // Lengths are byte lengths; non-ASCII input would panic the slicing below.
+        if !digits.is_ascii() {
+            return None;
+        }
+
+        let expand_rgb = |[r, g, b]: [f32; 3]| Hsla::from(Rgba { r, g, b, a: 1.0 });
+        let expand = |channels: [f32; 3]| Some(expand_rgb(channels));
+
+        match digits.len() {
+            3 => {
+                let mut channels = [0u8; 3];
+                for (i, byte) in channels.iter_mut().enumerate() {
+                    *byte = u8::from_str_radix(&digits[i..i + 1], 16).ok()?;
+                }
+                expand([
+                    channels[0] as f32 / 15.0,
+                    channels[1] as f32 / 15.0,
+                    channels[2] as f32 / 15.0,
+                ])
+            }
+            6 => {
+                let mut channels = [0u8; 3];
+                for (i, byte) in channels.iter_mut().enumerate() {
+                    *byte = u8::from_str_radix(&digits[i * 2..i * 2 + 2], 16).ok()?;
+                }
+                expand([
+                    channels[0] as f32 / 255.0,
+                    channels[1] as f32 / 255.0,
+                    channels[2] as f32 / 255.0,
+                ])
+            }
+            _ => None,
+        }
     }
 
     pub fn control_radius(&self) -> Option<f32> {
@@ -174,7 +216,7 @@ impl ThemeDefinition {
     /// Parses a color field, warning when a stated value is malformed.
     fn color(&self, field: &Option<String>, role: &str) -> Option<Hsla> {
         let value = field.as_deref()?;
-        match parse_hex(value) {
+        match Self::parse_hex(value) {
             Some(color) => Some(color),
             None => {
                 log::warn!("theme definition {role} is not #rgb/#rrggbb: {value:?}");
@@ -182,63 +224,25 @@ impl ThemeDefinition {
             }
         }
     }
-}
 
-/// Parses `#rgb` or `#rrggbb` into an opaque color.
-pub(crate) fn parse_hex(value: &str) -> Option<Hsla> {
-    let digits = value.strip_prefix('#')?;
-    // Lengths are byte lengths; non-ASCII input would panic the slicing below.
-    if !digits.is_ascii() {
-        return None;
+    /// Every bundled preset's name.
+    pub fn preset_names() -> impl Iterator<Item = &'static str> {
+        PRESETS.iter().map(|(name, _)| *name)
     }
-    let expand = |channels: [f32; 3]| Some(expand_rgb([channels[0], channels[1], channels[2]]));
 
-    match digits.len() {
-        3 => {
-            let mut channels = [0u8; 3];
-            for (i, byte) in channels.iter_mut().enumerate() {
-                *byte = u8::from_str_radix(&digits[i..i + 1], 16).ok()?;
+    /// Parses the named preset, returning its static name and definition.
+    pub fn builtin(name: &str) -> Option<(&'static str, Self)> {
+        let (name, source) = PRESETS
+            .iter()
+            .find(|(candidate, _)| *candidate == name)
+            .copied()?;
+
+        match Self::parse_toml(source) {
+            Ok(definition) => Some((name, definition)),
+            Err(error) => {
+                log::error!("bundled preset {name} failed to parse: {error}");
+                None
             }
-            expand([
-                channels[0] as f32 / 15.0,
-                channels[1] as f32 / 15.0,
-                channels[2] as f32 / 15.0,
-            ])
         }
-        6 => {
-            let mut channels = [0u8; 3];
-            for (i, byte) in channels.iter_mut().enumerate() {
-                *byte = u8::from_str_radix(&digits[i * 2..i * 2 + 2], 16).ok()?;
-            }
-            expand([
-                channels[0] as f32 / 255.0,
-                channels[1] as f32 / 255.0,
-                channels[2] as f32 / 255.0,
-            ])
-        }
-        _ => None,
-    }
-}
-
-fn expand_rgb([r, g, b]: [f32; 3]) -> Hsla {
-    Hsla::from(Rgba { r, g, b, a: 1.0 })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_hex_rejects_non_ascii_digits() {
-        assert_eq!(parse_hex("#éa"), None);
-        assert_eq!(parse_hex("#éaabbcc"), None);
-    }
-
-    #[test]
-    fn parse_hex_resolves_three_and_six_digits() {
-        assert!(parse_hex("#abc").is_some());
-        assert!(parse_hex("#aabbcc").is_some());
-        assert_eq!(parse_hex("abc"), None);
-        assert_eq!(parse_hex("#ab"), None);
     }
 }

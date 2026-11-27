@@ -28,8 +28,7 @@ use gpui::{
 
 use crate::components::button::{Button, ButtonVariant};
 use crate::components::common::{
-    DismissHandler, ResultLogErr as _, Sizable as _, StyledExt as _, TOAST_LAYER, floating_panel,
-    v_flex,
+    DismissHandler, ResultLogErr as _, Sizable as _, StyledExt as _, TOAST_LAYER, v_flex,
 };
 use crate::icons::{Icon, IconRole};
 use crate::theme::{ALERT_EDGE_WIDTH, ALERT_STACK_WIDTH, ActiveTheme as _, ENTER_SLIDE_DISTANCE};
@@ -195,33 +194,29 @@ impl RenderOnce for Alert {
         });
 
         match self.presentation {
-            AlertStyle::Overlay => floating_panel(
-                cx,
-                theme.radius.overlay,
-                div()
-                    .id(self.id.clone())
-                    .role(Role::Alert)
-                    .w_full()
-                    .flex()
-                    .items_start()
-                    .gap_2()
-                    .px_3()
-                    .py_2(),
-                theme.elevations.popover.shadows(),
-            )
-            .refine_style(&self.style)
-            .when_some(self.icon.clone(), |alert, icon_glyph| {
-                alert.child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .h(window.line_height())
-                        .child(icon_glyph.size(rems(1.0)).color(ramp.base)),
-                )
-            })
-            .child(content)
-            .when_some(dismiss, |alert, dismiss| alert.child(dismiss)),
+            AlertStyle::Overlay => div()
+                .id(self.id.clone())
+                .role(Role::Alert)
+                .w_full()
+                .flex()
+                .items_start()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .floating_panel(cx, theme.radius.overlay, theme.elevations.popover.shadows())
+                .refine_style(&self.style)
+                .when_some(self.icon.clone(), |alert, icon_glyph| {
+                    alert.child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .h(window.line_height())
+                            .child(icon_glyph.size(rems(1.0)).color(ramp.base)),
+                    )
+                })
+                .child(content)
+                .when_some(dismiss, |alert, dismiss| alert.child(dismiss)),
             AlertStyle::Inline => div()
                 .id(self.id.clone())
                 .role(Role::Alert)
@@ -291,7 +286,7 @@ impl Alerts {
         self.next_id += 1;
 
         let on_dismiss = alert.on_dismiss.take();
-        let stack = cx.entity().downgrade();
+        let stack = cx.weak_entity();
 
         alert.on_dismiss = Some(Rc::new(move |cx: &mut App| {
             stack

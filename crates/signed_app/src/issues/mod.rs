@@ -1,13 +1,16 @@
+use std::ops::Range;
+use std::sync::Arc;
+
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
 };
-use helpers::{IssueFilter, StatusCounts, filter_by_status};
+use helpers::IssueFilter;
 use metadata::ProfileDirectory;
-use nostr::prelude::PublicKey;
-use signed_core::GitEvent;
+use nostr::prelude::{EventId, PublicKey};
+use signed_core::{GitEvent, RepoStatus};
 use signed_state::RepoStore;
 use ui::avatar::Avatar;
 use ui::button::Button;
@@ -23,19 +26,31 @@ use utils::relative_time;
 use self::detail::IssueDetailView;
 use crate::app::AppRoot;
 use crate::issues::new_issue::NewIssueView;
-use crate::repo::helpers::short_id;
+use crate::shared::labels::ShortIdExt as _;
 use crate::shared::log_dropped;
-use crate::shared::widgets::status_badge;
+use crate::shared::widgets::{StatusCounts, status_badge};
 
 pub mod detail;
 pub(crate) mod helpers;
 pub mod new_issue;
 
+/// One issue row, with its display strings built on rebuild.
+struct IssueRow {
+    id: EventId,
+    /// The row's element id.
+    element_id: SharedString,
+    status: RepoStatus,
+    subject: SharedString,
+    author: PublicKey,
+    age: SharedString,
+    short: SharedString,
+}
+
 pub struct IssuesView {
     workspace: WeakEntity<AppRoot>,
     store: Entity<RepoStore>,
     filter: IssueFilter,
-    visible_issues: Vec<usize>,
+    rows: Arc<Vec<IssueRow>>,
     counts: StatusCounts,
     // A filter change notifies even when the visible rows are unchanged.
     synced_filter: IssueFilter,
@@ -51,7 +66,7 @@ impl IssuesView {
         store: Entity<RepoStore>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let weak = cx.entity().downgrade();
+        let weak = cx.weak_entity();
         let subscription = cx.observe(&store, |this, _store, cx| {
             this.rebuild(cx);
         });
@@ -66,7 +81,7 @@ impl IssuesView {
             workspace,
             store: store.clone(),
             filter: IssueFilter::Open,
-            visible_issues: Vec::new(),
+            rows: Arc::new(Vec::new()),
             counts: StatusCounts::default(),
             synced_filter: IssueFilter::Open,
             scroll_handle: UniformListScrollHandle::new(),
@@ -117,48 +132,150 @@ impl IssuesView {
 
         let (visible_issues, counts) = {
             let store = self.store.read(cx);
-            filter_by_status(
+            StatusCounts::filter(
                 &store.issues,
                 |issue| store.status_of(issue),
                 |status| filter.matches(status),
             )
         };
 
-        let store = self.store.read(cx);
-        let mut keys: Vec<PublicKey> = store.issues.iter().map(|issue| issue.pubkey).collect();
+        let (keys, rows) = {
+            let store = self.store.read(cx);
+            let mut keys: Vec<PublicKey> = store.issues.iter().map(|issue| issue.pubkey).collect();
 
-        if let Some(owner) = store
-            .announcement
-            .as_ref()
-            .map(|announcement| announcement.owner)
-        {
-            keys.push(owner);
-        }
+            if let Some(owner) = store
+                .announcement
+                .as_ref()
+                .map(|announcement| announcement.owner)
+            {
+                keys.push(owner);
+            }
+
+            let rows: Vec<IssueRow> = visible_issues
+                .iter()
+                .filter_map(|index| {
+                    let issue = store.issues.get(*index)?;
+                    Some(IssueRow {
+                        id: issue.id,
+                        element_id: SharedString::from(format!("issue:{}", issue.id.to_hex())),
+                        status: store.status_of(issue),
+                        subject: SharedString::from(issue.activity_subject()),
+                        author: issue.pubkey,
+                        age: SharedString::from(relative_time(issue.created_at)),
+                        short: issue.id.to_hex().short_id(),
+                    })
+                })
+                .collect();
+
+            (keys, rows)
+        };
 
         self.directory.update(cx, |directory, cx| {
             directory.track(keys, cx);
         });
 
         let filter_changed = self.synced_filter != filter;
-        let visible_issues_changed = self.visible_issues != visible_issues;
         let counts_changed = self.counts != counts;
+        let rows_changed = self.rows.len() != rows.len();
 
-        if !filter_changed && !visible_issues_changed && !counts_changed {
+        if !filter_changed && !counts_changed && !rows_changed {
             return;
         }
 
         self.synced_filter = filter;
-        self.visible_issues = visible_issues;
+        self.rows = Arc::new(rows);
         self.counts = counts;
 
         cx.notify();
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// One issue row of the list.
+    fn render_issue(&mut self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(row) = self.rows.get(ix) else {
+            return div().into_any_element();
+        };
+
+        let profile = self.directory.read(cx).profile(&row.author, cx);
+        let issue_id = row.id;
+        let status = row.status;
+
+        h_flex()
+            .id(row.element_id.clone())
+            .w_full()
+            .h_16()
+            .px_2()
+            .border_b_1()
+            .border_color(cx.theme().colors.border)
+            .hover(|this| this.bg(cx.theme().colors.muted_hover))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_issue(issue_id, window, cx);
+            }))
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_start()
+                    .gap_2()
+                    .child(h_flex().w_20().child(status_badge(status)))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_ellipsis()
+                                    .whitespace_nowrap()
+                                    .child(row.subject.clone()),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .text_xs()
+                                    .child(
+                                        h_flex()
+                                            .min_w_0()
+                                            .gap_1()
+                                            .child(
+                                                Avatar::new(row.author)
+                                                    .name(profile.name())
+                                                    .picture(profile.picture())
+                                                    .small(),
+                                            )
+                                            .child(
+                                                div().min_w_0().truncate().child(profile.name()),
+                                            ),
+                                    )
+                                    .child("opened")
+                                    .child(
+                                        div()
+                                            .text_color(cx.theme().colors.muted_foreground)
+                                            .child(row.short.clone()),
+                                    )
+                                    .child(row.age.clone()),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Opens this issue's detail panel in the split stack.
+    fn open_issue(&mut self, issue_id: EventId, window: &mut Window, cx: &mut Context<Self>) {
+        let panels = self
+            .workspace
+            .read_with(cx, |root, _| root.panels().clone());
+        let Ok(panels) = panels else {
+            log::warn!("issue list outlived the app shell");
+            return;
+        };
+
+        IssueDetailView::open(&panels, self.store.clone(), issue_id, window, cx);
+    }
+
+    fn render_header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let counts = self.counts;
         let colors = cx.theme().colors;
         let muted = colors.muted_foreground;
-        let weak = cx.entity().downgrade();
 
         h_flex()
             .px_2()
@@ -181,14 +298,10 @@ impl IssuesView {
                             .label(format!("Closed ({})", counts.closed))
                             .icon(Icon::named(IconRole::GitIssueClosed).color(muted)),
                     ])
-                    .on_change(move |filter, _, cx| {
-                        if let Err(error) = weak.update(cx, |this, cx| {
-                            this.filter = filter;
-                            this.rebuild(cx);
-                        }) {
-                            log::warn!("failed to switch issue filter: {error}");
-                        }
-                    }),
+                    .on_change(cx.processor(|this, filter: IssueFilter, _, cx| {
+                        this.filter = filter;
+                        this.rebuild(cx);
+                    })),
             )
             .child(div().flex_1())
             .child(
@@ -200,7 +313,6 @@ impl IssuesView {
                         this.open_new_issue(window, cx);
                     })),
             )
-            .into_any_element()
     }
 }
 
@@ -213,12 +325,8 @@ impl Panel for IssuesView {
 impl Render for IssuesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let filter = self.filter;
-        let visible_issues = self.visible_issues.clone();
-        let directory = self.directory.clone();
-        let store = self.store.clone();
-        let workspace = self.workspace.clone();
         let scroll_handle = self.scroll_handle.clone();
-        let count = visible_issues.len();
+        let count = self.rows.len();
 
         let empty_message = match filter {
             IssueFilter::All => "No issues",
@@ -237,96 +345,13 @@ impl Render for IssuesView {
                     .child(self.render_header(cx))
                     .when(count > 0, |this| {
                         this.child(
-                            uniform_list("issues", count, move |range, _, cx| {
-                                range
-                                    .map(|ix| {
-                                        // The store re-read per frame can shrink below a captured index.
-                                        let Some(issue) =
-                                            visible_issues.get(ix).and_then(|issue_ix| {
-                                                store.read(cx).issues.get(*issue_ix)
-                                            })
-                                        else {
-                                            return div().into_any_element();
-                                        };
-                                        let profile = directory.read(cx).profile(&issue.pubkey, cx);
-                                        let issue_id = issue.id;
-                                        let id_hex = issue.id.to_hex();
-                                        let status = store.read(cx).status_of(issue);
-                                        let store = store.clone();
-                                        let workspace = workspace.clone();
-
-                                        h_flex()
-                                            .id(SharedString::from(format!("issue:{id_hex}")))
-                                            .w_full()
-                                            .h_16()
-                                            .px_2()
-                                            .border_b_1()
-                                            .border_color(cx.theme().colors.border)
-                                            .hover(|this| this.bg(cx.theme().colors.muted_hover))
-                                            .on_click(move |_, window, cx| {
-                                                IssueDetailView::open(
-                                                    &workspace,
-                                                    store.clone(),
-                                                    issue_id,
-                                                    window,
-                                                    cx,
-                                                );
-                                            })
-                                            .child(
-                                                h_flex()
-                                                    .w_full()
-                                                    .items_start()
-                                                    .gap_2()
-                                                    .child(h_flex().w_20().child(status_badge(status)))
-                                                    .child(
-                                                        v_flex()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .gap_1()
-                                                            .child(
-                                                                div()
-                                                                    .text_sm()
-                                                                    .text_ellipsis()
-                                                                    .whitespace_nowrap()
-                                                                    .child(issue.activity_subject()),
-                                                            )
-                                                            .child(
-                                                                h_flex()
-                                                                    .gap_2()
-                                                                    .text_xs()
-                                                                    .child(
-                                                                        h_flex()
-                                                                            .gap_1()
-                                                                            .child(
-                                                                                Avatar::new(issue.pubkey)
-                                                                                    .name(profile.name())
-                                                                                    .picture(
-                                                                                        profile.picture(),
-                                                                                    )
-                                                                                    .small(),
-                                                                            )
-                                                                            .child(
-                                                                                div().child(profile.name()),
-                                                                            ),
-                                                                    )
-                                                                    .child("opened")
-                                                                    .child(
-                                                                        div()
-                                                                            .text_color(
-                                                                                cx.theme()
-                                                                                    .colors
-                                                                                    .muted_foreground,
-                                                                            )
-                                                                            .child(short_id(&id_hex)),
-                                                                    )
-                                                                    .child(relative_time(issue.created_at)),
-                                                            ),
-                                                    ),
-                                            )
-                                            .into_any_element()
-                                    })
-                                    .collect()
-                            })
+                            uniform_list(
+                                "issues",
+                                count,
+                                cx.processor(|this, range: Range<usize>, _, cx| {
+                                    range.map(|ix| this.render_issue(ix, cx)).collect()
+                                }),
+                            )
                             .track_scroll(&scroll_handle)
                             .size_full(),
                         )
@@ -334,8 +359,7 @@ impl Render for IssuesView {
                     })
                     .when(count == 0, |this| {
                         this.child(EmptyState::centered(empty_message))
-                    })
-                    .into_any_element(),
+                    }),
             )
             .into_any_element()
     }

@@ -1,12 +1,13 @@
 //! Signed's icon set: application-defined SVG glyphs.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AbsoluteLength, AnyElement, AssetSource, Hsla, IntoElement, ParentElement as _, Pixels, Rems,
-    RenderOnce, SharedString, Styled as _, TimedTransformation, Transformation, Window, div, rems,
-    svg,
+    AbsoluteLength, App, AssetSource, Div, Hsla, IntoElement, ParentElement as _, Pixels, Rems,
+    RenderOnce, Result, SharedString, Styled as _, TimedTransformation, Transformation, Window,
+    div, rems, svg,
 };
 
 const SMALL_ICON_SIZE: Rems = rems(0.875);
@@ -122,8 +123,56 @@ impl IconRole {
     }
 
     /// The bundled SVG asset path for the role.
-    fn asset_path(self) -> SharedString {
-        SharedString::from(format!("icons/{}.svg", self.slug()))
+    pub fn asset_path(self) -> &'static str {
+        match self {
+            Self::Check => "icons/check.svg",
+            Self::Close => "icons/close.svg",
+            Self::ChevronDown => "icons/chevron-down.svg",
+            Self::ChevronRight => "icons/chevron-right.svg",
+            Self::Plus => "icons/plus.svg",
+            Self::Search => "icons/search.svg",
+            Self::Folder => "icons/folder.svg",
+            Self::Warning => "icons/warning.svg",
+            Self::Copy => "icons/copy.svg",
+            Self::Eye => "icons/eye.svg",
+            Self::EyeOff => "icons/eye-off.svg",
+            Self::WindowMinimize => "icons/window-minimize.svg",
+            Self::WindowMaximize => "icons/window-maximize.svg",
+            Self::WindowRestore => "icons/window-restore.svg",
+            Self::Loader => "icons/loader.svg",
+            Self::Microphone => "icons/microphone.svg",
+            Self::Stop => "icons/stop.svg",
+            Self::Settings => "icons/settings.svg",
+            Self::Refresh => "icons/refresh.svg",
+            Self::More => "icons/more.svg",
+            Self::Grid => "icons/grid.svg",
+            Self::File => "icons/file.svg",
+            Self::Clock => "icons/clock.svg",
+            Self::Unlock => "icons/unlock.svg",
+            Self::CirclePlus => "icons/circle-plus.svg",
+            Self::GitCommit => "icons/git-commit.svg",
+            Self::GitIssueDone => "icons/git-issue-done.svg",
+            Self::GitIssueClosed => "icons/git-issue-closed.svg",
+            Self::GitIssueOngoing => "icons/git-issue-ongoing.svg",
+            Self::GitPullRequest => "icons/git-pull-request.svg",
+            Self::GitPullRequestClosed => "icons/git-pull-request-closed.svg",
+            Self::GitPullRequestDraft => "icons/git-pull-request-draft.svg",
+            Self::GitPullRequestMerged => "icons/git-pull-request-merged.svg",
+            Self::GitClone => "icons/git-clone.svg",
+            Self::GitBranch => "icons/git-branch.svg",
+            Self::Markdown => "icons/markdown.svg",
+            Self::Trending => "icons/trending.svg",
+            Self::EllipsisVertical => "icons/ellipsis-vertical.svg",
+            Self::ArrowUp => "icons/arrow-up.svg",
+            Self::Inbox => "icons/inbox.svg",
+            Self::Stack => "icons/stack.svg",
+            Self::Message => "icons/message.svg",
+            Self::PanelLeft => "icons/panel-left.svg",
+            Self::UnfoldVertical => "icons/unfold-vertical.svg",
+            Self::Download => "icons/download.svg",
+            Self::Maximize => "icons/maximize.svg",
+            Self::Minimize => "icons/minimize.svg",
+        }
     }
 }
 
@@ -135,14 +184,13 @@ pub trait IconNamed {
 
 impl IconNamed for IconRole {
     fn path(self) -> SharedString {
-        self.asset_path()
+        SharedString::from(self.asset_path())
     }
 }
 
 /// The glyph an icon draws.
 #[derive(Clone)]
 enum Glyph {
-    Role(IconRole),
     Named(SharedString),
 }
 
@@ -217,29 +265,22 @@ impl Icon {
         transformation: Option<Transformation>,
         rotation_period: Option<Duration>,
         path: SharedString,
-    ) -> AnyElement {
-        div()
-            .flex_none()
-            .size(size)
-            .child(
-                svg()
-                    .size_full()
-                    .path(path)
-                    .when_some(color, |el, color| el.text_color(color))
-                    .when_some(transformation, |el, transformation| {
-                        el.with_transformation(transformation)
-                    })
-                    .when_some(rotation_period, |el, period| {
-                        el.with_timed_transformation(
-                            TimedTransformation::rotation(
-                                period,
-                                transformation.unwrap_or_default(),
-                            )
+    ) -> Div {
+        div().flex_none().size(size).child(
+            svg()
+                .size_full()
+                .path(path)
+                .when_some(color, |el, color| el.text_color(color))
+                .when_some(transformation, |el, transformation| {
+                    el.with_transformation(transformation)
+                })
+                .when_some(rotation_period, |el, period| {
+                    el.with_timed_transformation(
+                        TimedTransformation::rotation(period, transformation.unwrap_or_default())
                             .with_max_fps(SPIN_MAX_FPS),
-                        )
-                    }),
-            )
-            .into_any_element()
+                    )
+                }),
+        )
     }
 }
 
@@ -253,7 +294,7 @@ where
 }
 
 impl RenderOnce for Icon {
-    fn render(self, window: &mut Window, _cx: &mut gpui::App) -> impl IntoElement {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let Icon {
             glyph,
             size,
@@ -264,19 +305,9 @@ impl RenderOnce for Icon {
 
         let size = size.to_pixels(window.rem_size());
         let color = color.unwrap_or_else(|| window.text_style().color);
+        let Glyph::Named(path) = glyph;
 
-        match glyph {
-            Glyph::Named(path) => {
-                Self::render_svg_path(size, Some(color), transformation, rotation_period, path)
-            }
-            Glyph::Role(role) => Self::render_svg_path(
-                size,
-                Some(color),
-                transformation,
-                rotation_period,
-                role.asset_path(),
-            ),
-        }
+        Self::render_svg_path(size, Some(color), transformation, rotation_period, path)
     }
 }
 
@@ -286,7 +317,7 @@ impl RenderOnce for Icon {
 pub struct Assets;
 
 impl AssetSource for Assets {
-    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
         let name = match path.strip_prefix("icons/") {
             Some(name) => name,
             None => return Ok(None),
@@ -299,16 +330,5 @@ impl AssetSource for Assets {
             .map(|file| SharedString::from(format!("icons/{file}")))
             .filter(|file| file.starts_with(path))
             .collect())
-    }
-}
-
-/// Creates an icon for the role at the default size.
-pub fn icon(role: IconRole) -> Icon {
-    Icon {
-        glyph: Glyph::Role(role),
-        size: AbsoluteLength::Rems(DEFAULT_ICON_SIZE),
-        color: None,
-        transformation: None,
-        rotation_period: None,
     }
 }

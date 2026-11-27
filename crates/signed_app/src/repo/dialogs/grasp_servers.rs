@@ -13,7 +13,7 @@ use ui::input::{Input, InputState};
 use ui::theme::ActiveTheme as _;
 use ui::tooltip::Tooltip;
 
-use crate::shared::progress::error_row;
+use crate::shared::labels::{RelayHostExt as _, ServerInputExt as _};
 
 /// State of the grasp-server section of a publish dialog, so async results can be rendered.
 #[derive(Default)]
@@ -37,6 +37,7 @@ impl GraspServersState {
         } else {
             settings.default_servers.clone()
         };
+
         Self {
             loading_servers: true,
             servers_enabled: false,
@@ -138,7 +139,14 @@ pub fn grasp_servers_field(
                             .child("Loading your grasp servers..."),
                     )
                 })
-                .when_some(error_row(&error, cx), |section, error| section.child(error))
+                .when_some(error, |section, error| {
+                    section.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().ramps.destructive.base)
+                            .child(error),
+                    )
+                })
         })
         .into_any_element()
 }
@@ -152,13 +160,14 @@ fn render_server_row(relay: &RelayUrl, state: Entity<GraspServersState>, cx: &Ap
         .child(
             h_flex()
                 .flex_1()
+                .min_w_0()
                 .h_8()
                 .px_2()
                 .bg(cx.theme().colors.muted)
                 .text_color(cx.theme().colors.muted_foreground)
                 .text_xs()
                 .rounded(cx.theme().radius.control)
-                .child(server_host(&relay)),
+                .child(relay.host_label()),
         )
         .child(
             Button::new(SharedString::from(format!("remove-relay:{relay}")))
@@ -187,7 +196,7 @@ fn add_relay(
         return;
     }
 
-    match normalize_server(&value) {
+    match value.normalize_server() {
         Some((_, relay)) => {
             state.update(cx, |state, cx| {
                 state.error = None;
@@ -196,7 +205,10 @@ fn add_relay(
                 }
                 cx.notify();
             });
-            input.update(cx, |input, cx| input.set_value("", window, cx));
+
+            input.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
         }
         None => {
             state.update(cx, |state, cx| {
@@ -220,7 +232,10 @@ pub fn load_user_grasp_servers(
     };
 
     let Some(user) = user else {
-        state.update(cx, |state, _| state.loading_servers = false);
+        state.update(cx, |state, cx| {
+            state.loading_servers = false;
+            cx.notify();
+        });
         return Task::ready(());
     };
 
@@ -247,22 +262,4 @@ pub fn load_user_grasp_servers(
             log::warn!("failed to apply grasp servers: {error}");
         }
     })
-}
-
-/// Normalize a user-typed grasp server, adding a `wss://` scheme when none is given.
-pub fn normalize_server(input: &str) -> Option<(String, RelayUrl)> {
-    let text = if input.contains("://") {
-        input.to_owned()
-    } else {
-        format!("wss://{input}")
-    };
-    RelayUrl::parse(&text).ok().map(|relay| (text, relay))
-}
-
-/// The host of a relay URL, which is what the server lists show; the scheme is implied.
-pub fn server_host(relay: &RelayUrl) -> SharedString {
-    relay
-        .domain()
-        .map(SharedString::from)
-        .unwrap_or_else(|| SharedString::from(relay.to_string()))
 }

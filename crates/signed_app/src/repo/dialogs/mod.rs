@@ -5,8 +5,8 @@ pub mod init;
 pub mod reset;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, WeakEntity, Window, div,
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
+    Styled as _, WeakEntity, Window, div,
 };
 use ui::button::{Button, ButtonVariant};
 use ui::dialog::{Dialog, DialogHandle};
@@ -96,25 +96,25 @@ impl Render for DeleteRepositoryDialog {
             .actions(move |_, _| {
                 let cancel_close = cancel_close.clone();
                 let confirm_close = confirm_close.clone();
-                let cancel: AnyElement = Button::new("cancel-delete")
-                    .label("Cancel")
-                    .variant(ButtonVariant::Secondary)
-                    .on_click(move |_, _, cx| cancel_close.close(cx))
-                    .into_any_element();
 
-                let delete: AnyElement = Button::new("confirm-delete")
-                    .label("Delete")
-                    .variant(ButtonVariant::Destructive)
-                    .on_click({
-                        let view = view.clone();
-                        move |_, _, cx| {
-                            confirm_close.close(cx);
-                            log_dropped(view.update(cx, |this, cx| this.delete_repository(cx)));
-                        }
-                    })
-                    .into_any_element();
-
-                vec![cancel, delete]
+                vec![
+                    Button::new("cancel-delete")
+                        .label("Cancel")
+                        .variant(ButtonVariant::Secondary)
+                        .on_click(move |_, _, cx| cancel_close.close(cx))
+                        .into_any_element(),
+                    Button::new("confirm-delete")
+                        .label("Delete")
+                        .variant(ButtonVariant::Destructive)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, _, cx| {
+                                confirm_close.close(cx);
+                                log_dropped(view.update(cx, |this, cx| this.delete_repository(cx)));
+                            }
+                        })
+                        .into_any_element(),
+                ]
             })
     }
 }

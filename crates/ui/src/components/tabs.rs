@@ -16,20 +16,23 @@
 //! ```
 
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Div, ElementId, Global, Hsla,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, ParentElement as _, Pixels,
-    Point, Render, RenderOnce, Role, SharedString, Stateful, StatefulInteractiveElement as _,
-    StyleRefinement, Styled, TextOverflow, Window, canvas, div, linear_color_stop, linear_gradient,
-    px, rems,
+    AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Div, ElementId, Entity,
+    FocusHandle, Global, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
+    ParentElement as _, Pixels, Point, Render, RenderOnce, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, TextOverflow, Window, canvas, div,
+    linear_color_stop, linear_gradient, px, rems, transparent_black,
 };
 
 use crate::components::button::{Button, ButtonVariant};
-use crate::components::common::{Sizable as _, StyledExt as _, adjacent_selectable, v_flex};
+use crate::components::common::{
+    ElementIdExt as _, SelectableRows as _, Sizable as _, StyledExt as _, v_flex,
+};
 use crate::components::popover::Popover;
 use crate::components::scroll_area::{ScrollArea, ScrollAxes};
 use crate::components::spinner::Spinner;
@@ -50,9 +53,110 @@ type TabsFn = Box<dyn Fn(&mut Window, &mut App) -> Vec<Tab>>;
 /// The open-state reporter of the overflow popover.
 type OpenHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 /// Identifies one strip's measurements across windows.
-type MeasureKey = (u64, String);
+type MeasureKey = (u64, ElementId);
 /// Shared per-frame state that lets tab canvases read the strip's bounds.
 type RootBoundsCell = Rc<RefCell<Option<Bounds<Pixels>>>>;
+
+/// Displacement before a tab drag locks to an axis: horizontal reorders,
+/// vertical cancels the reorder, like a browser tab strip.
+const TAB_DRAG_AXIS_LOCK: Pixels = px(6.0);
+
+/// One slot of a strip: a lone tab, or same-kind tabs collapsed into a group chip.
+enum StripItem {
+    /// A tab outside any two-member kind group, at its original index.
+    Single(usize, Tab),
+    /// Tabs of one kind collapsed into a chip, at the first member's index.
+    Group {
+        kind: SharedString,
+        /// The collapsed tabs with their original indices.
+        members: Vec<(usize, Tab)>,
+    },
+}
+
+impl StripItem {
+    /// The key the strip's geometry records the item under.
+    fn measure_key(&self, tabs_id: &ElementId) -> ElementId {
+        match self {
+            StripItem::Single(_, tab) => tab.key.clone(),
+            StripItem::Group { kind, .. } => Tabs::group_key(tabs_id, kind),
+        }
+    }
+}
+
+/// The visual language of a [`Tabs`] strip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TabsVariant {
+    /// A bottom indicator line on the active tab.
+    #[default]
+    Underline,
+    /// Capsule tabs with an elevated active background.
+    Pill,
+    /// Floating capsule tabs sized for a window titlebar.
+    Titlebar,
+}
+
+impl TabsVariant {
+    /// Whether the variant draws capsule-shaped tabs.
+    fn is_capsule(self) -> bool {
+        matches!(self, Self::Pill | Self::Titlebar)
+    }
+
+    /// The label color shared by strip tabs and group chips.
+    fn label_color(self, active: bool, disabled: bool, cx: &App) -> Hsla {
+        let theme = cx.theme();
+        if disabled {
+            return theme.colors.muted_foreground;
+        }
+        match self {
+            Self::Underline => {
+                if active {
+                    theme.ramps.primary.base
+                } else {
+                    theme.colors.foreground
+                }
+            }
+            Self::Pill => theme.colors.foreground,
+            Self::Titlebar => {
+                if active {
+                    theme.colors.foreground
+                } else {
+                    theme.colors.muted_foreground
+                }
+            }
+        }
+    }
+
+    /// The variant treatment shared by strip tabs and group chips.
+    fn chrome<R>(self, row: R, active: bool, cx: &App) -> R
+    where
+        R: Styled + IntoElement,
+    {
+        let theme = cx.theme();
+        match self {
+            Self::Underline => row
+                .px_2()
+                .py_1()
+                .rounded_tl(theme.radius.sm)
+                .rounded_tr(theme.radius.sm)
+                .border_b_2()
+                .border_color(transparent_black())
+                .when(active, |row| row.border_color(theme.ramps.primary.base)),
+            Self::Pill | Self::Titlebar => row
+                .h_8()
+                .px_2()
+                .pr_0p5()
+                .rounded(match self {
+                    Self::Titlebar => theme.radius.full,
+                    _ => theme.radius.control,
+                })
+                .when(self == Self::Titlebar, |row| row.bg(theme.colors.muted))
+                .when(active, |row| {
+                    row.bg(theme.colors.background)
+                        .shadow(theme.elevations.control.shadows().to_vec())
+                }),
+        }
+    }
+}
 
 /// One inline tab's geometry relative to the strip's left edge.
 #[derive(Clone, Copy, Default)]
@@ -62,11 +166,11 @@ struct TabMeasure {
 }
 
 /// A strip's geometry captured the previous frame.
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct StripMeasure {
     container_width: Pixels,
     trigger_width: Option<Pixels>,
-    tabs: HashMap<String, TabMeasure>,
+    tabs: HashMap<ElementId, TabMeasure>,
 }
 
 /// The capture context handed to inline tabs, only in popover mode.
@@ -93,7 +197,7 @@ impl TabsMeasurements {
         self.strips.entry(key.clone()).or_default().trigger_width = Some(width);
     }
 
-    fn record_tab(&mut self, key: &MeasureKey, tab: String, measure: TabMeasure) {
+    fn record_tab(&mut self, key: &MeasureKey, tab: ElementId, measure: TabMeasure) {
         self.strips
             .entry(key.clone())
             .or_default()
@@ -102,7 +206,7 @@ impl TabsMeasurements {
     }
 
     /// Drops measurements for tabs no longer rendered in the strip.
-    fn retain_tabs(&mut self, key: &MeasureKey, rendered: &[String]) {
+    fn retain_tabs(&mut self, key: &MeasureKey, rendered: &[ElementId]) {
         if let Some(strip) = self.strips.get_mut(key) {
             strip.tabs.retain(|tab, _| rendered.contains(tab));
         }
@@ -118,12 +222,12 @@ struct StripCtx {
     on_change: Option<ChangeHandler>,
     on_close: Option<CloseHandler>,
     on_reorder: Option<ReorderHandler>,
-    focus: gpui::FocusHandle,
+    focus: FocusHandle,
     measure: Option<MeasureFrame>,
     /// Whether tabs drag onto each other to reorder; requires `on_reorder`.
     draggable: bool,
     /// The tab drag gesture's live state, for the drop indicator.
-    drop_at: gpui::Entity<TabDrop>,
+    drop_at: Entity<TabDrop>,
 }
 
 impl StripCtx {
@@ -136,20 +240,6 @@ impl StripCtx {
         }
     }
 }
-
-/// The index the tab at `from` occupies once dropped before the tab at `onto`,
-/// or `None` when the drop is a no-op.
-fn reorder_target(from: usize, onto: usize) -> Option<usize> {
-    match from.cmp(&onto) {
-        std::cmp::Ordering::Equal => None,
-        std::cmp::Ordering::Less => Some(onto - 1),
-        std::cmp::Ordering::Greater => Some(onto),
-    }
-}
-
-/// Displacement before a tab drag locks to an axis: horizontal reorders,
-/// vertical cancels the reorder, like a browser tab strip.
-const TAB_DRAG_AXIS_LOCK: Pixels = px(6.0);
 
 /// One tab drag gesture's live state.
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -168,90 +258,14 @@ impl TabDrop {
     fn canceled(&self) -> bool {
         self.horizontal == Some(false)
     }
-}
 
-/// One slot of a strip: a lone tab, or same-kind tabs collapsed into a group chip.
-enum StripItem {
-    /// A tab outside any two-member kind group, at its original index.
-    Single(usize, Tab),
-    /// Tabs of one kind collapsed into a chip, at the first member's index.
-    Group {
-        kind: SharedString,
-        /// The collapsed tabs with their original indices.
-        members: Vec<(usize, Tab)>,
-    },
-}
-
-impl StripItem {
-    /// The key the strip's geometry records the item under.
-    fn measure_key(&self, tabs_id: &ElementId) -> String {
-        match self {
-            StripItem::Single(_, tab) => tab.key.to_string(),
-            StripItem::Group { kind, .. } => group_key(tabs_id, kind).to_string(),
+    /// The index the tab at `from` occupies once dropped before the tab at `onto`.
+    fn reorder_target(from: usize, onto: usize) -> Option<usize> {
+        match from.cmp(&onto) {
+            Ordering::Equal => None,
+            Ordering::Less => Some(onto - 1),
+            Ordering::Greater => Some(onto),
         }
-    }
-}
-
-/// The group chip's identity for one strip and kind.
-fn group_key(tabs_id: &ElementId, kind: &SharedString) -> ElementId {
-    SharedString::from(format!("{tabs_id}-tabs-group-{kind}")).into()
-}
-
-/// The label color shared by strip tabs and group chips.
-fn tab_label_color(variant: TabsVariant, active: bool, disabled: bool, cx: &App) -> Hsla {
-    let theme = cx.theme();
-    if disabled {
-        return theme.colors.muted_foreground;
-    }
-    match variant {
-        TabsVariant::Underline => {
-            if active {
-                theme.ramps.primary.base
-            } else {
-                theme.colors.foreground
-            }
-        }
-        TabsVariant::Pill => theme.colors.foreground,
-        TabsVariant::Titlebar => {
-            if active {
-                theme.colors.foreground
-            } else {
-                theme.colors.muted_foreground
-            }
-        }
-    }
-}
-
-/// The variant treatment shared by strip tabs and group chips.
-fn apply_tab_chrome<R>(row: R, variant: TabsVariant, active: bool, cx: &App) -> R
-where
-    R: Styled + IntoElement,
-{
-    let theme = cx.theme();
-    match variant {
-        TabsVariant::Underline => row
-            .px_2()
-            .py_1()
-            .rounded_tl(theme.radius.sm)
-            .rounded_tr(theme.radius.sm)
-            .border_b_2()
-            .border_color(gpui::transparent_black())
-            .when(active, |row| row.border_color(theme.ramps.primary.base)),
-        TabsVariant::Pill | TabsVariant::Titlebar => row
-            .h_8()
-            .px_2()
-            .pr_0p5()
-            .rounded(match variant {
-                TabsVariant::Titlebar => theme.radius.full,
-                _ => theme.radius.control,
-            })
-            .when(variant == TabsVariant::Titlebar, |row| {
-                row.bg(theme.colors.muted)
-            })
-            .when(active, |row| {
-                row.bg(theme.colors.background)
-                    .shadow(theme.elevations.control.shadows())
-            }),
     }
 }
 
@@ -279,27 +293,8 @@ impl Render for TabDragPreview {
             .bg(theme.colors.background)
             .text_sm()
             .text_color(theme.colors.foreground)
-            .shadow(theme.elevations.control.shadows())
+            .shadow(theme.elevations.control.shadows().to_vec())
             .child(self.label.clone())
-    }
-}
-
-/// The visual language of a [`Tabs`] strip.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum TabsVariant {
-    /// A bottom indicator line on the active tab.
-    #[default]
-    Underline,
-    /// Capsule tabs with an elevated active background.
-    Pill,
-    /// Floating capsule tabs sized for a window titlebar.
-    Titlebar,
-}
-
-impl TabsVariant {
-    /// Whether the variant draws capsule-shaped tabs.
-    fn is_capsule(self) -> bool {
-        matches!(self, Self::Pill | Self::Titlebar)
     }
 }
 
@@ -390,86 +385,99 @@ impl Tab {
     }
 
     fn render_tab(mut self, ctx: &StripCtx, cx: &App, index: usize) -> AnyElement {
+        let wrap = self.wrap.take();
+        let element = self.tab_element(ctx, cx, index);
+        match wrap {
+            Some(wrap) => wrap(element),
+            None => element.into_any_element(),
+        }
+    }
+
+    fn tab_element(mut self, ctx: &StripCtx, cx: &App, index: usize) -> Stateful<Div> {
         let selected = index == ctx.selected;
         // A pinned tab always wears the active treatment, selected or not.
         let active = selected || self.pinned;
 
         let theme = cx.theme();
-        let label_color = tab_label_color(ctx.variant, active, self.disabled, cx);
+        let label_color = ctx.variant.label_color(active, self.disabled, cx);
 
         let titlebar = ctx.variant == TabsVariant::Titlebar;
         let group = SharedString::from(format!("{}-tab-{}", ctx.id, self.key));
-        let close = (self.closeable && ctx.on_close.is_some() && !self.disabled)
-            .then(|| self.render_tab_close(&ctx.id, index, &ctx.on_close));
+        let close = ctx
+            .on_close
+            .as_ref()
+            .filter(|_| self.closeable && !self.disabled)
+            .map(|on_close| self.render_tab_close(&ctx.id, index, on_close));
 
-        let label = div()
-            .flex_grow(1.0)
-            .when(titlebar, |label| {
-                let fade = if active {
-                    theme.colors.background
-                } else {
-                    theme.colors.muted
-                };
+        div()
+            .child(
+                div()
+                    .flex_grow(1.0)
+                    .when(titlebar, |label| {
+                        let fade = if active {
+                            theme.colors.background
+                        } else {
+                            theme.colors.muted
+                        };
 
-                let hover_fade = if active {
-                    theme.colors.background
-                } else {
-                    theme.colors.muted_hover
-                };
+                        let hover_fade = if active {
+                            theme.colors.background
+                        } else {
+                            theme.colors.muted_hover
+                        };
 
-                let fade_width = rems(0.75);
-                let hover_fade_width = rems(1.5);
+                        let fade_width = rems(0.75);
+                        let hover_fade_width = rems(1.5);
 
-                label
-                    .min_w_0()
-                    .relative()
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .w_full()
+                        label
+                            .min_w_0()
+                            .relative()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .whitespace_nowrap()
+                                    .text_overflow(TextOverflow::Truncate(SharedString::default()))
+                                    .child(self.label.clone()),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .w(fade_width)
+                                    .bg(linear_gradient(
+                                        90.,
+                                        linear_color_stop(fade.opacity(0.), 0.),
+                                        linear_color_stop(fade, 1.),
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .right_0()
+                                    .bottom_0()
+                                    .w(hover_fade_width)
+                                    .bg(linear_gradient(
+                                        90.,
+                                        linear_color_stop(hover_fade.opacity(0.), 0.),
+                                        linear_color_stop(hover_fade, 1.),
+                                    ))
+                                    .invisible()
+                                    .group_hover(group.clone(), |style| style.visible()),
+                            )
+                    })
+                    .when(!titlebar, |label| {
+                        label
+                            .min_w_0()
                             .whitespace_nowrap()
-                            .text_overflow(TextOverflow::Truncate(SharedString::default()))
-                            .child(self.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .right_0()
-                            .bottom_0()
-                            .w(fade_width)
-                            .bg(linear_gradient(
-                                90.,
-                                linear_color_stop(fade.opacity(0.), 0.),
-                                linear_color_stop(fade, 1.),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .right_0()
-                            .bottom_0()
-                            .w(hover_fade_width)
-                            .bg(linear_gradient(
-                                90.,
-                                linear_color_stop(hover_fade.opacity(0.), 0.),
-                                linear_color_stop(hover_fade, 1.),
-                            ))
-                            .invisible()
-                            .group_hover(group.clone(), |style| style.visible()),
-                    )
-            })
-            .when(!titlebar, |label| {
-                label
-                    .min_w_0()
-                    .whitespace_nowrap()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(self.label.clone())
-            });
-
-        let strip_tab = div()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(self.label.clone())
+                    }),
+            )
             .id((self.key.clone(), "tab"))
             .debug_selector({
                 let tabs_id = ctx.id.clone();
@@ -492,12 +500,12 @@ impl Tab {
                 })
             })
             .map(|strip_tab| {
-                apply_tab_chrome(strip_tab, ctx.variant, active, cx)
+                ctx.variant
+                    .chrome(strip_tab, active, cx)
                     .max_w(TAB_MAX_WIDTH)
                     .when(titlebar, |strip_tab| strip_tab.min_w(TAB_MIN_WIDTH))
             })
             .when_some(self.lead.take(), |strip_tab, lead| strip_tab.child(lead))
-            .child(label)
             .when(ctx.variant == TabsVariant::Pill, |strip_tab| {
                 strip_tab.child(div().flex_none().w_4())
             })
@@ -542,7 +550,7 @@ impl Tab {
             .when_some(ctx.measure.clone(), |strip_tab, measure| {
                 let key = measure.key.clone();
                 let root_bounds = measure.root_bounds.clone();
-                let tab_key = self.key.to_string();
+                let tab_key = self.key.clone();
                 strip_tab.child(
                     canvas(
                         move |bounds, _, cx| {
@@ -636,27 +644,22 @@ impl Tab {
                                 }
                             });
                             let target = (!canceled)
-                                .then(|| reorder_target(drag.index, index))
+                                .then(|| TabDrop::reorder_target(drag.index, index))
                                 .flatten();
                             if let (Some(to), Some(on_reorder)) = (target, on_reorder.as_ref()) {
                                 on_reorder(drag.index, to, window, cx);
                             }
                         }
                     })
-            });
-
-        match self.wrap {
-            Some(wrap) => wrap(strip_tab),
-            None => strip_tab.into_any_element(),
-        }
+            })
     }
 
     fn render_tab_close(
         &self,
         tabs_id: &ElementId,
         index: usize,
-        on_close: &Option<CloseHandler>,
-    ) -> AnyElement {
+        on_close: &CloseHandler,
+    ) -> Button {
         Button::new((self.key.clone(), "tab-close"))
             .icon(IconRole::Close)
             .variant(ButtonVariant::Ghost)
@@ -674,12 +677,9 @@ impl Tab {
                 let on_close = on_close.clone();
                 move |_, window, cx| {
                     cx.stop_propagation();
-                    if let Some(on_close) = &on_close {
-                        on_close(index, window, cx);
-                    }
+                    on_close(index, window, cx);
                 }
             })
-            .into_any_element()
     }
 }
 
@@ -866,52 +866,51 @@ impl Tabs {
 
         Popover::new((id.clone(), "tabs-overflow"))
             .open(open)
-            .on_change({
+            .trigger({
                 let on_overflow_open = on_overflow_open.clone();
-                move |next, window, cx| {
-                    if let Some(on_overflow_open) = &on_overflow_open {
-                        on_overflow_open(next, window, cx);
-                    }
-                }
-            })
-            .trigger(move |_, _| {
-                Button::new((trigger_id.clone(), "tabs-overflow-trigger"))
-                    .icon(IconRole::More)
-                    .variant(ButtonVariant::Ghost)
-                    .small()
-                    .accessibility_label("More tabs")
-                    .on_click({
-                        let on_overflow_open = on_overflow_open.clone();
-                        move |event, window, cx| {
+                move |_, _| {
+                    Button::new((trigger_id.clone(), "tabs-overflow-trigger"))
+                        .icon(IconRole::More)
+                        .variant(ButtonVariant::Ghost)
+                        .small()
+                        .accessibility_label("More tabs")
+                        .on_click(move |event, window, cx| {
                             // Pointer clicks toggle inside Popover; only the keyboard path lands here.
                             if let ClickEvent::Keyboard(_) = event
-                                && let Some(on_overflow_open) = &on_overflow_open
+                                && let Some(on_overflow_open) = on_overflow_open.as_ref()
                             {
                                 on_overflow_open(!open, window, cx);
                             }
-                        }
-                    })
-                    .into_any_element()
+                        })
+                        .into_any_element()
+                }
+            })
+            .on_change(move |next, window, cx| {
+                if let Some(on_overflow_open) = on_overflow_open.as_ref() {
+                    on_overflow_open(next, window, cx);
+                }
             })
             .content(move |_, cx| {
-                let rows: Vec<AnyElement> = overflow_items
-                    .into_iter()
-                    .flat_map(|item| match item {
-                        StripItem::Single(index, tab) => {
-                            vec![tab.render_tab(&row_ctx, cx, index)]
-                        }
-                        // A group that ran out of room lists its members inline.
-                        StripItem::Group { members, .. } => members
-                            .into_iter()
-                            .map(|(index, tab)| tab.render_tab(&row_ctx, cx, index))
-                            .collect::<Vec<_>>(),
-                    })
-                    .collect();
-
                 ScrollArea::new((id.clone(), "tabs-overflow-list"))
                     .axes(ScrollAxes::Vertical)
                     .max_h(POPUP_MAX_HEIGHT)
-                    .child(v_flex().gap_0p5().p_1().children(rows))
+                    .child(
+                        v_flex()
+                            .gap_0p5()
+                            .p_1()
+                            .children(overflow_items.into_iter().flat_map(|item| {
+                                match item {
+                                    StripItem::Single(index, tab) => {
+                                        vec![tab.render_tab(&row_ctx, cx, index)]
+                                    }
+                                    // A group that ran out of room lists its members inline.
+                                    StripItem::Group { members, .. } => members
+                                        .into_iter()
+                                        .map(|(index, tab)| tab.render_tab(&row_ctx, cx, index))
+                                        .collect::<Vec<_>>(),
+                                }
+                            })),
+                    )
                     .into_any_element()
             })
     }
@@ -931,8 +930,9 @@ impl Tabs {
         for (index, tab) in tabs.into_iter().enumerate() {
             let grouped_kind = tab
                 .kind
-                .clone()
-                .filter(|kind| counts.get(kind).copied().unwrap_or(0) >= 2);
+                .as_ref()
+                .filter(|kind| counts.get(*kind).copied().unwrap_or(0) >= 2)
+                .cloned();
 
             match grouped_kind {
                 Some(kind) => match group_slots.get(&kind).copied() {
@@ -956,6 +956,14 @@ impl Tabs {
         items
     }
 
+    /// The group chip's identity for one strip and kind.
+    fn group_key(tabs_id: &ElementId, kind: &SharedString) -> ElementId {
+        ElementId::from((
+            ElementId::from((tabs_id.clone(), "tabs-group")),
+            kind.clone(),
+        ))
+    }
+
     /// Renders a group chip labeled with the kind and its member count.
     fn render_group_tab(
         ctx: &StripCtx,
@@ -964,131 +972,135 @@ impl Tabs {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let tabs_id = ctx.id.clone();
         let count = members.len();
         let selected = members.iter().any(|(index, _)| *index == ctx.selected);
         // A pinned member keeps the chip in the active treatment, selected or not.
         let active = selected || members.iter().any(|(_, tab)| tab.pinned);
 
+        let group_key = Self::group_key(&ctx.id, &kind);
         let open = window
-            .use_keyed_state((group_key(&tabs_id, &kind), "open"), cx, |_, _| false)
+            .use_keyed_state((group_key.clone(), "open"), cx, |_, _| false)
             .clone();
 
-        let theme = cx.theme();
-        let group_key = group_key(&tabs_id, &kind);
-
-        let label_color = tab_label_color(ctx.variant, active, false, cx);
-
-        let chip = div()
-            .id((group_key.clone(), "group-tab"))
-            .debug_selector({
-                let tabs_id = tabs_id.clone();
-                let label = kind.clone();
-                move || format!("{tabs_id}-group-{label}")
-            })
-            .flex()
-            .items_center()
-            .gap_2()
-            .cursor_pointer()
-            .role(Role::Tab)
-            .aria_selected(selected)
-            .aria_label(SharedString::from(format!("{kind}, {count} tabs")))
-            .text_color(label_color)
-            .when(!active, |chip| {
-                chip.hover(|chip| {
-                    chip.bg(match ctx.variant {
-                        TabsVariant::Titlebar => theme.colors.muted_hover,
-                        _ => theme.colors.muted,
-                    })
-                })
-            })
-            .map(|chip| apply_tab_chrome(chip, ctx.variant, active, cx))
-            .child(SharedString::from(format!("{kind} ({count})")))
-            .when(ctx.variant.is_capsule(), |chip| {
-                chip.child(div().flex_none().w_4())
-            })
-            .when_some(ctx.measure.clone(), |chip, measure| {
-                let key = measure.key.clone();
-                let root_bounds = measure.root_bounds.clone();
-                let item_key = group_key.to_string();
-                chip.child(
-                    canvas(
-                        move |bounds, _, cx| {
-                            let root = root_bounds.borrow();
-                            if let Some(root) = root.as_ref() {
-                                cx.default_global::<TabsMeasurements>().record_tab(
-                                    &key,
-                                    item_key,
-                                    TabMeasure {
-                                        left: bounds.origin.x - root.origin.x,
-                                        width: bounds.size.width,
-                                    },
-                                );
-                            }
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .inset_0(),
-                )
-            });
-
         // Selecting a row also dismisses the popover, mirroring the overflow popover.
-        let row_change: Option<ChangeHandler> = {
+        let row_change: ChangeHandler = {
             let open = open.clone();
             let on_change = ctx.on_change.clone();
-            Some(Rc::new(move |index, window, cx| {
+            Rc::new(move |index, window, cx| {
                 open.update(cx, |open, cx| {
-                    *open = false;
-                    cx.notify();
+                    if *open {
+                        *open = false;
+                        cx.notify();
+                    }
                 });
                 if let Some(on_change) = &on_change {
                     on_change(index, window, cx);
                 }
-            }))
+            })
         };
 
         let row_ctx = StripCtx {
-            on_change: row_change,
+            on_change: Some(row_change),
             ..ctx.for_popover()
         };
 
         Popover::new((group_key.clone(), "group-popover"))
             .open(*open.read(cx))
-            .on_change({
-                let open = open.clone();
-                move |next, _, cx| {
-                    open.update(cx, |open, cx| {
-                        *open = next;
-                        cx.notify();
-                    });
+            .trigger({
+                let ctx = ctx.clone();
+                let chip_key = group_key.clone();
+                move |_, cx| {
+                    let theme = cx.theme();
+                    let label_color = ctx.variant.label_color(active, false, cx);
+                    div()
+                        .id((chip_key.clone(), "group-tab"))
+                        .debug_selector({
+                            let tabs_id = ctx.id.clone();
+                            let label = kind.clone();
+                            move || format!("{tabs_id}-group-{label}")
+                        })
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .cursor_pointer()
+                        .role(Role::Tab)
+                        .aria_selected(selected)
+                        .aria_label(SharedString::from(format!("{kind}, {count} tabs")))
+                        .text_color(label_color)
+                        .when(!active, |chip| {
+                            chip.hover(|chip| {
+                                chip.bg(match ctx.variant {
+                                    TabsVariant::Titlebar => theme.colors.muted_hover,
+                                    _ => theme.colors.muted,
+                                })
+                            })
+                        })
+                        .map(|chip| ctx.variant.chrome(chip, active, cx))
+                        .child(SharedString::from(format!("{kind} ({count})")))
+                        .when(ctx.variant.is_capsule(), |chip| {
+                            chip.child(div().flex_none().w_4())
+                        })
+                        .when_some(ctx.measure.clone(), |chip, measure| {
+                            let key = measure.key.clone();
+                            let root_bounds = measure.root_bounds.clone();
+                            let item_key = chip_key.clone();
+                            chip.child(
+                                canvas(
+                                    move |bounds, _, cx| {
+                                        let root = root_bounds.borrow();
+                                        if let Some(root) = root.as_ref() {
+                                            cx.default_global::<TabsMeasurements>().record_tab(
+                                                &key,
+                                                item_key,
+                                                TabMeasure {
+                                                    left: bounds.origin.x - root.origin.x,
+                                                    width: bounds.size.width,
+                                                },
+                                            );
+                                        }
+                                    },
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .inset_0(),
+                            )
+                        })
+                        .into_any_element()
                 }
             })
-            .trigger(move |_, _| chip.into_any_element())
+            .on_change(move |next, _, cx| {
+                open.update(cx, |open, cx| {
+                    if *open != next {
+                        *open = next;
+                        cx.notify();
+                    }
+                });
+            })
             .content(move |_, cx| {
-                let rows: Vec<AnyElement> = members
-                    .into_iter()
-                    .map(|(index, tab)| tab.render_tab(&row_ctx, cx, index))
-                    .collect();
-
                 ScrollArea::new((group_key.clone(), "tabs-group-list"))
                     .axes(ScrollAxes::Vertical)
                     .max_h(POPUP_MAX_HEIGHT)
-                    .child(v_flex().gap_0p5().p_1().children(rows))
+                    .child(
+                        v_flex().gap_0p5().p_1().children(
+                            members
+                                .into_iter()
+                                .map(|(index, tab)| tab.render_tab(&row_ctx, cx, index)),
+                        ),
+                    )
                     .into_any_element()
             })
             .into_any_element()
     }
 }
 
-impl gpui::Styled for Tabs {
+impl Styled for Tabs {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
 }
 
 impl RenderOnce for Tabs {
-    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let tabs = match self.tabs {
             Some(build) => build(window, cx),
             None => Vec::new(),
@@ -1110,7 +1122,7 @@ impl RenderOnce for Tabs {
             })
             .collect();
 
-        let focus = crate::components::common::focus_handle(&self.id, window, cx);
+        let focus = self.id.focus_handle(window, cx);
         // Theme reads end here, so the strip's group chips can take `cx` mutably.
         let (border_color, shadow_bleed) = {
             let theme = cx.theme();
@@ -1123,31 +1135,32 @@ impl RenderOnce for Tabs {
 
         let label = self
             .a11y_label
-            .clone()
+            .take()
             .unwrap_or_else(|| SharedString::from(self.id.to_string()));
 
-        let measure_key: MeasureKey = (
-            window.window_handle().window_id().as_u64(),
-            self.id.to_string(),
-        );
+        let measure_key: MeasureKey =
+            (window.window_handle().window_id().as_u64(), self.id.clone());
 
-        let measure = if self.overflow_popover {
-            cx.try_global::<TabsMeasurements>()
-                .and_then(|cache| cache.strips.get(&measure_key).cloned())
-        } else {
-            None
-        };
-
-        let inline_count = measure
-            .as_ref()
-            .map(|measure| Self::inline_count(&self.id, &items, measure))
-            .unwrap_or(items.len());
+        // Read last frame's geometry under the borrow instead of cloning the strip.
+        let (measured, inline_count, trigger_width) = cx
+            .try_global::<TabsMeasurements>()
+            .filter(|_| self.overflow_popover)
+            .and_then(|cache| {
+                cache.strips.get(&measure_key).map(|measure| {
+                    (
+                        Self::inline_count(&self.id, &items, measure),
+                        measure.trigger_width,
+                    )
+                })
+            })
+            .map(|(count, trigger_width)| (true, count, trigger_width))
+            .unwrap_or((false, items.len(), None));
         let overflow_items = items.split_off(inline_count);
 
         // The strip records geometry per inline tab each frame; drop entries
         // for tabs no longer rendered inline.
         if cx.try_global::<TabsMeasurements>().is_some() {
-            let rendered: Vec<String> = items
+            let rendered: Vec<ElementId> = items
                 .iter()
                 .map(|item| item.measure_key(&self.id))
                 .collect();
@@ -1169,7 +1182,7 @@ impl RenderOnce for Tabs {
             selected: self.selected,
             variant: self.variant,
             on_change: self.on_change.clone(),
-            on_close: self.on_close.clone(),
+            on_close: self.on_close,
             on_reorder: self.on_reorder.clone(),
             focus: focus.clone(),
             measure: measure_frame.clone(),
@@ -1187,8 +1200,8 @@ impl RenderOnce for Tabs {
             })
             .collect();
 
-        let popover = (self.overflow_popover && measure.is_some() && !overflow_items.is_empty())
-            .then(|| {
+        let popover =
+            (self.overflow_popover && measured && !overflow_items.is_empty()).then(|| {
                 Self::render_overflow_popover(
                     &ctx,
                     overflow_items,
@@ -1212,8 +1225,8 @@ impl RenderOnce for Tabs {
                 let on_change = self.on_change.clone();
                 move |event: &KeyDownEvent, window, cx| {
                     let target = match event.keystroke.key.as_str() {
-                        "right" => adjacent_selectable(&selectable, Some(selected), true),
-                        "left" => adjacent_selectable(&selectable, Some(selected), false),
+                        "right" => selectable.adjacent(Some(selected), true),
+                        "left" => selectable.adjacent(Some(selected), false),
                         "home" => selectable.first().copied(),
                         "end" => selectable.last().copied(),
                         _ => return,
@@ -1264,7 +1277,7 @@ impl RenderOnce for Tabs {
                         });
                         if let (Some(onto), Some(on_reorder)) = (onto, on_reorder.as_ref())
                             && !canceled
-                            && let Some(to) = reorder_target(drag.index, onto)
+                            && let Some(to) = TabDrop::reorder_target(drag.index, onto)
                         {
                             on_reorder(drag.index, to, window, cx);
                         }
@@ -1283,12 +1296,10 @@ impl RenderOnce for Tabs {
 
                     let control = match popover {
                         Some(popover) => div().flex_none().relative().child(popover),
-                        None => div().flex_none().relative().child(
-                            div().w(measure
-                                .as_ref()
-                                .and_then(|measure| measure.trigger_width)
-                                .unwrap_or(Pixels::ZERO)),
-                        ),
+                        None => div()
+                            .flex_none()
+                            .relative()
+                            .child(div().w(trigger_width.unwrap_or(Pixels::ZERO))),
                     };
 
                     root.min_w_0()

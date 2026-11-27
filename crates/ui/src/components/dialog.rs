@@ -27,20 +27,26 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, DefiniteLength, ElementId, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, ParentElement as _, RenderOnce, Role, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window, canvas,
+    IntoElement, KeyBinding, MouseButton, ParentElement as _, RenderOnce, Role, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _, Window, actions,
     deferred, div, ease_out_quint, relative,
 };
 
 use crate::components::button::{Button, ButtonVariant};
 use crate::components::common::{
-    DIALOG_LAYER, Sizable, StyledExt as _, floating_panel, focus_handle, h_flex,
-    track_overlay_focus, v_flex,
+    DIALOG_LAYER, ElementIdExt as _, Sizable, StyledExt as _, h_flex, v_flex,
 };
-use crate::components::grain::grain;
+use crate::components::grain::Grain;
+use crate::components::menu::focus_capture;
+use crate::components::popover::POPOVER_CONTEXT;
 use crate::components::scroll_area::ScrollArea;
 use crate::icons::IconRole;
 use crate::theme::{ActiveTheme as _, DIALOG_MIN_WIDTH};
+
+actions!(dialog, [Dismiss]);
+
+/// Key context of the dialog panel.
+pub const DIALOG_CONTEXT: &str = "Dialog";
 
 /// Requests the dialog's close: `false` closes.
 type ChangeHandler = Rc<dyn Fn(bool, &mut Window, &mut App)>;
@@ -129,6 +135,14 @@ impl Dialog {
             height: None,
             style: StyleRefinement::default(),
         }
+    }
+
+    /// Binds the dialog's dismissal key.
+    pub fn bind_keys(cx: &mut App) {
+        cx.bind_keys([
+            KeyBinding::new("escape", Dismiss, Some(DIALOG_CONTEXT)),
+            KeyBinding::new("escape", Dismiss, Some(POPOVER_CONTEXT)),
+        ]);
     }
 
     /// Sets the initial open state; a handle overrides it.
@@ -248,19 +262,17 @@ impl gpui::Styled for Dialog {
 
 impl RenderOnce for Dialog {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let root = div().absolute().inset_0();
-
         let open = self
             .handle
             .as_ref()
             .map_or(self.open, DialogHandle::is_open);
 
         // Keyboard focus rides the panel across frames.
-        let focus = focus_handle(&self.id, window, cx);
-        track_overlay_focus(&self.id, &focus, open, window, cx);
+        let focus = self.id.focus_handle(window, cx);
+        self.id.track_overlay_focus(&focus, open, window, cx);
 
         if !open {
-            return root.into_any_element();
+            return div().absolute().inset_0().into_any_element();
         }
 
         // A handle routes dismissal through the shared state
@@ -312,11 +324,11 @@ impl RenderOnce for Dialog {
             .read(cx)
             .clone();
 
-        // The panel takes focus when it first paints, and again whenever nothing else holds it.
-        let painted = window.use_keyed_state((self.id.clone(), "dialog-painted"), cx, |_, _| false);
-
         deferred(
-            root.flex()
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
                 .items_center()
                 .justify_center()
                 .p_4()
@@ -327,7 +339,7 @@ impl RenderOnce for Dialog {
                         .inset_0()
                         .bg(scrim_color)
                         .occlude()
-                        .when(self.grain, |scrim| scrim.child(grain()))
+                        .when(self.grain, |scrim| scrim.child(Grain))
                         .when(!alert && close_on_backdrop, |scrim| {
                             scrim.on_mouse_down(MouseButton::Left, {
                                 let on_change = on_change.clone();
@@ -346,122 +358,108 @@ impl RenderOnce for Dialog {
                         ),
                 )
                 .child(
-                    floating_panel(
-                        cx,
-                        radius,
-                        v_flex()
-                            .id((self.id.clone(), "dialog-panel"))
-                            .track_focus(&focus)
-                            .role(role)
-                            .aria_label(label)
-                            .when_some(self.width, |panel, width| panel.w(width))
-                            .when(self.width.is_none() && self.min_width.is_none(), |panel| {
-                                panel.min_w(DIALOG_MIN_WIDTH)
-                            })
-                            .when_some(self.min_width, |panel, width| panel.min_w(width))
-                            .max_w(relative(0.9))
-                            .when_some(height, |panel, height| panel.h(height))
-                            .text_color(foreground),
-                        shadows,
-                    )
-                    .bg(background)
-                    .overflow_hidden()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_key_down({
-                        let on_change = on_change.clone();
-                        move |event: &KeyDownEvent, window, cx| {
-                            if event.keystroke.key == "escape"
-                                && !alert
-                                && close_on_escape
-                                && let Some(on_change) = &on_change
-                            {
-                                on_change(false, window, cx);
-                            }
-                            cx.stop_propagation();
-                        }
-                    })
-                    .when(self.title.is_some() || show_close, |panel| {
-                        panel.child(
-                            h_flex()
-                                .h_12()
-                                .px_2()
-                                .gap_2()
-                                .justify_between()
-                                .when(show_close, |row| row.child(div().w_7()))
-                                .when_some(self.title.clone(), |row, title| {
-                                    row.child(
-                                        div()
-                                            .flex_1()
-                                            .text_center()
-                                            .text_sm()
-                                            .font_semibold()
-                                            .child(title),
-                                    )
-                                })
-                                .when(show_close, |row| {
-                                    row.child(
-                                        Button::new((self.id.clone(), "dialog-close"))
-                                            .icon(IconRole::Close)
-                                            .variant(ButtonVariant::Ghost)
-                                            .small()
-                                            .debug_selector(|| "dialog-close".to_string())
-                                            .accessibility_label("Close")
-                                            .on_click({
-                                                let on_change = on_change.clone();
-                                                move |_, window, cx| {
-                                                    if let Some(on_change) = &on_change {
-                                                        on_change(false, window, cx);
-                                                    }
-                                                }
-                                            }),
-                                    )
-                                }),
-                        )
-                    })
-                    .when_some(content, |panel, content| {
-                        panel.map(|this| {
-                            if height.is_some() {
-                                this.child(
-                                    ScrollArea::new((self.id.clone(), "dialog-content"))
-                                        .handle(scroll)
-                                        .flex_1()
-                                        .min_h_0()
-                                        .child(div().p_2().child(content)),
-                                )
-                            } else {
-                                this.child(div().p_2().child(content))
-                            }
+                    v_flex()
+                        .id((self.id.clone(), "dialog-panel"))
+                        .track_focus(&focus)
+                        .key_context(DIALOG_CONTEXT)
+                        .role(role)
+                        .aria_label(label)
+                        .when_some(self.width, |panel, width| panel.w(width))
+                        .when(self.width.is_none() && self.min_width.is_none(), |panel| {
+                            panel.min_w(DIALOG_MIN_WIDTH)
                         })
-                    })
-                    .when_some(actions, |panel, actions| {
-                        panel.child(
-                            h_flex()
-                                .px_2()
-                                .h_12()
-                                .justify_end()
-                                .gap_2()
-                                .children(actions),
-                        )
-                    })
-                    .child(
-                        canvas(|_, _, _| {}, {
-                            let painted = painted.clone();
-                            move |_, _, window, cx| {
-                                let first_paint = painted
-                                    .update(cx, |painted, _| !std::mem::replace(painted, true));
-                                if first_paint || window.focused(cx).is_none() {
-                                    window.focus(&focus, cx);
+                        .when_some(self.min_width, |panel, width| panel.min_w(width))
+                        .max_w(relative(0.9))
+                        .when_some(height, |panel, height| panel.h(height))
+                        .text_color(foreground)
+                        .floating_panel(cx, radius, shadows)
+                        .bg(background)
+                        .overflow_hidden()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_action({
+                            let on_change = on_change.clone();
+                            move |_: &Dismiss, window, cx| {
+                                if !alert
+                                    && close_on_escape
+                                    && let Some(on_change) = &on_change
+                                {
+                                    on_change(false, window, cx);
                                 }
+                                cx.stop_propagation();
                             }
                         })
-                        .absolute()
-                        .inset_0(),
-                    )
-                    .with_animation(
-                        "dialog-enter",
-                        Animation::new(enter_duration).with_easing(ease_out_quint()),
-                        |panel, delta| panel.opacity(delta),
-                    ),
+                        .when(self.title.is_some() || show_close, |panel| {
+                            panel.child(
+                                h_flex()
+                                    .h_12()
+                                    .px_2()
+                                    .gap_2()
+                                    .justify_between()
+                                    .when(show_close, |row| row.child(div().w_7()))
+                                    .when_some(self.title.clone(), |row, title| {
+                                        row.child(
+                                            div()
+                                                .flex_1()
+                                                .text_center()
+                                                .text_sm()
+                                                .font_semibold()
+                                                .child(title),
+                                        )
+                                    })
+                                    .when(show_close, |row| {
+                                        row.child(
+                                            Button::new((self.id.clone(), "dialog-close"))
+                                                .icon(IconRole::Close)
+                                                .variant(ButtonVariant::Ghost)
+                                                .small()
+                                                .debug_selector(|| "dialog-close".to_string())
+                                                .accessibility_label("Close")
+                                                .on_click({
+                                                    let on_change = on_change.clone();
+                                                    move |_, window, cx| {
+                                                        if let Some(on_change) = &on_change {
+                                                            on_change(false, window, cx);
+                                                        }
+                                                    }
+                                                }),
+                                        )
+                                    }),
+                            )
+                        })
+                        .when_some(content, |panel, content| {
+                            panel.map(|this| {
+                                if height.is_some() {
+                                    this.child(
+                                        ScrollArea::new((self.id.clone(), "dialog-content"))
+                                            .handle(scroll)
+                                            .flex_1()
+                                            .min_h_0()
+                                            .child(div().p_2().child(content)),
+                                    )
+                                } else {
+                                    this.child(div().p_2().child(content))
+                                }
+                            })
+                        })
+                        .when_some(actions, |panel, actions| {
+                            panel.child(
+                                h_flex()
+                                    .px_2()
+                                    .h_12()
+                                    .justify_end()
+                                    .gap_2()
+                                    .children(actions),
+                            )
+                        })
+                        // Keep focus inside the dialog: Tab past the last control stays here.
+                        .child(focus_capture(focus.clone(), move |window, cx| {
+                            !focus.contains_focused(window, cx)
+                        }))
+                        .with_animation(
+                            "dialog-enter",
+                            Animation::new(enter_duration).with_easing(ease_out_quint()),
+                            |panel, delta| panel.opacity(delta),
+                        ),
                 ),
         )
         .with_priority(DIALOG_LAYER)

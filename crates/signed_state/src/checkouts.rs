@@ -162,7 +162,7 @@ impl CheckoutsStore {
         }
 
         if !cfg!(target_arch = "wasm32") {
-            let weak = cx.entity().downgrade();
+            let weak = cx.weak_entity();
             cx.defer(move |cx| {
                 weak.update(cx, |this, cx| {
                     this.refresh(cx);

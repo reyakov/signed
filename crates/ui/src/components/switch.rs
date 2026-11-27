@@ -15,10 +15,10 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnimationExt as _, App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _,
     RenderOnce, Role, SharedString, SpringAnimation, StatefulInteractiveElement as _,
-    StyleRefinement, Styled as _, Toggled, Window, div, px,
+    StyleRefinement, Styled, Toggled, Window, div, px,
 };
 
-use crate::components::common::{ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt as _, h_flex};
 use crate::theme::{ActiveTheme as _, BORDER_WIDTH, CONTROL_SPRING, DISABLED_OPACITY, Size};
 
 /// The change reporter, fired with the next value by pointer, Enter, and Space.
@@ -96,7 +96,7 @@ impl Switch {
     }
 }
 
-impl gpui::Styled for Switch {
+impl Styled for Switch {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
@@ -112,6 +112,7 @@ impl RenderOnce for Switch {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
         let colors = theme.colors;
+        let ring = theme.focus_ring();
         let ramps = theme.ramps;
 
         let rem = window.rem_size();
@@ -145,7 +146,7 @@ impl RenderOnce for Switch {
                     .cursor_pointer()
                     .focusable()
                     .tab_stop(true)
-                    .focus_visible(|style| style.shadow(focus_ring(colors.ring)))
+                    .focus_visible(|style| style.shadow(ring))
                     .when_some(on_change, |switch, on_change| {
                         switch.on_click(move |_, window, cx| on_change(next, window, cx))
                     })

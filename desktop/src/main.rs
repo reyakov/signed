@@ -54,7 +54,7 @@ fn main() {
             SettingsStore::set_global(store.clone(), cx);
 
             let settings = store.read(cx).settings().clone();
-            signed_app::apply_appearance_mode(settings.appearance, cx);
+            signed_app::AppRoot::apply_appearance_mode(settings.appearance, cx);
 
             if let Err(error) = std::fs::create_dir_all(paths::nostr_dir()) {
                 tracing::warn!("failed to create nostr dir: {error}");
@@ -107,7 +107,7 @@ fn main() {
                         cx.refresh_windows();
                     })
                     .detach();
-                signed_app::root(window, cx)
+                signed_app::AppRoot::mount(window, cx)
             }) {
                 tracing::error!("failed to open window: {error}");
                 cx.quit();

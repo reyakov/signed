@@ -253,31 +253,10 @@ pub struct PanelStack {
     split_width: Option<Pixels>,
     /// The side of the main panel the on-screen split pane opened on.
     split_side: SplitSide,
-    /// The main pane width the divider was last seeded at, to tell a drag from a window resize.
-    opened_at: Option<Pixels>,
     /// The panel shown alone while it is zoomed.
     zoomed: Option<SharedString>,
     /// The divider position, kept only while a split is on screen.
     sizes: Entity<ResizableState>,
-}
-
-/// The layout the cached panel content lays out with.
-fn content_style() -> StyleRefinement {
-    StyleRefinement::default().size_full()
-}
-
-/// The island chrome every panel paints.
-fn island(panel: Div, cx: &App) -> Div {
-    let theme = cx.theme();
-    let colors = theme.colors;
-
-    panel
-        .size_full()
-        .bg(colors.background)
-        .border_1()
-        .border_color(colors.border)
-        .rounded(theme.radius.overlay)
-        .overflow_hidden()
 }
 
 impl PanelStack {
@@ -294,7 +273,6 @@ impl PanelStack {
             resizable: true,
             split_width: None,
             split_side: SplitSide::Trailing,
-            opened_at: None,
             zoomed: None,
             sizes: ResizableState::new(cx),
         }
@@ -307,18 +285,29 @@ impl PanelStack {
         split: Option<(AnyView, Pixels)>,
         cx: &mut Context<Self>,
     ) {
+        let width = split.as_ref().map(|(_, width)| *width);
+
         self.empty = Some(EmptyContent {
             main: main.into(),
             split,
         });
+
+        if let Some(width) = width {
+            self.sizes.update(cx, |state, cx| {
+                state.open_pane(width, false, cx);
+            });
+        }
+
         self.forget_divider(cx);
         cx.notify();
     }
 
     /// Sets whether the divider can be dragged; a fixed split keeps its opening width.
     pub fn set_resizable(&mut self, resizable: bool, cx: &mut Context<Self>) {
-        self.resizable = resizable;
-        cx.notify();
+        if self.resizable != resizable {
+            self.resizable = resizable;
+            cx.notify();
+        }
     }
 
     /// Shows `view` in `slot` under `id`, opening it at the end of the stack when new.
@@ -381,6 +370,9 @@ impl PanelStack {
         if !self.is_split_shown() {
             self.split_width = Some(width);
             self.split_side = side;
+            self.sizes.update(cx, |state, cx| {
+                state.open_pane(width, side == SplitSide::Trailing, cx)
+            });
         }
         self.insert(PanelSlot::Split, id, view, cx);
     }
@@ -488,6 +480,7 @@ impl PanelStack {
         }
         if slot == PanelSlot::Main && was_shown {
             self.split.clear();
+            self.open_empty_split(cx);
         }
         self.forget_divider(cx);
         cx.notify();
@@ -532,16 +525,21 @@ impl PanelStack {
 
         self.split_width = None;
         self.split_side = SplitSide::Trailing;
-        self.opened_at = None;
         self.zoomed = None;
 
-        if !self.sizes.read(cx).sizes().is_empty() {
-            self.sizes.update(cx, |state, cx| state.set_sizes([], cx));
+        self.sizes.update(cx, |state, cx| state.clear(cx));
+    }
+
+    /// Opens the empty state's split beside the main pane at the width it was given.
+    fn open_empty_split(&self, cx: &mut Context<Self>) {
+        if let Some((_, width)) = self.empty.as_ref().and_then(|empty| empty.split.as_ref()) {
+            self.sizes
+                .update(cx, |state, cx| state.open_pane(*width, false, cx));
         }
     }
 
     /// The split pane's content: the split stack's tabs over its shown panel.
-    fn split_pane(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn split_pane(&self, cx: &Context<Self>) -> impl IntoElement {
         let selected = self.split.selected().unwrap_or(usize::MAX);
         let change = cx.weak_entity();
         let close = change.clone();
@@ -587,14 +585,13 @@ impl PanelStack {
                 div().flex_1().min_h_0().w_full().children(
                     self.split
                         .active()
-                        .map(|panel| panel.view().cached(content_style()).into_any_element()),
+                        .map(|panel| panel.view().cached(Self::content_style())),
                 ),
             )
-            .into_any_element()
     }
 
     /// The zoom and close buttons over a pane's top right corner, when its shown panel asks for them.
-    fn toolbar(&self, slot: PanelSlot, cx: &Context<Self>) -> Option<AnyElement> {
+    fn toolbar(&self, slot: PanelSlot, cx: &Context<Self>) -> Option<impl IntoElement> {
         if !self.stack(slot).active()?.toolbar(cx) {
             return None;
         }
@@ -657,21 +654,30 @@ impl PanelStack {
                                 .update(cx, |stack, cx| stack.close_active(slot, cx))
                                 .log_err();
                         }),
-                )
-                .into_any_element(),
+                ),
         )
     }
 
     /// The island around a pane's content, with its toolbar over the top right corner.
-    fn pane(&self, content: AnyElement, toolbar: Option<AnyElement>, cx: &App) -> Div {
-        island(
-            div()
-                .size_full()
-                .relative()
-                .child(content)
-                .children(toolbar),
-            cx,
-        )
+    fn pane(&self, content: impl IntoElement, toolbar: Option<impl IntoElement>, cx: &App) -> Div {
+        let theme = cx.theme();
+        let colors = theme.colors;
+
+        div()
+            .size_full()
+            .bg(colors.background)
+            .border_1()
+            .border_color(colors.border)
+            .rounded(theme.radius.overlay)
+            .overflow_hidden()
+            .relative()
+            .child(content)
+            .children(toolbar)
+    }
+
+    /// The layout the cached panel content lays out with.
+    fn content_style() -> StyleRefinement {
+        StyleRefinement::default().size_full()
     }
 }
 
@@ -679,7 +685,6 @@ impl Render for PanelStack {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let gutter = RESIZE_HANDLE_WIDTH;
         let extent = window.viewport_size().width - gutter * 2.0;
-        let cached = |view: AnyView| view.cached(content_style()).into_any_element();
 
         // The main pane's content, the split pane's when one is on screen, and how the first pane opens.
         let (main, split, width, leading) = match self.main.active() {
@@ -693,8 +698,11 @@ impl Render for PanelStack {
                         .map(|split_width| extent - gutter - split_width)
                 };
                 (
-                    cached(panel.view()),
-                    (!self.split.is_empty()).then(|| self.split_pane(cx)),
+                    panel
+                        .view()
+                        .cached(Self::content_style())
+                        .into_any_element(),
+                    (!self.split.is_empty()).then(|| self.split_pane(cx).into_any_element()),
                     width,
                     leading,
                 )
@@ -702,92 +710,108 @@ impl Render for PanelStack {
             None => match &self.empty {
                 Some(empty) => {
                     let (split, width) = match &empty.split {
-                        Some((view, width)) => (Some(cached(view.clone())), Some(*width)),
+                        Some((view, width)) => (
+                            Some(
+                                view.clone()
+                                    .cached(Self::content_style())
+                                    .into_any_element(),
+                            ),
+                            Some(*width),
+                        ),
                         None => (None, None),
                     };
-                    (cached(empty.main.clone()), split, width, false)
+                    (
+                        empty
+                            .main
+                            .clone()
+                            .cached(Self::content_style())
+                            .into_any_element(),
+                        split,
+                        width,
+                        false,
+                    )
                 }
                 None => (div().into_any_element(), None, None, false),
             },
         };
 
+        let has_split = split.is_some();
         // The pane shown alone while its panel is zoomed.
         let zoomed = self.zoomed.as_ref().and_then(|zoomed| {
             [PanelSlot::Main, PanelSlot::Split]
                 .into_iter()
-                .find(|slot| split.is_some() && self.stack(*slot).active.as_ref() == Some(zoomed))
+                .find(|slot| has_split && self.stack(*slot).active.as_ref() == Some(zoomed))
         });
 
-        div().flex_1().min_w_0().h_full().p_2().pt_1().map(|this| {
-            match split {
-                Some(split) => match zoomed {
-                    // A zoomed panel fills the row; its toolbar is the way back.
-                    Some(slot) => {
-                        let content = match slot {
-                            PanelSlot::Main => main,
-                            PanelSlot::Split => split,
-                        };
-                        this.child(div().w_full().h_full().child(self.pane(
-                            content,
-                            self.toolbar(slot, cx),
-                            cx,
-                        )))
-                    }
-                    None => {
-                        let main = self.pane(main, self.toolbar(PanelSlot::Main, cx), cx);
-                        let split = self.pane(split, self.toolbar(PanelSlot::Split, cx), cx);
-                        let (first, last) = if leading {
-                            (split, main)
-                        } else {
-                            (main, split)
-                        };
-                        let first_width =
-                            width.unwrap_or((extent - gutter) / 2.0).max(PANE_MIN_SIZE);
+        div()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .p_2()
+            .pt_1()
+            .map(|this| {
+                match split {
+                    Some(split) => match zoomed {
+                        // A zoomed panel fills the row; its toolbar is the way back.
+                        Some(slot) => {
+                            let content = match slot {
+                                PanelSlot::Main => main,
+                                PanelSlot::Split => split,
+                            };
+                            this.child(div().w_full().h_full().child(self.pane(
+                                content,
+                                self.toolbar(slot, cx),
+                                cx,
+                            )))
+                        }
+                        None => {
+                            let main = self.pane(main, self.toolbar(PanelSlot::Main, cx), cx);
+                            let split = self.pane(split, self.toolbar(PanelSlot::Split, cx), cx);
+                            let (first, last) = if leading {
+                                (split, main)
+                            } else {
+                                (main, split)
+                            };
+                            let first_width =
+                                width.unwrap_or((extent - gutter) / 2.0).max(PANE_MIN_SIZE);
 
-                        if !self.resizable {
-                            this.child(
-                                div()
-                                    .w_full()
-                                    .h_full()
-                                    .flex()
-                                    .flex_row()
-                                    .child(div().flex_none().w(first_width).h_full().child(first))
-                                    .child(div().flex_none().w(gutter))
-                                    .child(div().flex_1().min_w_0().h_full().child(last)),
-                            )
-                        } else {
-                            // A split opened at a width keeps it across window resizes until the divider is dragged.
-                            let current = self.sizes.read(cx).sizes().first().copied();
-                            let keeps_width =
-                                self.split_width.is_some() && current == self.opened_at;
-
-                            if current.is_none()
-                                || (keeps_width && self.opened_at != Some(first_width))
-                            {
-                                self.sizes.update(cx, |state, cx| {
-                                    state.set_pane_width(0, first_width, cx);
-                                });
-                                self.opened_at = Some(first_width);
-                            }
-
-                            this.child(
-                                div().w_full().h_full().child(
-                                    Resizable::new((self.id.clone(), "split"), self.sizes.clone())
+                            if !self.resizable {
+                                this.child(
+                                    div()
+                                        .w_full()
+                                        .h_full()
+                                        .flex()
+                                        .flex_row()
+                                        .child(
+                                            div().flex_none().w(first_width).h_full().child(first),
+                                        )
+                                        .child(div().flex_none().w(gutter))
+                                        .child(div().flex_1().min_w_0().h_full().child(last)),
+                                )
+                            } else {
+                                this.child(
+                                    div().w_full().h_full().child(
+                                        Resizable::new(
+                                            (self.id.clone(), "split"),
+                                            self.sizes.clone(),
+                                        )
                                         .axis(Axis::Horizontal)
                                         .pane(first)
                                         .pane(last)
+                                        .extent(extent)
                                         .h_full(),
-                                ),
-                            )
+                                    ),
+                                )
+                            }
                         }
-                    }
-                },
-                None => this.child(div().w_full().h_full().child(self.pane(
-                    main,
-                    self.toolbar(PanelSlot::Main, cx),
-                    cx,
-                ))),
-            }
-        })
+                    },
+                    None => this.child(div().w_full().h_full().child(self.pane(
+                        main,
+                        self.toolbar(PanelSlot::Main, cx),
+                        cx,
+                    ))),
+                }
+            })
     }
 }

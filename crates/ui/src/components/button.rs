@@ -17,18 +17,16 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AnyView, App, ClickEvent, ElementId, Hsla, InteractiveElement as _, IntoElement,
     ParentElement, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    StyleRefinement, Styled as _, Window, relative, transparent_black,
+    StyleRefinement, Styled, Window, relative, transparent_black,
 };
 
-use crate::components::common::{ControlSizing, Sizable, StyledExt as _, focus_ring, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt as _, TooltipBuilder, h_flex};
 use crate::components::spinner::Spinner;
 use crate::icons::Icon;
 use crate::theme::{ActiveTheme as _, DISABLED_OPACITY, Size};
 
 /// The single activation handler, shared by pointer, Enter, and Space.
 type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
-/// The tooltip view builder gpui's `.tooltip(...)` expects.
-type TooltipBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyView>;
 
 /// Which visual treatment a button uses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -278,7 +276,7 @@ impl ParentElement for Button {
     }
 }
 
-impl gpui::Styled for Button {
+impl Styled for Button {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
@@ -302,13 +300,13 @@ impl RenderOnce for Button {
             pressed_border,
         } = self.variant.chrome(cx);
 
+        let theme = cx.theme();
         let radius = if self.fully_rounded {
-            let theme = cx.theme();
             theme.radius.full
         } else {
-            let theme = cx.theme();
             theme.radius.control
         };
+        let ring = theme.focus_ring();
 
         let on_click = self.on_click;
         let a11y_label = self.a11y_label.or_else(|| self.label.clone());
@@ -320,7 +318,6 @@ impl RenderOnce for Button {
 
         let is_round_child = is_child_only && self.fully_rounded;
         let icon_trailing = self.side == ButtonSide::Right;
-        let ring = cx.theme().colors.ring;
 
         h_flex()
             .id(self.id.clone())
@@ -395,10 +392,8 @@ impl RenderOnce for Button {
                     .tab_stop(self.tab_stop)
                     .hover(move |style| style.bg(hover).border_color(hover_border))
                     .active(move |style| style.bg(pressed).border_color(pressed_border))
-                    .focus_visible(|style| style.shadow(focus_ring(ring)))
-                    .when_some(on_click, |button, on_click| {
-                        button.on_click(move |event, window, cx| on_click(event, window, cx))
-                    })
+                    .focus_visible(|style| style.shadow(ring))
+                    .when_some(on_click, |button, on_click| button.on_click(on_click))
             })
     }
 }

@@ -50,7 +50,7 @@ impl RepoListStore {
 
     pub fn new(cx: &mut Context<Self>) -> Self {
         let backend = Backend::global(cx);
-        let weak = cx.entity().downgrade();
+        let weak = cx.weak_entity();
 
         let subscription = cx.subscribe(&backend, |this, _backend, event, cx| {
             let relevant = match event {

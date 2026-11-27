@@ -14,11 +14,12 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, ElementId, InteractiveElement as _, IntoElement, ParentElement, RenderOnce, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled, Window, div,
+    AnyElement, App, ElementId, InteractiveElement as _, IntoElement, ParentElement, RenderOnce,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Window,
+    div,
 };
 
-use crate::components::common::StyledExt;
+use crate::components::common::StyledExt as _;
 use crate::components::scrollbar::{Scrollbar, ScrollbarVisibility};
 
 /// Which directions the content scrolls in.
@@ -42,18 +43,18 @@ pub struct ScrollArea {
     axes: ScrollAxes,
     visibility: ScrollbarVisibility,
     a11y_label: Option<SharedString>,
-    style: gpui::StyleRefinement,
-    children: Vec<gpui::AnyElement>,
+    style: StyleRefinement,
+    children: Vec<AnyElement>,
 }
 
 impl ParentElement for ScrollArea {
-    fn extend(&mut self, children: impl IntoIterator<Item = gpui::AnyElement>) {
+    fn extend(&mut self, children: impl IntoIterator<Item = AnyElement>) {
         self.children.extend(children);
     }
 }
 
 impl Styled for ScrollArea {
-    fn style(&mut self) -> &mut gpui::StyleRefinement {
+    fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
 }
@@ -70,7 +71,7 @@ impl ScrollArea {
             axes: ScrollAxes::Vertical,
             visibility: ScrollbarVisibility::default(),
             a11y_label: None,
-            style: gpui::StyleRefinement::default(),
+            style: StyleRefinement::default(),
             children: Vec::new(),
         }
     }
@@ -110,6 +111,8 @@ impl RenderOnce for ScrollArea {
 
         div()
             .relative()
+            .min_h_0()
+            .min_w_0()
             .refine_style(&self.style)
             .child(
                 div()
@@ -140,15 +143,13 @@ impl RenderOnce for ScrollArea {
                     .when(self.axes != ScrollAxes::Horizontal, |wrapper| {
                         wrapper.child(
                             Scrollbar::vertical((id.clone(), "v-scrollbar"), handle.clone())
-                                .visibility(self.visibility)
-                                .into_any_element(),
+                                .visibility(self.visibility),
                         )
                     })
                     .when(self.axes != ScrollAxes::Vertical, |wrapper| {
                         wrapper.child(
                             Scrollbar::horizontal((id, "h-scrollbar"), handle)
-                                .visibility(self.visibility)
-                                .into_any_element(),
+                                .visibility(self.visibility),
                         )
                     })
             })

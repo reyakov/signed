@@ -94,6 +94,78 @@ impl Panel for FieldView {
     }
 }
 
+struct MetaView {
+    loading: bool,
+    prefix: bool,
+}
+
+impl Render for MetaView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().size_full()
+    }
+}
+
+impl Panel for MetaView {
+    fn title(&self, _cx: &App) -> SharedString {
+        SharedString::from("Meta")
+    }
+
+    fn prefix(&self, _cx: &App) -> Option<AnyElement> {
+        self.prefix.then(|| {
+            div()
+                .debug_selector(|| "meta-prefix".to_string())
+                .into_any_element()
+        })
+    }
+
+    fn loading(&self, _cx: &App) -> bool {
+        self.loading
+    }
+}
+
+struct MetaStripHarness {
+    busy: Entity<MetaView>,
+    idle: Entity<MetaView>,
+    prefixed: Entity<MetaView>,
+}
+
+impl Render for MetaStripHarness {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let busy = self.busy.clone();
+        let idle = self.idle.clone();
+        let prefixed = self.prefixed.clone();
+        v_flex()
+            .size_full()
+            .gap_1()
+            .child(
+                Tabs::new("busy-strip")
+                    .tabs(move |_, cx| vec![busy.tab("busy".into(), cx).closeable(false)]),
+            )
+            .child(
+                Tabs::new("idle-strip")
+                    .tabs(move |_, cx| vec![idle.tab("idle".into(), cx).closeable(false)]),
+            )
+            .child(
+                Tabs::new("prefix-strip")
+                    .tabs(move |_, cx| vec![prefixed.tab("prefix".into(), cx).closeable(false)]),
+            )
+    }
+}
+
+/// The titlebar strip above the stack.
+struct TabsHarness {
+    stack: Entity<PanelStack>,
+}
+
+impl Render for TabsHarness {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .children(PanelStack::main_tabs(self.stack.clone(), cx))
+            .child(self.stack.clone())
+    }
+}
+
 /// A marker view.
 fn tag(cx: &mut App, selector: &'static str) -> Entity<TagView> {
     cx.new(|_| TagView::new(selector))
@@ -110,7 +182,7 @@ fn stack_window(
     seed: impl FnOnce(&mut PanelStack, &mut Context<PanelStack>),
 ) -> (VisualTestContext, Entity<PanelStack>) {
     let stack = cx.update(|cx| {
-        Theme::init(cx);
+        Theme::init_with(cx, Theme::fallback_source());
         let stack = cx.new(|cx| PanelStack::new("panel-harness", cx));
         stack.update(cx, seed);
         stack
@@ -294,67 +366,9 @@ fn dragging_the_divider_resizes_the_panels(cx: &mut TestAppContext) {
     assert_eq!(after.size.width, before.size.width + px(100.0));
 }
 
-struct MetaView {
-    loading: bool,
-    prefix: bool,
-}
-
-impl Render for MetaView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full()
-    }
-}
-
-impl Panel for MetaView {
-    fn title(&self, _cx: &App) -> SharedString {
-        SharedString::from("Meta")
-    }
-
-    fn prefix(&self, _cx: &App) -> Option<AnyElement> {
-        self.prefix.then(|| {
-            div()
-                .debug_selector(|| "meta-prefix".to_string())
-                .into_any_element()
-        })
-    }
-
-    fn loading(&self, _cx: &App) -> bool {
-        self.loading
-    }
-}
-
-struct MetaStripHarness {
-    busy: Entity<MetaView>,
-    idle: Entity<MetaView>,
-    prefixed: Entity<MetaView>,
-}
-
-impl Render for MetaStripHarness {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let busy = self.busy.clone();
-        let idle = self.idle.clone();
-        let prefixed = self.prefixed.clone();
-        v_flex()
-            .size_full()
-            .gap_1()
-            .child(
-                Tabs::new("busy-strip")
-                    .tabs(move |_, cx| vec![busy.tab("busy".into(), cx).closeable(false)]),
-            )
-            .child(
-                Tabs::new("idle-strip")
-                    .tabs(move |_, cx| vec![idle.tab("idle".into(), cx).closeable(false)]),
-            )
-            .child(
-                Tabs::new("prefix-strip")
-                    .tabs(move |_, cx| vec![prefixed.tab("prefix".into(), cx).closeable(false)]),
-            )
-    }
-}
-
 #[gpui::test]
 fn panel_tab_uses_title_prefix_and_loading(cx: &mut TestAppContext) {
-    cx.update(Theme::init);
+    cx.update(|cx| Theme::init_with(cx, Theme::fallback_source()));
     let busy = cx.new(|_| MetaView {
         loading: true,
         prefix: false,
@@ -513,7 +527,7 @@ fn a_reopened_split_starts_at_half_again(cx: &mut TestAppContext) {
         stack.update(cx, |stack, cx| {
             stack.insert(
                 PanelSlot::Split,
-                split.clone(),
+                split,
                 Arc::new(tag(cx, "panel-test-split")),
                 cx,
             )
@@ -532,25 +546,11 @@ fn a_reopened_split_starts_at_half_again(cx: &mut TestAppContext) {
     );
 }
 
-/// The titlebar strip above the stack.
-struct TabsHarness {
-    stack: Entity<PanelStack>,
-}
-
-impl Render for TabsHarness {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .size_full()
-            .children(PanelStack::main_tabs(self.stack.clone(), cx))
-            .child(self.stack.clone())
-    }
-}
-
 /// The titlebar strip lists the main stack; its tabs switch and close panels.
 #[gpui::test]
 fn main_tabs_switch_and_close_the_main_stack(cx: &mut TestAppContext) {
     let stack = cx.update(|cx| {
-        Theme::init(cx);
+        Theme::init_with(cx, Theme::fallback_source());
         cx.new(|cx| PanelStack::new("panel-harness", cx))
     });
     let window = cx.open_window(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), |_, _| {

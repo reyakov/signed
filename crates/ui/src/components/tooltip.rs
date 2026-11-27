@@ -19,7 +19,7 @@ use gpui::{
     Window, div,
 };
 
-use crate::components::common::floating_panel;
+use crate::components::common::StyledExt as _;
 use crate::theme::{ActiveTheme as _, TOOLTIP_MAX_WIDTH};
 
 /// A small text panel gpui shows next to a hovered element.
@@ -57,9 +57,7 @@ impl Render for Tooltip {
             .debug_selector(|| "tooltip-anchor".to_string())
             .pl_2()
             .pt_2()
-            .child(floating_panel(
-                cx,
-                radius_sm,
+            .child(
                 div()
                     .id("tooltip-panel")
                     .role(Role::Tooltip)
@@ -69,8 +67,8 @@ impl Render for Tooltip {
                     .max_w(TOOLTIP_MAX_WIDTH)
                     .text_sm()
                     .text_color(surface_foreground)
-                    .child(self.text.clone()),
-                shadows,
-            ))
+                    .child(self.text.clone())
+                    .floating_panel(cx, radius_sm, shadows),
+            )
     }
 }

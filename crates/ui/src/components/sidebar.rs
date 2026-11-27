@@ -24,10 +24,7 @@ use gpui::{
     StyleRefinement, Styled as _, Window, div,
 };
 
-use crate::common::v_flex;
-use crate::components::common::{
-    StyledExt as _, nav_key, paint_selectable_row, selectable_label_color,
-};
+use crate::components::common::{ElementIdExt as _, SelectableRows as _, StyledExt as _, v_flex};
 use crate::components::grain::grain as grain_overlay;
 use crate::theme::{ActiveTheme as _, BORDER_WIDTH, SIDEBAR_DEFAULT_WIDTH};
 
@@ -198,7 +195,7 @@ impl SidebarEntry {
                 suffix,
                 disabled: row_disabled,
             } => {
-                let label_color = selectable_label_color(cx, selected, row_disabled);
+                let label_color = theme.selectable_label_color(selected, row_disabled);
 
                 div()
                     .id((key.clone(), "sidebar-row"))
@@ -222,7 +219,7 @@ impl SidebarEntry {
                                 row.hover(|row| row.bg(theme.material.hover))
                             }
                         } else {
-                            paint_selectable_row(cx, row, selected, row_disabled)
+                            row.selectable_row(cx, selected, row_disabled)
                         }
                     })
                     .when(!row_disabled, |row| {
@@ -395,7 +392,7 @@ impl RenderOnce for Sidebar {
             .map(|(index, _)| index)
             .collect();
 
-        let focus = crate::components::common::focus_handle(&id, window, cx);
+        let focus = id.focus_handle(window, cx);
 
         let row_count = entries
             .iter()
@@ -464,7 +461,7 @@ impl RenderOnce for Sidebar {
                     .on_key_down({
                         let on_change = on_change.clone();
                         move |event: &KeyDownEvent, window, cx| {
-                            if nav_key(&selectable, selected, &event.keystroke.key, |next| {
+                            if selectable.nav_key(selected, &event.keystroke.key, |next| {
                                 if let Some(on_change) = &on_change {
                                     on_change(next, window, cx);
                                 }

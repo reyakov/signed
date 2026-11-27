@@ -1,28 +1,30 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
-    Styled as _, Window, div, px,
+    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
+    Styled as _, Task, Window, div, px,
 };
 use signed_state::Backend;
+use ui::button::Button;
 use ui::common::v_flex;
 use ui::dialog::{Dialog, DialogHandle};
 use ui::field::Field;
 use ui::input::{Input, InputState};
 use ui::theme::ActiveTheme as _;
 
-use crate::shared::progress::{DialogProgress, dialog_submit_button, error_row, run_dialog_task};
+use crate::shared::log_dropped;
 
 pub struct OnboardingDialog {
     handle: DialogHandle,
     name_input: Entity<InputState>,
     pass_input: Entity<InputState>,
     repass_input: Entity<InputState>,
-    state: Entity<DialogProgress>,
+    busy: bool,
+    error: Option<SharedString>,
+    task: Option<Task<()>>,
 }
 
 impl OnboardingDialog {
     pub fn new(cx: &mut App) -> Entity<Self> {
-        let state = cx.new(|_| DialogProgress::default());
         let name_input = InputState::new(cx);
         let pass_input = InputState::builder().password().build(cx);
         let repass_input = InputState::builder().password().build(cx);
@@ -32,12 +34,14 @@ impl OnboardingDialog {
             name_input,
             pass_input,
             repass_input,
-            state,
+            busy: false,
+            error: None,
+            task: None,
         })
     }
 
     fn create_identity(&mut self, cx: &mut Context<Self>) {
-        if self.state.read(cx).busy {
+        if self.busy {
             return;
         }
 
@@ -46,33 +50,51 @@ impl OnboardingDialog {
         let repass = self.repass_input.read(cx).value().to_string();
 
         if pass != repass {
-            self.state.update(cx, |state, cx| {
-                state.fail("Passphrases do not match");
-                cx.notify();
-            });
+            self.busy = false;
+            self.error = Some("Passphrases do not match".into());
+            cx.notify();
             return;
         }
 
-        self.state.update(cx, |state, cx| {
-            state.begin();
-            cx.notify();
-        });
+        self.busy = true;
+        self.error = None;
 
         let backend = Backend::global(cx);
         let task = backend.update(cx, |backend, cx| backend.create_identity(&name, &pass, cx));
-        run_dialog_task(task, &self.state, &self.handle, cx);
+        let handle = self.handle.clone();
+
+        self.task = Some(cx.spawn(async move |this, cx| {
+            match task.await {
+                Ok(_) => {
+                    cx.update(|cx| handle.close(cx));
+                    log_dropped(this.update(cx, |this, cx| {
+                        this.busy = false;
+                        cx.notify();
+                    }));
+                }
+                Err(error) => {
+                    log_dropped(this.update(cx, |this, cx| {
+                        this.busy = false;
+                        this.error = Some(error.to_string().into());
+                        cx.notify();
+                    }));
+                }
+            };
+        }));
     }
 }
 
 impl Render for OnboardingDialog {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        const INTRO: &str = "Set up your Signed identity to get started.";
+
         let name_input = self.name_input.clone();
         let pass_input = self.pass_input.clone();
         let repass_input = self.repass_input.clone();
-        let state = self.state.clone();
-        let action_state = state.clone();
-        let this = cx.entity().downgrade();
-        let busy = state.read(cx).busy;
+        let error = self.error.clone();
+        let busy = self.busy;
+
+        let this = cx.weak_entity();
 
         Dialog::new("onboarding-dialog")
             .handle(self.handle.clone())
@@ -81,14 +103,13 @@ impl Render for OnboardingDialog {
             .min_width(px(520.))
             .title("Create identity")
             .content(move |_window, cx| {
-                let progress = state.read(cx);
                 v_flex()
                     .gap_3()
                     .child(
                         div()
                             .text_sm()
                             .text_color(cx.theme().colors.muted_foreground)
-                            .child("Set up your Signed identity to get started."),
+                            .child(INTRO),
                     )
                     .child(
                         Field::new("name-field", "Name")
@@ -103,27 +124,29 @@ impl Render for OnboardingDialog {
                         Field::new("repeat-field", "Repeat passphrase")
                             .child(Input::new("repeat-input", repass_input.clone())),
                     )
-                    .when_some(error_row(&progress.error, cx), |el, error| el.child(error))
+                    .when_some(error.clone(), |el, error| {
+                        el.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().ramps.destructive.base)
+                                .child(error),
+                        )
+                    })
                     .into_any_element()
             })
-            .actions(move |_, cx| {
-                let busy = action_state.read(cx).busy;
+            .actions(move |_, _cx| {
                 let this = this.clone();
 
-                let create: AnyElement = dialog_submit_button(
-                    "create-identity",
-                    "Create new identity",
-                    None,
-                    busy,
-                    &this,
-                    |this, _window, cx| {
-                        this.create_identity(cx);
-                        Ok(())
-                    },
-                )
-                .into_any_element();
-
-                vec![create]
+                vec![
+                    Button::new("create-identity")
+                        .label("Create new identity")
+                        .loading(busy)
+                        .disabled(busy)
+                        .on_click(move |_, _, cx| {
+                            log_dropped(this.update(cx, |this, cx| this.create_identity(cx)));
+                        })
+                        .into_any_element(),
+                ]
             })
     }
 }

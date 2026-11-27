@@ -3,10 +3,9 @@
 
 use super::ThemeSource;
 use crate::theme::ThemeVariant;
-use crate::theme::system::SystemTheme;
+use crate::theme::system::{SourceKind, SystemTheme};
 
-// Constructed only by `platform_source` on platforms without their own adapter.
-#[cfg_attr(any(target_os = "macos", target_os = "linux"), allow(dead_code))]
+/// The source for platforms without their own adapter, and for tests.
 pub(crate) struct FallbackSource;
 
 impl ThemeSource for FallbackSource {
@@ -15,6 +14,6 @@ impl ThemeSource for FallbackSource {
     }
 
     fn label(&self) -> &'static str {
-        crate::theme::system::SourceKind::Fallback.label()
+        SourceKind::Fallback.label()
     }
 }

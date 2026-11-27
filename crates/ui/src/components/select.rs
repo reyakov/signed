@@ -19,13 +19,13 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder;
 use gpui::{
     App, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
-    RenderOnce, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
-    Window, canvas, rems,
+    RenderOnce, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled,
+    Window, rems,
 };
 
-use crate::components::common::{ControlSizing, Sizable, StyledExt, focus_handle, h_flex};
+use crate::components::common::{ControlSizing, ElementIdExt as _, Sizable, StyledExt, h_flex};
 use crate::components::menu::{Menu, MenuItem};
-use crate::icons::{Icon, IconRole, icon};
+use crate::icons::{Icon, IconRole};
 use crate::theme::{ActiveTheme as _, Size};
 
 /// Reports the value the user chose. `None` means the select holds no value.
@@ -173,7 +173,7 @@ where
     }
 }
 
-impl<T> gpui::Styled for Select<T>
+impl<T> Styled for Select<T>
 where
     T: Clone + PartialEq + 'static,
 {
@@ -207,16 +207,7 @@ where
                 .clone()
         });
 
-        let focus = focus_handle(&self.id, window, cx);
-
-        // Set when the popup closes without an activation; the trigger claims
-        // focus at paint, leaving keyboard activations to drop focus in place.
-        let refocus_pending = window.with_element_namespace(self.id.clone(), |window| {
-            window
-                .use_keyed_state("select-refocus", cx, |_, _| false)
-                .clone()
-        });
-
+        let focus = self.id.focus_handle(window, cx);
         let is_open = *open.read(cx);
         let open_for_items = open.clone();
 
@@ -242,7 +233,7 @@ where
         let trigger = {
             let open = open.clone();
             let focus = focus.clone();
-            let refocus_for_trigger = refocus_pending.clone();
+
             move |_window: &mut Window, _cx: &mut App| {
                 h_flex()
                     .id((trigger_id.clone(), "select-trigger"))
@@ -284,31 +275,15 @@ where
                     .hover(|style| style.bg(muted).border_color(rest_border))
                     .child(trigger_text.clone())
                     .child(
-                        icon(IconRole::ChevronDown)
+                        Icon::from(IconRole::ChevronDown)
                             .size(self.size.dense_icon_rems())
                             .color(muted_foreground),
-                    )
-                    .child(
-                        canvas(|_, _, _| {}, {
-                            let focus = focus.clone();
-                            let refocus_pending = refocus_for_trigger.clone();
-                            move |_, _, window, cx| {
-                                if *refocus_pending.read(cx) {
-                                    refocus_pending.update(cx, |pending, _| *pending = false);
-                                    window.focus(&focus, cx);
-                                }
-                            }
-                        })
-                        .absolute()
-                        .inset_0(),
                     )
                     .refine_style(&trigger_style)
                     .into_any_element()
             }
         };
 
-        let select_id = self.id.clone();
-        let refocus_for_items = refocus_pending.clone();
         let items = move |_window: &mut Window, _cx: &mut App| {
             self.options
                 .iter()
@@ -318,13 +293,10 @@ where
 
                     let handler = {
                         let open = open_for_items.clone();
-                        let refocus_pending = refocus_for_items.clone();
                         let value = option.value.clone();
                         let on_change = self.on_change.clone();
                         move |window: &mut Window, cx: &mut App| {
                             open.update(cx, |open, _| *open = false);
-                            // Activations own the close, so no focus returns to the trigger.
-                            refocus_pending.update(cx, |pending, _| *pending = false);
                             if let Some(on_change) = &on_change {
                                 on_change(Some(value.clone()), window, cx);
                             }
@@ -332,7 +304,7 @@ where
                     };
 
                     MenuItem::new(option.label.clone())
-                        .id((select_id.clone(), format!("option-{index}")))
+                        .id(("option", index))
                         .when_some(option.icon.clone(), |row, icon| row.icon(icon))
                         .checked(is_selected)
                         .handler(handler)
@@ -344,11 +316,7 @@ where
             .open(is_open)
             .on_change({
                 let open = open.clone();
-                let refocus_pending = refocus_pending.clone();
                 move |next, _window, cx| {
-                    if !next {
-                        refocus_pending.update(cx, |pending, _| *pending = true);
-                    }
                     open.update(cx, |open, _| *open = next);
                 }
             })

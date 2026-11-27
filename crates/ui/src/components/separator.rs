@@ -13,12 +13,14 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, InteractiveElement as _, IntoElement, RenderOnce, StyleRefinement, Styled as _, Window,
-    div,
+    App, InteractiveElement as _, IntoElement, RenderOnce, StyleRefinement, Styled, Window, div,
 };
 
 use crate::components::common::StyledExt as _;
 use crate::theme::{ActiveTheme as _, BORDER_WIDTH};
+
+/// The debug-bounds selector, for headless tests.
+type DebugSelector = Rc<dyn Fn() -> String>;
 
 /// The axis a [`Separator`] rule runs along.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -29,9 +31,6 @@ pub enum SeparatorOrientation {
     /// A vertical rule between side-by-side content.
     Vertical,
 }
-
-/// The debug-bounds selector, for headless tests.
-type DebugSelector = Rc<dyn Fn() -> String>;
 
 /// A hairline rule that divides sibling content.
 #[derive(IntoElement)]
@@ -77,7 +76,7 @@ impl Separator {
     }
 }
 
-impl gpui::Styled for Separator {
+impl Styled for Separator {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }

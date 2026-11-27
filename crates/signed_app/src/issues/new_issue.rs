@@ -13,7 +13,6 @@ use ui::theme::ActiveTheme as _;
 
 use crate::app::AppRoot;
 use crate::shared::log_dropped;
-use crate::shared::progress::error_row;
 
 pub struct NewIssueView {
     workspace: WeakEntity<AppRoot>,
@@ -64,9 +63,11 @@ impl NewIssueView {
 
         let workspace = self.workspace.clone();
         let panel_id = self.panel_id.clone();
+
         let task = self
             .store
             .update(cx, |store, cx| store.open_issue(subject, content, cx));
+
         self.submit_task = Some(cx.spawn(async move |this, cx| match task.await {
             Ok(()) => {
                 log_dropped(workspace.update(cx, |root, cx| {
@@ -86,8 +87,6 @@ impl NewIssueView {
     }
 
     fn render_footer(&self, cx: &Context<Self>) -> AnyElement {
-        let weak = cx.entity().downgrade();
-
         h_flex()
             .px_4()
             .py_2()
@@ -100,9 +99,7 @@ impl NewIssueView {
                     .label("Create issue")
                     .loading(self.submitting)
                     .disabled(self.submitting)
-                    .on_click(move |_, _, cx| {
-                        log_dropped(weak.update(cx, |this, cx| this.submit(cx)));
-                    }),
+                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
             )
             .into_any_element()
     }
@@ -124,6 +121,8 @@ impl Panel for NewIssueView {
 
 impl Render for NewIssueView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        const HINT: &str = "Report a bug, ask a question, or propose a change.";
+
         v_flex()
             .id("new-issue")
             .size_full()
@@ -137,7 +136,7 @@ impl Render for NewIssueView {
                             .pr_16()
                             .text_sm()
                             .text_color(cx.theme().colors.muted_foreground)
-                            .child("Report a bug, ask a question, or propose a change."),
+                            .child(HINT),
                     )
                     .child(
                         Field::new("issue-title", "Title")
@@ -147,7 +146,14 @@ impl Render for NewIssueView {
                         Field::new("issue-content", "Content")
                             .child(Input::new("issue-content-input", self.content.clone()).rows(6)),
                     )
-                    .when_some(error_row(&self.error, cx), |this, error| this.child(error)),
+                    .when_some(self.error.clone(), |this, error| {
+                        this.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().ramps.destructive.base)
+                                .child(error),
+                        )
+                    }),
             )
             .child(self.render_footer(cx))
     }

@@ -5,6 +5,7 @@ use gpui::{
     Render, Styled as _, TestAppContext, VisualTestContext, Window, div, px, size,
 };
 use ui::common::v_flex;
+use ui::dialog::Dialog;
 use ui::popover::Popover;
 use ui::theme::Theme;
 
@@ -60,7 +61,10 @@ fn focus_state(cx: &mut VisualTestContext) -> Option<(FocusHandle, bool)> {
 
 #[gpui::test]
 fn closing_a_popover_restores_the_previous_focus(cx: &mut TestAppContext) {
-    cx.update(Theme::init);
+    cx.update(|cx| {
+        Theme::init_with(cx, Theme::fallback_source());
+        Dialog::bind_keys(cx);
+    });
     let window = cx.open_window(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), |_, cx| {
         PopoverHarness {
             open: false,

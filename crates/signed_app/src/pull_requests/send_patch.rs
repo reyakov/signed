@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, SharedString, Styled as _, WeakEntity, Window, div,
+    App, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Task, WeakEntity, Window, div,
 };
 use signed_state::RepoStore;
 use ui::button::Button;
@@ -13,7 +13,6 @@ use ui::theme::ActiveTheme as _;
 
 use crate::app::AppRoot;
 use crate::shared::log_dropped;
-use crate::shared::progress::error_row;
 
 pub struct SendPatchView {
     workspace: WeakEntity<AppRoot>,
@@ -24,6 +23,8 @@ pub struct SendPatchView {
     patch: Entity<InputState>,
     submitting: bool,
     error: Option<SharedString>,
+    /// Holds the submit so a closed panel cancels it.
+    task: Option<Task<()>>,
 }
 
 impl SendPatchView {
@@ -47,6 +48,7 @@ impl SendPatchView {
             patch,
             submitting: false,
             error: None,
+            task: None,
         }
     }
 
@@ -57,8 +59,8 @@ impl SendPatchView {
 
         let subject = self.subject.read(cx).value().to_string();
         let description = self.description.read(cx).value().to_string();
-
         let patch = self.patch.read(cx).value().to_string();
+
         if patch.is_empty() {
             return;
         }
@@ -79,10 +81,11 @@ impl SendPatchView {
                 cx,
             )
         });
+
         let workspace = self.workspace.clone();
         let panel_id = self.panel_id.clone();
 
-        cx.spawn(async move |this, cx| match task.await {
+        self.task = Some(cx.spawn(async move |this, cx| match task.await {
             Ok(()) => {
                 log_dropped(workspace.update(cx, |root, cx| {
                     root.panels().clone().update(cx, |panels, cx| {
@@ -98,17 +101,16 @@ impl SendPatchView {
                 })
                 .log_err();
             }
-        })
-        .detach();
+        }));
     }
 
-    fn render_footer(&self, cx: &Context<Self>) -> AnyElement {
+    fn render_footer(&self, cx: &Context<Self>) -> impl IntoElement {
         let can_submit = !self.submitting
             && !self.subject.read(cx).value().is_empty()
             && !self.patch.read(cx).value().is_empty();
-        let weak = cx.entity().downgrade();
 
         h_flex()
+            .flex_none()
             .px_4()
             .py_2()
             .w_full()
@@ -121,11 +123,8 @@ impl SendPatchView {
                     .icon(Icon::named(IconRole::ArrowUp))
                     .loading(self.submitting)
                     .disabled(!can_submit)
-                    .on_click(move |_, _, cx| {
-                        log_dropped(weak.update(cx, |this, cx| this.submit(cx)));
-                    }),
+                    .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
             )
-            .into_any_element()
     }
 }
 
@@ -152,6 +151,7 @@ impl Render for SendPatchView {
                 v_flex()
                     .p_4()
                     .flex_1()
+                    .min_h_0()
                     .gap_2()
                     .child(div().pr_16().child(
                         Input::new("patch-subject", self.subject.clone()).placeholder("Title"),
@@ -174,7 +174,14 @@ impl Render for SendPatchView {
                             .rows(12)
                             .placeholder("diff --git a/file.txt b/file.txt"),
                     )
-                    .when_some(error_row(&self.error, cx), |this, error| this.child(error)),
+                    .when_some(self.error.clone(), |this, error| {
+                        this.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().ramps.destructive.base)
+                                .child(error),
+                        )
+                    }),
             )
             .child(self.render_footer(cx))
     }

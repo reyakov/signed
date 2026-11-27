@@ -4,14 +4,6 @@ use gpui::{Hsla, WindowBackgroundAppearance};
 
 use crate::theme::ThemeVariant;
 
-/// Accessibility preferences read from the OS, forwarded into resolution.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AccessibilityPreferences {
-    pub high_contrast: bool,
-    pub reduce_motion: bool,
-    pub reduce_transparency: bool,
-}
-
 /// Which adapter produced a [`SystemTheme`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(not(any(target_os = "linux", target_os = "windows")), allow(dead_code))]
@@ -43,6 +35,14 @@ impl SourceKind {
     pub fn scrollbar_autohide(self) -> bool {
         matches!(self, Self::Macos | Self::Omarchy | Self::Gnome)
     }
+}
+
+/// Accessibility preferences read from the OS, forwarded into resolution.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AccessibilityPreferences {
+    pub high_contrast: bool,
+    pub reduce_motion: bool,
+    pub reduce_transparency: bool,
 }
 
 /// A normalized snapshot of the running system's theme.

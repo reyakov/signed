@@ -18,14 +18,20 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, DispatchPhase, ElementId, Entity, EntityId, Hitbox, HitboxBehavior, IntoElement,
-    ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    RenderOnce, ScrollEvent, ScrollHandle, SharedString, Styled as _, Task,
+    App, Bounds, DispatchPhase, ElementId, Entity, EntityId, Hitbox, HitboxBehavior, Hsla,
+    IntoElement, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, RenderOnce, ScrollEvent, ScrollHandle, SharedString, Styled as _, Task,
     UniformListScrollHandle, Window, canvas, fill, point,
 };
 
 use crate::components::common::ResultLogErr as _;
 use crate::theme::{ActiveTheme as _, SCROLLBAR_AUTOHIDE_DELAY, SCROLLBAR_FADE_DURATION};
+
+/// How often the autohide fade repaints while it runs.
+const FADE_STEP: Duration = Duration::from_millis(50);
+
+/// The drag state shared between the scrollbar's mouse handlers.
+type Drag = Option<(Pixels, Pixels)>;
 
 /// When an overlay scrollbar shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -37,121 +43,6 @@ pub enum ScrollbarVisibility {
     Always,
     /// Shows on activity, then fades out.
     Autohide,
-}
-
-/// How often the autohide fade repaints while it runs.
-const FADE_STEP: Duration = Duration::from_millis(50);
-
-/// The drag state shared between the scrollbar's mouse handlers.
-type Drag = Option<(Pixels, Pixels)>;
-
-/// Which direction the scrollbar lies along.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Axis {
-    Vertical,
-    Horizontal,
-}
-
-impl Axis {
-    fn along(self, position: Point<Pixels>) -> Pixels {
-        match self {
-            Axis::Vertical => position.y,
-            Axis::Horizontal => position.x,
-        }
-    }
-
-    fn with_along(self, position: Point<Pixels>, along: Pixels) -> Point<Pixels> {
-        match self {
-            Axis::Vertical => point(position.x, along),
-            Axis::Horizontal => point(along, position.y),
-        }
-    }
-
-    fn viewport_along(self, viewport: &Bounds<Pixels>) -> Pixels {
-        match self {
-            Axis::Vertical => viewport.size.height,
-            Axis::Horizontal => viewport.size.width,
-        }
-    }
-}
-
-/// The shared autohide timeline for an overlay scrollbar.
-#[derive(Clone)]
-struct Autohide {
-    view: EntityId,
-    state: Entity<AutohideState>,
-}
-
-struct AutohideState {
-    last_activity: Option<Instant>,
-    hide_task: Option<Task<()>>,
-}
-
-impl Autohide {
-    fn new(key: ElementId, window: &mut Window, cx: &mut App) -> Self {
-        let view = window.current_view();
-        let state = window.use_keyed_state(key, cx, |_, _| AutohideState {
-            last_activity: None,
-            hide_task: None,
-        });
-        Self { view, state }
-    }
-
-    /// Marks interaction.
-    fn touch(&self, window: &mut Window, cx: &mut App) {
-        let view = self.view;
-        let reduce_motion = cx.theme().accessibility.reduce_motion;
-
-        let task = window.spawn(cx, async move |cx| {
-            if reduce_motion {
-                cx.background_executor()
-                    .timer(SCROLLBAR_AUTOHIDE_DELAY + SCROLLBAR_FADE_DURATION)
-                    .await;
-                cx.update(|_, cx| cx.notify(view)).log_err();
-                return;
-            }
-
-            let steps = (SCROLLBAR_FADE_DURATION.as_millis() / FADE_STEP.as_millis()).max(1);
-            cx.background_executor()
-                .timer(SCROLLBAR_AUTOHIDE_DELAY)
-                .await;
-
-            for _ in 0..steps {
-                cx.update(|_, cx| cx.notify(view)).log_err();
-                cx.background_executor().timer(FADE_STEP).await;
-            }
-
-            cx.update(|_, cx| cx.notify(view)).log_err();
-        });
-
-        self.state.update(cx, |state, _| {
-            state.last_activity = Some(Instant::now());
-            state.hide_task = Some(task);
-        });
-    }
-
-    /// The thumb's opacity.
-    fn alpha(&self, cx: &App, dragging: bool) -> f32 {
-        if dragging {
-            return 1.0;
-        }
-
-        let Some(activity) = self.state.read(cx).last_activity else {
-            return 0.0;
-        };
-
-        let idle = activity.elapsed();
-        if idle <= SCROLLBAR_AUTOHIDE_DELAY {
-            return 1.0;
-        }
-
-        let fade = idle.saturating_sub(SCROLLBAR_AUTOHIDE_DELAY);
-        if fade >= SCROLLBAR_FADE_DURATION {
-            return 0.0;
-        }
-
-        1.0 - fade.as_secs_f32() / SCROLLBAR_FADE_DURATION.as_secs_f32()
-    }
 }
 
 /// The scroll state a scrollbar drives, implemented for gpui's scroll handles.
@@ -229,6 +120,126 @@ impl ScrollbarHandle for ListState {
 
     fn drag_ended(&self) {
         ListState::scrollbar_drag_ended(self);
+    }
+}
+
+/// Which direction the scrollbar lies along.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Axis {
+    Vertical,
+    Horizontal,
+}
+
+impl Axis {
+    fn along(self, position: Point<Pixels>) -> Pixels {
+        match self {
+            Axis::Vertical => position.y,
+            Axis::Horizontal => position.x,
+        }
+    }
+
+    fn with_along(self, position: Point<Pixels>, along: Pixels) -> Point<Pixels> {
+        match self {
+            Axis::Vertical => point(position.x, along),
+            Axis::Horizontal => point(along, position.y),
+        }
+    }
+
+    fn viewport_along(self, viewport: &Bounds<Pixels>) -> Pixels {
+        match self {
+            Axis::Vertical => viewport.size.height,
+            Axis::Horizontal => viewport.size.width,
+        }
+    }
+}
+
+/// The shared autohide timeline for an overlay scrollbar.
+#[derive(Clone)]
+struct Autohide {
+    view: EntityId,
+    state: Entity<AutohideState>,
+}
+
+struct AutohideState {
+    last_activity: Option<Instant>,
+    hide_task: Option<Task<()>>,
+}
+
+impl Autohide {
+    fn new(key: ElementId, window: &mut Window, cx: &mut App) -> Self {
+        let view = window.current_view();
+        let state = window.use_keyed_state(key, cx, |_, _| AutohideState {
+            last_activity: None,
+            hide_task: None,
+        });
+        Self { view, state }
+    }
+
+    /// Marks interaction.
+    fn touch(&self, window: &mut Window, cx: &mut App) {
+        let view = self.view;
+        let reduce_motion = cx.reduce_motion();
+        let was_hidden = self.alpha(cx, false) == 0.0;
+
+        let task = window.spawn(cx, async move |cx| {
+            if reduce_motion {
+                cx.background_executor()
+                    .timer(SCROLLBAR_AUTOHIDE_DELAY + SCROLLBAR_FADE_DURATION)
+                    .await;
+                cx.update(|_, cx| cx.notify(view)).log_err();
+                return;
+            }
+
+            let steps = (SCROLLBAR_FADE_DURATION.as_millis() / FADE_STEP.as_millis()).max(1);
+            cx.background_executor()
+                .timer(SCROLLBAR_AUTOHIDE_DELAY)
+                .await;
+
+            for _ in 0..steps {
+                cx.update(|_, cx| cx.notify(view)).log_err();
+                cx.background_executor().timer(FADE_STEP).await;
+            }
+
+            cx.update(|_, cx| cx.notify(view)).log_err();
+        });
+
+        self.state.update(cx, |state, cx| {
+            state.last_activity = Some(Instant::now());
+            state.hide_task = Some(task);
+            if was_hidden {
+                App::notify(cx, view);
+            }
+        });
+    }
+
+    /// The thumb's opacity.
+    fn alpha(&self, cx: &App, dragging: bool) -> f32 {
+        if dragging {
+            return 1.0;
+        }
+
+        let Some(activity) = self.state.read(cx).last_activity else {
+            return 0.0;
+        };
+
+        let idle = activity.elapsed();
+        if cx.reduce_motion() {
+            return if idle <= SCROLLBAR_AUTOHIDE_DELAY {
+                1.0
+            } else {
+                0.0
+            };
+        }
+        if idle <= SCROLLBAR_AUTOHIDE_DELAY {
+            return 1.0;
+        }
+
+        let fade = idle.saturating_sub(SCROLLBAR_AUTOHIDE_DELAY);
+        if fade >= SCROLLBAR_FADE_DURATION {
+            return 0.0;
+        }
+
+        1.0 - fade.as_secs_f32() / SCROLLBAR_FADE_DURATION.as_secs_f32()
     }
 }
 
@@ -412,8 +423,8 @@ impl Scrollbar {
     }
 
     /// An overlay scrollbar thumb's style for one paint: `None` hides it.
-    fn thumb_style(color: gpui::Hsla, alpha: f32) -> Option<gpui::Hsla> {
-        (alpha > 0.0).then_some(gpui::Hsla {
+    fn thumb_style(color: Hsla, alpha: f32) -> Option<Hsla> {
+        (alpha > 0.0).then_some(Hsla {
             a: color.a * alpha,
             ..color
         })

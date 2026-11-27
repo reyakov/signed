@@ -5,7 +5,7 @@
 //! ```no_run
 //! use ui::status_dot::{StatusDot, StatusDotVariant};
 //!
-//! let dot = StatusDot::new("deploy-status")
+//! let dot = StatusDot::new()
 //!     .variant(StatusDotVariant::Success)
 //!     .label("Deployed");
 //! ```
@@ -48,10 +48,9 @@ impl StatusDotVariant {
 }
 
 /// A small circular bead marking a row's state.
-#[derive(IntoElement)]
+#[derive(Default, IntoElement)]
 #[must_use]
 pub struct StatusDot {
-    id: ElementId,
     variant: StatusDotVariant,
     size: Size,
     label: Option<SharedString>,
@@ -60,17 +59,8 @@ pub struct StatusDot {
 
 impl StatusDot {
     /// Creates an idle dot.
-    pub fn new<I>(id: I) -> Self
-    where
-        I: Into<ElementId>,
-    {
-        Self {
-            id: id.into(),
-            variant: StatusDotVariant::default(),
-            size: Size::default(),
-            label: None,
-            style: StyleRefinement::default(),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Sets how loud the dot is.
@@ -107,9 +97,7 @@ impl RenderOnce for StatusDot {
         let size = self.size;
         let color = self.variant.color(theme);
 
-        div()
-            .id(self.id.clone())
-            .debug_selector(move || self.id.to_string())
+        let dot = div()
             .flex_none()
             .rounded(theme.radius.full)
             .bg(color)
@@ -118,9 +106,15 @@ impl RenderOnce for StatusDot {
                 Size::Small | Size::Medium => dot.size_2(),
                 Size::Large => dot.size_2p5(),
             })
-            .refine_style(&self.style)
-            .when_some(self.label, |dot, label| {
-                dot.role(Role::Status).aria_label(label)
-            })
+            .refine_style(&self.style);
+
+        match self.label {
+            Some(label) => dot
+                .id((ElementId::from("status-dot"), label.clone()))
+                .role(Role::Status)
+                .aria_label(label)
+                .into_any_element(),
+            None => dot.into_any_element(),
+        }
     }
 }

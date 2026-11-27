@@ -10,14 +10,15 @@
 //! let column = v_flex().gap_2().child(row);
 //! ```
 
-use gpui::prelude::FluentBuilder as _;
+use std::rc::Rc;
+use std::sync::Arc;
+
 use gpui::{
-    App, BoxShadow, Div, ElementId, FocusHandle, FontWeight, Hsla, IntoElement, Pixels,
-    Refineable as _, Rems, SharedString, StatefulInteractiveElement, StyleRefinement, Styled,
-    Window, div, px, rems,
+    AnyView, App, BoxShadow, Div, ElementId, FocusHandle, FontWeight, Pixels, Refineable as _,
+    Rems, StatefulInteractiveElement, StyleRefinement, Styled, Window, div, rems,
 };
 
-use crate::theme::{ActiveTheme as _, FOCUS_RING_ALPHA, FOCUS_RING_SPREAD, Size};
+use crate::theme::{ActiveTheme as _, Size};
 
 /// Deferred draw priority of window-modal surfaces; default layer 0 stays for in-flow chrome like resize handles.
 pub const DIALOG_LAYER: usize = 1;
@@ -27,19 +28,9 @@ pub const OVERLAY_LAYER: usize = 2;
 pub const TOAST_LAYER: usize = 3;
 
 /// A handler told to clean up after a dismissed surface.
-pub type DismissHandler = std::rc::Rc<dyn Fn(&mut gpui::App)>;
-
-/// A row whose children center on the cross axis.
-#[must_use]
-pub fn h_flex() -> Div {
-    div().flex().flex_row().items_center()
-}
-
-/// A column whose children stack on the main axis.
-#[must_use]
-pub fn v_flex() -> Div {
-    div().flex().flex_col()
-}
+pub type DismissHandler = Rc<dyn Fn(&mut App)>;
+/// Builds a tooltip's view once its hover delay elapses.
+pub type TooltipBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyView>;
 
 /// Logs the error and yields the success value, if any.
 pub trait ResultLogErr<T> {
@@ -80,191 +71,184 @@ pub trait StyledExt: Styled + Sized {
         self.text_style().font_weight = Some(FontWeight::SEMIBOLD);
         self
     }
+
+    /// The shared floating-panel stack.
+    #[must_use]
+    fn floating_panel(
+        self,
+        cx: &App,
+        radius: Pixels,
+        shadows: impl Into<Arc<[BoxShadow]>>,
+    ) -> Self {
+        let theme = cx.theme();
+        let mut panel = self
+            .bg(theme.colors.surface)
+            .rounded(radius)
+            .border_1()
+            .border_color(theme.colors.border);
+        let shadow = StyleRefinement::default().shadow(shadows.into().to_vec());
+        panel.style().refine(&shadow);
+        panel
+    }
+
+    /// A selectable row's background.
+    #[must_use]
+    fn selectable_row(self, cx: &App, selected: bool, disabled: bool) -> Self
+    where
+        Self: StatefulInteractiveElement,
+    {
+        let theme = cx.theme();
+        if disabled {
+            self
+        } else if selected {
+            self.bg(theme.ramps.primary.base)
+        } else {
+            self.hover(|row| row.bg(theme.colors.muted))
+        }
+    }
+
+    /// A row that highlights under the pointer, for lists driven by mouse move
+    /// instead of selection.
+    #[must_use]
+    fn highlighted_row(self, cx: &App, highlighted: bool, disabled: bool) -> Self
+    where
+        Self: StatefulInteractiveElement,
+    {
+        let theme = cx.theme();
+        if disabled {
+            self
+        } else if highlighted {
+            self.bg(theme.colors.muted)
+        } else {
+            self.hover(|row| row.bg(theme.colors.muted))
+        }
+    }
 }
 
 impl<E: Styled> StyledExt for E {}
 
-/// Returns a focus handle for the given element ID.
-pub fn focus_handle(id: &ElementId, window: &mut Window, cx: &mut App) -> FocusHandle {
-    window
-        .with_element_namespace(id.clone(), |window| {
-            window.use_keyed_state("focus-handle", cx, |_, cx| cx.focus_handle())
-        })
-        .read(cx)
-        .clone()
-}
+/// Per-element-id focus and overlay state.
+pub trait ElementIdExt {
+    /// Returns a focus handle for the element ID.
+    fn focus_handle(&self, window: &mut Window, cx: &mut App) -> FocusHandle;
 
-/// Saves the focused handle while an overlay is open and restores it when the
-/// overlay closes, unless another surface already took focus.
-pub(crate) fn track_overlay_focus(
-    id: &ElementId,
-    overlay_focus: &FocusHandle,
-    open: bool,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let was_open = window.use_keyed_state(
-        SharedString::from(format!("overlay-was-open:{id}")),
-        cx,
-        |_, _| false,
+    /// Saves the focused handle while an overlay is open and restores it when the overlay closes.
+    fn track_overlay_focus(
+        &self,
+        overlay_focus: &FocusHandle,
+        open: bool,
+        window: &mut Window,
+        cx: &mut App,
     );
-    let previous = window.use_keyed_state(
-        SharedString::from(format!("overlay-previous-focus:{id}")),
-        cx,
-        |_, _| None::<FocusHandle>,
-    );
+}
 
-    let was_open_now = *was_open.read(cx);
-    if open && !was_open_now {
-        let focused = window.focused(cx);
-        previous.update(cx, |previous, _| *previous = focused);
-        was_open.update(cx, |was_open, _| *was_open = true);
-    } else if !open && was_open_now {
-        was_open.update(cx, |was_open, _| *was_open = false);
-        let Some(restore) = previous.update(cx, |previous, _| previous.take()) else {
-            return;
-        };
-        // Only take focus back from the closing overlay itself; a surface that
-        // replaced it owns focus now.
-        let overlay_focus = overlay_focus.clone();
-        window.defer(cx, move |window, cx| {
-            let holds_focus = window
-                .focused(cx)
-                .is_none_or(|current| current == overlay_focus);
-            if holds_focus && restore.is_rendered(window) {
-                window.focus(&restore, cx);
-            }
-        });
+impl ElementIdExt for ElementId {
+    fn focus_handle(&self, window: &mut Window, cx: &mut App) -> FocusHandle {
+        window
+            .with_element_namespace(self.clone(), |window| {
+                window.use_keyed_state("focus-handle", cx, |_, cx| cx.focus_handle())
+            })
+            .read(cx)
+            .clone()
+    }
+
+    fn track_overlay_focus(
+        &self,
+        overlay_focus: &FocusHandle,
+        open: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let was_open = window.use_keyed_state((self.clone(), "overlay-was-open"), cx, |_, _| false);
+        let previous =
+            window.use_keyed_state((self.clone(), "overlay-previous-focus"), cx, |_, _| {
+                None::<FocusHandle>
+            });
+
+        let was_open_now = *was_open.read(cx);
+
+        if open && !was_open_now {
+            let focused = window.focused(cx);
+            previous.update(cx, |previous, _| *previous = focused);
+            was_open.update(cx, |was_open, _| *was_open = true);
+        } else if !open && was_open_now {
+            was_open.update(cx, |was_open, _| *was_open = false);
+
+            let Some(restore) = previous.update(cx, |previous, _| previous.take()) else {
+                return;
+            };
+
+            // Only take focus back from the closing overlay itself.
+            let overlay_focus = overlay_focus.clone();
+            window.defer(cx, move |window, cx| {
+                let holds_focus = window
+                    .focused(cx)
+                    .is_none_or(|current| current == overlay_focus);
+
+                if holds_focus && restore.is_rendered(window) {
+                    window.focus(&restore, cx);
+                }
+            });
+        }
     }
 }
 
-/// Returns a focus ring shadow with the given color at half ink.
-pub fn focus_ring(color: Hsla) -> Vec<BoxShadow> {
-    vec![
-        BoxShadow::new(px(0.), px(0.), color.alpha(FOCUS_RING_ALPHA))
-            .spread_radius(FOCUS_RING_SPREAD),
-    ]
+/// Row selection stepping over the rows that cannot be selected.
+pub trait SelectableRows {
+    /// The next selectable row in the direction.
+    fn wrapping_adjacent(&self, selected: Option<usize>, forward: bool) -> Option<usize>;
+
+    /// The next selectable row in the direction, or `None` at the ends.
+    fn adjacent(&self, selected: Option<usize>, forward: bool) -> Option<usize>;
+
+    /// Whether the given key is a vertical navigation key.
+    fn nav_key<S>(&self, selected: Option<usize>, key: &str, select: S) -> bool
+    where
+        S: FnOnce(Option<usize>);
 }
 
-/// The shared floating-panel stack.
-#[must_use]
-pub fn floating_panel<R>(cx: &App, radius: Pixels, panel: R, shadows: Vec<BoxShadow>) -> R
-where
-    R: Styled + IntoElement,
-{
-    let theme = cx.theme();
-    panel.map(|panel| {
-        panel
-            .bg(theme.colors.surface)
-            .rounded(radius)
-            .border_1()
-            .border_color(theme.colors.border)
-            .shadow(shadows)
-    })
-}
+impl SelectableRows for [usize] {
+    fn wrapping_adjacent(&self, selected: Option<usize>, forward: bool) -> Option<usize> {
+        if self.is_empty() {
+            return None;
+        }
 
-/// The next selectable row in the direction.
-pub fn wrapping_adjacent_selectable(
-    selectable: &[usize],
-    selected: Option<usize>,
-    forward: bool,
-) -> Option<usize> {
-    if selectable.is_empty() {
-        return None;
+        self.adjacent(selected, forward)
+            .or_else(|| forward.then(|| self.first().copied()).flatten())
+            .or_else(|| (!forward).then(|| self.last().copied()).flatten())
     }
 
-    adjacent_selectable(selectable, selected, forward)
-        .or_else(|| forward.then(|| selectable.first().copied()).flatten())
-        .or_else(|| (!forward).then(|| selectable.last().copied()).flatten())
-}
-
-/// The next selectable row in the direction, or `None` at the ends.
-pub fn adjacent_selectable(
-    selectable: &[usize],
-    selected: Option<usize>,
-    forward: bool,
-) -> Option<usize> {
-    if forward {
-        selectable
-            .iter()
-            .copied()
-            .find(|index| Some(*index) > selected)
-    } else {
-        selectable
-            .iter()
-            .copied()
-            .rev()
-            .find(|index| Some(*index) < selected)
+    fn adjacent(&self, selected: Option<usize>, forward: bool) -> Option<usize> {
+        if forward {
+            self.iter().copied().find(|index| Some(*index) > selected)
+        } else {
+            self.iter()
+                .copied()
+                .rev()
+                .find(|index| Some(*index) < selected)
+        }
     }
-}
 
-/// Whether the given key is a vertical navigation key.
-pub fn nav_key<S>(selectable: &[usize], selected: Option<usize>, key: &str, select: S) -> bool
-where
-    S: FnOnce(Option<usize>),
-{
-    let target = match key {
-        "down" => adjacent_selectable(selectable, selected, true),
-        "up" => adjacent_selectable(selectable, selected, false),
-        "home" => selectable.first().copied(),
-        "end" => selectable.last().copied(),
-        _ => return false,
-    };
-    if let Some(next) = target
-        && Some(next) != selected
+    fn nav_key<S>(&self, selected: Option<usize>, key: &str, select: S) -> bool
+    where
+        S: FnOnce(Option<usize>),
     {
-        select(Some(next));
-    }
-    true
-}
+        let target = match key {
+            "down" => self.adjacent(selected, true),
+            "up" => self.adjacent(selected, false),
+            "home" => self.first().copied(),
+            "end" => self.last().copied(),
+            _ => return false,
+        };
 
-/// A selectable row's label and icon color.
-pub fn selectable_label_color(cx: &App, selected: bool, disabled: bool) -> Hsla {
-    let theme = cx.theme();
-    if disabled {
-        theme.colors.muted_foreground
-    } else if selected {
-        theme.colors.primary_foreground
-    } else {
-        theme.colors.foreground
-    }
-}
-
-/// A selectable row's background.
-#[must_use]
-pub fn paint_selectable_row<R>(cx: &App, row: R, selected: bool, disabled: bool) -> R
-where
-    R: IntoElement + Styled + StatefulInteractiveElement,
-{
-    let theme = cx.theme();
-    row.map(|row| {
-        if disabled {
-            row
-        } else if selected {
-            row.bg(theme.ramps.primary.base)
-        } else {
-            row.hover(|row| row.bg(theme.colors.muted))
+        if let Some(next) = target
+            && Some(next) != selected
+        {
+            select(Some(next));
         }
-    })
-}
 
-/// A row that highlights under the pointer, for lists driven by mouse move
-/// instead of selection.
-#[must_use]
-pub fn paint_highlighted_row<R>(cx: &App, row: R, highlighted: bool, disabled: bool) -> R
-where
-    R: IntoElement + Styled + StatefulInteractiveElement,
-{
-    let theme = cx.theme();
-    row.map(|row| {
-        if disabled {
-            row
-        } else if highlighted {
-            row.bg(theme.colors.muted)
-        } else {
-            row.hover(|row| row.bg(theme.colors.muted))
-        }
-    })
+        true
+    }
 }
 
 /// A component that can be told which size to render at.
@@ -581,4 +565,16 @@ impl Size {
             Size::Large => rems(0.375),
         }
     }
+}
+
+/// A row whose children center on the cross axis.
+#[must_use]
+pub fn h_flex() -> Div {
+    div().flex().flex_row().items_center()
+}
+
+/// A column whose children stack on the main axis.
+#[must_use]
+pub fn v_flex() -> Div {
+    div().flex().flex_col()
 }

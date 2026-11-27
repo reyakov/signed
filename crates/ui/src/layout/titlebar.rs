@@ -6,11 +6,12 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _,
-    RenderOnce, SharedString, StyleRefinement, Styled as _, Window,
+    AnyElement, App, ClickEvent, Div, ElementId, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, RenderOnce, Stateful, StatefulInteractiveElement as _, StyleRefinement,
+    Styled, Window, WindowControlArea,
 };
 
-use crate::layout::window_controls::{WindowControls, titlebar_strip};
+use crate::layout::window_controls::WindowControls;
 use crate::layout::{StyledExt as _, h_flex};
 use crate::theme::{ActiveTheme as _, TRAFFIC_LIGHT_PAD};
 
@@ -66,9 +67,61 @@ impl Titlebar {
         self.suffix = vec![suffix.into_any_element()];
         self
     }
+
+    /// Makes `this` a titlebar strip that moves the window; `id` keys its drag state, which `use_state` would otherwise share among every strip in the window.
+    pub fn strip<I>(id: I, this: Stateful<Div>, window: &mut Window, cx: &mut App) -> Stateful<Div>
+    where
+        I: Into<ElementId>,
+    {
+        let should_move = window.use_keyed_state(id.into(), cx, |_, _| false);
+        this.window_control_area(WindowControlArea::Drag)
+            .on_mouse_down_out(window.listener_for(&should_move, |should_move, _, _, _| {
+                *should_move = false;
+            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                window.listener_for(&should_move, |should_move, _, _, _| {
+                    *should_move = true;
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                window.listener_for(&should_move, |should_move, _, _, _| {
+                    *should_move = false;
+                }),
+            )
+            .on_mouse_move(
+                window.listener_for(&should_move, |should_move, _, window, cx| {
+                    if *should_move {
+                        *should_move = false;
+                        if !cx.has_active_drag() {
+                            window.start_window_move();
+                        }
+                    }
+                }),
+            )
+            .on_click(Self::on_titlebar_click)
+    }
+
+    /// Maximizes on a double-click where the platform does not do it.
+    pub fn on_titlebar_click(event: &ClickEvent, window: &mut Window, _cx: &mut App) {
+        if event.click_count() != 2 {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        window.titlebar_double_click();
+        #[cfg(target_os = "linux")]
+        window.zoom_window();
+        // Windows handles titlebar double-click natively via WindowControlArea::Drag.
+        #[cfg(any(
+            target_os = "windows",
+            not(any(target_os = "macos", target_os = "linux"))
+        ))]
+        let _ = (event, window, _cx);
+    }
 }
 
-impl gpui::Styled for Titlebar {
+impl Styled for Titlebar {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
@@ -81,12 +134,15 @@ impl RenderOnce for Titlebar {
         let shadow_bleed = theme.elevations.control.bleed();
 
         let id = self.id;
-        let bar_id = SharedString::from(format!("{id}-bar"));
 
-        titlebar_strip(
+        Self::strip(
+            (id.clone(), "drag"),
             h_flex()
                 .id(id.clone())
-                .debug_selector(move || bar_id.to_string())
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("{id}-bar")
+                })
                 .flex_none()
                 .w_full()
                 .h(height)
@@ -131,7 +187,6 @@ impl RenderOnce for Titlebar {
                             .children(self.suffix),
                     )
                 }),
-            (id.clone(), "drag"),
             window,
             cx,
         )

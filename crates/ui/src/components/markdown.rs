@@ -5,24 +5,18 @@
 //! report toggles and code blocks offer a copy action. Images render inline
 //! or as standalone blocks. Footnotes, math, and HTML render nothing; long
 //! code lines clip rather than scroll.
-//!
 //! The view is the state: build a [`MarkdownViewState`] in a
-//! [`gpui::Entity`] and embed it with [`TextView::new`], or let
-//! [`TextView::markdown`] own its state under an element id.
+//! [`gpui::Entity`] and embed that entity as a view.
 //!
 //! # Examples
 //!
-//! ```no_run
-//! use gpui::{App, AppContext as _};
-//! use ui::markdown::{MarkdownViewState, TextView};
+//! use ui::markdown::MarkdownViewState;
 //!
-//! fn notes(cx: &mut App) -> TextView {
-//!     let state = cx.new(|_| MarkdownViewState::new("notes", "# Notes\n- [x] shipped"));
-//!     TextView::new(&state)
+//! fn notes(cx: &mut App) -> Entity<MarkdownViewState> {
+//!     cx.new(|cx| MarkdownViewState::new("notes", "# Notes\n- [x] shipped", cx))
 //! }
 //! ```
 
-use std::borrow::Borrow as _;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
@@ -30,13 +24,12 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, Div, Element, ElementId, Entity, FontStyle,
-    FontWeight, GlobalElementId, HighlightStyle, InspectorElementId, InteractiveElement as _,
-    InteractiveText, IntoElement, KeyBinding, KeyBindingContextPredicate, LayoutId, ListAlignment,
-    ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit,
-    ParentElement as _, Pixels, Refineable as _, Rems, Render, SharedString,
-    StatefulInteractiveElement as _, StrikethroughStyle, StyleRefinement, Styled, StyledImage as _,
-    StyledText, TextLayout, UnderlineStyle, Window, actions, div, img, list, px, relative, rems,
+    AnyElement, App, ClipboardItem, Context, Div, ElementId, Entity, FocusHandle, FontStyle,
+    FontWeight, HighlightStyle, InteractiveElement as _, InteractiveText, IntoElement, KeyBinding,
+    KeyBindingContextPredicate, ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ObjectFit, ParentElement as _, Rems, Render, SharedString,
+    StatefulInteractiveElement as _, StrikethroughStyle, Styled, StyledImage as _, StyledText,
+    TextLayout, UnderlineStyle, Window, actions, div, img, list, px, relative, rems,
 };
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -160,6 +153,8 @@ pub enum MarkdownBlock {
     Code {
         language: Option<SharedString>,
         lines: HighlightedCode,
+        /// The fenced source, kept for the copy button.
+        text: SharedString,
         /// How many lists the block sits under.
         indent: usize,
         /// Whether a blockquote wraps the block.
@@ -189,24 +184,25 @@ impl MarkdownBlock {
         match self {
             MarkdownBlock::Heading { spans, .. } => vec![spans_text_of(spans)],
             MarkdownBlock::Paragraph { items, .. } | MarkdownBlock::ListItem { items, .. } => {
+                // One unit per image-separated text segment; images render no text.
                 let mut units: Vec<String> = Vec::new();
+                let mut current = String::new();
                 for item in items {
                     match item {
-                        InlineItem::Text(span) => match units.last_mut() {
-                            // Consecutive text items share the unit between images.
-                            Some(unit) => unit.push_str(&span.text),
-                            None => units.push(span.text.as_ref().to_string()),
-                        },
-                        // An image starts the next unit; the render emits no
-                        // element for it.
-                        InlineItem::Image { .. } => units.push(String::new()),
+                        InlineItem::Text(span) => current.push_str(&span.text),
+                        InlineItem::Image { .. } => {
+                            if !current.is_empty() {
+                                units.push(std::mem::take(&mut current));
+                            }
+                        }
                     }
+                }
+                if !current.is_empty() {
+                    units.push(current);
                 }
                 units
             }
-            MarkdownBlock::Code { lines, .. } => {
-                lines.lines.iter().map(|line| line.text()).collect()
-            }
+            MarkdownBlock::Code { text, .. } => text.split('\n').map(str::to_owned).collect(),
             MarkdownBlock::Table { table, .. } => table
                 .rows
                 .iter()
@@ -224,12 +220,12 @@ impl MarkdownBlock {
         match self {
             MarkdownBlock::Heading {
                 level,
-                spans,
+                spans: _,
                 indent,
                 quote,
             } => heading_row(
                 *level,
-                spans,
+                ctx.prepared.first().unwrap_or(&PreparedText::default()),
                 *indent,
                 *quote,
                 if block_index == 0 {
@@ -260,9 +256,10 @@ impl MarkdownBlock {
             MarkdownBlock::Code {
                 language,
                 lines,
+                text,
                 indent,
                 quote,
-            } => code_row(lines, language.as_ref(), *indent, *quote, ctx, cx),
+            } => code_row(lines, text, language.as_ref(), *indent, *quote, ctx, cx),
             MarkdownBlock::ThematicBreak { indent, quote } => rule_row(*indent, *quote, ctx, cx),
             MarkdownBlock::Table {
                 table,
@@ -303,13 +300,16 @@ pub struct MarkdownTable {
 
 /// Retained state for a markdown view.
 ///
-/// Build one in a [`gpui::Entity`] and embed it with [`TextView::new`], or
-/// let [`TextView::markdown`] own its state under an element id.
+/// Build one in a [`gpui::Entity`] and embed that entity as a view.
 pub struct MarkdownViewState {
     id: ElementId,
     source: SharedString,
     blocks: Vec<MarkdownBlock>,
     block_ids: Vec<ElementId>,
+    /// The selectable pieces and their text, rebuilt with the blocks.
+    doc: std::rc::Rc<TextDocument>,
+    /// Each block's inline text and style runs, rebuilt with the blocks.
+    prepared: std::rc::Rc<Vec<Vec<PreparedText>>>,
     /// Whether fenced code blocks highlight with the code view's palette.
     highlight_code: bool,
     /// Drives the vertical scroll of the virtualized block list.
@@ -319,12 +319,12 @@ pub struct MarkdownViewState {
     selection: Option<(usize, usize)>,
     /// Whether a drag is still extending the selection.
     selecting: bool,
-    focus_handle: Option<gpui::FocusHandle>,
+    focus_handle: FocusHandle,
 }
 
 impl MarkdownViewState {
     /// Builds the state, parsing `source`.
-    pub fn new<I, S>(id: I, source: S) -> Self
+    pub fn new<I, S>(id: I, source: S, cx: &mut App) -> Self
     where
         I: Into<ElementId>,
         S: Into<SharedString>,
@@ -333,6 +333,8 @@ impl MarkdownViewState {
         let source = source.into();
         let blocks = parse(&source, true);
         let block_ids = Self::stable_block_ids(&id, &blocks);
+        let doc = std::rc::Rc::new(text_document(&blocks));
+        let prepared = std::rc::Rc::new(prepared_blocks(&blocks));
         let count = blocks.len();
 
         Self {
@@ -340,12 +342,14 @@ impl MarkdownViewState {
             source,
             blocks,
             block_ids,
+            doc,
+            prepared,
             highlight_code: true,
             handle: ListState::new(count, ListAlignment::Top, CODE_OVERSCROLL_MAX),
             a11y_label: None,
             selection: None,
             selecting: false,
-            focus_handle: None,
+            focus_handle: cx.focus_handle().tab_stop(true),
         }
     }
 
@@ -373,6 +377,9 @@ impl MarkdownViewState {
     fn reparse(&mut self) {
         let blocks = parse(&self.source, self.highlight_code);
         let block_ids = Self::stable_block_ids(&self.id, &blocks);
+
+        self.doc = std::rc::Rc::new(text_document(&blocks));
+        self.prepared = std::rc::Rc::new(prepared_blocks(&blocks));
         self.blocks = blocks;
         self.block_ids = block_ids;
         self.selection = None;
@@ -385,16 +392,17 @@ impl MarkdownViewState {
     fn stable_block_ids(id: &ElementId, blocks: &[MarkdownBlock]) -> Vec<ElementId> {
         let mut ids = Vec::with_capacity(blocks.len());
         let mut occurrences = HashMap::with_capacity(blocks.len());
+
         for block in blocks {
             let hash = block.content_hash();
             let occurrence = *occurrences
                 .entry(hash)
                 .and_modify(|count| *count += 1)
                 .or_insert(0);
-            ids.push(ElementId::from(SharedString::from(format!(
-                "{id}-block-{hash:x}-{occurrence}"
-            ))));
+
+            ids.push(ElementId::from(format!("{id}-block-{hash:x}-{occurrence}")));
         }
+
         ids
     }
 
@@ -443,8 +451,7 @@ impl MarkdownViewState {
         cx.notify();
     }
 
-    /// The selected range over the rendered text, endpoints in document
-    /// order, when there is one.
+    /// The selected range over the rendered text, endpoints in document order.
     pub fn selection(&self) -> Option<(usize, usize)> {
         let (anchor, head) = self.selection?;
         Some(if anchor <= head {
@@ -456,18 +463,33 @@ impl MarkdownViewState {
 
     /// The selected text, or `None` when nothing is selected.
     pub fn selected_text(&self) -> Option<String> {
-        let document = text_document(&self.blocks);
         let (start, end) = self.selection()?;
-        let end = end.min(document.len);
+        let end = end.min(self.doc.len);
         let start = start.min(end);
-        Some(document.text(&self.blocks)[start..end].to_string()).filter(|text| !text.is_empty())
+
+        Some(self.doc.text[start..end].to_string()).filter(|text| !text.is_empty())
     }
 
-    /// The focus handle the view claims on click, created on first use.
-    fn focus_handle(&mut self, cx: &mut App) -> gpui::FocusHandle {
-        self.focus_handle
-            .get_or_insert_with(|| cx.focus_handle().tab_stop(true))
-            .clone()
+    /// Binds the view's copy chord: cmd-c on macOS, ctrl-c elsewhere.
+    pub fn bind_keys(cx: &mut App) {
+        let context = match KeyBindingContextPredicate::parse(TEXT_VIEW_CONTEXT) {
+            Ok(context) => Some(Rc::new(context)),
+            Err(error) => {
+                log::error!("failed to parse text view key context: {error}");
+                return;
+            }
+        };
+
+        let binding =
+            match KeyBinding::load("secondary-c", Box::new(Copy), context, false, None, cx) {
+                Ok(binding) => binding,
+                Err(error) => {
+                    log::error!("failed to parse text view copy keystroke: {error}");
+                    return;
+                }
+            };
+
+        cx.bind_keys([binding]);
     }
 }
 
@@ -475,18 +497,22 @@ impl Render for MarkdownViewState {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let id = self.id.clone();
         let state = cx.entity();
-        let focus_handle = self.focus_handle(cx);
+        let focus_handle = self.focus_handle.clone();
+
         let frame = std::rc::Rc::new(ViewFrame {
             state: state.clone(),
             selection: self.selection(),
             focus_handle,
             pressed_on_piece: std::rc::Rc::new(std::cell::Cell::new(false)),
         });
-        let doc = std::rc::Rc::new(text_document(&self.blocks));
+
+        let doc = self.doc.clone();
+        let prepared = self.prepared.clone();
 
         let blocks = list(self.handle.clone(), {
             let frame = frame.clone();
             let doc = doc.clone();
+
             move |block_index, _window, cx| {
                 let view = state.read(cx);
                 match view
@@ -498,6 +524,7 @@ impl Render for MarkdownViewState {
                         let ctx = BlockContext {
                             frame: &frame,
                             doc: &doc,
+                            prepared: prepared.get(block_index).map_or(&[], Vec::as_slice),
                             block_index,
                             block_id,
                         };
@@ -538,6 +565,8 @@ struct ViewFrame {
 struct BlockContext<'a> {
     frame: &'a ViewFrame,
     doc: &'a TextDocument,
+    /// The block's prepared inline text, one entry per selectable unit.
+    prepared: &'a [PreparedText],
     block_index: usize,
     block_id: &'a ElementId,
 }
@@ -586,6 +615,35 @@ struct PieceContext {
     pressed_on_piece: std::rc::Rc<std::cell::Cell<bool>>,
 }
 
+/// One block's inline text with its style runs, built once per parse.
+#[derive(Clone, Debug, Default)]
+struct PreparedText {
+    text: SharedString,
+    runs: Vec<(Range<usize>, InlineStyle)>,
+}
+
+impl PreparedText {
+    fn from_spans<'a>(spans: impl IntoIterator<Item = &'a InlineSpan>) -> Self {
+        let mut text = String::new();
+        let mut runs = Vec::new();
+
+        for span in spans {
+            let start = text.len();
+            text.push_str(&span.text);
+            let range = start..text.len();
+            if range.is_empty() || span.style == InlineStyle::Text {
+                continue;
+            }
+            runs.push((range, span.style.clone()));
+        }
+
+        Self {
+            text: SharedString::from(text),
+            runs,
+        }
+    }
+}
+
 /// One selectable stretch of rendered text.
 #[derive(Clone, Debug)]
 pub struct TextPiece {
@@ -602,167 +660,10 @@ pub struct TextPiece {
 pub struct TextDocument {
     /// The pieces, in document order.
     pub pieces: Vec<TextPiece>,
+    /// The rendered text, joined by newlines.
+    pub text: String,
     /// The rendered text length in bytes.
     pub len: usize,
-}
-
-impl TextDocument {
-    /// The rendered text, built on demand.
-    fn text(&self, blocks: &[MarkdownBlock]) -> String {
-        let mut out = String::with_capacity(self.len);
-        let mut piece_ix = 0;
-
-        for (block_index, block) in blocks.iter().enumerate() {
-            if piece_ix >= self.pieces.len() || self.pieces[piece_ix].block_index != block_index {
-                continue;
-            }
-
-            let block_end = self.pieces[piece_ix..]
-                .iter()
-                .position(|piece| piece.block_index != block_index)
-                .map_or(self.pieces.len(), |offset| piece_ix + offset);
-            let units = block.block_text_units();
-
-            for piece in &self.pieces[piece_ix..block_end] {
-                let Some(unit) = units.get(piece.sub_index).filter(|unit| !unit.is_empty()) else {
-                    continue;
-                };
-                if !out.is_empty() {
-                    out.push('\n');
-                }
-                out.push_str(unit);
-            }
-            piece_ix = block_end;
-        }
-
-        out
-    }
-}
-
-/// An embeddable markdown text view: fit-content height, no scrolling.
-pub struct TextView {
-    id: ElementId,
-    source: Option<SharedString>,
-    state: Option<Entity<MarkdownViewState>>,
-    style: StyleRefinement,
-}
-
-impl TextView {
-    /// Renders `source`, keeping its parsed state across frames under `id`.
-    pub fn markdown<I, S>(id: I, source: S) -> Self
-    where
-        I: Into<ElementId>,
-        S: Into<SharedString>,
-    {
-        Self {
-            id: id.into(),
-            source: Some(source.into()),
-            state: None,
-            style: StyleRefinement::default(),
-        }
-    }
-
-    /// Wraps an owned state; its source drives what the view renders.
-    pub fn new(state: &Entity<MarkdownViewState>) -> Self {
-        Self {
-            id: ElementId::from(SharedString::from(format!("{}", state.entity_id()))),
-            source: None,
-            state: Some(state.clone()),
-            style: StyleRefinement::default(),
-        }
-    }
-}
-
-impl Styled for TextView {
-    fn style(&mut self) -> &mut StyleRefinement {
-        &mut self.style
-    }
-}
-
-impl Element for TextView {
-    type PrepaintState = ();
-    type RequestLayoutState = AnyElement;
-
-    fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        let state = match self.state.clone() {
-            Some(state) => state,
-            None => {
-                let view_id = self.id.clone();
-                let source = self.source.clone().unwrap_or_default();
-                let state_key = SharedString::from(format!("{}/state", self.id));
-                window.use_keyed_state(state_key, cx, move |_, _| {
-                    MarkdownViewState::new(view_id, source)
-                })
-            }
-        };
-
-        let source = self.source.clone();
-
-        let (selection, focus_handle) =
-            state.update(cx, |view, cx| (view.selection(), view.focus_handle(cx)));
-
-        state.update(cx, |view, cx| {
-            if let Some(source) = source {
-                view.set_source(source, cx);
-            }
-        });
-
-        let view = state.read(cx);
-        let frame = ViewFrame {
-            state: state.clone(),
-            selection,
-            focus_handle,
-            pressed_on_piece: std::rc::Rc::new(std::cell::Cell::new(false)),
-        };
-        let doc = text_document(&view.blocks);
-
-        let mut element = render_blocks(&view.blocks, &frame, &doc, &view.block_ids, cx);
-        element.style().refine(&self.style);
-
-        let mut element = element.into_any_element();
-        let layout_id = element.request_layout(window, cx);
-
-        (layout_id, element)
-    }
-
-    fn prepaint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        request_layout.prepaint(window, cx);
-    }
-
-    fn paint(
-        &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
-        _prepaint: &mut Self::PrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        request_layout.paint(window, cx);
-    }
 }
 
 /// One open list, tracking ordered numbering and an in-flight task marker.
@@ -836,28 +737,6 @@ impl InlineBuilder {
     }
 }
 
-/// Binds the text view's copy chord: cmd-c on macOS, ctrl-c elsewhere.
-///
-/// Call once at startup. Without it, selection copy has no key.
-pub fn bind_text_view_keys(cx: &mut App) {
-    let context = match KeyBindingContextPredicate::parse(TEXT_VIEW_CONTEXT) {
-        Ok(context) => Some(Rc::new(context)),
-        Err(error) => {
-            log::error!("failed to parse text view key context: {error}");
-            return;
-        }
-    };
-    let binding = match KeyBinding::load("secondary-c", Box::new(Copy), context, false, None, cx) {
-        Ok(binding) => binding,
-        Err(error) => {
-            log::error!("failed to parse text view copy keystroke: {error}");
-            return;
-        }
-    };
-    cx.bind_keys([binding]);
-}
-
-/// The view's base container: selection wiring, focus, and copy.
 fn view_container(frame: &ViewFrame) -> Div {
     let clear_flag = frame.pressed_on_piece.clone();
 
@@ -876,7 +755,7 @@ fn view_container(frame: &ViewFrame) -> Div {
         .on_mouse_down(MouseButton::Left, {
             let state = frame.state.clone();
             move |_, window, cx| {
-                let focus_handle = state.update(cx, |view, cx| view.focus_handle(cx));
+                let focus_handle = state.read(cx).focus_handle.clone();
                 window.focus(&focus_handle, cx);
                 if !clear_flag.replace(false) {
                     state.update(cx, |view, cx| {
@@ -900,25 +779,52 @@ fn view_container(frame: &ViewFrame) -> Div {
         })
 }
 
-/// Renders every block stacked, without virtualization or scrolling.
-fn render_blocks(
-    blocks: &[MarkdownBlock],
-    frame: &ViewFrame,
-    doc: &TextDocument,
-    block_ids: &[ElementId],
-    cx: &App,
-) -> Div {
-    view_container(frame).children(blocks.iter().zip(block_ids).enumerate().map(
-        |(block_index, (block, block_id))| {
-            let ctx = BlockContext {
-                frame,
-                doc,
-                block_index,
-                block_id,
-            };
-            block.render_block(block_index, &ctx, cx)
-        },
-    ))
+/// Builds each block's inline text and style runs, in the same unit order the selection uses.
+fn prepared_blocks(blocks: &[MarkdownBlock]) -> Vec<Vec<PreparedText>> {
+    fn text_units(items: &[InlineItem]) -> Vec<PreparedText> {
+        let mut units = Vec::new();
+        let mut run: Vec<&InlineSpan> = Vec::new();
+
+        for item in items {
+            match item {
+                InlineItem::Text(span) => run.push(span),
+                InlineItem::Image { .. } => {
+                    if !run.is_empty() {
+                        let unit = PreparedText::from_spans(run.drain(..));
+                        if !unit.text.is_empty() {
+                            units.push(unit);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !run.is_empty() {
+            let unit = PreparedText::from_spans(run);
+            if !unit.text.is_empty() {
+                units.push(unit);
+            }
+        }
+
+        units
+    }
+
+    blocks
+        .iter()
+        .map(|block| match block {
+            MarkdownBlock::Heading { spans, .. } => vec![PreparedText::from_spans(spans.iter())],
+            MarkdownBlock::Paragraph { items, .. } | MarkdownBlock::ListItem { items, .. } => {
+                text_units(items)
+            }
+            MarkdownBlock::Table { table, .. } => table
+                .rows
+                .iter()
+                .flat_map(|row| row.cells.iter())
+                .map(|cell| PreparedText::from_spans(cell.spans.iter()))
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect()
 }
 
 fn spans_text_of(spans: &[InlineSpan]) -> String {
@@ -928,6 +834,7 @@ fn spans_text_of(spans: &[InlineSpan]) -> String {
 /// Enumerates the selectable text pieces of `blocks`, in render order.
 fn text_document(blocks: &[MarkdownBlock]) -> TextDocument {
     let mut pieces = Vec::new();
+    let mut text = String::new();
     let mut len = 0usize;
 
     for (block_index, block) in blocks.iter().enumerate() {
@@ -945,8 +852,10 @@ fn text_document(blocks: &[MarkdownBlock]) -> TextDocument {
             let mut range = len..len;
             if !unit.is_empty() {
                 if len > 0 {
+                    text.push('\n');
                     len += 1; // The newline that joins pieces.
                 }
+                text.push_str(&unit);
                 range = len..len + unit.len();
                 len = range.end;
             }
@@ -959,7 +868,7 @@ fn text_document(blocks: &[MarkdownBlock]) -> TextDocument {
         }
     }
 
-    TextDocument { pieces, len }
+    TextDocument { pieces, text, len }
 }
 
 /// The markdown extensions the view parses, on top of CommonMark.
@@ -1191,6 +1100,7 @@ fn parse(source: &str, highlight_code: bool) -> Vec<MarkdownBlock> {
                     blocks.push(MarkdownBlock::Code {
                         language,
                         lines,
+                        text: SharedString::from(text),
                         indent: lists.len(),
                         quote: quote_depth > 0,
                     });
@@ -1419,7 +1329,7 @@ fn indented_frame(indent: usize, frame: Div) -> Div {
 #[allow(clippy::too_many_arguments)]
 fn heading_row(
     level: MarkdownHeading,
-    spans: &[InlineSpan],
+    prepared: &PreparedText,
     indent: usize,
     quote: bool,
     top: Rems,
@@ -1437,7 +1347,7 @@ fn heading_row(
                     frame.text_sm().font_semibold()
                 }
             })
-            .child(text_child(spans, ctx.block_id, ctx.piece_context(0), cx)),
+            .child(text_child(prepared, ctx.block_id, ctx.piece_context(0), cx)),
     )
     .into_any_element()
 }
@@ -1481,10 +1391,10 @@ fn text_row(
                                     ListMarker::Ordered(number) => div()
                                         .text_color(theme.colors.muted_foreground)
                                         .whitespace_nowrap()
-                                        .child(format!("{number}."))
+                                        .child(SharedString::from(format!("{number}.")))
                                         .into_any_element(),
                                     ListMarker::Task(checked) => {
-                                        task_toggle(checked, item_text(items), ctx)
+                                        task_toggle(checked, InlineItem::text_of(items), ctx)
                                     }
                                 }),
                         )
@@ -1505,9 +1415,8 @@ fn text_row(
 /// The task marker: a checkbox that renders the state without toggling.
 fn task_toggle(checked: bool, label: SharedString, ctx: &BlockContext) -> AnyElement {
     let block_index = ctx.block_index;
-    let selector = SharedString::from(format!("task-toggle-{block_index}"));
     Checkbox::new((ctx.block_id.clone(), "task"))
-        .debug_selector(move || selector.to_string())
+        .debug_selector(move || format!("task-toggle-{block_index}"))
         .checked(checked)
         .with_size(Size::Small)
         .accessibility_label(label)
@@ -1515,17 +1424,19 @@ fn task_toggle(checked: bool, label: SharedString, ctx: &BlockContext) -> AnyEle
         .into_any_element()
 }
 
-/// The item's plain text, for the checkbox's accessibility label.
-fn item_text(items: &[InlineItem]) -> SharedString {
-    let text = items
-        .iter()
-        .filter_map(|item| match item {
-            InlineItem::Text(span) => Some(span.text.as_ref()),
-            InlineItem::Image { .. } => None,
-        })
-        .collect::<Vec<_>>()
-        .join("");
-    SharedString::from(text)
+impl InlineItem {
+    /// The items' plain text, for the checkbox's accessibility label.
+    fn text_of(items: &[Self]) -> SharedString {
+        let text = items
+            .iter()
+            .filter_map(|item| match item {
+                InlineItem::Text(span) => Some(span.text.as_ref()),
+                InlineItem::Image { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        SharedString::from(text)
+    }
 }
 
 /// Builds a paragraph's content.
@@ -1534,31 +1445,38 @@ fn paragraph_child(items: &[InlineItem], ctx: &BlockContext, cx: &App) -> AnyEle
         .iter()
         .any(|item| matches!(item, InlineItem::Image { .. }));
 
+    let mut units = ctx.prepared.iter();
+
     if !has_image {
-        let spans = items.iter().filter_map(|item| match item {
-            InlineItem::Text(span) => Some(span),
-            InlineItem::Image { .. } => None,
-        });
-        return text_child(spans, ctx.block_id, ctx.piece_context(0), cx);
+        return text_child(
+            units.next().unwrap_or(&PreparedText::default()),
+            ctx.block_id,
+            ctx.piece_context(0),
+            cx,
+        );
     }
 
     let side = rems(0.8625);
     let mut flow = div().flex().flex_wrap().items_center();
-    let mut segment: Vec<&InlineSpan> = Vec::new();
-    let mut segment_index = 0;
+    // One prepared unit per image-separated text segment, in order.
+    let mut segment = false;
+    let mut segment_index = 0usize;
+
     for item in items {
         match item {
-            InlineItem::Text(span) => segment.push(span),
+            InlineItem::Text(_) => segment = true,
             InlineItem::Image { source, .. } => {
-                if !segment.is_empty() {
-                    flow = flow.child(text_child(
-                        segment,
-                        &text_segment_id(ctx.block_id, segment_index),
-                        ctx.piece_context(segment_index),
-                        cx,
-                    ));
-                    segment = Vec::new();
-                    segment_index += 1;
+                if segment {
+                    if let Some(unit) = units.next() {
+                        flow = flow.child(text_child(
+                            unit,
+                            &text_segment_id(ctx.block_id, segment_index),
+                            ctx.piece_context(segment_index),
+                            cx,
+                        ));
+                        segment_index += 1;
+                    }
+                    segment = false;
                 }
                 flow = flow.child(
                     img(source.clone())
@@ -1569,14 +1487,16 @@ fn paragraph_child(items: &[InlineItem], ctx: &BlockContext, cx: &App) -> AnyEle
             }
         }
     }
-    if !segment.is_empty() {
+
+    if segment && let Some(unit) = units.next() {
         flow = flow.child(text_child(
-            segment,
+            unit,
             &text_segment_id(ctx.block_id, segment_index),
             ctx.piece_context(segment_index),
             cx,
         ));
     }
+
     flow.into_any_element()
 }
 
@@ -1612,6 +1532,7 @@ fn text_segment_id(id: &ElementId, segment_index: usize) -> ElementId {
 
 fn code_row(
     lines: &HighlightedCode,
+    text: &SharedString,
     language: Option<&SharedString>,
     indent: usize,
     quote: bool,
@@ -1621,12 +1542,7 @@ fn code_row(
     let theme = cx.theme();
     let text_size = rems(0.75).to_pixels(theme.root_font_size);
     let line_height = text_size * CODE_LINE_HEIGHT;
-    let plain = lines
-        .lines
-        .iter()
-        .map(|line| line.text())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let plain = text.clone();
 
     indented_frame(
         indent,
@@ -1658,13 +1574,16 @@ fn code_row(
                                 .variant(ButtonVariant::Ghost)
                                 .debug_selector(|| "copy-code".to_string())
                                 .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(plain.clone()));
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        plain.to_string(),
+                                    ));
                                 }),
                         ),
                 )
                 .children(lines.lines.iter().enumerate().map(|(line_ix, line)| {
                     let styled = code_line(line, theme.colors, theme.ramps);
                     let layout = styled.layout().clone();
+
                     with_selection_handlers(
                         div()
                             .h(line_height)
@@ -1699,19 +1618,24 @@ fn table_row(
 ) -> AnyElement {
     let theme = cx.theme();
     let colors = theme.colors;
+
     let width = table
         .rows
         .iter()
         .map(|row| row.cells.len())
         .max()
         .unwrap_or(0);
+
     let row_count = table.rows.len();
+    let fallback = PreparedText::default();
+
     let mut cell_ix = 0usize;
 
     indented_frame(
         indent,
         block_frame(quote, Rems::ZERO, rems(0.75), ctx.block_id, cx).child(
             v_flex()
+                .id((ctx.block_id.clone(), "table"))
                 .w_full()
                 .border_1()
                 .border_color(colors.border)
@@ -1728,12 +1652,9 @@ fn table_row(
                         .children(
                             row.cells
                                 .iter()
-                                .enumerate()
-                                .map(|(column_index, cell)| {
-                                    let cell_id = ElementId::from(SharedString::from(format!(
-                                        "{}-cell-{row_index}-{column_index}",
-                                        ctx.block_id
-                                    )));
+                                .map(|_cell| {
+                                    let cell_id = ElementId::from(("cell", cell_ix));
+                                    let prepared = ctx.prepared.get(cell_ix).unwrap_or(&fallback);
                                     let piece = ctx.piece_context(cell_ix);
                                     cell_ix += 1;
                                     div()
@@ -1744,7 +1665,7 @@ fn table_row(
                                         .when(row.header, |cell_element| {
                                             cell_element.font_semibold()
                                         })
-                                        .child(text_child(&cell.spans, &cell_id, piece, cx))
+                                        .child(text_child(prepared, &cell_id, piece, cx))
                                 })
                                 // Ragged tables pad missing cells so rows align.
                                 .chain(
@@ -1768,17 +1689,19 @@ fn with_selection_handlers(element: Div, piece: Option<PieceContext>, layout: Te
     let doc_range = piece.doc_range.clone();
     let pressed_on_piece = piece.pressed_on_piece.clone();
     let layout_for_move = layout.clone();
+
     element
         .on_mouse_down(
             MouseButton::Left,
             move |event: &MouseDownEvent, window: &mut Window, cx: &mut App| {
                 pressed_on_piece.set(true);
-                let focus_handle = state.update(cx, |view, cx| view.focus_handle(cx));
+                let focus_handle = state.read(cx).focus_handle.clone();
                 window.focus(&focus_handle, cx);
 
                 let local = match layout.index_for_position(event.position) {
                     Ok(index) | Err(index) => index,
                 };
+
                 let index = doc_range.start + local;
                 state.update(cx, |view, cx| {
                     if event.modifiers.shift {
@@ -1799,19 +1722,23 @@ fn with_selection_handlers(element: Div, piece: Option<PieceContext>, layout: Te
             let state = piece.state.clone();
             let doc_range = piece.doc_range.clone();
             let layout = layout_for_move;
+
             move |event: &MouseMoveEvent, _window: &mut Window, cx: &mut App| {
                 if !state.read(cx).selecting {
                     return;
                 }
+
                 let local = match layout.index_for_position(event.position) {
                     Ok(index) | Err(index) => index,
                 };
+
                 let index = doc_range.start + local;
                 let changed = state
                     .read(cx)
                     .selection
                     .map(|(_, head)| head != index)
                     .unwrap_or(true);
+
                 if changed {
                     state.update(cx, |view, cx| {
                         if let Some((anchor, _)) = view.selection {
@@ -1836,26 +1763,23 @@ fn with_selection_handlers(element: Div, piece: Option<PieceContext>, layout: Te
 }
 
 /// Builds the block's text element, selectable when it renders a piece.
-fn text_child<I>(spans: I, id: &ElementId, piece: Option<PieceContext>, cx: &App) -> AnyElement
-where
-    I: IntoIterator,
-    I::Item: std::borrow::Borrow<InlineSpan>,
-{
+fn text_child(
+    prepared: &PreparedText,
+    id: &ElementId,
+    piece: Option<PieceContext>,
+    cx: &App,
+) -> AnyElement {
     let theme = cx.theme();
-    let mut text = String::new();
-    let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    let mut highlights: Vec<(Range<usize>, HighlightStyle)> =
+        Vec::with_capacity(prepared.runs.len() + 1);
+
     let mut family_overrides: Vec<(Range<usize>, SharedString)> = Vec::new();
     let mut link_ranges: Vec<Range<usize>> = Vec::new();
     let mut destinations: Vec<SharedString> = Vec::new();
 
-    for span in spans {
-        let span = span.borrow();
-        let start = text.len();
-        text.push_str(&span.text);
-
-        let range = start..text.len();
-
-        match &span.style {
+    for (range, style) in &prepared.runs {
+        let range = range.clone();
+        match style {
             InlineStyle::Text => {}
             InlineStyle::Emphasis => highlights.push((
                 range,
@@ -1928,7 +1852,7 @@ where
         ));
     }
 
-    let styled = StyledText::new(text)
+    let styled = StyledText::new(prepared.text.clone())
         .with_highlights(highlights)
         .with_font_family_overrides(family_overrides);
     let layout = styled.layout().clone();
@@ -1950,5 +1874,6 @@ where
     if let Some(piece) = piece {
         element = with_selection_handlers(element, Some(piece), layout);
     }
+
     element.into_any_element()
 }

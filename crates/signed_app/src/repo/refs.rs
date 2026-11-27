@@ -1,9 +1,8 @@
 use gpui::{App, AppContext as _, Entity, SharedString, WeakEntity, Window};
 use ui::combobox::{Combobox, ComboboxState};
-use ui::icons::{IconRole, icon};
+use ui::icons::IconRole;
 
-use super::RepoDetailView;
-use super::helpers::sync_selector;
+use super::{RefKind, RepoDetailView};
 
 pub(super) struct RefSwitcher {
     pub(super) branch_select: Entity<ComboboxState<SharedString>>,
@@ -22,7 +21,7 @@ impl RefSwitcher {
             ComboboxState::new(
                 Combobox::new("branch-select", "Branch", Vec::new())
                     .placeholder("Branch")
-                    .selected_icon(icon(IconRole::GitBranch))
+                    .selected_icon(IconRole::GitBranch.into())
                     .on_change(move |value, window, cx| {
                         if let Some(name) = value
                             && let Err(error) = branch_view.update(cx, |this, cx| {
@@ -80,14 +79,59 @@ impl RefSwitcher {
             selected
         };
 
-        sync_selector(
-            &self.branch_select,
-            &mut self.ref_branches,
-            branches,
-            selected,
-            window,
-            cx,
-        )
+        self.sync_select(RefKind::Branch, branches, selected, window, cx)
+    }
+
+    /// Pushes `items`/`selected` into a selector, reporting whether it changed.
+    fn sync_select(
+        &mut self,
+        kind: RefKind,
+        items: Vec<SharedString>,
+        selected: Option<SharedString>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let select = match kind {
+            RefKind::Branch => self.branch_select.clone(),
+            RefKind::Tag => self.tag_select.clone(),
+        };
+
+        let cached = match kind {
+            RefKind::Branch => &mut self.ref_branches,
+            RefKind::Tag => &mut self.ref_tags,
+        };
+
+        let select = &select;
+        let items_changed = *cached != items;
+
+        let selection_changed = selected
+            .as_ref()
+            .is_some_and(|value| select.read(cx).selected() != Some(value));
+
+        if !items_changed && !selection_changed {
+            return false;
+        }
+
+        select.update(cx, |state, cx| {
+            if items_changed {
+                state.set_options(
+                    items
+                        .iter()
+                        .map(|item| (item.clone(), item.clone()))
+                        .collect(),
+                    cx,
+                );
+            }
+
+            if let Some(value) = selected
+                && (items_changed || selection_changed)
+            {
+                state.set_selected_silent(Some(value), window, cx);
+            }
+        });
+
+        *cached = items;
+        true
     }
 
     pub(super) fn set_tags(
@@ -96,14 +140,15 @@ impl RefSwitcher {
         window: &mut Window,
         cx: &mut App,
     ) -> bool {
-        sync_selector(&self.tag_select, &mut self.ref_tags, tags, None, window, cx)
+        self.sync_select(RefKind::Tag, tags, None, window, cx)
     }
 
     /// Shows `label` in the branch selector until a ref is picked.
     pub(super) fn show_commit(&mut self, label: SharedString, window: &mut Window, cx: &mut App) {
         self.commit_label = Some(label.clone());
-        self.branch_select
-            .update(cx, |state, cx| state.set_display_label(label, window, cx));
+        self.branch_select.update(cx, |state, cx| {
+            state.set_display_label(label, window, cx);
+        });
     }
 
     pub(super) fn restore_selection(

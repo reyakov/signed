@@ -10,13 +10,12 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    RenderOnce, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
-    Window, div,
+    App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
+    Role, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Window, div,
 };
 
 use crate::components::common::{Sizable, StyledExt as _, v_flex};
-use crate::icons::{IconRole, icon};
+use crate::icons::{Icon, IconRole};
 use crate::theme::{ActiveTheme as _, SPINNER_PERIOD, Size};
 
 /// A loader icon that spins for unknown work.
@@ -46,7 +45,7 @@ impl Spinner {
     }
 
     /// The spinner centered in the full available space.
-    pub fn centered<I>(id: I) -> AnyElement
+    pub fn centered<I>(id: I) -> impl IntoElement
     where
         I: Into<ElementId>,
     {
@@ -55,7 +54,6 @@ impl Spinner {
             .items_center()
             .justify_center()
             .child(Self::new(id))
-            .into_any_element()
     }
 
     /// Overrides the icon color, for accent-filled surfaces.
@@ -74,7 +72,7 @@ impl Spinner {
     }
 }
 
-impl gpui::Styled for Spinner {
+impl Styled for Spinner {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
@@ -100,7 +98,7 @@ impl RenderOnce for Spinner {
             .role(Role::ProgressIndicator)
             .when_some(self.a11y_label, |spinner, label| spinner.aria_label(label))
             .child(
-                icon(IconRole::Loader)
+                Icon::from(IconRole::Loader)
                     .size(side)
                     .color(accent)
                     .with_rotation_animation(SPINNER_PERIOD),

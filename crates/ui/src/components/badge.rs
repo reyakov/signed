@@ -13,16 +13,13 @@ use std::rc::Rc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyView, App, ElementId, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-    RenderOnce, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled as _,
-    Window, relative, transparent_black,
+    RenderOnce, SharedString, StatefulInteractiveElement as _, StyleRefinement, Styled, Window,
+    relative, transparent_black,
 };
 
-use crate::components::common::{ControlSizing, Sizable, StyledExt, h_flex};
+use crate::components::common::{ControlSizing, Sizable, StyledExt, TooltipBuilder, h_flex};
 use crate::icons::Icon;
 use crate::theme::{ActiveTheme as _, Size, Theme};
-
-/// The tooltip view builder gpui's `.tooltip(...)` expects.
-type TooltipBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyView>;
 
 /// The visual treatment of a [`Badge`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -141,8 +138,8 @@ impl Sizable for Badge {
     }
 }
 
-impl gpui::Styled for Badge {
-    fn style(&mut self) -> &mut gpui::StyleRefinement {
+impl Styled for Badge {
+    fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
 }
@@ -206,8 +203,8 @@ impl GroupedBadge {
     }
 }
 
-impl gpui::Styled for GroupedBadge {
-    fn style(&mut self) -> &mut gpui::StyleRefinement {
+impl Styled for GroupedBadge {
+    fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
 }

@@ -58,7 +58,7 @@ fn press_track(cx: &mut VisualTestContext) {
 
 #[gpui::test]
 fn a_covering_overlay_blocks_scrollbar_drags(cx: &mut TestAppContext) {
-    cx.update(Theme::init);
+    cx.update(|cx| Theme::init_with(cx, Theme::fallback_source()));
     let window = cx.open_window(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)), |_, _| {
         ScrollHarness {
             handle: ScrollHandle::new(),

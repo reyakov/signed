@@ -1,17 +1,18 @@
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::Error;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    App, AppContext as _, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Task,
     UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
 };
 use signed_git::{CommitList, FileCommit, Repo};
 use signed_state::{Backend, RepoStore, SyncStatusDirectory};
 use ui::alert::{Alert, AlertSeverity, AlertStyle};
-use ui::avatar::IdentityRow;
+use ui::avatar::Avatar;
 use ui::button::{Button, ButtonVariant};
 use ui::common::{Sizable as _, h_flex, v_flex};
 use ui::empty_state::EmptyState;
@@ -24,10 +25,23 @@ use ui::tooltip::Tooltip;
 use utils::relative_time_secs;
 
 use super::RepoDetailView;
-use super::commit_diff::CommitDiffView;
-use super::helpers::short_id;
 use crate::app::AppRoot;
+use crate::shared::commit_diff::CommitDiffView;
+use crate::shared::labels::ShortIdExt as _;
 use crate::shared::log_dropped;
+
+/// One commit row, with its display strings built when the list loads.
+struct HistoryRow {
+    commit: FileCommit,
+    /// The commit's hex id.
+    id: SharedString,
+    /// The abbreviated id shown on the browse button.
+    short: SharedString,
+    /// The browse button's element id.
+    browse: ElementId,
+    /// The row's age label.
+    age: SharedString,
+}
 
 pub struct RepoHistoryView {
     store: Entity<RepoStore>,
@@ -39,6 +53,7 @@ pub struct RepoHistoryView {
     loading_all_commits: bool,
     /// The loaded commit list, shared with the render without a per-frame copy.
     commits: Arc<Vec<FileCommit>>,
+    rows: Arc<Vec<HistoryRow>>,
     /// The last load failure, shown instead of the empty list.
     error: Option<SharedString>,
     scroll_handle: UniformListScrollHandle,
@@ -62,6 +77,7 @@ impl RepoHistoryView {
             all_commits: None,
             loading_all_commits: false,
             commits: Arc::new(Vec::new()),
+            rows: Arc::new(Vec::new()),
             error: None,
             scroll_handle: UniformListScrollHandle::new(),
             load_task: None,
@@ -92,12 +108,11 @@ impl RepoHistoryView {
         if self.loading_all_commits || self.all_commits.is_some() {
             return;
         }
+        self.loading_all_commits = true;
 
         let Some(worktree) = self.worktree.clone() else {
             return;
         };
-
-        self.loading_all_commits = true;
 
         let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
             let result = cx
@@ -110,6 +125,21 @@ impl RepoHistoryView {
                 match result {
                     Ok(list) => {
                         this.commits = Arc::new(list.commits.clone());
+                        this.rows = Arc::new(
+                            list.commits
+                                .iter()
+                                .map(|commit| HistoryRow {
+                                    id: SharedString::from(commit.id.clone()),
+                                    short: commit.id.short_id(),
+                                    browse: ElementId::from((
+                                        ElementId::from("browse-commit"),
+                                        SharedString::from(commit.id.clone()),
+                                    )),
+                                    age: SharedString::from(relative_time_secs(commit.time)),
+                                    commit: commit.clone(),
+                                })
+                                .collect(),
+                        );
                         this.all_commits = Some(Arc::new(list));
                         this.error = None;
                     }
@@ -196,9 +226,10 @@ impl Render for RepoHistoryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(list) = self.all_commits.as_ref() else {
             return if self.loading_all_commits {
-                Spinner::centered("commits-loading")
+                Spinner::centered("commits-loading").into_any_element()
             } else if let Some(error) = self.error.clone() {
-                let weak = cx.entity().downgrade();
+                let weak = cx.weak_entity();
+
                 v_flex()
                     .size_full()
                     .items_center()
@@ -220,19 +251,25 @@ impl Render for RepoHistoryView {
                     )
                     .into_any_element()
             } else {
-                EmptyState::centered("Failed to load commits")
+                EmptyState::centered("Failed to load commits").into_any_element()
             };
         };
 
         if self.commits.is_empty() {
-            return EmptyState::centered("No commits found");
+            return EmptyState::centered("No commits found").into_any_element();
         }
 
-        let commits = Arc::clone(&self.commits);
+        let commits = Arc::clone(&self.rows);
         let shown = commits.len();
         let total = list.total;
 
-        let view = cx.entity().downgrade();
+        let open_commit = Rc::new(cx.processor(|this, commit_id: SharedString, window, cx| {
+            this.open_commit_diff(&commit_id, window, cx);
+        }));
+
+        let browse_commit = Rc::new(cx.processor(|this, commit_id: SharedString, window, cx| {
+            this.browse_commit(&commit_id, window, cx);
+        }));
         let detail = self.detail.clone();
 
         let backend = Backend::global(cx);
@@ -277,15 +314,15 @@ impl Render for RepoHistoryView {
 
                                     let row_id = commit.id.clone();
                                     let browse_id = commit.id.clone();
-                                    let view = view.clone();
-                                    let browse_view = view.clone();
+                                    let open_commit = open_commit.clone();
+                                    let browse_commit = browse_commit.clone();
 
                                     let ahead = ahead
                                         .iter()
                                         .find(|(id, _)| id.starts_with(commit.id.as_str()));
 
                                     h_flex()
-                                        .id(commit.id.clone())
+                                        .id(row_id.clone())
                                         .px_4()
                                         .h_12()
                                         .w_full()
@@ -294,23 +331,31 @@ impl Render for RepoHistoryView {
                                         .border_color(cx.theme().colors.border)
                                         .hover(|this| this.bg(cx.theme().colors.muted))
                                         .child(
-                                            IdentityRow::new(
-                                                commit.author.clone(),
-                                                commit.author.clone(),
-                                                None,
-                                            )
-                                            .small()
-                                            .truncate()
-                                            .gap_2()
-                                            .flex_none()
-                                            .w_40()
-                                            .text_xs()
-                                            .text_color(cx.theme().colors.muted_foreground),
+                                            h_flex()
+                                                .gap_2()
+                                                .flex_none()
+                                                .w_40()
+                                                .text_xs()
+                                                .text_color(cx.theme().colors.muted_foreground)
+                                                .child(
+                                                    Avatar::new(commit.commit.author.clone())
+                                                        .name(commit.commit.author.clone())
+                                                        .small(),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .overflow_hidden()
+                                                        .whitespace_nowrap()
+                                                        .text_ellipsis()
+                                                        .child(commit.commit.author.clone()),
+                                                ),
                                         )
                                         .child(
                                             h_flex().w_20().child(
-                                                Button::new(format!("browse-commit:{}", commit.id))
-                                                    .label(short_id(&commit.id))
+                                                Button::new(commit.browse.clone())
+                                                    .label(commit.short.clone())
                                                     .variant(ButtonVariant::Ghost)
                                                     .small()
                                                     .tooltip(Tooltip::text(
@@ -318,14 +363,11 @@ impl Render for RepoHistoryView {
                                                     ))
                                                     .on_click(move |_, window, cx| {
                                                         cx.stop_propagation();
-                                                        log_dropped(browse_view.update(
+                                                        browse_commit(
+                                                            browse_id.clone(),
+                                                            window,
                                                             cx,
-                                                            |this, cx| {
-                                                                this.browse_commit(
-                                                                    &browse_id, window, cx,
-                                                                );
-                                                            },
-                                                        ));
+                                                        );
                                                     }),
                                             ),
                                         )
@@ -336,7 +378,7 @@ impl Render for RepoHistoryView {
                                                 .text_ellipsis()
                                                 .text_sm()
                                                 .whitespace_nowrap()
-                                                .child(commit.summary.clone()),
+                                                .child(commit.commit.summary.clone()),
                                         )
                                         .child(
                                             div()
@@ -344,14 +386,16 @@ impl Render for RepoHistoryView {
                                                 .text_xs()
                                                 .text_color(cx.theme().colors.muted_foreground)
                                                 .whitespace_nowrap()
-                                                .child(relative_time_secs(commit.time)),
+                                                .child(commit.age.clone()),
                                         )
                                         .when_some(ahead, |row, (ahead_id, path)| {
                                             let path = path.clone();
                                             let target = ahead_id.clone();
                                             let detail = detail.clone();
-                                            let tooltip =
-                                                format!("Sync up to {}", short_id(&commit.id));
+                                            let tooltip = SharedString::from(format!(
+                                                "Sync up to {}",
+                                                commit.short
+                                            ));
 
                                             row.child(
                                                 Button::new(("sync-commit", ix))
@@ -364,25 +408,22 @@ impl Render for RepoHistoryView {
                                                     .tooltip(Tooltip::text(tooltip))
                                                     .on_click(move |_, window, cx| {
                                                         cx.stop_propagation();
-                                                        if let Some(detail) = detail.upgrade() {
-                                                            detail.update(cx, |this, cx| {
+                                                        log_dropped(detail.update(
+                                                            cx,
+                                                            |this, cx| {
                                                                 this.sync_checkout_commit(
                                                                     path.clone(),
                                                                     target.clone(),
                                                                     window,
                                                                     cx,
                                                                 );
-                                                            });
-                                                        }
+                                                            },
+                                                        ));
                                                     }),
                                             )
                                         })
                                         .on_click(move |_, window, cx| {
-                                            if let Err(error) = view.update(cx, |this, cx| {
-                                                this.open_commit_diff(&row_id, window, cx);
-                                            }) {
-                                                log::warn!("failed to open commit diff: {error}");
-                                            }
+                                            open_commit(row_id.clone(), window, cx);
                                         })
                                         .into_any_element()
                                 })

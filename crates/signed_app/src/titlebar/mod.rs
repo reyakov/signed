@@ -2,8 +2,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, IntoElement, KeyBinding,
-    KeyBindingContextPredicate, ParentElement as _, SharedString, Subscription, WeakEntity, Window,
+    App, AppContext as _, Context, Entity, IntoElement, KeyBinding, KeyBindingContextPredicate,
+    ParentElement as _, SharedString, Subscription, WeakEntity, Window,
 };
 use metadata::{Profile, ProfileDirectory};
 use nostr::prelude::PublicKey;
@@ -23,8 +23,10 @@ use ui::tooltip::Tooltip;
 use crate::app::AppRoot;
 use crate::explore::ExploreView;
 use crate::identity::exit::ExitDialog;
-use crate::repo::{RepoDetailView, actions, dialogs};
+use crate::repo::RepoDetailView;
+use crate::repo::dialogs::create::CreateRepoDialog;
 use crate::settings::SettingsDialog;
+use crate::shared::labels::{AnnouncementExt as _, ResolvedLocalRepoExt as _};
 use crate::shared::log_dropped;
 
 mod repository_switcher;
@@ -76,9 +78,7 @@ impl TitlebarView {
         let repos = RepoListStore::global(cx);
         let local = LocalReposStore::global(cx);
         let directory = ProfileDirectory::new(cx);
-
-        let entity = cx.entity();
-        let weak = entity.downgrade();
+        let weak = cx.weak_entity();
 
         let palette = Self::new_palette(weak.clone(), window, cx);
         cx.open_palette(palette);
@@ -115,10 +115,15 @@ impl TitlebarView {
         });
 
         subscriptions.push(cx.subscribe(&backend, |this, _backend, event, cx| {
-            let signer_changed = matches!(event, BackendEvent::SignerChanged);
-            let signer_required = matches!(event, BackendEvent::SignerRequired);
+            // Push progress and sync events cannot change the titlebar's data.
+            if !matches!(
+                event,
+                BackendEvent::SignerChanged | BackendEvent::SignerRequired
+            ) {
+                return;
+            }
 
-            if this.refresh(cx) || signer_changed || signer_required {
+            if this.refresh(cx) {
                 cx.notify();
             }
         }));
@@ -135,16 +140,14 @@ impl TitlebarView {
             }
         }));
 
-        cx.defer(move |cx| {
-            entity.update(cx, |this, cx| {
-                if this.refresh(cx) {
-                    cx.notify();
-                }
-            });
+        cx.defer_in(window, move |this, _window, cx| {
+            if this.refresh(cx) {
+                cx.notify();
+            }
         });
 
         Self {
-            weak: cx.entity().downgrade(),
+            weak,
             app,
             announcements: Arc::new(Vec::new()),
             local_repos: Arc::new(Vec::new()),
@@ -269,7 +272,8 @@ impl TitlebarView {
 
             entries.push(RepositoryEntry {
                 index,
-                key: announcement_key(announcement),
+                key: announcement.panel_key(),
+                label_lower: SharedString::from(label.to_lowercase()),
                 label,
                 owner: Some(announcement.owner),
             });
@@ -277,11 +281,13 @@ impl TitlebarView {
 
         for (local_index, entry) in self.local_repos.iter().enumerate() {
             let owner = entry.nip34.as_ref().and_then(|binding| binding.owner);
+            let label = entry.name();
 
             entries.push(RepositoryEntry {
                 index: self.announcements.len() + local_index,
-                key: local_key(entry),
-                label: entry.name(),
+                key: entry.panel_key(),
+                label_lower: SharedString::from(label.to_lowercase()),
+                label,
                 owner,
             });
         }
@@ -299,39 +305,41 @@ impl TitlebarView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.repository_switcher
-            .update(cx, |switcher, cx| switcher.close(cx));
+        self.repository_switcher.update(cx, |switcher, cx| {
+            switcher.close(cx);
+        });
         self.activate(index, window, cx);
     }
 
     pub(crate) fn create_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.repository_switcher
-            .update(cx, |switcher, cx| switcher.close(cx));
+        self.repository_switcher.update(cx, |switcher, cx| {
+            switcher.close(cx);
+        });
         self.open_create(window, cx);
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
         let dialog = SettingsDialog::new(cx);
         cx.open_dialog(dialog);
-        cx.notify();
     }
 
     fn open_exit(&mut self, cx: &mut Context<Self>) {
         let dialog = ExitDialog::new(cx);
         cx.open_dialog(dialog);
-        cx.notify();
     }
 
     fn open_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let view = dialogs::create::CreateRepoDialog::new(self.app.clone(), window, cx);
+        let view = CreateRepoDialog::new(self.app.clone(), window, cx);
         cx.open_dialog(view);
-        cx.notify();
     }
 
     fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(announcement) = self.announcements.get(index) {
             let addr = announcement.addr();
-            actions::open_repo_panel(&self.app, &addr, Some(announcement), window, cx);
+            let result = self.app.update(cx, |root, cx| {
+                root.open_repo_panel(&addr, Some(announcement), window, cx);
+            });
+            log_dropped(result);
             return;
         }
 
@@ -342,6 +350,7 @@ impl TitlebarView {
         else {
             return;
         };
+
         self.open_local_entry(entry, window, cx);
     }
 
@@ -414,7 +423,7 @@ impl TitlebarView {
         }));
     }
 
-    pub fn render_user_menu(&self, cx: &App) -> Option<AnyElement> {
+    pub fn render_user_menu(&self, cx: &App) -> Option<impl IntoElement> {
         let profile = Backend::global(cx)
             .read(cx)
             .current_user()
@@ -423,7 +432,7 @@ impl TitlebarView {
         Some(self.render_user(&profile, cx).into_any_element())
     }
 
-    pub fn render_explore(&self) -> AnyElement {
+    pub fn render_explore(&self) -> Button {
         let workspace = self.app.clone();
 
         Button::new("open-explore")
@@ -432,12 +441,15 @@ impl TitlebarView {
             .fully_rounded(true)
             .tooltip(Tooltip::text("Explore repositories"))
             .on_click(move |_, window, cx| {
-                ExploreView::open(&workspace, window, cx);
+                let panels = workspace.read_with(cx, |root, _| root.panels().clone());
+                let Ok(panels) = panels else {
+                    return;
+                };
+                ExploreView::open(&panels, workspace.clone(), window, cx);
             })
-            .into_any_element()
     }
 
-    pub fn render_new_repository(&self) -> AnyElement {
+    pub fn render_new_repository(&self) -> Button {
         let weak = self.weak.clone();
 
         Button::new("add-repo")
@@ -448,7 +460,6 @@ impl TitlebarView {
             .on_click(move |_, window, cx| {
                 log_dropped(weak.update(cx, |this, cx| this.open_create(window, cx)));
             })
-            .into_any_element()
     }
 
     fn render_user(&self, profile: &Profile, _cx: &App) -> impl IntoElement {
@@ -506,56 +517,48 @@ impl TitlebarView {
     }
 }
 
-fn announcement_key(announcement: &Announcement) -> SharedString {
-    SharedString::from(format!("repo:{}", announcement.addr()))
-}
+impl TitlebarView {
+    /// Binds the repository shortcuts that the shell and the switcher share.
+    pub(crate) fn bind_keys(cx: &mut App) {
+        let context = match KeyBindingContextPredicate::parse(REPOSITORY_KEY_CONTEXT) {
+            Ok(context) => Some(Rc::new(context)),
+            Err(error) => {
+                log::error!("failed to parse repository key context: {error}");
+                return;
+            }
+        };
 
-fn local_key(entry: &ResolvedLocalRepo) -> SharedString {
-    match entry.announcement.as_ref() {
-        Some(announcement) => announcement_key(announcement),
-        None => SharedString::from(format!("repo-local:{}", entry.path.display())),
-    }
-}
-
-pub(crate) fn bind_repository_shortcuts(cx: &mut App) {
-    let context = match KeyBindingContextPredicate::parse(REPOSITORY_KEY_CONTEXT) {
-        Ok(context) => Some(Rc::new(context)),
-        Err(error) => {
-            log::error!("failed to parse repository key context: {error}");
-            return;
-        }
-    };
-
-    let bindings = REPOSITORY_KEYSTROKES
-        .into_iter()
-        .enumerate()
-        .map(|(index, keystroke)| {
-            KeyBinding::load(
-                keystroke,
-                Box::new(SwitchRepository { index }),
+        let bindings = REPOSITORY_KEYSTROKES
+            .into_iter()
+            .enumerate()
+            .map(|(index, keystroke)| {
+                KeyBinding::load(
+                    keystroke,
+                    Box::new(SwitchRepository { index }),
+                    context.clone(),
+                    false,
+                    None,
+                    cx,
+                )
+            })
+            .chain(std::iter::once(KeyBinding::load(
+                CREATE_KEYSTROKE,
+                Box::new(CreateRepository),
                 context.clone(),
                 false,
                 None,
                 cx,
-            )
-        })
-        .chain(std::iter::once(KeyBinding::load(
-            CREATE_KEYSTROKE,
-            Box::new(CreateRepository),
-            context.clone(),
-            false,
-            None,
-            cx,
-        )))
-        .collect::<Result<Vec<_>, _>>();
+            )))
+            .collect::<Result<Vec<_>, _>>();
 
-    let bindings = match bindings {
-        Ok(bindings) => bindings,
-        Err(error) => {
-            log::error!("failed to parse repository shortcut keystrokes: {error}");
-            return;
-        }
-    };
+        let bindings = match bindings {
+            Ok(bindings) => bindings,
+            Err(error) => {
+                log::error!("failed to parse repository shortcut keystrokes: {error}");
+                return;
+            }
+        };
 
-    cx.bind_keys(bindings);
+        cx.bind_keys(bindings);
+    }
 }

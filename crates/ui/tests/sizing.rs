@@ -59,7 +59,7 @@ impl Render for Harness {
 
 #[gpui::test]
 fn buttons_render_at_their_token_heights(cx: &mut TestAppContext) {
-    cx.update(Theme::init);
+    cx.update(|cx| Theme::init_with(cx, Theme::fallback_source()));
     let window = cx.open_window(size(px(400.), px(400.)), |_, _| Harness);
     let mut cx = VisualTestContext::from_window(window.into(), cx);
     cx.run_until_parked();

@@ -15,7 +15,7 @@ use gpui::{
 
 use crate::components::button::{Button, ButtonVariant};
 use crate::components::common::{
-    ResultLogErr as _, Sizable as _, StyledExt as _, TOAST_LAYER, floating_panel, v_flex,
+    ResultLogErr as _, Sizable as _, StyledExt as _, TOAST_LAYER, v_flex,
 };
 use crate::icons::{Icon, IconRole};
 use crate::theme::{ActiveTheme as _, TOAST_MAX_WIDTH};
@@ -77,55 +77,51 @@ impl ToastEntry {
         let toasts = toasts.clone();
         let id = self.id;
 
-        floating_panel(
-            cx,
-            radius,
-            div()
-                .id(("toast", id))
-                .debug_selector(|| "toast-pill".to_string())
-                .role(Role::Alert)
-                .aria_label(toast.message.clone())
-                .max_w(TOAST_MAX_WIDTH)
-                .flex()
-                .items_center()
-                .gap_2()
-                .py_1p5()
-                .px_3(),
-            theme.elevations.popover.shadows(),
-        )
-        .refine_style(&toast.style)
-        .when_some(toast.icon.clone(), |pill, icon| {
-            pill.child(
+        div()
+            .id(("toast", id))
+            .debug_selector(|| "toast-pill".to_string())
+            .role(Role::Alert)
+            .aria_label(toast.message.clone())
+            .max_w(TOAST_MAX_WIDTH)
+            .flex()
+            .items_center()
+            .gap_2()
+            .py_1p5()
+            .px_3()
+            .floating_panel(cx, radius, theme.elevations.popover.shadows())
+            .refine_style(&toast.style)
+            .when_some(toast.icon.clone(), |pill, icon| {
+                pill.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .child(icon.size(rems(1.0)).color(foreground)),
+                )
+            })
+            .child(
                 div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .child(icon.size(rems(1.0)).color(foreground)),
+                    .flex_1()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_sm()
+                    .text_color(foreground)
+                    .child(toast.message.clone()),
             )
-        })
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .truncate()
-                .text_sm()
-                .text_color(foreground)
-                .child(toast.message.clone()),
-        )
-        .child(
-            div().flex_none().child(
-                Button::new(("toast-close", id))
-                    .icon(IconRole::Close)
-                    .variant(ButtonVariant::Ghost)
-                    .small()
-                    .accessibility_label("Dismiss")
-                    .on_click(move |_, _window, cx| {
-                        toasts.update(cx, |toasts, cx| {
-                            toasts.dismiss(id, cx);
-                        });
-                    }),
-            ),
-        )
+            .child(
+                div().flex_none().child(
+                    Button::new(("toast-close", id))
+                        .icon(IconRole::Close)
+                        .variant(ButtonVariant::Ghost)
+                        .small()
+                        .accessibility_label("Dismiss")
+                        .on_click(move |_, _window, cx| {
+                            toasts.update(cx, |toasts, cx| {
+                                toasts.dismiss(id, cx);
+                            });
+                        }),
+                ),
+            )
     }
 }
 
@@ -156,14 +152,17 @@ impl Toasts {
         self.current = Some(ToastEntry { id, toast });
         cx.notify();
 
-        if let Some(duration) = duration.filter(|duration| !duration.is_zero()) {
-            let task = cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(duration).await;
-                this.update(cx, |toasts, cx| toasts.dismiss(id, cx))
+        self.dismiss_task = duration
+            .filter(|duration| !duration.is_zero())
+            .map(|duration| {
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(duration).await;
+                    this.update(cx, |toasts, cx| {
+                        toasts.dismiss(id, cx);
+                    })
                     .log_err();
+                })
             });
-            self.dismiss_task.replace(task);
-        }
 
         id
     }
