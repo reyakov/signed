@@ -410,6 +410,7 @@ impl Tab {
             .map(|on_close| self.render_tab_close(&ctx.id, index, on_close));
 
         div()
+            .when_some(self.lead.take(), |strip_tab, lead| strip_tab.child(lead))
             .child(
                 div()
                     .flex_grow(1.0)
@@ -505,7 +506,6 @@ impl Tab {
                     .max_w(TAB_MAX_WIDTH)
                     .when(titlebar, |strip_tab| strip_tab.min_w(TAB_MIN_WIDTH))
             })
-            .when_some(self.lead.take(), |strip_tab, lead| strip_tab.child(lead))
             .when(ctx.variant == TabsVariant::Pill, |strip_tab| {
                 strip_tab.child(div().flex_none().w_4())
             })

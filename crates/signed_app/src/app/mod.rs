@@ -9,6 +9,7 @@ use nostr::prelude::EventId;
 use settings::{AppearanceMode, SettingsStore};
 use signed_core::{Announcement, RepoAddr};
 use signed_state::{Backend, BackendEvent, RepoStore};
+use ui::button::{Button, ButtonVariant};
 use ui::common::{h_flex, v_flex};
 use ui::icons::IconRole;
 use ui::layout::panel::{PanelSlot, PanelStack};
@@ -16,12 +17,14 @@ use ui::layout::root::{Root, RootContext as _};
 use ui::layout::titlebar::Titlebar;
 use ui::theme::{ThemeEngine, ThemeVariant};
 use ui::toast::Toast;
+use ui::tooltip::Tooltip;
 
 use crate::app::placeholder::PlaceholderView;
 use crate::explore::ExploreView;
 use crate::identity::import::ImportDialog;
 use crate::identity::onboarding::OnboardingDialog;
 use crate::identity::passphrase::PassphraseDialog;
+use crate::inbox::InboxView;
 use crate::issues::IssuesView;
 use crate::issues::detail::IssueDetailView;
 use crate::pull_requests::{PullRequestDetailView, PullRequestsView};
@@ -232,6 +235,23 @@ impl AppRoot {
         }
     }
 
+    /// Opens the explore panel in the main stack.
+    fn open_explore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        ExploreView::open(&self.panels, cx.weak_entity(), window, cx);
+    }
+
+    /// Opens the inbox panel in the main stack.
+    fn open_inbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        InboxView::open_panel(&self.panels, cx.weak_entity(), window, cx);
+    }
+
+    /// Opens the dialog that creates a repository.
+    fn open_create_repository(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.titlebar.update(cx, |titlebar, cx| {
+            titlebar.open_create(window, cx);
+        });
+    }
+
     /// Opens the dialog that imports an identity from a secret.
     pub(crate) fn open_import_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let dialog = ImportDialog::new(cx);
@@ -248,7 +268,8 @@ impl AppRoot {
 impl Render for AppRoot {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let repo_tabs = PanelStack::main_tabs(self.panels.clone(), cx);
-        let titlebar_view = self.titlebar.read(cx);
+        let repository_switcher = self.titlebar.read(cx).repository_switcher();
+        let user_menu = self.titlebar.read(cx).render_user_menu(cx);
 
         div()
             .relative()
@@ -277,18 +298,48 @@ impl Render for AppRoot {
                             .prefix(
                                 h_flex()
                                     .gap_1()
-                                    .child(titlebar_view.render_new_repository())
-                                    .child(titlebar_view.render_explore())
-                                    .child(titlebar_view.repository_switcher()),
+                                    .child(
+                                        Button::new("open-explore")
+                                            .icon(IconRole::Grid)
+                                            .variant(ButtonVariant::Ghost)
+                                            .fully_rounded(true)
+                                            .tooltip(Tooltip::text("Explore repositories"))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.open_explore(window, cx);
+                                            })),
+                                    )
+                                    .child(repository_switcher),
                             )
                             .tab_bar(
                                 h_flex()
                                     .gap_1()
                                     .when_some(repo_tabs, |bar, tabs| bar.child(tabs)),
                             )
-                            .when_some(titlebar_view.render_user_menu(cx), |titlebar, menu| {
-                                titlebar.suffix(menu)
-                            }),
+                            .suffix(
+                                h_flex()
+                                    .gap_1()
+                                    .child(
+                                        Button::new("add-repo")
+                                            .icon(IconRole::Plus)
+                                            .variant(ButtonVariant::Ghost)
+                                            .fully_rounded(true)
+                                            .tooltip(Tooltip::text("Create repository"))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.open_create_repository(window, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("open-inbox")
+                                            .icon(IconRole::Bell)
+                                            .variant(ButtonVariant::Ghost)
+                                            .fully_rounded(true)
+                                            .tooltip(Tooltip::text("Inbox"))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.open_inbox(window, cx);
+                                            })),
+                                    )
+                                    .when_some(user_menu, |bar, menu| bar.child(menu)),
+                            ),
                     )
                     .child(self.panels.clone()),
             )

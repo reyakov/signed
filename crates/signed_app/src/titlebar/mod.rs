@@ -18,10 +18,8 @@ use ui::icons::{Icon, IconRole};
 use ui::layout::panel::PanelSlot;
 use ui::layout::root::RootContext as _;
 use ui::menu::{Menu, MenuItem};
-use ui::tooltip::Tooltip;
 
 use crate::app::AppRoot;
-use crate::explore::ExploreView;
 use crate::identity::exit::ExitDialog;
 use crate::repo::RepoDetailView;
 use crate::repo::dialogs::create::CreateRepoDialog;
@@ -328,7 +326,7 @@ impl TitlebarView {
         cx.open_dialog(dialog);
     }
 
-    fn open_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let view = CreateRepoDialog::new(self.app.clone(), window, cx);
         cx.open_dialog(view);
     }
@@ -430,36 +428,6 @@ impl TitlebarView {
             .map(|public_key| self.directory.read(cx).profile(&public_key, cx))?;
 
         Some(self.render_user(&profile, cx).into_any_element())
-    }
-
-    pub fn render_explore(&self) -> Button {
-        let workspace = self.app.clone();
-
-        Button::new("open-explore")
-            .icon(IconRole::Grid)
-            .variant(ButtonVariant::Ghost)
-            .fully_rounded(true)
-            .tooltip(Tooltip::text("Explore repositories"))
-            .on_click(move |_, window, cx| {
-                let panels = workspace.read_with(cx, |root, _| root.panels().clone());
-                let Ok(panels) = panels else {
-                    return;
-                };
-                ExploreView::open(&panels, workspace.clone(), window, cx);
-            })
-    }
-
-    pub fn render_new_repository(&self) -> Button {
-        let weak = self.weak.clone();
-
-        Button::new("add-repo")
-            .icon(IconRole::Plus)
-            .variant(ButtonVariant::Ghost)
-            .fully_rounded(true)
-            .tooltip(Tooltip::text("Create repository"))
-            .on_click(move |_, window, cx| {
-                log_dropped(weak.update(cx, |this, cx| this.open_create(window, cx)));
-            })
     }
 
     fn render_user(&self, profile: &Profile, _cx: &App) -> impl IntoElement {

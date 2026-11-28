@@ -18,7 +18,8 @@ use ui::button::Button;
 use ui::common::{StyledExt as _, h_flex, v_flex};
 use ui::empty_state::EmptyState;
 use ui::icons::{Icon, IconRole};
-use ui::layout::panel::Panel;
+use ui::layout::panel::{Panel, PanelSlot, PanelStack};
+use ui::theme::ActiveTheme;
 
 mod helpers;
 
@@ -81,6 +82,26 @@ pub struct InboxView {
 }
 
 impl InboxView {
+    pub(crate) const PANEL_ID: &'static str = "Inbox";
+
+    /// Opens the inbox panel in the main panel, reusing it when it is already cached.
+    pub(crate) fn open_panel(
+        panels: &Entity<PanelStack>,
+        workspace: WeakEntity<AppRoot>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        panels.update(cx, |panels, cx| {
+            panels.open(
+                PanelSlot::Main,
+                Self::PANEL_ID,
+                move |_, cx| cx.new(|cx| Self::new(workspace.clone(), cx)),
+                window,
+                cx,
+            );
+        });
+    }
+
     pub fn new(workspace: WeakEntity<AppRoot>, cx: &mut Context<Self>) -> Self {
         let backend = Backend::global(cx);
         let inbox = backend.read(cx).inbox();
@@ -434,7 +455,15 @@ impl InboxView {
 
 impl Panel for InboxView {
     fn title(&self, _cx: &App) -> SharedString {
-        SharedString::from("Inbox")
+        SharedString::from(Self::PANEL_ID)
+    }
+
+    fn prefix(&self, cx: &App) -> Option<AnyElement> {
+        Some(
+            Icon::named(IconRole::Bell)
+                .color(cx.theme().colors.foreground)
+                .into_any_element(),
+        )
     }
 }
 

@@ -320,8 +320,7 @@ impl Panel for ExploreView {
     fn prefix(&self, cx: &App) -> Option<AnyElement> {
         Some(
             Icon::named(IconRole::Grid)
-                .small()
-                .color(cx.theme().colors.muted_foreground)
+                .color(cx.theme().colors.foreground)
                 .into_any_element(),
         )
     }
