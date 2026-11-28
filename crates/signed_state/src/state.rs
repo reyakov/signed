@@ -11,25 +11,6 @@ use signed_git::Repo;
 
 use crate::push::{GraspServer, PushOutcome, grasp_base_url};
 
-/// A git ref with the commit it points at.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitRef {
-    /// Full ref name, like `refs/heads/main` or `refs/tags/v1.0`.
-    pub name: String,
-    pub commit: Sha1Hash,
-}
-
-impl GitRef {
-    pub fn new(name: impl Into<String>, commit: &str) -> Result<Self, Error> {
-        let commit = Sha1Hash::from_str(commit).map_err(|_| anyhow!("invalid commit: {commit}"))?;
-
-        Ok(Self {
-            name: name.into(),
-            commit,
-        })
-    }
-}
-
 /// How much to push to the grasp servers.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum GitPushMode {
@@ -50,16 +31,6 @@ pub enum GitPushPolicy {
     Reconcile,
     /// Declare the local refs only and delete server-only refs while pushing.
     ResetRemote,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SyncState {
-    pub refs: Vec<GitRef>,
-    pub head: Option<String>,
-    /// Local repository to push from; `None` for states parsed from events.
-    pub path: Option<PathBuf>,
-    pub mode: GitPushMode,
-    pub policy: GitPushPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +71,35 @@ impl PushStepStatus {
             Self::Running(step) | Self::Done(step) | Self::Failed(step, _) => step,
         }
     }
+}
+
+/// A git ref with the commit it points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitRef {
+    /// Full ref name, like `refs/heads/main` or `refs/tags/v1.0`.
+    pub name: String,
+    pub commit: Sha1Hash,
+}
+
+impl GitRef {
+    pub fn new(name: impl Into<String>, commit: &str) -> Result<Self, Error> {
+        let commit = Sha1Hash::from_str(commit).map_err(|_| anyhow!("invalid commit: {commit}"))?;
+
+        Ok(Self {
+            name: name.into(),
+            commit,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncState {
+    pub refs: Vec<GitRef>,
+    pub head: Option<String>,
+    /// Local repository to push from; `None` for states parsed from events.
+    pub path: Option<PathBuf>,
+    pub mode: GitPushMode,
+    pub policy: GitPushPolicy,
 }
 
 impl SyncState {
@@ -397,11 +397,11 @@ impl SyncState {
                             repo.push_refspecs(&base, &owner, &repo_id, &[refspec.as_str()])
                         }
                         GitPushMode::All => {
-                            let mut refspecs = force_refspecs();
+                            let mut refspecs = Self::force_refspecs();
                             if policy == GitPushPolicy::ResetRemote {
                                 let url = format!("{base}/{owner}/{repo_id}.git");
                                 let server_refs = repo.ls_remote(&url)?;
-                                refspecs.extend(deletion_refspecs(&declared, &server_refs));
+                                refspecs.extend(Self::deletion_refspecs(&declared, &server_refs));
                             }
 
                             let refspecs = refspecs.iter().map(String::as_str).collect::<Vec<_>>();
@@ -526,21 +526,21 @@ impl SyncState {
 
         Ok(())
     }
-}
 
-/// Refspecs to force push all heads and tags to the grasp servers.
-fn force_refspecs() -> Vec<String> {
-    vec![
-        "+refs/heads/*:refs/heads/*".to_owned(),
-        "+refs/tags/*:refs/tags/*".to_owned(),
-    ]
-}
+    /// Refspecs to force push all heads and tags to the grasp servers.
+    fn force_refspecs() -> Vec<String> {
+        vec![
+            "+refs/heads/*:refs/heads/*".to_owned(),
+            "+refs/tags/*:refs/tags/*".to_owned(),
+        ]
+    }
 
-/// Refspecs to delete server-only refs from the grasp servers.
-fn deletion_refspecs(declared: &[String], server_refs: &[(String, String)]) -> Vec<String> {
-    server_refs
-        .iter()
-        .filter(|(name, _)| !declared.contains(name))
-        .map(|(name, _)| format!(":{name}"))
-        .collect()
+    /// Refspecs to delete server-only refs from the grasp servers.
+    fn deletion_refspecs(declared: &[String], server_refs: &[(String, String)]) -> Vec<String> {
+        server_refs
+            .iter()
+            .filter(|(name, _)| !declared.contains(name))
+            .map(|(name, _)| format!(":{name}"))
+            .collect()
+    }
 }

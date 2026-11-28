@@ -30,21 +30,21 @@ impl PatchSeries {
     pub(crate) fn tip_commit(&self) -> Option<Sha1Hash> {
         self.parts
             .last()
-            .and_then(|part| patch_current_commit(part))
+            .and_then(|part| Self::current_commit(part))
             .and_then(|hex| hex.parse::<Sha1Hash>().ok())
     }
 
     pub(crate) fn commit_of(&self, index: usize) -> Option<&str> {
         self.parts
             .get(index)
-            .and_then(|part| patch_current_commit(part))
+            .and_then(|part| Self::current_commit(part))
             .filter(|hex| hex.len() == 40)
     }
-}
 
-/// The `From <commit>` header on the first line.
-fn patch_current_commit(patch: &str) -> Option<&str> {
-    let line = patch.lines().next()?;
-    let hex = line.strip_prefix("From ")?;
-    hex.split_whitespace().next().filter(|hex| hex.len() == 40)
+    /// The `From <commit>` header on the first line.
+    fn current_commit(patch: &str) -> Option<&str> {
+        let line = patch.lines().next()?;
+        let hex = line.strip_prefix("From ")?;
+        hex.split_whitespace().next().filter(|hex| hex.len() == 40)
+    }
 }

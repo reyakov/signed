@@ -11,7 +11,7 @@ use nostr::event::IntoEventBuilder;
 use nostr::nips::nip19::Nip19Coordinate;
 use nostr_connect::prelude::*;
 use nostr_sdk::prelude::*;
-use signed_core::{Announcement, Filters, RepoAddr, filters};
+use signed_core::{Announcement, Filters, RepoAddr};
 use signed_git::{GitCache, Repo};
 use signed_nostr::{SignedAuthUrlHandler, UniversalSigner, Update};
 
@@ -52,6 +52,54 @@ impl BackendEvent {
     }
 }
 
+enum UpdateEvent {
+    Profile(PublicKey),
+    Grasp(PublicKey),
+    Repo(Update),
+}
+
+impl UpdateEvent {
+    async fn next(
+        notifications: &mut (impl futures::Stream<Item = ClientNotification> + Unpin),
+        seen: &mut HashSet<EventId>,
+    ) -> Option<Self> {
+        loop {
+            match notifications.next().await {
+                Some(ClientNotification::Message { message, .. }) => {
+                    let RelayMessage::Event { event, .. } = *message else {
+                        continue;
+                    };
+
+                    let update = match event.kind {
+                        Kind::Metadata => UpdateEvent::Profile(event.pubkey),
+                        Kind::GitUserGraspList => UpdateEvent::Grasp(event.pubkey),
+                        kind if Filters::is_repo_kind(kind) => {
+                            UpdateEvent::Repo(Update::from_event(&event))
+                        }
+                        _ => continue,
+                    };
+
+                    if seen.insert(event.id) {
+                        // Bounded, so a long session does not keep every event id.
+                        if seen.len() >= MAX_SEEN_EVENT_IDS {
+                            seen.clear();
+                        }
+                        return Some(update);
+                    }
+                }
+                Some(_) => continue,
+                None => return None,
+            }
+        }
+    }
+}
+
+impl EventEmitter<BackendEvent> for Backend {}
+
+struct GlobalBackend(Entity<Backend>);
+
+impl Global for GlobalBackend {}
+
 pub struct Backend {
     client: Client,
     signer: UniversalSigner,
@@ -61,13 +109,8 @@ pub struct Backend {
     pushing_repos: Entity<HashSet<RepoAddr>>,
     /// Bumped by every explicit identity action, results from an older session are dropped.
     session: u64,
+    _pump: Task<Result<(), Error>>,
 }
-
-struct GlobalBackend(Entity<Backend>);
-
-impl Global for GlobalBackend {}
-
-impl EventEmitter<BackendEvent> for Backend {}
 
 impl Backend {
     pub fn global(cx: &App) -> Entity<Self> {
@@ -105,7 +148,6 @@ impl Backend {
 
                 loop {
                     let now = Instant::now();
-
                     if now >= deadline {
                         break;
                     }
@@ -156,8 +198,6 @@ impl Backend {
             Ok(())
         });
 
-        pump.detach();
-
         cx.defer(move |cx| {
             weak.update(cx, |this, cx| {
                 this.restore_session(cx);
@@ -173,6 +213,7 @@ impl Backend {
             passphrase_required: false,
             pushing_repos: cx.new(|_| HashSet::new()),
             session: 0,
+            _pump: pump,
         }
     }
 
@@ -205,7 +246,7 @@ impl Backend {
                         this.set_signer(keys, session, cx);
                     })?;
                 } else if content.starts_with("bunker://") {
-                    let (base, keys) = extract_master_key(&content)?;
+                    let (base, keys) = Self::extract_master_key(&content)?;
                     let uri = NostrConnectUri::parse(base)?;
                     let signer = NostrConnect::builder(uri, keys)
                         .auth_url_handler(Arc::new(SignedAuthUrlHandler))
@@ -380,7 +421,7 @@ impl Backend {
         };
 
         let keys = Keys::generate();
-        let credential = with_master_key(&uri_string, &keys);
+        let credential = Self::with_master_key(&uri_string, &keys);
         let write = cx.write_credentials(USER_KEYRING, "bunker", credential.as_bytes());
         let session = self.supersede_session();
 
@@ -611,7 +652,7 @@ impl Backend {
             let commit = work.await?;
             let commit_sha = Sha1Hash::from_str(&commit).map_err(|_| anyhow!("invalid id"))?;
 
-            let announcement = build_announcement(
+            let announcement = Self::build_announcement(
                 &repo_id,
                 &name,
                 &description,
@@ -641,9 +682,15 @@ impl Backend {
                 Ok::<(), Error>(())
             };
 
-            let event =
-                announce_and_push_or_retract(&client, &signer, &state, announcement, cx, on_step)
-                    .await?;
+            let event = Self::announce_and_push_or_retract(
+                &client,
+                &signer,
+                &state,
+                announcement,
+                cx,
+                on_step,
+            )
+            .await?;
 
             let announcement = Announcement::from_event(&event)
                 .ok_or_else(|| anyhow!("failed to parse announcement"))?;
@@ -723,7 +770,8 @@ impl Backend {
             }
 
             let euc = euc.and_then(|commit: String| Sha1Hash::from_str(&commit).ok());
-            let ann = build_announcement(&repo_id, &name, &description, &owner, &servers, euc);
+            let ann =
+                Self::build_announcement(&repo_id, &name, &description, &owner, &servers, euc);
 
             let on_step = &mut |status: PushStepStatus, cx: &mut AsyncApp| {
                 this.update(cx, |_, cx| {
@@ -736,7 +784,8 @@ impl Backend {
             };
 
             let event =
-                announce_and_push_or_retract(&client, &signer, &state, ann, cx, on_step).await?;
+                Self::announce_and_push_or_retract(&client, &signer, &state, ann, cx, on_step)
+                    .await?;
 
             if let Some(base) = servers.first().and_then(grasp_base_url) {
                 let url = format!("{base}/{owner}/{repo_id}.git");
@@ -1296,7 +1345,6 @@ impl Backend {
                 Ok(_) => {
                     this.update(cx, |_this, cx| {
                         cx.emit(BackendEvent::Synced);
-                        cx.notify();
                     })?;
                 }
                 Err(e) => {
@@ -1336,124 +1384,82 @@ impl Backend {
             })
             .collect()
     }
-}
 
-fn build_announcement(
-    repo_id: &str,
-    name: &str,
-    description: &str,
-    owner: &str,
-    servers: &[RelayUrl],
-    euc: Option<Sha1Hash>,
-) -> GitRepositoryAnnouncement {
-    GitRepositoryAnnouncement {
-        id: repo_id.to_owned(),
-        name: Some(name.to_owned()),
-        description: (!description.is_empty()).then(|| description.to_owned()),
-        web: Vec::new(),
-        clone: servers
-            .iter()
-            .filter_map(|relay| grasp_clone_url(relay, owner, repo_id))
-            .collect(),
-        relays: servers.to_vec(),
-        euc,
-        maintainers: Vec::new(),
-    }
-}
-
-/// Announces a repository and pushes its state to grasp, retracting the announcement on failure.
-async fn announce_and_push_or_retract<S, P>(
-    client: &Client,
-    signer: &S,
-    state: &SyncState,
-    announcement: GitRepositoryAnnouncement,
-    cx: &mut AsyncApp,
-    on_step: &mut P,
-) -> Result<Event, Error>
-where
-    S: AsyncGetPublicKey + AsyncSignEvent + ?Sized,
-    P: FnMut(PushStepStatus, &mut AsyncApp) -> Result<(), Error>,
-{
-    let state_event = state
-        .state_event(&announcement.id)
-        .finalize_async(signer)
-        .await?;
-    let announcement_event = announcement.finalize_async(signer).await?;
-
-    match state
-        .announce_and_push(client, announcement_event.clone(), state_event, cx, on_step)
-        .await
-    {
-        Ok(event) => Ok(event),
-        Err(e) => {
-            let retracted =
-                SyncState::retract_announcement(client, signer, announcement_event.id).await;
-            let retraction = match retracted {
-                Ok(()) => "The announcement has been retracted".to_owned(),
-                Err(error) => format!(
-                    "Retracting the announcement failed: {error}; delete the repository to clean it up"
-                ),
-            };
-
-            bail!("{e}. {retraction}");
+    fn build_announcement(
+        repo_id: &str,
+        name: &str,
+        description: &str,
+        owner: &str,
+        servers: &[RelayUrl],
+        euc: Option<Sha1Hash>,
+    ) -> GitRepositoryAnnouncement {
+        GitRepositoryAnnouncement {
+            id: repo_id.to_owned(),
+            name: Some(name.to_owned()),
+            description: (!description.is_empty()).then(|| description.to_owned()),
+            web: Vec::new(),
+            clone: servers
+                .iter()
+                .filter_map(|relay| grasp_clone_url(relay, owner, repo_id))
+                .collect(),
+            relays: servers.to_vec(),
+            euc,
+            maintainers: Vec::new(),
         }
     }
-}
 
-enum UpdateEvent {
-    Profile(PublicKey),
-    Grasp(PublicKey),
-    Repo(Update),
-}
+    /// Announces a repository and pushes its state to grasp, retracting the announcement on failure.
+    async fn announce_and_push_or_retract<S, P>(
+        client: &Client,
+        signer: &S,
+        state: &SyncState,
+        announcement: GitRepositoryAnnouncement,
+        cx: &mut AsyncApp,
+        on_step: &mut P,
+    ) -> Result<Event, Error>
+    where
+        S: AsyncGetPublicKey + AsyncSignEvent + ?Sized,
+        P: FnMut(PushStepStatus, &mut AsyncApp) -> Result<(), Error>,
+    {
+        let state_event = state
+            .state_event(&announcement.id)
+            .finalize_async(signer)
+            .await?;
+        let announcement_event = announcement.finalize_async(signer).await?;
 
-impl UpdateEvent {
-    async fn next(
-        notifications: &mut (impl futures::Stream<Item = ClientNotification> + Unpin),
-        seen: &mut HashSet<EventId>,
-    ) -> Option<Self> {
-        loop {
-            match notifications.next().await {
-                Some(ClientNotification::Message { message, .. }) => {
-                    let RelayMessage::Event { event, .. } = *message else {
-                        continue;
-                    };
+        match state
+            .announce_and_push(client, announcement_event.clone(), state_event, cx, on_step)
+            .await
+        {
+            Ok(event) => Ok(event),
+            Err(e) => {
+                let retracted =
+                    SyncState::retract_announcement(client, signer, announcement_event.id).await;
+                let retraction = match retracted {
+                    Ok(()) => "The announcement has been retracted".to_owned(),
+                    Err(error) => format!(
+                        "Retracting the announcement failed: {error}; delete the repository to clean it up"
+                    ),
+                };
 
-                    let update = match event.kind {
-                        Kind::Metadata => UpdateEvent::Profile(event.pubkey),
-                        Kind::GitUserGraspList => UpdateEvent::Grasp(event.pubkey),
-                        kind if filters::is_repo_kind(kind) => {
-                            UpdateEvent::Repo(Update::from_event(&event))
-                        }
-                        _ => continue,
-                    };
-
-                    if seen.insert(event.id) {
-                        // Bounded, so a long session does not keep every event id.
-                        if seen.len() >= MAX_SEEN_EVENT_IDS {
-                            seen.clear();
-                        }
-                        return Some(update);
-                    }
-                }
-                Some(_) => continue,
-                None => return None,
+                bail!("{e}. {retraction}");
             }
         }
     }
-}
 
-fn extract_master_key(credential: &str) -> Result<(&str, Keys), Error> {
-    match credential.split_once("master=") {
-        Some((base, nsec)) => {
-            let keys = Keys::new(SecretKey::parse(nsec)?);
-            Ok((base.trim_end_matches(['?', '&']), keys))
+    fn extract_master_key(credential: &str) -> Result<(&str, Keys), Error> {
+        match credential.split_once("master=") {
+            Some((base, nsec)) => {
+                let keys = Keys::new(SecretKey::parse(nsec)?);
+                Ok((base.trim_end_matches(['?', '&']), keys))
+            }
+            None => Ok((credential, Keys::generate())),
         }
-        None => Ok((credential, Keys::generate())),
     }
-}
 
-fn with_master_key(uri: &str, keys: &Keys) -> String {
-    let separator = if uri.contains('?') { '&' } else { '?' };
-    let nsec = keys.secret_key().to_bech32().expect("infallible");
-    format!("{uri}{separator}master={nsec}")
+    fn with_master_key(uri: &str, keys: &Keys) -> String {
+        let separator = if uri.contains('?') { '&' } else { '?' };
+        let nsec = keys.secret_key().to_bech32().expect("infallible");
+        format!("{uri}{separator}master={nsec}")
+    }
 }

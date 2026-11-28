@@ -1,10 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use nostr::prelude::Keys;
+use nostr::prelude::*;
 use signed_core::RepoAddr;
-
-use super::*;
+use signed_git::{DiffStatus, GitCache, LocalRepo, Nip34Binding, Nip34Kind, PatchParser, Repo};
 
 #[test]
 fn blocks_parent_components() {
@@ -827,6 +826,11 @@ fn git_run(dir: &Path, args: &[&str]) -> std::process::Output {
     output
 }
 
+fn git_in(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
+    let output = git_run(dir, args);
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 #[test]
 fn find_git_repos_reports_the_outermost_repository() {
     let root = tempfile::tempdir().expect("tempdir");
@@ -837,7 +841,7 @@ fn find_git_repos_reports_the_outermost_repository() {
     let plain_dir = root.path().join("plain").join("deep");
     std::fs::create_dir_all(&plain_dir).expect("mkdir");
 
-    let repos = find_git_repos(root.path());
+    let repos = LocalRepo::find_all(root.path());
 
     assert_eq!(repos.len(), 1);
     assert_eq!(repos[0].path, repo_dir.canonicalize().expect("canonical"));
@@ -855,7 +859,7 @@ fn find_git_repos_skips_repositories_nested_in_repositories() {
     std::fs::create_dir_all(&nested).expect("mkdir");
     git_run(&nested, &["init", "-q"]);
 
-    let repos = find_git_repos(root.path());
+    let repos = LocalRepo::find_all(root.path());
 
     assert_eq!(repos.len(), 1);
     assert_eq!(repos[0].path, outer.canonicalize().expect("canonical"));
@@ -869,7 +873,7 @@ fn find_git_repos_ignores_a_repository_above_the_scan_root() {
     let root = outer.path().join("scan");
     std::fs::create_dir_all(&root).expect("mkdir");
 
-    assert!(find_git_repos(&root).is_empty());
+    assert!(LocalRepo::find_all(&root).is_empty());
 }
 
 /// Creates an empty bare server repository for push tests.
@@ -1065,4 +1069,233 @@ fn read_at_reads_the_files_of_that_commit() {
         repo.read_at("0000000000000000000000000000000000000000", Path::new("src"))
             .is_err()
     );
+}
+
+/// Creates a fresh repository in a temp directory.
+fn init_repo() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("repo");
+    std::fs::create_dir_all(&path).expect("mkdir");
+    git(&path, &["init", "-q"]);
+    (dir, path)
+}
+
+/// Runs `git` in `dir`, failing the test on a non-zero exit.
+fn git(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "Test Author")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "Test Author")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .env("GIT_EDITOR", "true")
+        .args(args)
+        .status()
+        .expect("spawn git");
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// Generates a fresh public key.
+fn key() -> PublicKey {
+    Keys::generate().public_key()
+}
+
+/// Encodes a NIP-34 coordinate as an `naddr` string.
+fn naddr(kind: Kind, owner: PublicKey, identifier: &str) -> String {
+    let coordinate = Coordinate::new(kind, owner).identifier(identifier);
+    Nip19Coordinate::new(coordinate, Vec::<RelayUrl>::new())
+        .to_bech32()
+        .expect("naddr")
+}
+
+/// Opens the repository at `path` and returns its NIP-34 binding.
+fn binding_of(path: &Path) -> Option<Nip34Binding> {
+    Repo::open(path).ok()?.nip34_binding()
+}
+
+#[test]
+fn plain_repository_has_no_binding() {
+    let (_dir, path) = init_repo();
+    assert!(binding_of(&path).is_none());
+}
+
+#[test]
+fn nip34_json_marks_a_repository_initialized() {
+    let (_dir, path) = init_repo();
+    let owner = key();
+    let npub = owner.to_bech32().expect("npub");
+    std::fs::write(
+        path.join("nip34.json"),
+        format!(r#"{{"identifier":"my-repo","owner":"{npub}"}}"#),
+    )
+    .expect("write");
+
+    let binding = binding_of(&path).expect("binding");
+    assert_eq!(binding.kind, Nip34Kind::Initialized);
+    assert!(binding.signals.nip34_json);
+    assert_eq!(binding.owner, Some(owner));
+    assert_eq!(binding.identifier.as_deref(), Some("my-repo"));
+}
+
+#[test]
+fn malformed_nip34_json_is_ignored() {
+    let (_dir, path) = init_repo();
+    std::fs::write(path.join("nip34.json"), b"not json").expect("write");
+
+    assert!(binding_of(&path).is_none());
+}
+
+#[test]
+fn commit_patch_applies_cleanly_to_parent() {
+    let (dir, path) = init_repo();
+    git(&path, &["config", "user.name", "Test Author"]);
+    git(&path, &["config", "user.email", "test@example.com"]);
+    std::fs::write(path.join("file.txt"), "one\n").expect("write");
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-q", "-m", "first"]);
+    std::fs::write(path.join("file.txt"), "two\n").expect("write");
+    std::fs::write(path.join("file2.txt"), "added\n").expect("write");
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-q", "-m", "second"]);
+
+    let patch = Repo::open(&path)
+        .expect("open repo")
+        .commit_patch("HEAD")
+        .expect("commit patch");
+    assert!(patch.contains("diff --git a/file.txt b/file.txt"));
+    assert!(patch.contains("diff --git a/file2.txt b/file2.txt"));
+    assert!(patch.contains("--- /dev/null"));
+    assert!(patch.contains("+added"));
+
+    let patch_path = dir.path().join("head.patch");
+    std::fs::write(&patch_path, &patch).expect("write patch");
+    git(&path, &["checkout", "-q", "--detach", "HEAD~1"]);
+    git(
+        &path,
+        &["apply", patch_path.to_str().expect("utf8 patch path")],
+    );
+
+    let applied = std::fs::read_to_string(path.join("file.txt")).expect("read");
+    assert_eq!(applied, "two\n");
+    assert_eq!(
+        std::fs::read_to_string(path.join("file2.txt")).expect("read"),
+        "added\n"
+    );
+}
+
+#[test]
+fn nak_exclude_and_state_refs_are_detected() {
+    let (_dir, path) = init_repo();
+
+    std::fs::create_dir_all(path.join(".git/info")).expect("mkdir");
+    std::fs::write(path.join(".git/info/exclude"), "nip34.json\n").expect("write");
+
+    git(&path, &["commit", "-q", "--allow-empty", "-m", "initial"]);
+    git(
+        &path,
+        &["update-ref", "refs/heads/nip34/state/HEAD", "HEAD"],
+    );
+
+    let binding = binding_of(&path).expect("binding");
+    assert_eq!(binding.kind, Nip34Kind::Initialized);
+    assert!(binding.signals.nip34_excluded);
+    assert!(binding.signals.nip34_state_refs);
+}
+
+#[test]
+fn nostr_repo_config_marks_a_repository_initialized() {
+    let (_dir, path) = init_repo();
+    let owner = key();
+    let naddr = naddr(Kind::GitRepoAnnouncement, owner, "my-repo");
+    git(&path, &["config", "nostr.repo", &naddr]);
+
+    let binding = binding_of(&path).expect("binding");
+    assert_eq!(binding.kind, Nip34Kind::Initialized);
+    assert!(binding.signals.nostr_repo_config);
+    assert_eq!(binding.owner, Some(owner));
+    assert_eq!(binding.identifier.as_deref(), Some("my-repo"));
+}
+
+#[test]
+fn the_written_nostr_repo_marker_is_detected() {
+    let (_dir, path) = init_repo();
+    let owner = key();
+    let naddr = naddr(Kind::GitRepoAnnouncement, owner, "my-repo");
+
+    Repo::open(&path)
+        .expect("open")
+        .set_nostr_repo(&naddr)
+        .expect("write marker");
+
+    let binding = binding_of(&path).expect("binding");
+    assert_eq!(binding.kind, Nip34Kind::Initialized);
+    assert!(binding.signals.nostr_repo_config);
+    assert_eq!(binding.owner, Some(owner));
+    assert_eq!(binding.identifier.as_deref(), Some("my-repo"));
+}
+
+#[test]
+fn nostr_remote_is_a_nip34_clone() {
+    let (_dir, path) = init_repo();
+    let owner = key();
+    let npub = owner.to_bech32().expect("npub");
+    let url = format!("nostr://{npub}/relay.ngit.dev/my-repo");
+    git(&path, &["remote", "add", "origin", &url]);
+
+    let binding = binding_of(&path).expect("binding");
+    assert_eq!(binding.kind, Nip34Kind::Cloned);
+    assert!(binding.signals.nostr_remote);
+    assert_eq!(binding.owner, Some(owner));
+    assert_eq!(binding.identifier.as_deref(), Some("my-repo"));
+}
+
+#[test]
+fn nak_grasp_remote_marks_a_repository_initialized() {
+    let (_dir, path) = init_repo();
+    let owner = key();
+    let npub = owner.to_bech32().expect("npub");
+    let url = format!("https://gitnostr.com/{npub}/my-repo.git");
+    git(
+        &path,
+        &["config", "remote.nip34/grasp/gitnostr.com.url", &url],
+    );
+
+    let binding = binding_of(&path).expect("binding");
+    assert_eq!(binding.kind, Nip34Kind::Initialized);
+    assert!(binding.signals.nip34_grasp_remote);
+    assert!(binding.signals.grasp_remote);
+    assert_eq!(binding.grasp_urls, vec![url]);
+    assert_eq!(binding.owner, Some(owner));
+    assert_eq!(binding.identifier.as_deref(), Some("my-repo"));
+}
+
+#[test]
+fn nostr_cache_alone_is_tooling_only() {
+    let (_dir, path) = init_repo();
+    std::fs::write(path.join(".git/nostr-cache.lmdb"), b"cache").expect("write");
+
+    let binding = binding_of(&path).expect("binding");
+    assert_eq!(binding.kind, Nip34Kind::ToolingOnly);
+    assert!(binding.signals.nostr_cache);
+}
+
+#[test]
+fn grasp_urls_are_recognised_by_shape() {
+    let owner = key();
+    let npub = owner.to_bech32().expect("npub");
+
+    assert!(Repo::is_grasp_url(&format!(
+        "https://gitnostr.com/{npub}/my-repo.git"
+    )));
+    assert!(Repo::is_grasp_url(&format!(
+        "grasp://gitnostr.com/{npub}/my-repo.git"
+    )));
+
+    assert!(!Repo::is_grasp_url("https://gitnostr.com/my-repo.git"));
+    assert!(!Repo::is_grasp_url(
+        "https://gitnostr.com/not-a-pubkey/my-repo.git"
+    ));
+    assert!(!Repo::is_grasp_url(&format!(
+        "ssh://gitnostr.com/{npub}/my-repo.git"
+    )));
 }

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use anyhow::{Error, bail};
-use gpui::{App, AppContext, Context, SharedString, Subscription, Task};
+use gpui::{App, AppContext, Context, Subscription, Task};
 use nostr::event::IntoEventBuilder;
 use nostr_sdk::prelude::*;
 use settings::{EventFetchingStrategy, SettingsStore};
@@ -231,14 +231,6 @@ impl RepoStore {
         cx.notify();
     }
 
-    pub fn name(&self) -> SharedString {
-        self.announcement
-            .as_ref()
-            .map_or(SharedString::default(), |a| {
-                SharedString::from(a.name.as_deref().unwrap_or("Unknown"))
-            })
-    }
-
     fn repo_filters(addr: &RepoAddr) -> Vec<Filter> {
         let mut filters = vec![
             Filter::new()
@@ -446,18 +438,18 @@ impl RepoStore {
                 .unwrap_or_default();
 
             let status_by_root =
-                resolve_statuses(&issues, &patches, &pull_requests, &statuses, &maintainers);
+                Self::resolve_statuses(&issues, &patches, &pull_requests, &statuses, &maintainers);
 
             let open_issue_count = issues
                 .iter()
-                .filter(|issue| status_of(&status_by_root, issue) == RepoStatus::Open)
+                .filter(|issue| Self::status_in(&status_by_root, issue) == RepoStatus::Open)
                 .count();
 
             let open_pr_count = pull_requests
                 .iter()
                 .filter(|pr| {
                     pr.kind == Kind::GitPullRequest
-                        && status_of(&status_by_root, pr) == RepoStatus::Open
+                        && Self::status_in(&status_by_root, pr) == RepoStatus::Open
                 })
                 .count();
 
@@ -588,7 +580,7 @@ impl RepoStore {
     }
 
     pub fn status_of(&self, root: &Event) -> RepoStatus {
-        status_of(&self.status_by_root, root)
+        Self::status_in(&self.status_by_root, root)
     }
 
     pub fn issue_count(&self) -> usize {
@@ -655,10 +647,10 @@ impl RepoStore {
             .cloned();
 
         let task = self.publish(
-            comment_builder(root, parent, relay_hint.as_ref(), &addr, content),
+            Self::comment_builder(root, parent, relay_hint.as_ref(), &addr, content),
             cx,
         );
-        self.tasks.push(task);
+        self.track_task(task);
     }
 
     #[expect(clippy::too_many_arguments, reason = "mirrors the PR event")]
@@ -749,7 +741,7 @@ impl RepoStore {
         };
 
         cx.spawn(async move |this, cx| {
-            let root_patch = match publish_patch_series(
+            let root_patch = match Self::publish_patch_series(
                 &client,
                 &signer,
                 &addr,
@@ -985,12 +977,13 @@ impl RepoStore {
                 );
 
                 // The store owns the publish so it outlives the panel that requested it.
-                this.tasks.push(cx.spawn(async move |_this, _cx| {
+                let task = cx.spawn(async move |_this, _cx| {
                     if done.send(publish.await).is_err() {
                         log::debug!("pull request publish finished after its panel closed");
                     }
                     Ok::<(), Error>(())
-                }));
+                });
+                this.track_task(task);
             })?;
 
             finished
@@ -1066,7 +1059,7 @@ impl RepoStore {
             .unwrap_or_default();
 
         let task: Task<Result<(), Error>> = cx.spawn(async move |this, cx| {
-            if let Err(e) = publish_patch_series(
+            if let Err(e) = Self::publish_patch_series(
                 &client,
                 &signer,
                 &addr,
@@ -1131,7 +1124,7 @@ impl RepoStore {
             Ok(())
         });
 
-        self.tasks.push(task);
+        self.track_task(task);
     }
 
     fn set_status(&mut self, root: &Event, status: RepoStatus, cx: &mut Context<Self>) {
@@ -1173,7 +1166,7 @@ impl RepoStore {
         ]);
 
         let task = self.publish(builder, cx);
-        self.tasks.push(task);
+        self.track_task(task);
     }
 
     fn action_announcement(&self, cx: &App) -> Option<Announcement> {
@@ -1250,13 +1243,18 @@ impl RepoStore {
             backend.push_checkout_commit(announcement, path.clone(), head, commit, cx)
         });
 
-        self.run_push(push, Some((addr, path)), cx)
+        self.run_push(push, Some(addr), cx)
+    }
+
+    fn track_task(&mut self, task: Task<Result<(), Error>>) {
+        self.tasks.retain(|task| !task.is_ready());
+        self.tasks.push(task);
     }
 
     fn run_push(
         &mut self,
         push: Task<Result<PushOutcome, Error>>,
-        pushed_checkout: Option<(RepoAddr, PathBuf)>,
+        pushed_checkout: Option<RepoAddr>,
         cx: &mut Context<Self>,
     ) -> Task<Result<(), Error>> {
         self.pushing = true;
@@ -1283,20 +1281,10 @@ impl RepoStore {
                         this.last_error = None;
                         this.last_push_warning = outcome.partial_warning();
 
-                        if let Some((addr, path)) = &pushed_checkout {
-                            let checkouts = CheckoutsStore::global(cx);
-                            checkouts.update(cx, |store, cx| {
-                                store.checkout_pushed(addr, path, cx);
-                            });
-                        }
-
                         let sync_status = SyncStatusStore::global(cx);
-                        let addr = pushed_checkout
-                            .as_ref()
-                            .map(|(addr, _)| addr.clone())
-                            .or_else(|| this.addr.clone());
+                        let addr = pushed_checkout.clone().or_else(|| this.addr.clone());
 
-                        sync_status.read(cx).probe(addr);
+                        sync_status.update(cx, |store, _| store.probe(addr));
                     }
                     Err(e) => {
                         this.last_error = Some(format!("Push failed: {e}"));
@@ -1458,176 +1446,156 @@ impl RepoStore {
 
         task
     }
-}
 
-fn status_of(status_by_root: &HashMap<EventId, RepoStatus>, root: &Event) -> RepoStatus {
-    status_by_root
-        .get(&root.id)
-        .copied()
-        .unwrap_or(RepoStatus::Open)
-}
-
-fn resolve_statuses(
-    issues: &[Event],
-    patches: &[Event],
-    pull_requests: &[Event],
-    statuses: &[Event],
-    maintainers: &[PublicKey],
-) -> HashMap<EventId, RepoStatus> {
-    let mut by_root: HashMap<EventId, Vec<&Event>> = HashMap::new();
-    for event in statuses {
-        for tag in event.tags.iter() {
-            if matches!(tag.kind(), "e" | "E")
-                && let Some(id) = tag.content().and_then(|hex| EventId::from_hex(hex).ok())
-            {
-                by_root.entry(id).or_default().push(event);
-            }
-        }
+    fn status_in(status_by_root: &HashMap<EventId, RepoStatus>, root: &Event) -> RepoStatus {
+        status_by_root
+            .get(&root.id)
+            .copied()
+            .unwrap_or(RepoStatus::Open)
     }
 
-    issues
-        .iter()
-        .chain(patches)
-        .chain(pull_requests)
-        .map(|root| {
-            let events = by_root.get(&root.id).map(Vec::as_slice).unwrap_or(&[]);
-            let status =
-                signed_core::RepoStatus::resolve(events.iter().copied(), &root.pubkey, maintainers);
-            (root.id, status)
-        })
-        .collect()
-}
+    fn resolve_statuses(
+        issues: &[Event],
+        patches: &[Event],
+        pull_requests: &[Event],
+        statuses: &[Event],
+        maintainers: &[PublicKey],
+    ) -> HashMap<EventId, RepoStatus> {
+        let mut by_root: HashMap<EventId, Vec<&Event>> = HashMap::new();
+        for event in statuses {
+            for tag in event.tags.iter() {
+                if matches!(tag.kind(), "e" | "E")
+                    && let Some(id) = tag.content().and_then(|hex| EventId::from_hex(hex).ok())
+                {
+                    by_root.entry(id).or_default().push(event);
+                }
+            }
+        }
 
-/// Publish a patch series as a sequence of `git/patch` events.
-#[expect(clippy::too_many_arguments, reason = "independent inputs")]
-async fn publish_patch_series<S>(
-    client: &Client,
-    signer: &S,
-    addr: &RepoAddr,
-    owner: PublicKey,
-    euc: Option<&str>,
-    series: &PatchSeries,
-    first_marker: &str,
-    reply_to: Option<EventId>,
-) -> Result<Event, Error>
-where
-    S: AsyncGetPublicKey + AsyncSignEvent + ?Sized,
-{
-    let mut root: Option<Event> = None;
-    let mut previous = reply_to;
+        issues
+            .iter()
+            .chain(patches)
+            .chain(pull_requests)
+            .map(|root| {
+                let events = by_root.get(&root.id).map(Vec::as_slice).unwrap_or(&[]);
+                let status = signed_core::RepoStatus::resolve(
+                    events.iter().copied(),
+                    &root.pubkey,
+                    maintainers,
+                );
+                (root.id, status)
+            })
+            .collect()
+    }
 
-    for (ix, part) in series.parts.iter().enumerate() {
-        let Some(commit) = series.commit_of(ix) else {
-            return Err(anyhow::anyhow!(
-                "patch {} of the series has no `From <commit-id>` header",
-                ix + 1
-            ));
+    /// Publish a patch series as a sequence of `git/patch` events.
+    #[expect(clippy::too_many_arguments, reason = "independent inputs")]
+    async fn publish_patch_series<S>(
+        client: &Client,
+        signer: &S,
+        addr: &RepoAddr,
+        owner: PublicKey,
+        euc: Option<&str>,
+        series: &PatchSeries,
+        first_marker: &str,
+        reply_to: Option<EventId>,
+    ) -> Result<Event, Error>
+    where
+        S: AsyncGetPublicKey + AsyncSignEvent + ?Sized,
+    {
+        let mut root: Option<Event> = None;
+        let mut previous = reply_to;
+
+        for (ix, part) in series.parts.iter().enumerate() {
+            let Some(commit) = series.commit_of(ix) else {
+                return Err(anyhow::anyhow!(
+                    "patch {} of the series has no `From <commit-id>` header",
+                    ix + 1
+                ));
+            };
+
+            let mut tags = vec![
+                Tag::coordinate(addr.clone().into(), None),
+                Tag::public_key(owner),
+            ];
+
+            if ix == 0 {
+                if let Ok(tag) = Tag::parse(["t", first_marker]) {
+                    tags.push(tag);
+                }
+                if let Some(root_id) = reply_to
+                    && let Ok(tag) = Tag::parse(["e", &root_id.to_hex(), "", "reply"])
+                {
+                    tags.push(tag);
+                }
+            } else if let Some(previous) = previous
+                && let Ok(tag) = Tag::parse(["e", &previous.to_hex(), "", "reply"])
+            {
+                tags.push(tag);
+            }
+
+            if let Some(euc) = euc
+                && let Ok(tag) = Tag::parse(["r", euc])
+            {
+                tags.push(tag);
+            }
+
+            if let Ok(tag) = Tag::parse(["commit", commit]) {
+                tags.push(tag);
+            }
+
+            if let Ok(tag) = Tag::parse(["r", commit]) {
+                tags.push(tag);
+            }
+
+            let builder = EventBuilder::new(Kind::GitPatch)
+                .content(part.clone())
+                .tags(tags);
+
+            let event = builder.finalize_async(signer).await?;
+            let output = client.send_event(&event).broadcast().await?;
+
+            if output.success.is_empty() && !output.failed.is_empty() {
+                let reasons = output
+                    .failed
+                    .values()
+                    .cloned()
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                bail!("event not accepted by any relay: {reasons}");
+            }
+
+            if root.is_none() {
+                root = Some(event.clone());
+            }
+            previous = Some(event.id);
+        }
+
+        root.ok_or_else(|| anyhow::anyhow!("patch series is empty"))
+    }
+
+    fn comment_builder(
+        root: &Event,
+        parent: Option<&Event>,
+        relay_hint: Option<&RelayUrl>,
+        addr: &RepoAddr,
+        content: String,
+    ) -> EventBuilder {
+        let target = |event: &Event| {
+            CommentTarget::event(
+                event.id,
+                event.kind,
+                Some(event.pubkey),
+                relay_hint.cloned().map(Cow::Owned),
+            )
         };
 
-        let mut tags = vec![
-            Tag::coordinate(addr.clone().into(), None),
-            Tag::public_key(owner),
-        ];
+        let root_target = target(root);
+        let parent_target = parent.map(target).unwrap_or_else(|| root_target.clone());
 
-        if ix == 0 {
-            if let Ok(tag) = Tag::parse(["t", first_marker]) {
-                tags.push(tag);
-            }
-            if let Some(root_id) = reply_to
-                && let Ok(tag) = Tag::parse(["e", &root_id.to_hex(), "", "reply"])
-            {
-                tags.push(tag);
-            }
-        } else if let Some(previous) = previous
-            && let Ok(tag) = Tag::parse(["e", &previous.to_hex(), "", "reply"])
-        {
-            tags.push(tag);
-        }
-
-        if let Some(euc) = euc
-            && let Ok(tag) = Tag::parse(["r", euc])
-        {
-            tags.push(tag);
-        }
-
-        if let Ok(tag) = Tag::parse(["commit", commit]) {
-            tags.push(tag);
-        }
-
-        if let Ok(tag) = Tag::parse(["r", commit]) {
-            tags.push(tag);
-        }
-
-        let builder = EventBuilder::new(Kind::GitPatch)
-            .content(part.clone())
-            .tags(tags);
-
-        let event = builder.finalize_async(signer).await?;
-        let output = client.send_event(&event).broadcast().await?;
-
-        if output.success.is_empty() && !output.failed.is_empty() {
-            let reasons = output
-                .failed
-                .values()
-                .cloned()
-                .collect::<Vec<String>>()
-                .join(", ");
-            bail!("event not accepted by any relay: {reasons}");
-        }
-
-        if root.is_none() {
-            root = Some(event.clone());
-        }
-        previous = Some(event.id);
-    }
-
-    root.ok_or_else(|| anyhow::anyhow!("patch series is empty"))
-}
-
-fn comment_builder(
-    root: &Event,
-    parent: Option<&Event>,
-    relay_hint: Option<&RelayUrl>,
-    addr: &RepoAddr,
-    content: String,
-) -> EventBuilder {
-    let target = |event: &Event| {
-        CommentTarget::event(
-            event.id,
-            event.kind,
-            Some(event.pubkey),
-            relay_hint.cloned().map(Cow::Owned),
-        )
-    };
-
-    let root_target = target(root);
-    let parent_target = parent.map(target).unwrap_or_else(|| root_target.clone());
-
-    CommentBuilder::new(content, parent_target)
-        .root(root_target)
-        .into_event_builder()
-        .tags([Tag::coordinate(addr.clone().into(), None)])
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use anyhow::anyhow;
-    use gpui::{AppContext as _, Task, TestAppContext};
-
-    use super::RepoStore;
-
-    #[gpui::test]
-    fn a_finished_push_releases_the_busy_flag(cx: &mut TestAppContext) {
-        let store = cx.new(|_| RepoStore::new_local(PathBuf::from("repo"), None));
-
-        let push = store.update(cx, |store, cx| {
-            store.run_push(Task::ready(Err(anyhow!("push refused"))), None, cx)
-        });
-        cx.run_until_parked();
-
-        assert!(push.is_ready());
-        assert!(!cx.update(|app| store.read(app).pushing));
+        CommentBuilder::new(content, parent_target)
+            .root(root_target)
+            .into_event_builder()
+            .tags([Tag::coordinate(addr.clone().into(), None)])
     }
 }

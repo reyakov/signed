@@ -1,10 +1,9 @@
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Error;
 use gpui::{App, AppContext, Context, Entity, Global, Subscription};
-use nostr::prelude::*;
 use settings::{CheckoutRecord, CheckoutsSettings, SettingsStore};
 use signed_core::{Announcement, RepoAddr};
 use signed_git::Repo;
@@ -17,27 +16,10 @@ use crate::refresh::{RefreshGate, RefreshRequest};
 use crate::repos::RepoListStore;
 
 const REFRESH_DEBOUNCE: Duration = Duration::from_millis(300);
-const MAX_STATUS_CHECKOUTS: usize = 8;
-const LOCAL_POLL: Duration = Duration::from_secs(2);
-const STATUS_POLL: Duration = Duration::from_secs(15);
-const PUSH_POLL: Duration = Duration::from_secs(60);
 
 struct GlobalCheckoutsStore(Entity<CheckoutsStore>);
 
 impl Global for GlobalCheckoutsStore {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CheckoutStatus {
-    pub path: PathBuf,
-    /// A detached checkout is idle and yields no status.
-    pub branch: String,
-    /// For tip-based PR dedupe.
-    pub head: String,
-    /// `refs/remotes/origin/<branch>`, else `origin/HEAD` for new branches.
-    pub base: String,
-    /// Zero-ahead checkouts are dropped, so always above zero.
-    pub ahead: u32,
-}
 
 struct Remembered {
     path: PathBuf,
@@ -94,15 +76,8 @@ impl Remembered {
 
 pub struct CheckoutsStore {
     by_repo: HashMap<RepoAddr, Vec<PathBuf>>,
-    statuses: HashMap<RepoAddr, Vec<CheckoutStatus>>,
-    status_requested: HashSet<RepoAddr>,
-    push_requested: HashSet<RepoAddr>,
-    push_statuses: HashMap<RepoAddr, Vec<CheckoutStatus>>,
-    requested_head: HashMap<RepoAddr, Option<String>>,
     refresh: RefreshGate,
     debounce_pending: bool,
-    local_pending: bool,
-    last_full_sync: Option<Instant>,
     checkouts_settings: CheckoutsSettings,
     _subscriptions: Vec<Subscription>,
 }
@@ -146,15 +121,14 @@ impl CheckoutsStore {
                 this.refresh(cx);
             }));
 
-            // Another identity's repositories must not keep the old statuses alive.
+            // Another identity's repositories must not keep the old associations alive.
             subscriptions.push(cx.subscribe(&backend, |this, _backend, event, cx| {
                 if matches!(event, BackendEvent::SignerChanged) {
-                    this.status_requested.clear();
-                    this.push_requested.clear();
-                    this.requested_head.clear();
-                    this.statuses.clear();
-                    this.push_statuses.clear();
-                    cx.notify();
+                    let had_state = !this.by_repo.is_empty();
+                    this.by_repo.clear();
+                    if had_state {
+                        cx.notify();
+                    }
 
                     this.refresh(cx);
                 }
@@ -173,15 +147,8 @@ impl CheckoutsStore {
 
         Self {
             by_repo: HashMap::new(),
-            statuses: HashMap::new(),
-            status_requested: HashSet::new(),
-            push_requested: HashSet::new(),
-            push_statuses: HashMap::new(),
-            requested_head: HashMap::new(),
             refresh: RefreshGate::default(),
             debounce_pending: false,
-            local_pending: false,
-            last_full_sync: None,
             checkouts_settings,
             _subscriptions: subscriptions,
         }
@@ -221,60 +188,7 @@ impl CheckoutsStore {
         self.by_repo.get(addr).cloned().unwrap_or_default()
     }
 
-    pub fn request_statuses(
-        &mut self,
-        addr: &RepoAddr,
-        announced_head: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
-        self.status_requested.insert(addr.clone());
-        if announced_head != self.requested_head.get(addr).cloned().flatten() {
-            self.requested_head.insert(addr.clone(), announced_head);
-        }
-        self.refresh(cx);
-    }
-
-    pub fn ready_statuses_of(&self, addr: &RepoAddr) -> Vec<CheckoutStatus> {
-        self.statuses.get(addr).cloned().unwrap_or_default()
-    }
-
-    pub fn request_push_statuses(&mut self, addr: &RepoAddr, cx: &mut Context<Self>) {
-        self.push_requested.insert(addr.clone());
-        self.refresh(cx);
-    }
-
-    pub fn checkout_pushed(&mut self, addr: &RepoAddr, path: &Path, cx: &mut Context<Self>) {
-        let mut removed = false;
-
-        if let Some(statuses) = self.push_statuses.get_mut(addr) {
-            let before = statuses.len();
-            statuses.retain(|status| status.path.as_path() != path);
-            removed = statuses.len() != before;
-
-            if removed && statuses.is_empty() {
-                self.push_statuses.remove(addr);
-            }
-        }
-
-        if removed {
-            cx.notify();
-        }
-
-        self.request_push_statuses(addr, cx);
-    }
-
-    pub fn push_statuses_of(&self, addr: &RepoAddr) -> Vec<CheckoutStatus> {
-        self.push_statuses.get(addr).cloned().unwrap_or_default()
-    }
-
-    pub fn unpushed(&self, addr: &RepoAddr) -> usize {
-        self.push_statuses
-            .get(addr)
-            .map(|list| list.iter().map(|status| status.ahead as usize).sum())
-            .unwrap_or(0)
-    }
-
-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+    fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.debounce_pending || self.refresh.request() != RefreshRequest::Schedule {
             return;
         }
@@ -315,26 +229,11 @@ impl CheckoutsStore {
         let scanned = LocalReposStore::global(cx).read(cx).repos.clone();
         let cache_root = Mirrors::root().canonicalize().ok();
 
-        let requested: Vec<(RepoAddr, Option<String>)> = self
-            .status_requested
-            .iter()
-            .map(|addr| {
-                (
-                    addr.clone(),
-                    self.requested_head.get(addr).cloned().flatten(),
-                )
-            })
-            .collect();
-
-        let push_requested: Vec<RepoAddr> = self.push_requested.iter().cloned().collect();
-        let poll = !self.status_requested.is_empty() || !self.push_requested.is_empty();
-
         let work = cx.background_spawn(async move {
-            let mut facts: Vec<(PathBuf, Option<String>, Option<String>)> = Vec::new();
+            let mut facts = Vec::new();
             for scanned in scanned.iter() {
                 let path = &scanned.path;
 
-                // The browser's mirror clones are not user checkouts.
                 if cache_root
                     .as_ref()
                     .is_some_and(|root| path.starts_with(root))
@@ -342,15 +241,13 @@ impl CheckoutsStore {
                     continue;
                 }
 
-                let origin = Repo::open(path)
-                    .and_then(|repo| repo.origin_url())
-                    .ok()
-                    .flatten();
-
-                let root = Repo::open(path)
-                    .and_then(|repo| repo.root_commit())
-                    .ok()
-                    .flatten();
+                let (origin, root) = match Repo::open(path) {
+                    Ok(repo) => (
+                        repo.origin_url().ok().flatten(),
+                        repo.root_commit().ok().flatten(),
+                    ),
+                    Err(_) => (None, None),
+                };
 
                 facts.push((path.clone(), origin, root));
             }
@@ -358,283 +255,31 @@ impl CheckoutsStore {
             let associations =
                 Remembered::resolve_associations(&remembered, &facts, announcements.iter());
 
-            let associations: HashMap<RepoAddr, Vec<PathBuf>> = associations
+            associations
                 .into_iter()
                 .map(|(addr, paths)| (addr, paths.into_iter().filter(|p| p.is_dir()).collect()))
-                .collect();
-
-            let (statuses, push_statuses) =
-                CheckoutsStore::compute_statuses(&associations, &requested, &push_requested, true);
-
-            (associations, statuses, push_statuses)
+                .collect::<HashMap<RepoAddr, Vec<PathBuf>>>()
         });
 
         cx.spawn(async move |this, cx| {
-            let (associations, statuses, push_statuses) = work.await;
-
+            let associations = work.await;
             let again = this.update(cx, |this, cx| {
-                let associations_changed = this.by_repo != associations;
-                let statuses_changed = this.statuses != statuses;
-                let push_statuses_changed = this.push_statuses != push_statuses;
-
+                let changed = this.by_repo != associations;
                 this.by_repo = associations;
-                this.statuses = statuses;
-                this.push_statuses = push_statuses;
 
-                // Notify only when something actually changed.
-                if associations_changed || statuses_changed || push_statuses_changed {
+                if changed {
                     cx.notify();
                 }
 
-                this.last_full_sync = Some(Instant::now());
                 this.refresh.finish()
             })?;
 
             if again {
-                this.update(cx, |this, cx| {
-                    this.refresh(cx);
-                })?;
+                this.update(cx, |this, cx| this.refresh(cx))?;
             }
-
-            this.update(cx, |this, cx| {
-                if poll {
-                    this.schedule_local_pass(cx);
-                }
-            })?;
 
             Ok::<(), Error>(())
         })
         .detach();
-    }
-
-    fn schedule_local_pass(&mut self, cx: &mut Context<Self>) {
-        if self.local_pending {
-            return;
-        }
-        self.local_pending = true;
-
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(LOCAL_POLL).await;
-            this.update(cx, |this, cx| {
-                this.local_pending = false;
-                this.local_tick(cx);
-            })
-        })
-        .detach();
-    }
-
-    fn local_tick(&mut self, cx: &mut Context<Self>) {
-        if self.status_requested.is_empty() && self.push_requested.is_empty() {
-            return;
-        }
-
-        if self.refresh.running() || self.debounce_pending {
-            self.schedule_local_pass(cx);
-            return;
-        }
-
-        let cadence = if self.status_requested.is_empty() {
-            PUSH_POLL
-        } else {
-            STATUS_POLL
-        };
-
-        let full_due = self
-            .last_full_sync
-            .is_none_or(|sync| sync.elapsed() >= cadence);
-
-        if full_due {
-            self.last_full_sync = Some(Instant::now());
-            self.refresh(cx);
-        } else {
-            self.run_local_statuses(cx);
-        }
-
-        self.schedule_local_pass(cx);
-    }
-
-    fn run_local_statuses(&mut self, cx: &mut Context<Self>) {
-        let associations = self.by_repo.clone();
-
-        let requested: Vec<(RepoAddr, Option<String>)> = self
-            .status_requested
-            .iter()
-            .map(|addr| {
-                (
-                    addr.clone(),
-                    self.requested_head.get(addr).cloned().flatten(),
-                )
-            })
-            .collect();
-
-        let push_requested: Vec<RepoAddr> = self.push_requested.iter().cloned().collect();
-
-        let work = cx.background_spawn(async move {
-            CheckoutsStore::compute_statuses(&associations, &requested, &push_requested, false)
-        });
-
-        cx.spawn(async move |this, cx| {
-            let (statuses, push_statuses) = work.await;
-
-            this.update(cx, |this, cx| {
-                if this.refresh.running() || this.debounce_pending {
-                    return;
-                }
-
-                let statuses_changed = this.statuses != statuses;
-                let push_statuses_changed = this.push_statuses != push_statuses;
-
-                this.statuses = statuses;
-                this.push_statuses = push_statuses;
-
-                if statuses_changed || push_statuses_changed {
-                    cx.notify();
-                }
-            })?;
-
-            Ok::<(), anyhow::Error>(())
-        })
-        .detach();
-    }
-
-    fn checkout_status(path: &Path, announced_head: Option<&str>) -> Option<CheckoutStatus> {
-        let repo = Repo::try_open(path)?;
-        let branches = repo.branches().ok()?;
-
-        if branches.is_empty() || repo.is_dirty() {
-            return None;
-        }
-
-        let branch = repo.current_branch()?;
-        let head = repo.head()?;
-        let base = announced_head
-            .filter(|name| branches.iter().any(|b| b == name))
-            .map(str::to_owned)
-            .or_else(|| branches.iter().find(|b| *b == "main").cloned())
-            .or_else(|| branches.first().cloned())?;
-
-        if base == branch {
-            return None;
-        }
-
-        let ahead = repo.commits_ahead(&base, &branch);
-        (ahead > 0).then_some(CheckoutStatus {
-            path: path.to_path_buf(),
-            branch,
-            head,
-            base,
-            ahead,
-        })
-    }
-
-    /// Returns checkouts that are ahead of their remote tracking branch.
-    fn checkout_push_status(path: &Path, fetch: bool) -> Option<CheckoutStatus> {
-        let repo = Repo::try_open(path)?;
-        if repo.is_dirty() {
-            return None;
-        }
-
-        let branch = repo.current_branch()?;
-        let head = repo.head()?;
-        let origin = repo.origin_url().ok().flatten()?;
-
-        if fetch && let Err(e) = repo.fetch_refs(&[origin], "+refs/heads/*:refs/remotes/origin/*") {
-            log::warn!("failed to fetch refs for {path:?}: {e}");
-        }
-
-        let remote = format!("refs/remotes/origin/{branch}");
-
-        // If the branch is new and has no remote tracking branch, fall back to origin/HEAD.
-        let base = if repo.ref_exists(&remote) {
-            remote
-        } else if repo.ref_exists("refs/remotes/origin/HEAD") {
-            "refs/remotes/origin/HEAD".to_owned()
-        } else {
-            return None;
-        };
-
-        let ahead = repo.commits_ahead(&base, &branch);
-
-        (ahead > 0).then_some(CheckoutStatus {
-            path: path.to_path_buf(),
-            branch,
-            head,
-            base,
-            ahead,
-        })
-    }
-
-    fn compute_statuses(
-        associations: &HashMap<RepoAddr, Vec<PathBuf>>,
-        requested: &[(RepoAddr, Option<String>)],
-        push_requested: &[RepoAddr],
-        fetch: bool,
-    ) -> (
-        HashMap<RepoAddr, Vec<CheckoutStatus>>,
-        HashMap<RepoAddr, Vec<CheckoutStatus>>,
-    ) {
-        let mut statuses: HashMap<RepoAddr, Vec<CheckoutStatus>> = HashMap::new();
-        for (addr, announced_head) in requested {
-            let Some(paths) = associations.get(addr) else {
-                continue;
-            };
-
-            let list: Vec<CheckoutStatus> = paths
-                .iter()
-                .take(MAX_STATUS_CHECKOUTS)
-                .filter_map(|path| Self::checkout_status(path, announced_head.as_deref()))
-                .collect();
-
-            if !list.is_empty() {
-                statuses.insert(addr.clone(), list);
-            }
-        }
-
-        let mut push_statuses: HashMap<RepoAddr, Vec<CheckoutStatus>> = HashMap::new();
-        for addr in push_requested {
-            let Some(paths) = associations.get(addr) else {
-                continue;
-            };
-
-            let list: Vec<CheckoutStatus> = paths
-                .iter()
-                .take(MAX_STATUS_CHECKOUTS)
-                .filter_map(|path| Self::checkout_push_status(path, fetch))
-                .collect();
-
-            if !list.is_empty() {
-                push_statuses.insert(addr.clone(), list);
-            }
-        }
-
-        (statuses, push_statuses)
-    }
-
-    pub fn pr_proposes_checkout(
-        pr: &Event,
-        open: bool,
-        user: PublicKey,
-        checkout: &CheckoutStatus,
-    ) -> bool {
-        if pr.kind != Kind::GitPullRequest || !open || pr.pubkey != user {
-            return false;
-        }
-
-        let branch_matches = pr
-            .tags
-            .iter()
-            .find(|t| t.kind() == "branch-name")
-            .and_then(|t| t.content())
-            .is_some_and(|name| name == checkout.branch);
-
-        // A renamed branch falls back to the proposed tip commit.
-        let tip_matches = pr
-            .tags
-            .iter()
-            .find(|t| t.kind() == "c")
-            .and_then(|t| t.content())
-            .is_some_and(|tip| tip == checkout.head);
-
-        branch_matches || tip_matches
     }
 }

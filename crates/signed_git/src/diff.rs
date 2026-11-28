@@ -7,6 +7,15 @@ pub enum DiffLineKind {
     Deletion,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+}
+
 #[derive(Debug, Clone)]
 pub struct DiffLine {
     pub kind: DiffLineKind,
@@ -53,15 +62,6 @@ impl DiffHunk {
             lines,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffStatus {
-    Added,
-    Modified,
-    Deleted,
-    Renamed,
-    Copied,
 }
 
 #[derive(Debug, Clone)]

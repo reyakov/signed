@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -16,6 +15,12 @@ use crate::state::SyncState;
 const SYNC_POLL: Duration = Duration::from_secs(180);
 const MAX_SYNC_CHECKOUTS: usize = 8;
 
+/// Statuses for these repositories may have changed; empty on signer change.
+#[derive(Debug, Clone)]
+pub enum SyncEvent {
+    Updated(Vec<(RepoAddr, Vec<CheckoutSyncStatus>)>),
+}
+
 struct GlobalSyncStatusStore(Entity<SyncStatusStore>);
 
 impl Global for GlobalSyncStatusStore {}
@@ -27,15 +32,12 @@ pub struct CheckoutSyncStatus {
     pub status: RepoSyncStatus,
 }
 
-/// Statuses for these repositories may have changed; empty on signer change.
-#[derive(Debug, Clone)]
-pub enum SyncEvent {
-    Updated(Vec<(RepoAddr, Vec<CheckoutSyncStatus>)>),
-}
-
 /// Probes tracked repositories and broadcasts results. Holds no statuses.
 pub struct SyncStatusStore {
-    active: RefCell<HashSet<RepoAddr>>,
+    // Addresses a live directory still renders, with one count per directory.
+    active: HashMap<RepoAddr, usize>,
+    // One-shot probes that should not keep the repository on the poll.
+    requested: HashSet<RepoAddr>,
     in_flight: bool,
     pass_pending: bool,
     poll_pending: bool,
@@ -93,7 +95,8 @@ impl SyncStatusStore {
         });
 
         Self {
-            active: RefCell::new(HashSet::new()),
+            active: HashMap::new(),
+            requested: HashSet::new(),
             sender,
             in_flight: false,
             pass_pending: false,
@@ -105,10 +108,37 @@ impl SyncStatusStore {
         }
     }
 
-    /// Queue a probe pass; folded into any pass already in flight.
-    pub fn probe(&self, addrs: impl IntoIterator<Item = RepoAddr>) {
-        self.active.borrow_mut().extend(addrs);
+    /// Requests a one-shot probe pass; folded into any pass already in flight.
+    pub fn probe(&mut self, addrs: impl IntoIterator<Item = RepoAddr>) {
+        self.requested.extend(addrs);
+        self.wake();
+    }
 
+    /// Keeps these addresses on the periodic poll until released.
+    pub fn track(&mut self, addrs: impl IntoIterator<Item = RepoAddr>) {
+        for addr in addrs {
+            *self.active.entry(addr).or_default() += 1;
+        }
+        self.wake();
+    }
+
+    /// Drops one directory's interest in these addresses.
+    pub fn untrack(&mut self, addrs: impl IntoIterator<Item = RepoAddr>) {
+        for addr in addrs {
+            let remove = match self.active.get_mut(&addr) {
+                Some(count) => {
+                    *count = count.saturating_sub(1);
+                    *count == 0
+                }
+                None => false,
+            };
+            if remove {
+                self.active.remove(&addr);
+            }
+        }
+    }
+
+    fn wake(&self) {
         if let Err(e) = self.sender.send(()) {
             log::warn!("failed to queue sync status probe: {e}");
         }
@@ -116,8 +146,8 @@ impl SyncStatusStore {
 
     // Keeps the in-flight pass so its completion releases the slot exactly once.
     fn clear(&mut self, cx: &mut Context<Self>) {
-        let had_addrs = !self.active.borrow().is_empty();
-        self.active.borrow_mut().clear();
+        let had_addrs = !self.active.is_empty() || !self.requested.is_empty();
+        self.requested.clear();
         self.pass_pending = false;
 
         if had_addrs {
@@ -136,29 +166,36 @@ impl SyncStatusStore {
         }
 
         let backend = Backend::global(cx);
-        let client = backend.read(cx).client();
 
         if backend.read(cx).current_user().is_none() {
             self.clear(cx);
             return;
         }
 
-        if self.active.borrow().is_empty() {
+        if self.active.is_empty() && self.requested.is_empty() {
             return;
         }
 
         self.in_flight = true;
-        self.schedule_poll(cx);
+        let poll = !self.active.is_empty();
+        if poll {
+            self.schedule_poll(cx);
+        }
 
+        let mut targets: Vec<RepoAddr> = self.active.keys().cloned().collect();
+        targets.extend(self.requested.drain());
+        targets.sort();
+        targets.dedup();
+
+        let client = backend.read(cx).client();
         let targets: Vec<(RepoAddr, Vec<PathBuf>)> = {
-            let active = self.active.borrow();
             let checkouts = CheckoutsStore::global(cx);
 
-            active
-                .iter()
+            targets
+                .into_iter()
                 .map(|addr| {
-                    let paths = checkouts.read(cx).associations_of(addr);
-                    (addr.clone(), paths)
+                    let paths = checkouts.read(cx).associations_of(&addr);
+                    (addr, paths)
                 })
                 .collect()
         };
@@ -260,7 +297,8 @@ impl SyncStatusStore {
 /// Sync status cache bound to one panel or screen.
 pub struct SyncStatusDirectory {
     statuses: HashMap<RepoAddr, Vec<CheckoutSyncStatus>>,
-    pending: RefCell<HashSet<RepoAddr>>,
+    pending: HashSet<RepoAddr>,
+    tracked: HashSet<RepoAddr>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -275,10 +313,20 @@ impl SyncStatusDirectory {
                     SyncEvent::Updated(updates) => this.apply(updates.clone(), cx),
                 });
 
+            let release = cx.on_release(|this: &mut Self, cx| {
+                let tracked = std::mem::take(&mut this.tracked);
+                if tracked.is_empty() {
+                    return;
+                }
+                let store = SyncStatusStore::global(cx);
+                store.update(cx, |store, _| store.untrack(tracked));
+            });
+
             Self {
                 statuses: HashMap::new(),
-                pending: RefCell::new(HashSet::new()),
-                _subscriptions: vec![subscription],
+                pending: HashSet::new(),
+                tracked: HashSet::new(),
+                _subscriptions: vec![subscription, release],
             }
         })
     }
@@ -289,7 +337,8 @@ impl SyncStatusDirectory {
             .into_iter()
             .filter(|addr| {
                 !self.statuses.contains_key(addr)
-                    && !self.with_pending(|pending| pending.contains(addr))
+                    && !self.pending.contains(addr)
+                    && !self.tracked.contains(addr)
             })
             .collect();
 
@@ -297,30 +346,18 @@ impl SyncStatusDirectory {
             return;
         }
 
-        self.with_pending(|pending| pending.extend(missing.iter().cloned()));
+        self.pending.extend(missing.iter().cloned());
+        self.tracked.extend(missing.iter().cloned());
 
         let store = SyncStatusStore::global(cx);
-        store.read(cx).probe(missing);
+        store.update(cx, |store, _| {
+            store.track(missing);
+        });
     }
 
-    /// Statuses for a repo, or empty; a miss queues a probe.
-    pub fn statuses_of(&self, addr: &RepoAddr, cx: &App) -> Vec<CheckoutSyncStatus> {
-        self.queue(addr, cx);
-        self.statuses.get(addr).cloned().unwrap_or_default()
-    }
-
-    /// Commits available locally but missing on Nostr.
-    pub fn unsynced(&self, addr: &RepoAddr, cx: &App) -> usize {
-        self.queue(addr, cx);
-
-        self.statuses
-            .get(addr)
-            .map(|list| {
-                list.iter()
-                    .map(|checkout| checkout.status.ahead_total)
-                    .sum()
-            })
-            .unwrap_or(0)
+    /// Statuses for a repo, or empty.
+    pub fn statuses_of(&self, addr: &RepoAddr) -> &[CheckoutSyncStatus] {
+        self.statuses.get(addr).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// Commit ids missing on Nostr, mapped to their checkout; restricted to `checkout` if tracked.
@@ -328,10 +365,7 @@ impl SyncStatusDirectory {
         &self,
         addr: &RepoAddr,
         checkout: Option<&Path>,
-        cx: &App,
     ) -> HashMap<String, PathBuf> {
-        self.queue(addr, cx);
-
         let Some(statuses) = self.statuses.get(addr) else {
             return HashMap::new();
         };
@@ -359,22 +393,11 @@ impl SyncStatusDirectory {
         commits
     }
 
-    fn queue(&self, addr: &RepoAddr, cx: &App) {
-        if self.statuses.contains_key(addr) {
-            return;
-        }
-
-        if self.with_pending(|pending| pending.insert(addr.clone())) {
-            let store = SyncStatusStore::global(cx);
-            store.read(cx).probe([addr.clone()]);
-        }
-    }
-
     fn apply(&mut self, updates: Vec<(RepoAddr, Vec<CheckoutSyncStatus>)>, cx: &mut Context<Self>) {
         if updates.is_empty() {
             let changed = !self.statuses.is_empty();
             self.statuses.clear();
-            self.with_pending(|pending| pending.clear());
+            self.pending.clear();
 
             if changed {
                 cx.notify();
@@ -387,7 +410,8 @@ impl SyncStatusDirectory {
 
         for (addr, list) in updates {
             let relevant = self.statuses.contains_key(&addr)
-                || self.with_pending(|pending| pending.remove(&addr));
+                || self.pending.remove(&addr)
+                || self.tracked.contains(&addr);
 
             if !relevant {
                 continue;
@@ -402,10 +426,5 @@ impl SyncStatusDirectory {
         if changed {
             cx.notify();
         }
-    }
-
-    fn with_pending<R>(&self, then: impl FnOnce(&mut HashSet<RepoAddr>) -> R) -> R {
-        let mut pending = self.pending.borrow_mut();
-        then(&mut pending)
     }
 }

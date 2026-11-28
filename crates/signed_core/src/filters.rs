@@ -32,27 +32,36 @@ const GIT_ROOT_KINDS: [Kind; 4] = [
     Kind::GitRepoAnnouncement,
 ];
 
-pub fn is_repo_kind(kind: Kind) -> bool {
-    kind == Kind::GitRepoAnnouncement
-        || kind == Kind::RepoState
-        || kind == Kind::EventDeletion
-        || kind == Kind::RequestToVanish
-        || ACTIVITY_KINDS.contains(&kind)
-}
-
-fn tag_kind(event: &Event, name: &str) -> Option<Kind> {
-    event
-        .tags
-        .iter()
-        .find(|tag| tag.kind() == name)
-        .and_then(|tag| tag.content())
-        .and_then(|value| value.parse::<Kind>().ok())
-}
-
 pub struct Filters;
 
 impl Filters {
     const DELETIONS_LOOKBACK: Duration = Duration::from_secs(3 * 365 * 86_400);
+
+    pub fn is_repo_kind(kind: Kind) -> bool {
+        kind == Kind::GitRepoAnnouncement
+            || kind == Kind::RepoState
+            || kind == Kind::EventDeletion
+            || kind == Kind::RequestToVanish
+            || ACTIVITY_KINDS.contains(&kind)
+    }
+
+    fn tag_kind(event: &Event, name: &str) -> Option<Kind> {
+        event
+            .tags
+            .iter()
+            .find(|tag| tag.kind() == name)
+            .and_then(|tag| tag.content())
+            .and_then(|value| value.parse::<Kind>().ok())
+    }
+
+    pub(crate) fn is_git_comment(event: &Event) -> bool {
+        event.kind == Kind::Comment
+            && Self::tag_kind(event, "K").is_some_and(|kind| GIT_ROOT_KINDS.contains(&kind))
+    }
+
+    pub(crate) fn is_git_status(event: &Event) -> bool {
+        Self::tag_kind(event, "k").is_some_and(|kind| GIT_ROOT_KINDS.contains(&kind))
+    }
 
     pub fn statuses_for(roots: impl IntoIterator<Item = EventId>) -> Filter {
         Filter::new()
@@ -158,71 +167,5 @@ impl Filters {
         Filter::new()
             .kinds([Kind::EventDeletion, Kind::RequestToVanish])
             .since(Self::deletions_since())
-    }
-}
-
-pub(crate) fn is_git_comment(event: &Event) -> bool {
-    event.kind == Kind::Comment
-        && tag_kind(event, "K").is_some_and(|kind| GIT_ROOT_KINDS.contains(&kind))
-}
-
-pub(crate) fn is_git_status(event: &Event) -> bool {
-    tag_kind(event, "k").is_some_and(|kind| GIT_ROOT_KINDS.contains(&kind))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::GitEvent;
-
-    fn keys(seed: u8) -> Keys {
-        let mut hex = "00000000000000000000000000000000000000000000000000000000000000".to_string();
-        hex.push_str(&format!("{seed:02x}"));
-        Keys::new(SecretKey::from_hex(&hex).expect("valid secret key"))
-    }
-
-    fn signed(author: &Keys, kind: Kind, tags: Vec<Tag>) -> Event {
-        EventBuilder::new(kind)
-            .tags(tags)
-            .finalize(author)
-            .expect("signed event")
-    }
-
-    fn kind_tag(name: &str, kind: Kind) -> Tag {
-        Tag::parse([name, &kind.as_u16().to_string()]).expect("valid kind tag")
-    }
-
-    #[test]
-    fn comment_activity_depends_on_the_uppercase_k_tag() {
-        let on_git = signed(&keys(1), Kind::Comment, vec![kind_tag("K", Kind::GitIssue)]);
-        let on_repo = signed(
-            &keys(1),
-            Kind::Comment,
-            vec![kind_tag("K", Kind::GitRepoAnnouncement)],
-        );
-        let on_note = signed(&keys(1), Kind::Comment, vec![kind_tag("K", Kind::TextNote)]);
-
-        assert!(on_git.is_git_activity());
-        assert!(on_repo.is_git_activity());
-        assert!(!on_note.is_git_activity());
-        assert!(!signed(&keys(1), Kind::Comment, Vec::new()).is_git_activity());
-    }
-
-    #[test]
-    fn status_activity_depends_on_the_lowercase_k_tag() {
-        let status = signed(
-            &keys(1),
-            Kind::GitStatusClosed,
-            vec![kind_tag("k", Kind::GitPullRequest)],
-        );
-        let unrelated = signed(
-            &keys(1),
-            Kind::GitStatusClosed,
-            vec![kind_tag("k", Kind::Metadata)],
-        );
-
-        assert!(status.is_git_activity());
-        assert!(!unrelated.is_git_activity());
-        assert!(!signed(&keys(1), Kind::GitStatusClosed, Vec::new()).is_git_activity());
     }
 }

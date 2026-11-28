@@ -1,16 +1,16 @@
 use nostr::prelude::*;
 
-#[derive(serde::Deserialize)]
-pub(crate) struct Nip34Json {
-    pub(crate) identifier: Option<String>,
-    pub(crate) owner: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Nip34Kind {
     Initialized,
     Cloned,
     ToolingOnly,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct Nip34Json {
+    pub(crate) identifier: Option<String>,
+    pub(crate) owner: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

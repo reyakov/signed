@@ -81,39 +81,42 @@ impl FileCommit {
             },
             String::from_utf8_lossy(author.name).trim().to_string(),
             time.seconds,
-            format_commit_date(time),
+            Self::format_date(time),
             commit.parent_ids().map(|id| id.to_string()).collect(),
         ))
     }
-}
 
-/// Formats a gix time as "Nov 21, 2026 at 4:40 AM GMT+7" in the commit's own offset.
-pub(crate) fn format_commit_date(time: gix::date::Time) -> String {
-    let Ok(timestamp) = jiff::Timestamp::from_second(time.seconds) else {
-        return String::new();
-    };
-    let Ok(offset) = jiff::tz::Offset::from_seconds(time.offset) else {
-        return String::new();
-    };
-    let datetime = offset.to_datetime(timestamp);
+    /// Formats a gix time as "Nov 21, 2026 at 4:40 AM GMT+7" in the commit's own offset.
+    pub(crate) fn format_date(time: gix::date::Time) -> String {
+        let Ok(timestamp) = jiff::Timestamp::from_second(time.seconds) else {
+            return String::new();
+        };
 
-    let label = datetime.strftime("%b %-d, %Y at %-I:%M %p").to_string();
-    format!("{label} {}", gmt_label(time.offset))
-}
+        let Ok(offset) = jiff::tz::Offset::from_seconds(time.offset) else {
+            return String::new();
+        };
 
-/// The GMT offset label for a seconds offset, e.g. "GMT", "GMT+7", "GMT-5:30".
-fn gmt_label(offset: i32) -> String {
-    if offset == 0 {
-        return "GMT".to_owned();
+        let datetime = offset.to_datetime(timestamp);
+        let label = datetime.strftime("%b %-d, %Y at %-I:%M %p").to_string();
+
+        format!("{label} {}", Self::gmt_label(time.offset))
     }
 
-    let sign = if offset < 0 { '-' } else { '+' };
-    let total_minutes = offset.abs() / 60;
-    let hours = total_minutes / 60;
-    let minutes = total_minutes % 60;
-    if minutes == 0 {
-        format!("GMT{sign}{hours}")
-    } else {
-        format!("GMT{sign}{hours}:{minutes:02}")
+    /// The GMT offset label for a seconds offset, e.g. "GMT", "GMT+7", "GMT-5:30".
+    fn gmt_label(offset: i32) -> String {
+        if offset == 0 {
+            return "GMT".to_owned();
+        }
+
+        let sign = if offset < 0 { '-' } else { '+' };
+        let total_minutes = offset.abs() / 60;
+        let hours = total_minutes / 60;
+        let minutes = total_minutes % 60;
+
+        if minutes == 0 {
+            format!("GMT{sign}{hours}")
+        } else {
+            format!("GMT{sign}{hours}:{minutes:02}")
+        }
     }
 }

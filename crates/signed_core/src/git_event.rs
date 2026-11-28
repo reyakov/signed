@@ -89,11 +89,11 @@ impl GitEvent for Event {
     fn is_git_activity(&self) -> bool {
         match self.kind {
             Kind::GitIssue | Kind::GitPatch | Kind::GitPullRequest => true,
-            Kind::Comment => crate::filters::is_git_comment(self),
+            Kind::Comment => crate::Filters::is_git_comment(self),
             Kind::GitStatusOpen
             | Kind::GitStatusApplied
             | Kind::GitStatusClosed
-            | Kind::GitStatusDraft => crate::filters::is_git_status(self),
+            | Kind::GitStatusDraft => crate::Filters::is_git_status(self),
             _ => false,
         }
     }

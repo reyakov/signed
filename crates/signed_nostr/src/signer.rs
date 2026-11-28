@@ -8,43 +8,6 @@ use nostr_connect::client::AuthUrlHandler;
 use nostr_sdk::error::Error as SignerError;
 use nostr_sdk::prelude::*;
 
-#[derive(Clone, Debug)]
-pub struct UniversalSigner {
-    inner: Arc<RwLock<Arc<dyn InnerSigner>>>,
-}
-
-impl UniversalSigner {
-    pub fn new<T>(signer: T) -> Self
-    where
-        T: AsyncGetPublicKey + AsyncSignEvent + AsyncNip44 + 'static,
-        <T as AsyncGetPublicKey>::Error: Error + Send + Sync + 'static,
-        <T as AsyncSignEvent>::Error: Error + Send + Sync + 'static,
-        <T as AsyncNip44>::Error: Error + Send + Sync + 'static,
-    {
-        Self {
-            inner: Arc::new(RwLock::new(Arc::new(InnerSignerImpl(signer)))),
-        }
-    }
-
-    pub fn swap_inner<T>(&self, new_signer: T)
-    where
-        T: AsyncGetPublicKey + AsyncSignEvent + AsyncNip44 + 'static,
-        <T as AsyncGetPublicKey>::Error: Error + Send + Sync + 'static,
-        <T as AsyncSignEvent>::Error: Error + Send + Sync + 'static,
-        <T as AsyncNip44>::Error: Error + Send + Sync + 'static,
-    {
-        *self
-            .inner
-            .write()
-            .unwrap_or_else(|error| error.into_inner()) = Arc::new(InnerSignerImpl(new_signer));
-    }
-
-    /// A poisoned lock still holds a usable signer, so it is recovered instead of panicking.
-    fn inner(&self) -> Arc<dyn InnerSigner> {
-        Arc::clone(&self.inner.read().unwrap_or_else(|error| error.into_inner()))
-    }
-}
-
 trait InnerSigner: fmt::Debug + Send + Sync + 'static {
     fn get_public_key_async(
         &self,
@@ -118,6 +81,43 @@ where
                 .await
                 .map_err(SignerError::other)
         })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct UniversalSigner {
+    inner: Arc<RwLock<Arc<dyn InnerSigner>>>,
+}
+
+impl UniversalSigner {
+    pub fn new<T>(signer: T) -> Self
+    where
+        T: AsyncGetPublicKey + AsyncSignEvent + AsyncNip44 + 'static,
+        <T as AsyncGetPublicKey>::Error: Error + Send + Sync + 'static,
+        <T as AsyncSignEvent>::Error: Error + Send + Sync + 'static,
+        <T as AsyncNip44>::Error: Error + Send + Sync + 'static,
+    {
+        Self {
+            inner: Arc::new(RwLock::new(Arc::new(InnerSignerImpl(signer)))),
+        }
+    }
+
+    pub fn swap_inner<T>(&self, new_signer: T)
+    where
+        T: AsyncGetPublicKey + AsyncSignEvent + AsyncNip44 + 'static,
+        <T as AsyncGetPublicKey>::Error: Error + Send + Sync + 'static,
+        <T as AsyncSignEvent>::Error: Error + Send + Sync + 'static,
+        <T as AsyncNip44>::Error: Error + Send + Sync + 'static,
+    {
+        *self
+            .inner
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = Arc::new(InnerSignerImpl(new_signer));
+    }
+
+    /// A poisoned lock still holds a usable signer, so it is recovered instead of panicking.
+    fn inner(&self) -> Arc<dyn InnerSigner> {
+        Arc::clone(&self.inner.read().unwrap_or_else(|error| error.into_inner()))
     }
 }
 

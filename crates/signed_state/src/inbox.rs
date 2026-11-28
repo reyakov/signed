@@ -33,14 +33,18 @@ impl Inbox {
         self.loaded = false;
         cx.notify();
 
-        let backend = Backend::global(cx);
+        let backend = Backend::global(cx).downgrade();
         let work = cx.background_spawn(async move { Self::load_state(&client, me).await });
 
         cx.spawn(async move |this, cx| {
             let loaded = work.await;
 
             this.update(cx, |this, cx| {
-                if backend.read(cx).current_user() != Some(me) {
+                let matches = backend
+                    .read_with(cx, |backend, _| backend.current_user() == Some(me))
+                    .unwrap_or(false);
+
+                if !matches {
                     return;
                 }
 
@@ -60,9 +64,13 @@ impl Inbox {
     }
 
     pub(crate) fn reset(&mut self, cx: &mut Context<Self>) {
+        let changed = self.loaded || self.state != InboxReadState::default();
         self.state = InboxReadState::default();
         self.loaded = false;
-        cx.notify();
+
+        if changed {
+            cx.notify();
+        }
     }
 
     fn persist(&mut self, cx: &mut Context<Self>) {

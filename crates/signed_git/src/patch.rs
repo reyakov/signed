@@ -3,7 +3,7 @@ use diffy::patch_set::{FileOperation, FilePatch, ParseOptions, PatchSet};
 use diffy::{Hunk, Line};
 
 use crate::diff::{CommitDiff, DiffHunk, DiffLineKind, DiffStatus, FileDiff, HunkBuilder};
-use crate::history::{FileCommit, format_commit_date};
+use crate::history::FileCommit;
 
 pub struct PatchParser;
 
@@ -75,7 +75,7 @@ impl PatchParser {
                 .map(Self::name_from_address)
                 .unwrap_or_default(),
             time.map(|time| time.seconds).unwrap_or(0),
-            time.map(format_commit_date).unwrap_or_default(),
+            time.map(FileCommit::format_date).unwrap_or_default(),
             Vec::new(),
         )
     }

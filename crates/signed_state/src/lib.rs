@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 pub use backend::{Backend, BackendEvent};
 pub use bootstrap::{sync_bootstrap_only, user_grasp_list_servers};
-pub use checkouts::{CheckoutStatus, CheckoutsStore};
+pub use checkouts::CheckoutsStore;
 pub use git_store::Mirrors;
 use gpui::{App, AppContext};
 pub use inbox::Inbox;

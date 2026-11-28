@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
 };
 use signed_git::{CommitList, FileCommit, Repo};
-use signed_state::{Backend, RepoStore, SyncStatusDirectory};
+use signed_state::RepoStore;
 use ui::alert::{Alert, AlertSeverity, AlertStyle};
 use ui::avatar::Avatar;
 use ui::button::{Button, ButtonVariant};
@@ -47,13 +48,14 @@ pub struct RepoHistoryView {
     store: Entity<RepoStore>,
     workspace: WeakEntity<AppRoot>,
     detail: WeakEntity<RepoDetailView>,
-    sync_directory: Entity<SyncStatusDirectory>,
     worktree: Option<PathBuf>,
     all_commits: Option<Arc<CommitList>>,
     loading_all_commits: bool,
     /// The loaded commit list, shared with the render without a per-frame copy.
     commits: Arc<Vec<FileCommit>>,
     rows: Arc<Vec<HistoryRow>>,
+    /// Commit ids that exist in a local checkout but not on Nostr.
+    ahead: Arc<HashMap<String, PathBuf>>,
     /// The last load failure, shown instead of the empty list.
     error: Option<SharedString>,
     scroll_handle: UniformListScrollHandle,
@@ -66,18 +68,17 @@ impl RepoHistoryView {
         store: Entity<RepoStore>,
         workspace: WeakEntity<AppRoot>,
         detail: WeakEntity<RepoDetailView>,
-        sync_directory: Entity<SyncStatusDirectory>,
     ) -> Self {
         Self {
             store,
             workspace,
             detail,
-            sync_directory,
             worktree: None,
             all_commits: None,
             loading_all_commits: false,
             commits: Arc::new(Vec::new()),
             rows: Arc::new(Vec::new()),
+            ahead: Arc::new(HashMap::new()),
             error: None,
             scroll_handle: UniformListScrollHandle::new(),
             load_task: None,
@@ -86,6 +87,14 @@ impl RepoHistoryView {
 
     pub fn set_worktree(&mut self, path: Option<PathBuf>) {
         self.worktree = path;
+    }
+
+    pub fn set_ahead(&mut self, ahead: HashMap<String, PathBuf>, cx: &mut Context<Self>) {
+        let next = Arc::new(ahead);
+        if *self.ahead != *next {
+            self.ahead = next;
+            cx.notify();
+        }
     }
 
     pub fn worktree(&self) -> Option<&Path> {
@@ -224,6 +233,8 @@ impl RepoHistoryView {
 
 impl Render for RepoHistoryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let scroll_handle = self.scroll_handle.clone();
+
         let Some(list) = self.all_commits.as_ref() else {
             return if self.loading_all_commits {
                 Spinner::centered("commits-loading").into_any_element()
@@ -272,27 +283,8 @@ impl Render for RepoHistoryView {
         }));
         let detail = self.detail.clone();
 
-        let backend = Backend::global(cx);
-        let user = backend.read(cx).current_user();
-
-        let author = user.is_some_and(|user| self.store.read(cx).is_author(&user));
-        let checkout = self.worktree.clone();
-
         let pushing = self.store.read(cx).pushing;
-        let scroll_handle = self.scroll_handle.clone();
-
-        let ahead = self
-            .store
-            .read(cx)
-            .addr()
-            .cloned()
-            .filter(|_| author)
-            .map(|addr| {
-                self.sync_directory.read_with(cx, |directory, cx| {
-                    directory.ahead_commits_of(&addr, checkout.as_deref(), cx)
-                })
-            })
-            .unwrap_or_default();
+        let ahead = Arc::clone(&self.ahead);
 
         v_flex()
             .relative()
@@ -318,8 +310,8 @@ impl Render for RepoHistoryView {
                                     let browse_commit = browse_commit.clone();
 
                                     let ahead = ahead
-                                        .iter()
-                                        .find(|(id, _)| id.starts_with(commit.id.as_str()));
+                                        .get(commit.id.as_str())
+                                        .map(|path| (commit.id.to_string(), path.clone()));
 
                                     h_flex()
                                         .id(row_id.clone())

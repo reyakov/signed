@@ -78,6 +78,8 @@ struct AboutModel {
     nip05: Option<SharedString>,
     ngit_command: SharedString,
     nak_command: SharedString,
+    description: SharedString,
+    clone_commands: Arc<Vec<String>>,
     avatar_seed: SharedString,
 }
 
@@ -109,6 +111,8 @@ impl AboutModel {
                 nip05: nip05.map(SharedString::from),
                 ngit_command,
                 nak_command,
+                description: SharedString::from(announcement.description()),
+                clone_commands: Arc::new(announcement.clone_urls()),
                 avatar_seed,
             }
         });
@@ -206,14 +210,8 @@ impl RepoDetailView {
         let tabs = AppRoot::repo_tabs(&store, &workspace, cx);
         let refs = RefSwitcher::new(weak.clone(), window, cx);
 
-        let history = cx.new(|_| {
-            RepoHistoryView::new(
-                store.clone(),
-                workspace.clone(),
-                weak.clone(),
-                sync_directory.clone(),
-            )
-        });
+        let history =
+            cx.new(|_| RepoHistoryView::new(store.clone(), workspace.clone(), weak.clone()));
 
         let mut subscriptions = vec![];
 
@@ -392,11 +390,11 @@ impl RepoDetailView {
             return displayed.to_path_buf();
         }
 
-        self.sync_directory
-            .read_with(cx, |directory, cx| directory.statuses_of(addr, cx))
-            .into_iter()
+        let statuses = self.sync_directory.read(cx).statuses_of(addr);
+        statuses
+            .iter()
             .find(|checkout| checkout.status.head.is_some() && checkout.status.ahead_total > 0)
-            .map(|checkout| checkout.path)
+            .map(|checkout| checkout.path.clone())
             .unwrap_or_else(|| displayed.to_path_buf())
     }
 
@@ -414,6 +412,29 @@ impl RepoDetailView {
         } else {
             self.reload_history_source(false, cx);
         }
+
+        let backend = Backend::global(cx);
+        let checkout = self.history.read(cx).worktree().map(Path::to_path_buf);
+
+        let ahead = self
+            .store
+            .read(cx)
+            .addr()
+            .cloned()
+            .filter(|_| {
+                let user = backend.read(cx).current_user();
+                user.is_some_and(|user| self.store.read(cx).is_author(&user))
+            })
+            .map(|addr| {
+                self.sync_directory
+                    .read(cx)
+                    .ahead_commits_of(&addr, checkout.as_deref())
+            })
+            .unwrap_or_default();
+
+        self.history.update(cx, |history, cx| {
+            history.set_ahead(ahead, cx);
+        });
     }
 
     /// Points the commit list at its source again, reloading a mirror whose HEAD moved.
@@ -1379,7 +1400,7 @@ impl RepoDetailView {
         let nak_command = header.nak_command.clone();
 
         let name = self.store.read(cx).display_name();
-        let description = announcement.description();
+        let description = header.description.clone();
 
         let announcement_for_menu = Arc::clone(&header.announcement);
         let weak_menu_open = cx.weak_entity();
@@ -1388,7 +1409,7 @@ impl RepoDetailView {
         let weak_download = cx.weak_entity();
         let ngit_for_popover = ngit_command.clone();
         let nak_for_popover = nak_command.clone();
-        let git_for_popover = Arc::new(announcement.clone_urls());
+        let git_for_popover = Arc::clone(&header.clone_commands);
 
         h_flex()
             .p_6()

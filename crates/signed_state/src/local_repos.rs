@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Error;
 use gpui::{App, AppContext, Context, Entity, Global, SharedString, Task};
 use signed_core::{Announcement, RepoAddr};
-use signed_git::{LocalRepo, Nip34Binding, find_git_repos};
+use signed_git::{LocalRepo, Nip34Binding};
 
 struct GlobalLocalReposStore(Entity<LocalReposStore>);
 
@@ -44,13 +44,19 @@ impl LocalReposStore {
     }
 
     pub fn remove(&mut self, path: &Path, cx: &mut Context<Self>) {
-        self.repos = Arc::new(
-            self.repos
-                .iter()
-                .filter(|repo| repo.path.as_path() != path)
-                .cloned()
-                .collect(),
-        );
+        let Some(index) = self
+            .repos
+            .iter()
+            .position(|repo| repo.path.as_path() == path)
+        else {
+            return;
+        };
+
+        let mut repos = (*self.repos).clone();
+        repos.remove(index);
+
+        self.repos = Arc::new(repos);
+
         cx.notify();
     }
 
@@ -72,7 +78,7 @@ impl LocalReposStore {
         let work = cx.background_spawn(async move {
             let mut repos = Vec::new();
             for root in roots.iter() {
-                repos.extend(find_git_repos(root));
+                repos.extend(LocalRepo::find_all(root));
             }
             repos.sort_by(|a, b| a.path.cmp(&b.path));
             repos.dedup_by(|a, b| a.path == b.path);
@@ -101,6 +107,14 @@ impl LocalReposStore {
         task.detach();
     }
 
+    fn repo_addr(repo: &LocalRepo) -> Option<RepoAddr> {
+        let binding = repo.nip34.as_ref()?;
+        let owner = binding.owner?;
+        let identifier = binding.identifier.as_deref()?;
+
+        Some(RepoAddr::new(owner, identifier))
+    }
+
     pub fn resolve(
         repos: &[LocalRepo],
         known: &[Announcement],
@@ -111,7 +125,7 @@ impl LocalReposStore {
         repos
             .iter()
             .filter_map(|repo| {
-                let addr = local_repo_addr(repo);
+                let addr = Self::repo_addr(repo);
 
                 if let Some(addr) = &addr
                     && shown.contains(addr)
@@ -152,12 +166,4 @@ impl ResolvedLocalRepo {
             .map(|name| SharedString::from(name.to_string_lossy().into_owned()))
             .unwrap_or_else(|| SharedString::from("Untitled"))
     }
-}
-
-pub fn local_repo_addr(repo: &LocalRepo) -> Option<RepoAddr> {
-    let binding = repo.nip34.as_ref()?;
-    let owner = binding.owner?;
-    let identifier = binding.identifier.as_deref()?;
-
-    Some(RepoAddr::new(owner, identifier))
 }

@@ -1,13 +1,13 @@
-#[derive(Debug, Default)]
-pub struct RefreshGate {
-    running: bool,
-    dirty: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshRequest {
     Schedule,
     Fold,
+}
+
+#[derive(Debug, Default)]
+pub struct RefreshGate {
+    running: bool,
+    dirty: bool,
 }
 
 impl RefreshGate {

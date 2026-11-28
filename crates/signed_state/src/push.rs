@@ -1,44 +1,6 @@
 use nostr::prelude::Url;
 use nostr_sdk::prelude::*;
 
-/// `ws://` grasp servers, like ngit, use `http(s)://<host>`.
-pub(crate) fn grasp_base_url(relay: &RelayUrl) -> Option<String> {
-    let parsed = Url::parse(relay.as_str()).ok()?;
-    let host = parsed.host_str()?;
-    let port = parsed
-        .port()
-        .map(|port| format!(":{port}"))
-        .unwrap_or_default();
-    let scheme = if relay.scheme().is_secure() {
-        "https"
-    } else {
-        "http"
-    };
-    Some(format!("{scheme}://{host}{port}"))
-}
-
-pub(crate) fn grasp_clone_url(relay: &RelayUrl, owner: &str, repo_id: &str) -> Option<Url> {
-    let base = grasp_base_url(relay)?;
-    Url::parse(&format!("{base}/{owner}/{repo_id}.git")).ok()
-}
-
-/// GRASP-06 contributor namespace URL of a pull request tip.
-pub(crate) fn grasp06_prs_url(base_url: &str, npub: &str, repo_id: &str) -> String {
-    format!("{base_url}/prs/{npub}/{repo_id}.git")
-}
-
-/// The author's GRASP-06 `/prs/` URLs come first.
-pub(crate) fn pr_clone_urls(prs_urls: Vec<Url>, base_clone_urls: Vec<Url>) -> Vec<Url> {
-    let mut seen = std::collections::HashSet::new();
-    let mut urls = Vec::new();
-    for url in prs_urls.into_iter().chain(base_clone_urls) {
-        if seen.insert(url.to_string()) {
-            urls.push(url);
-        }
-    }
-    urls
-}
-
 #[derive(Debug, Clone)]
 pub struct GraspServer {
     relay: RelayUrl,
@@ -111,4 +73,44 @@ impl PushOutcome {
             self.failure_summary()
         ))
     }
+}
+
+/// `ws://` grasp servers, like ngit, use `http(s)://<host>`.
+pub(crate) fn grasp_base_url(relay: &RelayUrl) -> Option<String> {
+    let parsed = Url::parse(relay.as_str()).ok()?;
+    let host = parsed.host_str()?;
+    let port = parsed
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+
+    let scheme = if relay.scheme().is_secure() {
+        "https"
+    } else {
+        "http"
+    };
+
+    Some(format!("{scheme}://{host}{port}"))
+}
+
+pub(crate) fn grasp_clone_url(relay: &RelayUrl, owner: &str, repo_id: &str) -> Option<Url> {
+    let base = grasp_base_url(relay)?;
+    Url::parse(&format!("{base}/{owner}/{repo_id}.git")).ok()
+}
+
+/// GRASP-06 contributor namespace URL of a pull request tip.
+pub(crate) fn grasp06_prs_url(base_url: &str, npub: &str, repo_id: &str) -> String {
+    format!("{base_url}/prs/{npub}/{repo_id}.git")
+}
+
+/// The author's GRASP-06 `/prs/` URLs come first.
+pub(crate) fn pr_clone_urls(prs_urls: Vec<Url>, base_clone_urls: Vec<Url>) -> Vec<Url> {
+    let mut seen = std::collections::HashSet::new();
+    let mut urls = Vec::new();
+    for url in prs_urls.into_iter().chain(base_clone_urls) {
+        if seen.insert(url.to_string()) {
+            urls.push(url);
+        }
+    }
+    urls
 }
