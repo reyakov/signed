@@ -131,9 +131,11 @@ where
     /// Parses a four-value `e` tag carrying the given marker.
     fn e_tag_with_marker(&self, tag: &Tag, marker: &str) -> Option<EventId> {
         let slice = tag.as_slice();
+
         if tag.kind() != "e" || slice.len() != 4 || slice[3] != marker {
             return None;
         }
+
         tag.content()
             .and_then(|content| EventId::from_hex(content).ok())
     }

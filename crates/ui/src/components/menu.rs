@@ -27,8 +27,8 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, App, Bounds, DefiniteLength, DispatchPhase, Div,
-    ElementId, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyBinding,
+    Anchor, Animation, AnimationExt as _, AnyElement, App, Bounds, DefiniteLength, DispatchPhase,
+    Div, ElementId, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyBinding,
     ListAlignment, ListSizingBehavior, ListState, MouseButton, MouseDownEvent, ParentElement as _,
     Pixels, Point, RenderOnce, Role, SharedString, Stateful, StatefulInteractiveElement as _,
     StyleRefinement, Styled, Window, actions, anchored, canvas, deferred, div, ease_out_quint,
@@ -368,6 +368,7 @@ impl MenuItem {
             .role(Role::MenuItem)
             .debug_selector(move || format!("{}-item-{index}", env.debug_prefix))
             .flex()
+            .w_full()
             .items_center()
             .gap_2()
             .h_8()
@@ -608,7 +609,13 @@ impl Styled for Menu {
 impl RenderOnce for Menu {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let (chrome, enter_duration) = MenuChrome::read(cx);
-        let trigger_bounds: TriggerBoundsCell = Rc::new(RefCell::new(None));
+        // Keyed so the panel can anchor to bounds captured by the last paint.
+        let trigger_bounds: TriggerBoundsCell = window
+            .use_keyed_state((self.id.clone(), "trigger-bounds"), cx, |_, _| {
+                Rc::new(RefCell::new(None)) as TriggerBoundsCell
+            })
+            .read(cx)
+            .clone();
         let on_change = self.on_change.clone();
 
         let panel_focus = ElementId::from((self.id.clone(), "panel")).focus_handle(window, cx);
@@ -706,6 +713,10 @@ impl MenuPanelSpec {
             return None;
         }
 
+        let target = self
+            .trigger_bounds
+            .borrow()
+            .map(|bounds| TriggerAnchor::below(window, bounds));
         let state = MenuPanelState::new(id, window, cx);
         let panel = state.panel(
             window,
@@ -729,7 +740,7 @@ impl MenuPanelSpec {
             },
         );
 
-        Some(anchored_overlay(self.position, panel, None))
+        Some(anchored_overlay(self.position, target, panel, None))
     }
 }
 
@@ -1245,9 +1256,39 @@ pub(crate) fn trigger_toggle(
     .inset_0()
 }
 
+/// Where an overlay hangs off its trigger.
+#[derive(Clone, Copy)]
+pub(crate) struct TriggerAnchor {
+    target: Bounds<Pixels>,
+    /// The panel's corner that meets the trigger.
+    anchor: Anchor,
+    /// The trigger's corner the panel hangs from.
+    corner: Anchor,
+}
+
+impl TriggerAnchor {
+    /// Hangs the panel below the trigger, aligned to the trigger edge nearer the window's center.
+    pub(crate) fn below(window: &Window, target: Bounds<Pixels>) -> Self {
+        if target.center().x > window.viewport_size().width / 2.0 {
+            Self {
+                target,
+                anchor: Anchor::TopRight,
+                corner: Anchor::BottomRight,
+            }
+        } else {
+            Self {
+                target,
+                anchor: Anchor::TopLeft,
+                corner: Anchor::BottomLeft,
+            }
+        }
+    }
+}
+
 /// Deferred anchored overlay on OVERLAY_LAYER, optionally fading in.
 pub(crate) fn anchored_overlay<E: IntoElement>(
     position: Option<Point<Pixels>>,
+    trigger: Option<TriggerAnchor>,
     panel: E,
     fade: Option<(&'static str, Duration)>,
 ) -> AnyElement {
@@ -1263,14 +1304,17 @@ pub(crate) fn anchored_overlay<E: IntoElement>(
         None => div().child(panel).into_any_element(),
     };
 
-    deferred(
-        anchored()
-            .when_some(position, |anchored, position| anchored.position(position))
-            .offset(point(px(0.), px(4.)))
-            .child(wrapper),
-    )
-    .with_priority(OVERLAY_LAYER)
-    .into_any_element()
+    let overlay = match (position, trigger) {
+        (Some(position), _) => anchored().position(position),
+        (None, Some(trigger)) => anchored()
+            .anchor(trigger.anchor)
+            .attach(trigger.target, trigger.corner),
+        (None, None) => anchored(),
+    };
+
+    deferred(overlay.offset(point(px(0.), px(4.))).child(wrapper))
+        .with_priority(OVERLAY_LAYER)
+        .into_any_element()
 }
 
 /// Canvas that grabs focus when `should_grab` holds.

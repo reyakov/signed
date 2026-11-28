@@ -32,7 +32,8 @@ use gpui::{
 use crate::components::common::{ElementIdExt as _, StyledExt as _, v_flex};
 use crate::components::dialog::Dismiss;
 use crate::components::menu::{
-    ChangeHandler, TriggerBoundsCell, anchored_overlay, focus_capture, trigger_toggle,
+    ChangeHandler, TriggerAnchor, TriggerBoundsCell, anchored_overlay, focus_capture,
+    trigger_toggle,
 };
 use crate::theme::{ActiveTheme as _, POPOVER_MIN_WIDTH};
 
@@ -135,7 +136,12 @@ impl RenderOnce for Popover {
             )
         };
 
-        let trigger_bounds: TriggerBoundsCell = Rc::new(RefCell::new(None));
+        let trigger_bounds: TriggerBoundsCell = window
+            .use_keyed_state((self.id.clone(), "trigger-bounds"), cx, |_, _| {
+                Rc::new(RefCell::new(None)) as TriggerBoundsCell
+            })
+            .read(cx)
+            .clone();
 
         // Keyboard focus rides the panel across frames.
         let focus = self.id.focus_handle(window, cx);
@@ -163,8 +169,13 @@ impl RenderOnce for Popover {
                 let label = fallback_label.clone();
                 let content = self.content.map(|content| content(window, cx));
 
+                let target = trigger_bounds
+                    .borrow()
+                    .map(|bounds| TriggerAnchor::below(window, bounds));
+
                 wrapper.child(anchored_overlay(
                     None,
+                    target,
                     v_flex()
                         .id((self.id.clone(), "popover-panel"))
                         .debug_selector(|| "popover-panel".to_string())
@@ -180,6 +191,7 @@ impl RenderOnce for Popover {
                         .on_mouse_down_out({
                             let on_change = on_change.clone();
                             let trigger_bounds = trigger_bounds.clone();
+
                             move |event, window, cx| {
                                 if trigger_bounds
                                     .borrow()

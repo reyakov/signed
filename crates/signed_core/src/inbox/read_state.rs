@@ -47,6 +47,7 @@ impl InboxReadState {
     /// Marks all events from other authors within the window as read.
     pub fn mark_all_read(&mut self, all: &[Event], me: PublicKey, now: Timestamp) {
         let cutoff = now - MARK_ALL_WINDOW;
+
         self.read_before = cutoff;
         self.read_ids = all
             .iter()

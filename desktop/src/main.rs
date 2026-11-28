@@ -7,28 +7,32 @@ use ui::theme::{ActiveTheme as _, Theme};
 
 actions!(signed, [Quit]);
 
+/// Embeds app artwork and serves it plus the ui crate's icon set.
 #[derive(rust_embed::RustEmbed)]
 #[folder = "assets"]
 #[exclude = "*.DS_Store"]
-struct BackgroundAssets;
-
-/// Serves app artwork plus the ui crate's icon set.
 struct AppAssets;
 
 impl AssetSource for AppAssets {
     fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
-        if path.starts_with("backgrounds/") {
-            return Ok(BackgroundAssets::get(path).map(|file| file.data));
+        if let Some(name) = path.strip_prefix("icons/") {
+            return Ok(ui::Assets::get(name).map(|file| file.data));
         }
-        ui::Assets.load(path)
+        Ok(Self::get(path).map(|file| file.data))
     }
 
     fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
-        let mut files: Vec<SharedString> = BackgroundAssets::iter()
+        let mut files: Vec<SharedString> = ui::Assets::iter()
+            .map(|name| SharedString::from(format!("icons/{name}")))
             .filter(|file| file.starts_with(path))
-            .map(SharedString::from)
             .collect();
-        files.extend(ui::Assets.list(path)?);
+
+        files.extend(
+            Self::iter()
+                .filter(|file| file.starts_with(path))
+                .map(SharedString::from),
+        );
+
         Ok(files)
     }
 }
@@ -48,7 +52,7 @@ fn main() {
             ]);
 
             cx.on_action(|_: &Quit, cx| cx.quit());
-            cx.set_app_identity("info.reya.signed", "Signed");
+            cx.set_app_identity("build.signed.signed", "Signed");
 
             let store = cx.new(|_| SettingsStore::new(paths::settings_file()));
             SettingsStore::set_global(store.clone(), cx);
@@ -100,6 +104,7 @@ fn main() {
             if let Err(error) = cx.open_window(options, |window, cx| {
                 Theme::sync_from_window(window, cx);
                 Theme::sync_window_rem_size(window, cx);
+
                 window
                     .observe_window_appearance(|window, cx| {
                         Theme::sync_from_window(window, cx);
@@ -107,12 +112,14 @@ fn main() {
                         cx.refresh_windows();
                     })
                     .detach();
+
                 signed_app::AppRoot::mount(window, cx)
             }) {
                 tracing::error!("failed to open window: {error}");
                 cx.quit();
                 return;
             }
+
             cx.activate(true);
         });
 }

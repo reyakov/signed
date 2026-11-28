@@ -41,7 +41,7 @@ use crate::components::common::{
 };
 use crate::components::empty_state::EmptyState;
 use crate::components::input::{Input, InputState, InputStateEvent};
-use crate::components::menu::anchored_overlay;
+use crate::components::menu::{TriggerAnchor, TriggerBoundsCell, anchored_overlay};
 use crate::icons::{Icon, IconRole};
 use crate::theme::{ActiveTheme as _, COMBOBOX_MIN_WIDTH, COMBOBOX_WIDTH, POPUP_MAX_HEIGHT, Size};
 
@@ -588,7 +588,13 @@ where
         let id = self.id.clone();
         let open = self.highlight.is_some();
         let weak = cx.weak_entity();
-        let wrapper_bounds: Rc<RefCell<Option<Bounds<Pixels>>>> = Rc::new(RefCell::new(None));
+
+        let wrapper_bounds: TriggerBoundsCell = window
+            .use_keyed_state((id.clone(), "wrapper-bounds"), cx, |_, _| {
+                Rc::new(RefCell::new(None)) as TriggerBoundsCell
+            })
+            .read(cx)
+            .clone();
 
         div()
             .id(id.clone())
@@ -725,6 +731,9 @@ where
 
                 wrapper.child(anchored_overlay(
                     None,
+                    wrapper_bounds
+                        .borrow()
+                        .map(|bounds| TriggerAnchor::below(window, bounds)),
                     v_flex()
                         .id((id.clone(), "panel"))
                         .debug_selector({

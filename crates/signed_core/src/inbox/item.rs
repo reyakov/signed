@@ -72,8 +72,8 @@ impl InboxItem {
                 .then_with(|| b.id.to_hex().cmp(&a.id.to_hex()))
         });
         rest.truncate(limit.saturating_sub(events.len()));
-        events.extend(rest);
 
+        events.extend(rest);
         events.sort_by_key(|event| event.created_at);
         events
     }

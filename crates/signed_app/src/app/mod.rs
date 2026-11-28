@@ -61,8 +61,8 @@ impl AppRoot {
         let app = cx.weak_entity();
         let panels = cx.new(|cx| PanelStack::new("signed-panel", cx));
         let titlebar = cx.new(|cx| TitlebarView::new(app.clone(), window, cx));
-
         let empty = cx.new(|_| PlaceholderView::new("Select a repository"));
+
         panels.update(cx, |panels, cx| {
             panels.set_empty(empty, None, cx);
         });

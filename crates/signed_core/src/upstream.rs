@@ -17,6 +17,7 @@ impl Upstream {
             .ok()
             .filter(|coordinate| coordinate.kind == Kind::GitRepoAnnouncement)
             .map(RepoAddr::from);
+
         Self {
             raw: raw.to_owned(),
             addr,

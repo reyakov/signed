@@ -24,6 +24,7 @@ impl<'a> PullRequest<'a> {
         let Some(tip) = pr.current_commit() else {
             return Vec::new();
         };
+
         let Some(last) = patches
             .iter()
             .filter(|patch| Self::patch_produces_commit(patch, &tip))
@@ -35,10 +36,12 @@ impl<'a> PullRequest<'a> {
 
         let mut series = vec![last];
         let mut tail = last;
+
         loop {
             let Some(prev_id) = tail.tags.event_ids().next() else {
                 break;
             };
+
             let Some(prev) = patches
                 .iter()
                 .find(|patch| patch.id == prev_id && !series.contains(patch))
@@ -46,9 +49,11 @@ impl<'a> PullRequest<'a> {
             else {
                 break;
             };
+
             series.push(prev);
             tail = prev;
         }
+
         series.reverse();
         series
     }
@@ -58,9 +63,11 @@ impl<'a> PullRequest<'a> {
         let pr = self.0;
         let patches: Vec<&'a Event> = patches.into_iter().collect();
         let series = self.patches(patches.iter().copied());
+
         if series.is_empty() {
             return pr.content.clone();
         }
+
         series
             .iter()
             .map(|patch| patch.content.as_str())
@@ -89,18 +96,22 @@ impl<'a> PullRequest<'a> {
     fn forward_series(root: &'a Event, patches: &[&'a Event]) -> Vec<&'a Event> {
         let mut series = vec![root];
         let mut tail = root;
+
         loop {
             let next = patches
                 .iter()
                 .filter(|patch| !series.contains(patch))
                 .filter(|patch| patch.tags.event_ids().any(|id| id == tail.id))
                 .max_by_key(|patch| patch.created_at);
+
             let Some(next) = next else {
                 break;
             };
+
             series.push(next);
             tail = next;
         }
+
         series
     }
 

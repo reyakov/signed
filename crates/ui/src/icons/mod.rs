@@ -1,13 +1,11 @@
 //! Signed's icon set: application-defined SVG glyphs.
 
-use std::borrow::Cow;
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AbsoluteLength, App, AssetSource, Div, Hsla, IntoElement, ParentElement as _, Pixels, Rems,
-    RenderOnce, Result, SharedString, Styled as _, TimedTransformation, Transformation, Window,
-    div, rems, svg,
+    AbsoluteLength, App, Div, Hsla, IntoElement, ParentElement as _, Pixels, Rems, RenderOnce,
+    SharedString, Styled as _, TimedTransformation, Transformation, Window, div, rems, svg,
 };
 
 const SMALL_ICON_SIZE: Rems = rems(0.875);
@@ -15,6 +13,11 @@ const DEFAULT_ICON_SIZE: Rems = rems(1.0);
 const LARGE_ICON_SIZE: Rems = rems(1.25);
 /// The spin presents at most this rate, rotating a sprite needs no more frames.
 const SPIN_MAX_FPS: f32 = 60.0;
+
+#[derive(rust_embed::RustEmbed)]
+#[folder = "src/icons/assets"]
+#[exclude = "*.DS_Store"]
+pub struct Assets;
 
 /// The semantic glyphs UI components need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,27 +314,5 @@ impl RenderOnce for Icon {
         let Glyph::Named(path) = glyph;
 
         Self::render_svg_path(size, Some(color), transformation, rotation_period, path)
-    }
-}
-
-#[derive(rust_embed::RustEmbed)]
-#[folder = "src/icons/assets"]
-#[exclude = "*.DS_Store"]
-pub struct Assets;
-
-impl AssetSource for Assets {
-    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        let name = match path.strip_prefix("icons/") {
-            Some(name) => name,
-            None => return Ok(None),
-        };
-        Ok(Assets::get(name).map(|file| file.data))
-    }
-
-    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
-        Ok(Self::iter()
-            .map(|file| SharedString::from(format!("icons/{file}")))
-            .filter(|file| file.starts_with(path))
-            .collect())
     }
 }

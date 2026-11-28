@@ -20,6 +20,7 @@ where
     L: Fn(EventId) -> Option<Event>,
 {
     let resolver = ThreadResolver::new(lookup);
+
     let mut groups: HashMap<EventId, Vec<Event>> = HashMap::new();
     for event in events {
         if event.pubkey == me {
@@ -46,6 +47,7 @@ where
         .map(|root| {
             let mut events = groups.remove(&root).unwrap_or_default();
             let mut own_events = own_groups.remove(&root).unwrap_or_default();
+
             sort_newest_first(&mut events);
             sort_newest_first(&mut own_events);
 
